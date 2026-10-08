@@ -61,6 +61,261 @@ so each device runs the kernel/sweep on its local mode-plane block
 with zero communication, and all tile pad/crop bookkeeping happens on
 local arrays where no Explicit-mesh sharding rules apply.  See
 :meth:`PerModeBandedPallasOperator.solve`.
+
+Design notes
+------------
+**Why a Pallas kernel.**  The implicit step is one independent banded
+system per Fourier mode (size `$N_y$`, half-bandwidth `$p$`), so the
+parallelism is across modes: each Pallas program walks the sequential
+banded sweep along `$N_y$` for a tile of modes, and the many programs
+fill the GPU.  JAX/XLA cannot express a per-lane sequential loop
+(``vmap(scan)`` collapses to a single `$N_y$`-deep batched scan), so the
+sweep is a Pallas (Triton) kernel: two ``fori_loop`` passes that read
+the band one entry at a time by index (``l_ref[i, d]``, one value per
+mode of the program's tile) and carry the sliding window in registers,
+so no whole-band block is ever loaded (Triton supports neither a
+non-power-of-two block load nor value slicing, reversal or a scan over
+``xs``).  The same banded math runs in pure JAX as the CPU path, on the
+stored layout (:func:`_banded_solve_mode_inner`), and as the mode-outer
+reference (:func:`_banded_solve_batched`).
+
+**The Pallas mode tile.**  Each program covers ``(bm0, bm1)`` Fourier
+modes along ``(k_z, k_x)`` (``solver.pallas_block_m0`` /
+``pallas_block_m1``, powers of two for Triton's block loads) and runs
+the sweep vectorized across its tile, filling ``bm0 * bm1 * k`` SIMD
+lanes instead of ``k``.  The default ``(2, 32)`` is the H100 tuning.
+``bm1 = 32`` is one warp wide along the contiguous innermost mode axis
+(`$k_x$`), so a warp's band load fully coalesces (256 B); a smaller
+``bm1`` splits the warp across the strided `$k_z$` axis (at least two
+transactions per load).  ``bm0 = 2`` gives four warps per program
+(``k = 2``) to hide the dependent-sweep latency, the recurrence having
+little per-warp ILP.  No parameter-independent optimum exists: total
+parallelism is fixed at ``Nkz * Nkx * k`` threads, so a typical DNS
+(~1e3-1e4 modes) is limited by mode-count occupancy on an H100 whatever
+the tile.  The tuning rule: keep ``bm1 >= 32`` (coalescing) and the
+program count ``cdiv(Nkz, bm0) * cdiv(Nkx, bm1)`` at least a few times
+the SM count; shrink the tile for small mode counts, grow it for very
+large DNS, and profile a change (``scripts/pallas_solve_profile.py``,
+Nsight).
+
+**The partial-tile miscompile.**  When the tile does not divide the
+mode plane -- the common case, since ``Nkz = nz - 1`` is odd -- the
+boundary tile is partial and Triton masks its loads.  That masked path
+miscompiles on a real GPU: a grid with a partial boundary tile corrupts
+results across the grid, full-tile programs included,
+nondeterministically (warp-scheduling dependent), for any nontrivial
+kernel (the masked double-index band loads ``l_ref[i, d]`` /
+``u_ref[i, d]``, and even a single-index window-carry sweep), while
+interpret mode and the CUDA lowering both accept it.
+``scripts/pallas_tiling_diagnostic.py`` localized it: only trivial
+copy and round-trip kernels survive a partial plane, and full tiles
+are always correct at ``(2, 32)``.  The same diagnostic found the
+forward-to-backward round-trip of ``y`` through the output ref
+coherent without the ``debug_barrier`` (the ``bm1 > 1`` miscompile was
+the masked load, not a visibility bug), which stays as a cheap guard.
+
+**No input-output aliasing in the kernel.**
+``input_output_aliases={2: 0}`` (aliasing ``b`` to the output) would
+be correct -- the forward pass writes ``y[i]`` only after reading
+``b[i]``, and no ``b[j]`` is re-read once overwritten -- and lowers and
+interprets cleanly, dropping one output allocation.  It is left out:
+the saving is allocation-only (the kernel is bound by memory
+bandwidth, which aliasing leaves unchanged), it would add a donation
+constraint across the vmapped ``.solve`` paths and the multi-device
+GPU sharding, and XLA's buffer assignment and the stepper's
+``donate_argnums`` likely reuse the dead ``b`` already.  Worth
+revisiting if GPU profiling shows a peak-memory win.
+
+**Factorizing in the stored layout.**  At the per-rank block of a
+``1280 x 383 x 384`` run on ``(np0, np1) = (64, 1)`` (``7 x 640``
+modes, ``N = 383``, ``p = 8``; one core, jitted, warm), the first form
+``vmap``-ed a one-mode ``fori_loop`` over the modes: 0.62 s, plus
+0.42 s of factor transposes into the stored layout.  A ``scan`` over a
+fully transposed band takes 0.20 s but needs that band-sized transpose
+(0.23 s), and a program that transposes and then loops holds two
+band-sized temporaries (XLA copies a loop operand that is still read
+after the loop).  Reading the rows in place
+(:func:`_banded_factor_mode_inner`) takes 0.40 s with 5 MB of
+temporaries, and the factors agree bit for bit with both.
+
+**The setup check's programs.**  The cross-device maxima of the
+stability check run as separate small programs, the host reducing the
+planes.  A version that took them inside :func:`_factor_checked` failed
+at once on a ``(2, 2)`` mesh under the MPI collectives (``MPI:
+Communicator requested from a thread that is not the one MPI was
+initialized from``, every rank, every launch): its collectives ran off
+the launching thread and were the first over their device groups, so
+MPI refused to open the communicators there.  The mesh now opens them
+as it is built (``sharding._warm_communicators``), and
+``tests/test_mpi_communicators.py`` runs that version.  Run eagerly,
+the same check was a few hundred separately compiled operations -- the
+factorization and the probe sweep recompiled on every build -- with
+factor-sized transposed copies alongside; jitted, it reads the band in
+place in both loops and holds no band-sized temporary (45 MB of
+temporaries at the per-rank block above, against 0.9 GB for a version
+that transposed the band first).
+
+**No unrolling of the CPU sweep.**  The sweep's body is small at a CPU
+rank's mode block, so ``unroll`` looked like a way to amortize the
+loop.  It loses on both counts (the as-run step at ``10 x 385 x 320``,
+plane Poiseuille, one pinned core, the variants compiled in one process
+and executed alternately, 10 rounds): the step's temporaries grow from
+23.5 to 31.0 padded fields at any ``unroll`` of 2, 4 or 8, and it runs
+x0.87, x0.83 and x0.75 as fast.
+
+**One stored layout for both backends.**  Three CPU-native stored
+layouts were tried end to end against the mode-inner one (plane
+Couette ``64 x 96 x 64``, 29 steady steps, one device, every variant
+bit-identical), when the CPU branch still permuted the stored factors
+to mode-outer on every solve and ran :func:`_banded_solve_batched`:
+
+===========================  =============  ==============
+stored layout                isolated solve  full step
+===========================  =============  ==============
+mode-inner (the shipped one)  1.00x           0.44 s
+mode-outer ``(Nkz,Nkx,N,p)``  0.73x           0.70 s
+N-first ``(N,Nkz,Nkx,p)``     0.52x           ~0.9-1.3 s
+===========================  =============  ==============
+
+The ranking inverts: the more the stored layout is tailored to the
+sweep in isolation, the slower the step, monotonically.  The factors
+are jit *arguments* (the stepper takes ``flow`` as one), so their
+stored layout constrains layout assignment across the whole step;
+pre-materializing a solve-optimal arrangement wins the solve and loses
+more elsewhere.  Setup compile degrades with it too (27 s -> 53 s total
+wall for mode-outer).  Neither a standalone ``jit`` of one solve nor
+any isolated solve timing can decide this, since both rank the options
+backwards; only an end-to-end step measurement does.
+
+**The CPU sweep reads the stored layout.**  Keeping the stored layout
+and changing only the sweep -- scanning the mode-inner factors
+directly, as the kernel does -- removes two factor-sized transposes per
+solve, which the as-run step held as temporaries (with the singletons
+baked in as constants XLA had folded them, so the baked step never
+showed them).  Measured end to end, the as-run step compiled both ways
+in one process, executions alternating, the first pair discarded,
+plane Poiseuille, one device pinned to one core:
+
+==================  ===================  ===========================
+grid                step temporaries     step time, old / new
+==================  ===================  ===========================
+``64 x 96 x 64``    29.7 -> 22.2 fields  0.325 -> 0.263 s, x1.24
+``10 x 385 x 320``  29.1 -> 22.0 fields  1.175 -> 0.884 s, x1.33
+==================  ===================  ===========================
+
+(Medians of 10 pairs; per-pair ratios 1.07-1.32 and 1.19-1.56.  Fields
+are oversampled physical components; the second grid has the per-rank
+mode count and point count of a ``1280 x 385 x 320`` run on 128 ranks
+at ``(np0, np1) = (1, 128)``.)  The states agree to ``2e-15`` and
+``1e-14`` relative, with identical corrector counts: the two sweeps sum
+the same terms in a different order, so they agree to machine epsilon,
+not bit for bit.
+
+**No split-real hoist.**  The re/im split and recombine around each
+solve are mandatory -- JAX has no zero-copy complex<->real bitcast, the
+f64 Triton kernel cannot ingest ``c128``, and the CPU sweep runs on
+real columns too -- and some look redundant *between* consumers:
+``Hk_op.solve`` recombines its result to complex, the caller only
+indexes or linearly combines it, and ``Lk_op.solve`` splits it straight
+back apart.  XLA does not simplify them away (optimized CPU HLO: one
+``.solve`` emits one ``complex`` and one ``real``/``imag`` pair; one
+``_imm_iteration`` emits 12/6/6 Cartesian, 15/6/6 annular, 23/8/8
+pipe).  Carrying the field split-real across that chain nevertheless
+loses.  ``scripts/pallas_solve_profile.py`` Part A2 times the real
+``Hk.solve -> map -> Lk.solve`` chain both ways, fidelity-gated,
+factors as jit arguments (CPU, one device; measured with the permuting
+CPU sweep, before the mode-inner one; positive = hoisting is faster):
+
+==============  =========  =========
+geometry        96-ish      `$128^3$`
+==============  =========  =========
+plane-couette    -0.6 %      +9.1 %
+taylor-couette  -11.0 %     -10.0 %
+pipe             -5.6 %     -14.7 %
+==============  =========  =========
+
+All six are isolated-chain figures, which rank options backwards (the
+stored-layout entry above), so the table decides nothing on its own.
+The step decides it.  With the permuting sweep, Part A's fused
+``full - sweep`` was ``<= 0`` on CPU: the split and recombine cost
+nothing measurable inside the step, so there was no time for a hoist
+to win back.  With the mode-inner sweep they are 4.6 % of one ``Lk``
+solve, and Part A2 times the hoisted chain 1.6 % *slower* than the
+shipped one (plane Couette ``64 x 96 x 64``, one core; -0.25 % of the
+step).  The likely mechanism is the layout finding's: pre-materializing
+a representation that suits the two solves constrains layout assignment
+around them.  The two arms agree to ~1e-15, the bar here, since the
+hoist changes only the representation a value is carried in.
+
+**Per-backend storage.**  A CPU run never reaches the kernel, so
+storing the reciprocated diagonal and the tile pad would only be undone
+on every solve.  Dropping both on CPU is worth +2.3 % of the step at
+plane Couette ``64 x 96 x 64``, +4.0 % at plane Couette `$128^3$` and
++1.5 % on the pipe at `$128^3$`, and the padded factor memory goes with
+it.  The `$128^3$` figure is reproduced three independent ways: an
+interleaved one-process A/B (+4.04 %), an independent re-run of it
+(+3.94 %), and a tree swap between the change and its parent -- one
+fixed harness pointed at each ``src`` in turn, 20 chained steps, 6
+pairs with the first discarded: +4.01 % mean, 3.6-4.7 % range, no
+monotone settling, and the ratio holding at 4.02 % in a pair where both
+arms ran 12 % slow.  ``num_c`` is 0 in all twelve tree-swap runs, so
+the restart and chained harnesses agree to 0.03 pp.  An earlier record
+of 1.4 / 9.9 / 22 % came from a prototype, not from the change: under
+one harness the two trees run 1279 and 1227 ms/step, where the recorded
+pair was 2745 / 2130 -- the *before* arm inflated 2.15x against the
+*after* arm's 1.74x, an asymmetry in the direction that manufactures a
+gain.  The likely cause: the CPU-native prototypes replaced
+:meth:`~PerModeBandedPallasOperator.from_mode_inner_factors`'s
+``shard_map`` with a bare ``moveaxis`` or an ``optimization_barrier``,
+slowing the baseline for a reason unrelated to the storage split.
+
+The win is step-level, not solve-level: the same interleaved A/B on
+``Hk_op.solve`` alone gives -0.3 % at plane Couette `$128^3$`, the crop
+and the un-invert costing essentially nothing inside the sweep.  What
+the padded, reciprocated storage costs is everything *around* it --
+larger factor arrays for XLA to place and move across a step that
+takes them as jit arguments: the stored-layout lesson, running the
+other way.  The arms agree to ``4e-17``-``2e-15`` relative per step,
+growing with the solve count -- machine epsilon rather than exactly,
+since un-inverting round-trips the diagonal through ``1/(1/d)`` -- so
+no test may assert exact equality across the two.
+
+**The compilation barrier.**  On the kernel path the ``shard_map`` of
+:func:`_kernel_storage` separates the no-pivot factorization from the
+reciprocate-and-pad, independently of the pad it carries: without it
+the two fuse into one graph and XLA's CPU algebraic simplifier reports
+a circular simplification loop while building ``H_k``, turning a
+seconds-long setup into a minutes-long one.  The CPU branch is measured
+not to need it: returning early leaves nothing to separate, the
+factors arriving in the stored layout with neither the reciprocal
+scatter nor the pad the simplifier chokes on (measured when that branch
+still made the two ``moveaxis`` a mode-outer factorization needed).  It
+was checked where the two *can* fuse at all, the jitted ``set_dt``
+rebuild, the one place :func:`_factor_pallas_operator` runs inside a
+``jit``; the setup build cannot fuse, since
+:func:`_build_pallas_operator` factors in one compiled program
+(:func:`_factor_checked`) and packs in another, with its host-side
+stability verdict between them.  Its first, compiling call takes
+0.95-1.5 s at plane Couette ``64 x 96 x 64`` and 1.9-2.6 s on the pipe
+at `$128^3$`, and reinstating a ``shard_map`` barrier on the CPU branch
+lands inside that same spread (three interleaved repeats per arm, one
+process each, orders alternated).  No configuration reproduced the
+pathology without it.
+
+**The one remaining IMM transpose.**  For the stacked ``Hk`` solve
+(``L.ndim == 5``, ``component_axis=1``), ``out_axes=1`` makes XLA emit
+one output-repositioning transpose `$(C, N, \ldots) \to (N, C, \ldots)$`
+on the complex-reconstructed result (seen in the H100 optimized HLO as
+a ``c128[N, C, 1, Nkz, Nkx]`` ``dimensions={1,0,2,3,4}`` transpose under
+``vmap()/complex``).  It is the only IMM transpose the y-leading
+contract leaves, and a net win: feeding ``R_stack`` y-leading removes
+the three larger ``D1``/``D2`` matvec transposes at the cost of this one
+(a corrector step's optimized-HLO transposes drop from 252 to 177),
+and ``component_axis=0`` would merely move it to the input side and
+reintroduce those matvec transposes.  Eliminating it means folding the
+three-component stack into the kernel's `$(k_z, k_x)$` batch, so that
+no ``vmap`` runs over components: a solve-kernel refactor worth ~2 % of
+the step, deferred as low-return and cross-cutting.
 """
 
 from __future__ import annotations
@@ -93,8 +348,7 @@ def _real_rhs_view(rhs: Array) -> Array:
 
 
 def _complex_from_view(x: Array) -> Array:
-    """Recombine the trailing re/im axis of length 2 into a
-    complex array (inverse of :func:`_real_rhs_view`)."""
+    """Inverse of :func:`_real_rhs_view`: the re/im axis to complex."""
     return lax.complex(x[..., 0], x[..., 1])
 
 
@@ -146,8 +400,8 @@ class DenseJAXSolver:
     """Batched dense LU cache for per-mode operators.
 
     On construction, the input matrix is LU-factored over all
-    `$(k_z, k_x)$` modes via cuSOLVER batched LU (the input
-    buffer is donated, so the factors reuse its memory), then
+    `$(k_z, k_x)$` modes by a batched pivoted LU (cuSOLVER on GPU; the
+    input buffer is donated, so the factors reuse its memory), then
     discarded.  Pivots are converted to permutations once so the
     solve path needs no per-call pivot conversion.
 
@@ -257,52 +511,15 @@ class DenseJAXSolver:
 
 # ── Pallas per-mode banded solver ────────────────────────────────
 #
-# The implicit step is one independent banded system per Fourier mode
-# (size N_y, half-bandwidth p), so the parallelism is across modes: each
-# Pallas program walks the sequential banded sweep along N_y for a tile
-# of modes, and the many programs fill the GPU.
-# JAX/XLA cannot express a per-lane sequential loop (``vmap(scan)``
-# collapses to a single N_y-deep batched scan), so the sweep is written
-# as a Pallas (Triton) kernel: two ``fori_loop`` passes that read the
-# band one entry at a time by index (``l_ref[i, d]``, one value per mode
-# of the program's tile) and carry the sliding window in registers, so
-# no whole-band block is ever loaded (Triton supports neither a
-# non-power-of-two block load nor value slicing / reversal / scan
-# ``xs``).  The same banded math runs in pure JAX as the CPU path, on
-# the stored layout (``_banded_solve_mode_inner``), and as the
-# mode-outer reference (``_banded_solve_batched``).
+# One independent banded system per Fourier mode, swept along N_y by a
+# Pallas (Triton) kernel on GPU and by pure-JAX scans elsewhere (Design
+# notes: "Why a Pallas kernel", "The Pallas mode tile").
 #
 # Factors are stored banded: ``L`` carries the ``p`` strict sub-diagonals
 # of the unit-lower factor (``L[i, i-p+d]``, ``d = 0..p-1``); ``U`` carries
 # the diagonal + ``p`` super-diagonals (``U[i, i+d]``, ``d = 0..p``).  The
 # operator band uses ``A[i, i-p+d]``, ``d = 0..2p`` (``d = p`` the
 # diagonal), out-of-range entries zero.
-
-# Pallas mode-tile per program: ``(bm0, bm1)`` Fourier modes along the
-# ``(k_z, k_x)`` axes, read from ``params.solver.pallas_block_m0`` /
-# ``pallas_block_m1`` (must be powers of two -- Triton block loads).  Each
-# program runs the sequential banded sweep vectorized across its tile, so
-# ``bm0 * bm1 * k`` SIMD lanes are filled instead of just ``k``.
-#
-# Default ``(2, 32)`` is the H100 tuning.  Partial boundary tiles (when the
-# tile does not divide the mode plane) are avoided by padding the plane up
-# to whole tiles inside :func:`_pallas_banded_solve` -- the masked
-# partial-tile path miscompiles on real Triton (it corrupts even full-tile
-# programs, nondeterministically, for nontrivial kernels), so the kernel only
-# ever runs the correct full-tile path.  The tuning:
-#   * ``bm1 = 32`` is one warp wide along the **contiguous innermost** mode
-#     axis (``k_x``), so a warp's band load fully coalesces (256 B).  A
-#     smaller ``bm1`` splits the warp across the strided ``k_z`` axis
-#     (>= 2 transactions per load).
-#   * ``bm0 = 2`` gives 4 warps per program (``k = 2``) to hide the
-#     dependent-sweep latency (the recurrence has little per-warp ILP).
-# A parameter-independent optimum does not exist: total parallelism is
-# fixed at ``Nkz * Nkx * k`` threads, so a typical DNS (~1e3-1e4 modes) is
-# mode-count-occupancy-limited on an H100 regardless of tile size.  Tuning
-# rule: keep ``bm1 >= 32`` (coalescing) and the program count
-# ``cdiv(Nkz, bm0) * cdiv(Nkx, bm1)`` at least a few x the SM count; shrink
-# the tile for small mode counts, grow it for very large DNS, and
-# profile a change (``scripts/pallas_solve_profile.py``, Nsight).
 
 
 def _lu_row(
@@ -343,9 +560,11 @@ def _lu_row(
 
 
 def _band_row(a_band: Array, i: Array) -> Array:
-    """Row *i* of a mode-outer band ``(..., N, 2p+1)``, as
-    ``(2p+1, ...)``: one small in-cache transpose, so the arithmetic
-    runs on contiguous mode planes."""
+    """Row *i* of a mode-outer band ``(..., N, 2p+1)``, as ``(2p+1, ...)``.
+
+    One small in-cache transpose, so the arithmetic runs on contiguous
+    mode planes.
+    """
     return jnp.moveaxis(lax.dynamic_index_in_dim(a_band, i, -2, False), -1, 0)
 
 
@@ -366,18 +585,9 @@ def _banded_factor_mode_inner(a_band: Array) -> tuple[Array, Array]:
     place (:func:`_band_row`), updates them all at once
     (:func:`_lu_row`) and writes the factor rows into the loop-carried
     outputs; the previous ``p`` rows of ``U`` ride along as a tuple
-    window (the pattern of :func:`_banded_solve_mode_inner`).
-
-    *Why this form.*  At the per-rank block of a ``1280 x 383 x 384``
-    run on ``(np0, np1) = (64, 1)`` (``7 x 640`` modes, ``N = 383``,
-    ``p = 8``; one core, jitted, warm): the first form ``vmap``-ed a
-    one-mode ``fori_loop`` over the modes, 0.62 s plus 0.42 s of
-    factor transposes into the stored layout; a ``scan`` over a fully
-    transposed band takes 0.20 s but needs that band-sized transpose
-    (0.23 s), and a program that transposes and then loops holds two
-    band-sized temporaries (XLA copies a loop operand that is still
-    read after the loop).  Reading the rows in place takes 0.40 s with
-    5 MB of temporaries, and the factors agree bit for bit with both.
+    window (the pattern of :func:`_banded_solve_mode_inner`).  Reading
+    the rows in place keeps the factorization fast and its temporaries
+    small (Design notes: "Factorizing in the stored layout").
     """
     N = a_band.shape[-2]
     p = (a_band.shape[-1] - 1) // 2
@@ -492,16 +702,8 @@ def _banded_solve_mode_inner(L: Array, U: Array, b: Array, p: int) -> Array:
     the whole plane rather than one tile, with the ``U`` diagonal
     stored plain and therefore divided by.  The back substitution scans
     in reverse instead of reversing its operands, and the ``p``-deep
-    window is a tuple carry, so no step copies it.
-
-    *Unrolling the two scans: measured, and rejected.*  The body is
-    small at a CPU rank's mode block, so ``unroll`` looked like a way
-    to amortize the loop.  It loses on both counts (the as-run step at
-    ``10 x 385 x 320``, plane Poiseuille, one pinned core, the variants
-    compiled in one process and executed alternately, 10 rounds): the
-    step's temporaries grow from 23.5 to 31.0 padded fields at any
-    ``unroll`` of 2, 4 or 8, and it runs x0.87, x0.83 and x0.75 as
-    fast.
+    window is a tuple carry, so no step copies it.  The scans are not
+    unrolled (Design notes: "No unrolling of the CPU sweep").
 
     Parameters
     ----------
@@ -633,6 +835,10 @@ def _assemble_banded_operator(
     the operator's mode layout; *walls* rows may be mode-dependent
     (e.g. a mean-mode identity pin via ``jnp.where``).
 
+    One jitted program (the row indices static): the setup assembles
+    each operator eagerly, where the shift and the row overrides would
+    otherwise each be an operator-sized pass of their own.
+
     Parameters
     ----------
     base_band:
@@ -645,10 +851,6 @@ def _assemble_banded_operator(
     walls:
         ``(row_index, band_row)`` overrides for the boundary rows
         (one per wall; ``band_row`` is ``(..., 2p+1)``).
-
-    One jitted program (the row indices static): the setup assembles
-    each operator eagerly, where the shift and the row overrides would
-    otherwise each be an operator-sized pass of their own.
     """
     return _assemble_banded_jit(
         base_band,
@@ -678,16 +880,11 @@ def _assemble_banded_jit(
 
 
 # Test-only override: run the Pallas kernels in interpret mode wherever
-# they are reached.  Paired with :data:`_force_kernel_path`, this lets a
-# machine without a GPU *execute* the whole ``.solve`` composition --
-# shard_map, the vmap over components, the ``custom_vjp`` and both
-# sweeps -- rather than only lower it, which is the one way to check
-# that the adjoint composes.  (Lowering the *differentiated* region for
-# cuda is not an option: shard_map's transpose compares cotangent
-# shardings, and against an abstract mesh they do not compare equal.)
-# Read at trace time in :func:`_pallas_banded_solve` and
-# :func:`_pallas_banded_solve_t`; ``False`` leaves every production
-# trace untouched.  See ``test_pallas_adjoint_composes_in_solve``.
+# they are reached (read at trace time; ``False`` leaves every
+# production trace untouched).  With :data:`_force_kernel_path` it lets
+# a machine without a GPU *execute* the whole ``.solve`` composition,
+# the one way to check that the adjoint composes
+# (``test_pallas_adjoint_composes_in_solve`` says why lowering cannot).
 _force_interpret: bool = False
 
 
@@ -704,19 +901,15 @@ def _tile_pad_planes(
     bm0 = params.solver.pallas_block_m0
     bm1 = params.solver.pallas_block_m1
     # Whole-``(bm0, bm1)``-tile mode plane, so no boundary tile is
-    # partial (a masked partial-tile band load miscompiles on real
-    # Triton -- see the docstring).  Zero-fill is NaN-safe: padded modes
-    # solve to zero (the backward sweep multiplies by the pre-inverted
-    # diagonal, never divides).  The **stored factors are already padded
-    # to this plane at construction** (``from_mode_inner_factors``), so only
-    # the per-call RHS is padded here; factors from a direct caller that
-    # are still at the true plane take the same pad as a fallback.  The
-    # kernel plane is the whole-tile roundup of the **larger** of the
-    # RHS's true plane and the stored factor plane: factors padded at
-    # construction under a *different* (larger) tile than the runtime
-    # one are grown, never shrunk (a negative ``jnp.pad`` raises) --
-    # their extra rows are valid zero-solving padded modes either way.
-    # The result is cropped back to the RHS's ``(Nkz, Nkx)``.
+    # partial (:func:`_pallas_banded_solve` says why).  Zero fill is
+    # NaN-safe: padded modes solve to zero (the backward sweep multiplies
+    # by the pre-inverted diagonal).  Stored factors are normally padded
+    # already (``from_mode_inner_factors``), so only the RHS is padded
+    # here, true-plane factors as a fallback.  The plane is the roundup
+    # of the larger of the RHS plane and the factor plane: factors padded
+    # under a larger tile grow, never shrink (a negative ``jnp.pad``
+    # raises), their extra rows valid zero-solving modes.  The caller
+    # crops back to the RHS's ``(Nkz, Nkx)``.
     Nkz_need = max(Nkz, L.shape[2])
     Nkx_need = max(Nkx, L.shape[3])
     Nkz_pad = ((Nkz_need + bm0 - 1) // bm0) * bm0
@@ -777,37 +970,41 @@ def _pallas_banded_solve(
     reverse).  A ``pltriton.debug_barrier()`` is emitted between the two
     passes on the real-GPU path (it has no CPU lowering) as a defensive
     multi-warp fence -- so that, when a tile spans more than one warp, every
-    forward store is globally visible before the backward reads (the GPU
-    diagnostic found the round-trip coherent even without it).
+    forward store is globally visible before the backward reads.
 
-    **Partial-tile masking (why the plane is padded).**  When the tile does
-    not divide the mode plane (``Nkz % bm0`` or ``Nkx % bm1`` nonzero -- the
-    common case, since the real-FFT axis ``Nkx = nx/2 + 1`` is rarely a
-    multiple of ``bm1``), the boundary tile is partial and Triton masks the
-    loads.  That **masked partial-tile path miscompiles on real Triton**: in
-    a grid with a partial boundary tile it corrupts results *across the grid*
-    -- **even full-tile programs** -- **nondeterministically**
-    (warp-scheduling dependent), for any nontrivial kernel (the masked
-    double-index band loads ``l_ref[i, d]`` / ``u_ref[i, d]`` *and* even a
-    single-index window-carry sweep), while interpret mode and the CUDA
-    lowering both accept it.  ``scripts/pallas_tiling_diagnostic.py``
-    localized it: only trivial copy/round-trip kernels survive a partial
-    plane; full tiles (no partial boundary anywhere) are always correct at
-    ``(2, 32)``.  The fix is to **pad the mode plane up to whole tiles**
-    so the kernel only ever runs the correct full-tile path; the padded
-    modes get zero
-    ``L``/``U``/``b`` and -- because the ``U`` diagonal is pre-inverted, so
-    the backward sweep multiplies, never divides -- solve to a clean zero
-    (no NaN) and are cropped off the result.  The **factors are padded
-    once at construction** (:meth:`PerModeBandedPallasOperator.
-    from_mode_inner_factors`), not per call: ``Nkz = nz - 1`` is odd, so the
-    plane virtually never tiles evenly, and a per-call ``jnp.pad`` of the
-    factors would re-copy them (holding a transient duplicate) on every
-    solve of every step.  Only the RHS is padded here per call (with a
-    fallback factor pad for direct callers passing true-plane factors).
-    The sequential `$N$`-loop
-    itself is an intrinsic recurrence (no Triton-lowerable parallel scan);
-    the only parallelism is across modes, which the tiling + grid maximize.
+    **Why the plane is padded.**  When the tile does not divide the mode
+    plane, the boundary tile is partial and Triton masks its loads, and
+    that **masked partial-tile path miscompiles on a real GPU**: it
+    corrupts results *across the grid*, full-tile programs included,
+    nondeterministically, while interpret mode and the CUDA lowering
+    both accept it (Design notes: "The partial-tile miscompile").  So the
+    mode plane is padded up to whole tiles and the kernel only ever runs
+    full ones; the padded modes get zero ``L``/``U``/``b`` and -- the
+    ``U`` diagonal being pre-inverted, so the backward sweep multiplies,
+    never divides -- solve to a clean zero (no NaN) and are cropped off
+    the result.  The **factors are padded once at construction**
+    (:meth:`PerModeBandedPallasOperator.from_mode_inner_factors`), not
+    per call: ``Nkz = nz - 1`` is odd, so the plane virtually never tiles
+    evenly, and a per-call ``jnp.pad`` of the factors would re-copy them
+    (holding a transient duplicate) on every solve of every step.  Only
+    the RHS is padded here per call (with a fallback factor pad for
+    direct callers passing true-plane factors).  The sequential
+    `$N$`-loop itself is an intrinsic recurrence (no Triton-lowerable
+    parallel scan); the only parallelism is across modes, which the
+    tiling and grid maximize.
+
+    **Differentiation.**  The sequential sweep is a Pallas kernel, so
+    reverse mode cannot traverse it; :func:`_pallas_banded_solve_core`
+    -- this function minus the pad and crop, where all three arrays
+    share one whole-tile plane -- carries a :func:`jax.custom_vjp`
+    whose backward pass is the mirrored sweep
+    :func:`_pallas_banded_solve_t` on the *same stored factors*.  The
+    pad and crop stay outside it as ordinary differentiable ops, which
+    transpose to each other, so the rule needs no shape bookkeeping.
+    The rule is complete: it returns cotangents for ``L`` and ``U`` as
+    well as ``b`` -- see :func:`_pallas_banded_solve_t` for the
+    derivation, and the module docstring for the references it is
+    checked against.
 
     Parameters
     ----------
@@ -826,23 +1023,6 @@ def _pallas_banded_solve(
         Half-bandwidth.
     interpret:
         Run the kernel in Pallas interpret mode (CPU).
-
-    **Differentiation.**  The sequential sweep is a Pallas kernel, so
-    reverse mode cannot traverse it; :func:`_pallas_banded_solve_core`
-    -- this function minus the pad and crop, where all three arrays
-    share one whole-tile plane -- carries a :func:`jax.custom_vjp`
-    whose backward pass is the mirrored sweep
-    :func:`_pallas_banded_solve_t` on the *same stored factors*.  The
-    pad and crop stay outside it as ordinary differentiable ops, which
-    transpose to each other, so the rule needs no shape bookkeeping.
-    The rule is complete: it returns cotangents for ``L`` and ``U`` as
-    well as ``b`` -- see :func:`_pallas_banded_solve_t` for the
-    derivation.  The two pure-JAX sweeps (:func:`_banded_solve_batched`,
-    :func:`_banded_solve_mode_inner`) keep differentiating through
-    their own ``lax.scan``, deliberately: they are the independent
-    references this rule is checked against
-    (``test_pallas_adjoint_matches_portable_sweep`` in
-    ``tests/test_banded_solver.py``).
     """
     interpret = interpret or _force_interpret
     L, U, b, Nkz, Nkx = _tile_pad_planes(L, U, b)
@@ -885,16 +1065,11 @@ def _banded_kernel_call(
 
         lax.fori_loop(0, N, fwd, (zero,) * p)
 
-        # The forward pass stashes each ``y[i]`` in the output GMEM ref;
-        # the backward pass reads it back.  When a tile spans >1 warp the
-        # forward store and backward load need not share a thread->element
-        # layout, so this barrier makes all forward stores globally visible
-        # first (lowers to ``__syncthreads()``; no CPU lowering, GPU-only).
-        # Defensive multi-warp fence: the GPU diagnostic found the round-trip
-        # coherent even without it (the ``bm1 > 1`` miscompile was the masked
-        # partial-tile band load, fixed by padding the plane, not a visibility
-        # bug), but it is kept as a cheap correctness guard.  See the
-        # docstring.
+        # When a tile spans more than one warp, the forward store and the
+        # backward load of ``y[i]`` need not share a thread-to-element
+        # layout: make every forward store visible first (lowers to
+        # ``__syncthreads()``; GPU only).  A defensive fence (Design notes:
+        # "The partial-tile miscompile").
         if not interpret:
             pltriton.debug_barrier()
 
@@ -927,16 +1102,8 @@ def _banded_kernel_call(
         ],
         out_specs=pl.BlockSpec((N, k, bm0, bm1), idx),
         out_shape=jax.ShapeDtypeStruct((N, k, Nkz_pad, Nkx_pad), b.dtype),
-        # Deferred: ``input_output_aliases={2: 0}`` (alias ``b`` -> output)
-        # is correct here (the forward pass writes y[i] only after reading
-        # b[i], and no b[j] is re-read once overwritten) and lowers +
-        # interprets cleanly, dropping one output allocation.  Left out on
-        # purpose: the saving is allocation-only (this kernel is bound by
-        # memory *bandwidth*, unchanged by aliasing), it adds a donation
-        # constraint across the vmapped ``.solve`` paths and the deferred
-        # multi-device GPU sharding, and XLA buffer assignment + the
-        # stepper's ``donate_argnums`` likely already reuse the dead ``b``.
-        # Revisit if GPU profiling shows a peak-memory win.
+        # No ``input_output_aliases`` (Design notes: "No input-output
+        # aliasing in the kernel").
         # Force Triton: JAX's default Pallas GPU backend (Mosaic GPU,
         # via jax_pallas_use_mosaic_gpu=True) rejects f64 in its TMA
         # gmem->smem copy ("unsupported TMA dtype f64").  Triton (this
@@ -1153,8 +1320,7 @@ def _core_bwd(
     res: tuple[Array, Array, Array],
     xbar: Array,
 ) -> tuple[Array, Array, Array]:
-    """Backward pass: the complete rule derived in
-    :func:`_pallas_banded_solve_t`."""
+    """Backward pass: the rule derived in :func:`_pallas_banded_solve_t`."""
     L, U, x = res
     N = x.shape[0]
     bbar, z = _banded_kernel_call_t(L, U, xbar, p, interpret)
@@ -1190,8 +1356,8 @@ _pallas_banded_solve_core.defvjp(_core_fwd, _core_bwd)
 
 
 # Test-only override: force :func:`_banded_mode_solve` onto the Pallas
-# kernel branch while tracing on a CPU-only box (the branch condition is
-# trace-time Python).  Lets the CPU test suite *lower* the
+# kernel branch while tracing on a machine without a GPU (the branch
+# condition is trace-time Python).  Lets the CPU test suite *lower* the
 # ``shard_map(pallas_call)`` composition for cuda -- the composition
 # whose trace-time failures (e.g. the ``check_vma`` out-shape rule) are
 # otherwise reachable only on a real GPU, because the CPU branch never
@@ -1260,110 +1426,18 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     around every ``.solve`` instead (a round-trip XLA does not fuse
     away, ~half this memory-bound solve's HBM traffic).
 
-    *The split-real hoist: measured, and rejected.*  That split and
-    recombine are **mandatory** per solve -- JAX has no zero-copy
-    complex<->real bitcast, the f64 Triton kernel cannot ingest
-    ``c128``, and the CPU sweep runs on real columns too -- and some of
-    them look redundant
-    *between* consumers: ``Hk_op.solve`` recombines its result to
-    complex, the caller only indexes or linearly combines it, and
-    ``Lk_op.solve`` splits it straight back apart.  XLA does **not**
-    simplify them away (optimized CPU HLO: one ``.solve`` emits one
-    ``complex`` and one ``real``/``imag`` pair; one ``_imm_iteration``
-    emits 12/6/6 Cartesian, 15/6/6 annular, 23/8/8 pipe).
-
-    Carrying the field split-real across that chain nevertheless
-    **loses**.  ``pallas_solve_profile.py`` Part A2 times the real
-    ``Hk.solve -> map -> Lk.solve`` chain both ways, fidelity-gated,
-    factors as jit arguments (CPU, one device; measured with the
-    permuting CPU sweep described below, before the mode-inner one):
-
-    ==============  =========  =========
-    geometry        96-ish      `$128^3$`
-    ==============  =========  =========
-    plane-couette    -0.6 %      +9.1 %
-    taylor-couette  -11.0 %     -10.0 %
-    pipe             -5.6 %     -14.7 %
-    ==============  =========  =========
-
-    (Positive = hoisting is faster.)  All six are **isolated**-chain
-    figures, and this module's own layout history (below) is precisely
-    that such figures rank options backwards -- so the five negatives
-    are no better as proof than the one positive is as refutation, and
-    the table decides nothing on its own.
-
-    What decides it is the measurement one level up.  With the
-    permuting sweep, Part A's fused ``full - sweep`` was ``<= 0`` on
-    CPU: the split and recombine cost nothing measurable inside the
-    step, so there was no time there for a hoist to win back.  With the
-    mode-inner sweep it is 4.6 % of one ``Lk`` solve, and Part A2 times
-    the hoisted chain 1.6 % *slower* than the shipped one
-    (plane-Couette ``64 x 96 x 64``, one core; -0.25 % of the step).
-    The A2 table is recorded because it is what was run and because its
-    sign does not contradict that; it is not the reason for the
-    decision.  The mechanism, if one is wanted, is the layout finding's:
-    pre-materializing a representation that suits the two solves
-    constrains layout assignment across everything around them.
-
-    The two arms agree to ~1e-15, which is the bar: the hoist changes
-    only the representation a value is carried in, and XLA is free to
-    contract differently around a differently-consumed sweep output.
+    The split and recombine stay per solve: carrying the field
+    split-real from one solve to the next measured slower (Design notes:
+    "No split-real hoist").
 
     On CPU the sweep is :func:`_banded_solve_mode_inner`, which scans the
     stored factors as they are: no factor copy, no crop and no
     un-inversion (the CPU build stores the plain diagonal at the true
     plane, :meth:`~PerModeBandedPallasOperator.from_mode_inner_factors`).
-
-    **Why the layout is shared with the kernel -- on CPU too.**  Three
-    CPU-native *stored* layouts were tried end to end against the
-    mode-inner one (plane-Couette ``64 x 96 x 64``, 29 steady steps, one
-    device, every variant bit-identical), when the CPU branch still
-    permuted the stored factors to mode-outer on every solve and ran
-    :func:`_banded_solve_batched`:
-
-    ===========================  =============  ==============
-    stored layout                isolated solve  full step
-    ===========================  =============  ==============
-    mode-inner (this one)         1.00x           0.44 s
-    mode-outer ``(Nkz,Nkx,N,p)``  0.73x           0.70 s
-    N-first ``(N,Nkz,Nkx,p)``     0.52x           ~0.9-1.3 s
-    ===========================  =============  ==============
-
-    The ranking **inverts**: the more the stored layout is tailored to
-    the sweep in isolation, the slower the step gets, monotonically.
-    The factors are jit *arguments* (the stepper takes ``flow`` as one),
-    so their stored layout constrains layout assignment across the whole
-    step; pre-materializing a solve-optimal arrangement wins the solve
-    and loses more elsewhere.  Setup compile degrades with it too
-    (27 s -> 53 s total wall for mode-outer).  So: do not re-derive this
-    from a standalone ``jit`` of one solve, or from any isolated solve
-    timing -- both rank the options backwards.  Only an end-to-end step
-    measurement decides it.
-
-    **The per-solve permutations are gone (2026-10).**  Keeping the
-    stored layout and changing only the sweep -- scan the mode-inner
-    factors directly, as the kernel does -- touches nothing the table is
-    about.  It removes two factor-sized transposes per solve, which the
-    as-run step held as temporaries (the singletons baked in as
-    constants, XLA had folded them, so the baked step never showed
-    them).  Measured end to end -- the as-run step compiled both ways in
-    one process, alternating executions, the first pair discarded,
-    plane Poiseuille, one device pinned to one core:
-
-    ==================  ===================  ===========================
-    grid                step temporaries     step time, old / new
-    ==================  ===================  ===========================
-    ``64 x 96 x 64``    29.7 -> 22.2 fields  0.325 -> 0.263 s, x1.24
-    ``10 x 385 x 320``  29.1 -> 22.0 fields  1.175 -> 0.884 s, x1.33
-    ==================  ===================  ===========================
-
-    (Medians of 10 pairs; per-pair ratios 1.07-1.32 and 1.19-1.56.
-    Fields are oversampled physical components; the second grid has the
-    per-rank mode count and point count of a ``1280 x 385 x 320`` run
-    on 128 ranks at ``(np0, np1) = (1, 128)``.)  The states agree to
-    ``2e-15`` and ``1e-14`` relative, with identical corrector counts:
-    the two sweeps sum the same terms in a different order, so they
-    agree to machine epsilon, not bit for bit.
+    That the stored layout is the kernel's on CPU too, and that the CPU
+    sweep reads it directly, both rest on end-to-end measurements (Design
+    notes: "One stored layout for both backends", "The CPU sweep reads
+    the stored layout").
     """
     p = L.shape[1]
     is_complex = jnp.iscomplexobj(rhs)
@@ -1398,9 +1472,9 @@ class PerModeBandedPallasOperator:
     :meth:`from_mode_inner_factors` from the factors a run computes
     (:func:`_banded_factor_mode_inner`), or :meth:`from_banded_factors`
     from mode-outer ones (:func:`_banded_factor`).  The public
-    ``.solve`` contract takes the
-    **mode-inner** ``(N, Nkz, Nkx)`` spectral field, the velocity's
-    native layout -- see :meth:`solve` for the component-axis dispatch.
+    ``.solve`` contract takes the **mode-inner** ``(N, Nkz, Nkx)``
+    spectral field, the velocity's native layout -- see :meth:`solve`
+    for the component-axis dispatch.
 
     **The layout is shared by both backends; two transforms on top of
     it are per-backend** (:func:`_kernel_path` decides, and is the
@@ -1481,113 +1555,42 @@ class PerModeBandedPallasOperator:
         instead of dividing, see :func:`_pallas_banded_solve` -- and
         **pre-pad the mode plane up to whole ``(pallas_block_m0,
         pallas_block_m1)`` tiles** with zeros (zero factor rows solve
-        padded modes to a clean zero; the reciprocated diagonal makes
-        the backward sweep multiply, never divide).  A CPU run needs
-        neither: its sweep divides by the diagonal directly and its
-        grid is the true plane, so it stored a reciprocal it had to
-        un-invert and a pad it had to crop, on every solve.  Dropping
-        both is worth **+2.3 % of the step at plane-Couette
-        ``64 x 96 x 64``, +4.0 % at plane-Couette ``128^3``, and
-        +1.5 % on the pipe at ``128^3``**, and the padded factor memory
-        goes with it.
+        padded modes to a clean zero).  A CPU run needs neither: its
+        sweep divides by the diagonal directly and its grid is the true
+        plane, so either transform would be undone on every solve, at a
+        measured cost to the step (Design notes: "Per-backend storage").
 
-        The ``128^3`` figure is reproduced **three independent ways**:
-        an interleaved one-process A/B (+4.04 %), an independent re-run
-        of it (+3.94 %), and a tree-swap between the commits themselves
-        -- ``cf4db73`` against ``34aea41``, one fixed harness pointed at
-        each ``src`` in turn, 20 *chained* steps, 6 pairs with the first
-        discarded: **+4.01 % mean, 3.6-4.7 % range**, no monotone
-        settling, and the ratio holding at 4.02 % in a pair where both
-        arms ran 12 % slow.  ``num_c`` is **0** in all twelve tree-swap
-        runs; chaining does not raise it for this flow, so the restart
-        and chained harnesses agree to 0.03 pp.
+        Padding here trades memory for memory (and time): the persistent
+        factors grow by the tile-roundup fraction (typically one ``k_z``
+        row -- ``Nkz = nz - 1`` is odd -- and up to ``bm1 - 1`` ``k_x``
+        columns), but no per-solve ``jnp.pad`` of the factors is needed,
+        which would re-copy them into a transient duplicate on every
+        solve of every step.  Paying once here shrinks both the step's
+        HBM traffic and its transient peak.
 
-        **This supersedes the 1.4 / 9.9 / 22 % first recorded here**,
-        which came from a prototype, not from these two commits (the
-        commit message says so: "reproduces the *prototype's* margin").
-        Measured under one harness the real ``cf4db73`` is 1279 ms/step
-        and the real ``34aea41`` 1227; the recorded pair is 2745 / 2130
-        -- the *before* arm inflated ``2.15x`` against the *after*
-        arm's ``1.74x``.  A uniform machine slowdown scales both and
-        preserves the ratio; this is asymmetric, in the direction that
-        manufactures a gain.  ``cf4db73`` names the likely cause
-        itself: every earlier CPU-native prototype replaced this
-        method's ``shard_map`` with a bare ``moveaxis`` or an
-        ``optimization_barrier``, losing that region -- which makes a
-        baseline slow for a reason unrelated to the storage split.
-        Its "right call, wrong reason" correction therefore did not go
-        far enough: the number needed correcting too.
-
-        The win is **step-level, not solve-level**.  The same
-        interleaved A/B on ``Hk_op.solve`` alone gives ``-0.3 %`` at
-        plane-Couette ``128^3``: the crop and the un-invert cost
-        essentially nothing inside the sweep.  What the padded,
-        reciprocated storage costs is everything *around* it -- larger
-        factor arrays for XLA to place and move across a step that
-        takes them as jit **arguments**.  Same lesson as the layout
-        table in :func:`_banded_mode_solve`, running the other way: an
-        isolated solve times this change at zero.
-
-        (The arms agree to ``4e-17``-``2e-15`` relative per step,
-        growing with the solve count -- machine epsilon rather than
-        exactly, since un-inverting round-trips the diagonal through
-        ``1/(1/d)``.  Do not assert exact equality across the two.)
-
-        Why the *layout* nevertheless stays shared (three CPU-native
-        layouts measured slower end to end, monotonically in how
-        solve-optimal they are): :func:`_banded_mode_solve`.
-
-        Padding here is a memory-for-memory (and time) trade: the
-        persistent factors grow by the tile-roundup fraction (typically
-        one ``k_z`` row -- ``Nkz = nz - 1`` is odd -- and up to
-        ``bm1 - 1`` ``k_x`` columns), but no per-solve ``jnp.pad`` of
-        the factors is needed: padding at solve time would re-copy them
-        into a transient duplicate on every solve of every step, so
-        paying once here shrinks both the step's HBM traffic and its
-        transient peak.
-
-        The padding is **per device shard** (a ``shard_map`` region,
-        like the FFT pipeline): the whole-tile requirement applies to
-        each device's *local* mode plane -- the plane its kernel grid
-        covers -- so each local block is padded to
+        The padding is **per device shard**, in a ``shard_map`` region
+        like the FFT pipeline (:func:`_kernel_storage`): the whole-tile
+        requirement applies to each device's *local* mode plane -- the
+        plane its kernel grid covers -- so each local block is padded to
         ``(ceil(nkz_loc / bm0) * bm0, ceil(nkx_loc / bm1) * bm1)``,
         entirely locally (no communication, no Explicit-mesh sharding
         rules involved).  Local plane sizes are uniform across devices
         (``sharding.nz_spec`` / ``nx_spec`` are divisibility-padded to
         the mesh), so the stored global plane is well-formed:
-        ``np0 * nkz_loc_pad x np1 * nkx_loc_pad`` -- the **sum of
-        local roundups**, not the global roundup.  On one device
-        local = global and this reduces to the plain whole-tile pad.
-        Any nonzero round-up is reported once at startup (main
-        process), since the padded modes cost solve work and memory.
+        ``np0 * nkz_loc_pad x np1 * nkx_loc_pad`` -- the **sum of local
+        roundups**, not the global roundup.  On one device local =
+        global and this reduces to the plain whole-tile pad.  Any
+        nonzero round-up is reported once at startup (main process),
+        since the padded modes cost solve work and memory.
 
         That ``shard_map`` is also load-bearing as a **compilation
         barrier** between the no-pivot factorization and the
-        reciprocate-and-pad above, independently of the pad it carries:
-        without it the two fuse into one graph and XLA's CPU algebraic
-        simplifier reports a circular simplification loop while
-        building ``H_k``, turning a seconds-long setup into a
-        minutes-long one.  Keep any future **kernel-storage** layout
-        work inside it.
-
-        *That is a kernel-path statement, and the CPU branch is
-        measured not to need it.*  Returning early leaves nothing -- the
-        factors arrive in the stored layout, with neither the reciprocal
-        scatter nor the pad the simplifier chokes on -- so there is
-        nothing for a barrier to separate.  (It was measured when that
-        branch still made the two ``moveaxis`` a mode-outer
-        factorization needed.)  Checked where the two *can* fuse at all: the
-        jitted ``set_dt`` rebuild, the one place
-        :func:`_factor_pallas_operator` runs inside a ``jit`` (the
-        setup build cannot fuse -- :func:`_build_pallas_operator`
-        factors in one compiled program, :func:`_factor_checked`, and
-        packs in another, with its host-side stability verdict
-        between them).  Its first, compiling call takes **0.95-1.5 s** at
-        plane-Couette ``64 x 96 x 64`` and **1.9-2.6 s** on the pipe at
-        ``128^3``; reinstating a ``shard_map`` barrier on the CPU
-        branch lands inside that same spread (three interleaved
-        repeats per arm, one process each, orders alternated).  No
-        configuration reproduced the pathology without it.
+        reciprocate-and-pad: without it the two fuse and XLA's CPU
+        algebraic simplifier loops while building ``H_k``, turning a
+        seconds-long setup into a minutes-long one.  Keep any future
+        **kernel-storage** layout work inside it; the CPU branch is
+        measured not to need it (Design notes: "The compilation
+        barrier").
         """
         if not _kernel_path():
             # CPU storage: the shared layout, plain diagonal, true
@@ -1641,9 +1644,8 @@ class PerModeBandedPallasOperator:
         and all tile pad/crop bookkeeping happen *inside* the body on
         local arrays, where no Explicit-mesh sharding rules apply --
         this is what makes the per-shard factor pre-padding and the
-        true-plane crop legal on sharded mode axes, and what wires the
-        multi-device-GPU Pallas path (real multi-GPU execution pending
-        cluster validation).
+        true-plane crop legal on sharded mode axes, and what carries the
+        Pallas path across several GPUs.
 
         *component_axis* is the position of that batched RHS axis:
         ``0`` (default, ``(C, N, ...)``) or ``1`` (``(N, C, ...)``,
@@ -1651,25 +1653,9 @@ class PerModeBandedPallasOperator:
         matvecs stay transpose-free -- see ``apply_y_matrix``).  The
         Pallas kernel is per-mode, so *component_axis* only picks the
         ``vmap`` axis; the kernel itself never transposes and the
-        output preserves the input layout.
-
-        Deferred optimization (stacked ``component_axis=1`` path).  For
-        the stacked Hk solve (``L.ndim == 5``), ``out_axes=1`` makes XLA
-        emit one output-repositioning transpose
-        `$(C, N, \ldots) \to (N, C, \ldots)$` on the complex-
-        reconstructed result (seen on the H100 optimized HLO as a
-        ``c128[N, C, 1, Nkz, Nkx]`` ``dimensions={1,0,2,3,4}`` transpose
-        under ``vmap()/complex``).  This is the **only** IMM transpose
-        the y-leading contract leaves, and it is a net win: feeding
-        ``R_stack`` y-leading removes the three larger ``D1``/``D2``
-        matvec transposes at the cost of this one (measured as a
-        corrector-step 252 -> 177 optimized-HLO transpose drop), and
-        ``component_axis=0`` would merely move it back to the input side
-        *and* reintroduce those matvec transposes.  Eliminating it
-        entirely means folding the 3-component stack into the kernel's
-        `$(k_z, k_x)$` batch so there is no ``vmap`` over components at
-        all -- a solve-kernel refactor worth ~2% of the step, deferred
-        as low-ROI and cross-cutting.
+        output preserves the input layout.  The stacked
+        ``component_axis=1`` solve leaves one output transpose, a net
+        win (Design notes: "The one remaining IMM transpose").
         """
         ca = component_axis
 
@@ -1688,18 +1674,14 @@ class PerModeBandedPallasOperator:
         # the result, for either component_axis.
         fac_spec = P(*(None,) * (self.L.ndim - 2), sharding.a0, sharding.a1)
         rhs_spec = P(*(None,) * (rhs.ndim - 2), sharding.a0, sharding.a1)
-        # ``check_vma=False``: under the default varying-mesh-axes
-        # checking, ``pl.pallas_call``'s ``ShapeDtypeStruct`` out-shape
-        # inside a shard_map must carry a ``manual_axis_type``
-        # annotation, or tracing raises -- a GPU-only failure (the CPU
-        # branch never reaches ``pallas_call``), first hit on the real
-        # cluster.  The body is communication-free (independent
-        # per-mode solves on local blocks), so the check guards
-        # nothing here, and disabling it keeps ``_pallas_banded_solve``
-        # callable both inside this region and standalone (where no
-        # mesh axes exist to annotate).  Regression guard:
-        # ``test_pallas_cuda_lowering_sharded_solve`` (forces the
-        # kernel branch and lowers this region for cuda on CPU).
+        # ``check_vma=False``: with varying-mesh-axes checking on, the
+        # ``pallas_call`` out-shape inside a shard_map needs a
+        # ``manual_axis_type`` annotation or tracing raises (GPU only:
+        # the CPU branch never reaches ``pallas_call``).  The body is
+        # communication-free, so the check guards nothing, and without
+        # it ``_pallas_banded_solve`` also runs standalone, where no mesh
+        # axes exist to annotate.  Guard:
+        # ``test_pallas_cuda_lowering_sharded_solve``.
         return shard_map(
             _local,
             mesh=sharding.mesh,
@@ -1814,24 +1796,11 @@ def _factor_checked(a_band: Array) -> tuple[Array, ...]:
       ``max_u`` and ``max_a``.
 
     The reductions across devices run as separate small programs, the
-    host reducing the planes (:func:`_build_pallas_operator`).  A
-    version that took the maxima inside this one failed at once on a
-    ``(2, 2)`` mesh under the MPI collectives (``MPI: Communicator
-    requested from a thread that is not the one MPI was initialized
-    from``, every rank, every launch): its collectives ran off the
-    launching thread and were the first over their device groups, so
-    MPI refused to open the communicators there.  The mesh now opens
-    them as it is built (``sharding._warm_communicators``), and
-    ``tests/test_mpi_communicators.py`` runs that version.
-
-    Run eagerly, the same check was a few hundred separately compiled
-    operations -- the factorization and the probe sweep recompiled on
-    every build -- with factor-sized transposed copies alongside.
-    Here the band is read in place by both loops, so the program holds
-    no band-sized temporary (45 MB of temporaries at the per-rank block
-    the factorization's docstring measures, against 0.9 GB for a
-    version that transposed the band first).  A pure function of its
-    argument, so a module-level ``jit`` is safe to share.
+    host reducing the planes (:func:`_build_pallas_operator`), and both
+    loops read the band in place, so the program holds no band-sized
+    temporary (Design notes: "The setup check's programs").  A pure
+    function of its argument, so a module-level ``jit`` is safe to
+    share.
     """
     L, U = _banded_factor_mode_inner(a_band)
     max_u = jnp.max(jnp.abs(U), axis=(0, 1))
@@ -1919,7 +1888,7 @@ def _build_pallas_operator(
     """
     checked = [_factor_checked(A) for A in a_bands]
     # The cross-device maxima run here, outside the looping program
-    # (:func:`_factor_checked` has the history).
+    # (Design notes: "The setup check's programs").
     resids = [float(jnp.max(r)) for _, _, r, _, _ in checked]
     growths = [float(jnp.max(mu) / jnp.max(ma)) for _, _, _, mu, ma in checked]
     # The group's worst band -- and a NaN in *any* band, which ``max``

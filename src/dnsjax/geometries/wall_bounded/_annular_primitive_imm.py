@@ -9,9 +9,9 @@ influence-matrix method, which solves `$(u_z, u_+, u_-)$` against a
 pressure Poisson solve and enforces continuity only at the two walls.
 It is retained for reference and for reproducing older trajectories; a
 state it steps carries an `$O(1)$` *relative* discrete divergence.  The
-full comparison and the measured ledger: the
-``Resolution.consistent_imm`` docs (``parameters.py``) and the shared
-scheme record on
+full comparison and the measured ledger: the :mod:`dnsjax.parameters`
+Design notes ("Consistent influence matrix") and the shared scheme
+record on
 :func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`.
 
 Everything here is reachable **only** when the flag is off, so
@@ -96,7 +96,7 @@ def _build_Lk_dense_gpu(
     kz2: Array,
     mean_mask: Array,
 ) -> Array:
-    r"""Build dense `$L_k$` on GPU (dense backend only)."""
+    r"""Build dense `$L_k$` on the device (dense backend only)."""
     Nr = A_base.shape[0]
     dtype = A_base.dtype
     eye_Nr = jnp.eye(Nr, dtype=dtype)
@@ -123,7 +123,7 @@ def _hk_bands(
 
     Single-sources the band assembly for the setup-checked build, the
     adaptive ``dt_max`` stability pre-check, and the jitted ``set_dt``
-    rebuild (:func:`_build_dt_leaves`).  Pallas backend only.
+    rebuild (:func:`.annular._build_dt_leaves`).  Pallas backend only.
 
     The half-width is read back from the already-factored (and
     ``dt``-independent) `$L_k$`, whose ``L`` factor is
@@ -155,8 +155,7 @@ def _hk_dense_op(
     fourier_: Fourier,
     flow_: AnnularFlow,
 ) -> DenseJAXSolver:
-    r"""Factored dense stacked `$H_k$` (+, -, z) at *dt* (dense
-    backend)."""
+    r"""Factored dense stacked `$H_k$` (+, -, z) at *dt* (dense backend)."""
     m_s = fourier_.m[0, ..., None]
     kz2_s = fourier_.kz2[0, ..., None]
     ops = [
@@ -239,11 +238,11 @@ def derive_homogeneous_data(
     # This run-once setup stays in the mode-outer (Nm, Nkz, Nr)
     # layout: the influence-matrix einsums below operate on it and
     # the results are transposed to field layout (Nr, Nm, Nkz) at
-    # the end.  ``.solve`` now takes a mode-inner field, so each
-    # setup solve is wrapped (transpose in, transpose out) to keep
-    # this layout.  FUTURE: rebuild this setup natively mode-inner to
-    # drop the wrappers -- the hot path already is; here it only
-    # relocates a one-time transpose, so it is deferred.
+    # the end.  ``.solve`` takes a mode-inner field, so each setup
+    # solve is wrapped (transpose in, transpose out) to keep this
+    # layout.  A natively mode-inner setup would drop the wrappers,
+    # but it would only relocate a one-time transpose (the hot path
+    # is mode-inner already).
     e_inner = (
         jnp.zeros(
             (Nm, Nkz, Nr),
@@ -364,7 +363,7 @@ def _imm_iteration_vp(
     """
     c = params.step.implicitness
     dt = flow_.dt
-    nu = derived_params.nu  # solvent viscosity (see AnnularFlow.__post_init__)
+    nu = derived_params.nu  # solvent viscosity (update_parameters)
 
     uz_n, up_n, um_n = velocity_n[0], velocity_n[1], velocity_n[2]
     NLz_n, NLp_n, NLm_n = nonlin_n[0], nonlin_n[1], nonlin_n[2]

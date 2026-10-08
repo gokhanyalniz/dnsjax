@@ -62,8 +62,7 @@ def propose_dt(
         the genuine zero-velocity case reaches that branch here.
     dt:
         The current time step.
-    cfl_target, dt_min, dt_max, dt_min_change, dt_max_change, \
-dt_threshold:
+    cfl_target, dt_min, dt_max, dt_min_change, dt_max_change, dt_threshold:
         The ``step.*`` controller knobs (see ``TimeStepping``).
 
     Returns

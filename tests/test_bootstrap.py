@@ -799,8 +799,9 @@ def case_cpu_collectives() -> None:
         with _env():
             note = bootstrap._select_cpu_collectives(None)
             check(
-                "gloo" in note and "README.md" in note,
-                "no wrapper reports gloo and points at the README",
+                "gloo" in note and "docs/cpu-collectives.md" in note,
+                "no wrapper reports gloo and points at the CPU-collectives "
+                "doc",
                 note,
             )
             check(

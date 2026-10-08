@@ -297,8 +297,8 @@ def internalize(surface_dump: dict, spec: FlowSpec) -> dict:
 
     Raises the deferred-feature message when a deferred field was set
     to anything but its (inert) model default -- an explicit default,
-    e.g. a scripted ``--init.localized_rolls False`` on a periodic
-    flow, is a no-op and passes.  Global / unaliased names pass
+    e.g. a scripted ``--init.random_mean_flow False`` on the periodic
+    box, is a no-op and passes.  Global / unaliased names pass
     through unchanged.  The result feeds ``Parameters.model_validate``
     and then ``update_parameters`` (the per-layer merge), so
     ``_user_set_fields`` records internal names.

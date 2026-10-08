@@ -1,4 +1,4 @@
-"""Predictor-corrector time integration factory.
+r"""Predictor-corrector time integration factory.
 
 Provides :func:`make_stepper`, which builds the JIT-compiled stepping
 functions from flow-specific callables -- ``predict_and_fully_correct``
@@ -23,6 +23,36 @@ tangential pair with no pressure at all, while the legacy primitive
 one solves the wall-normal velocity, then a pressure, then updates all
 three components.  Either way this module never inspects the state's
 components -- see ``_imm_iteration`` in each geometry.
+
+Design notes
+------------
+**Re-deriving the curl in ``l_bf_fn``.**  ``l_bf_fn(state)``
+re-derives the spectral curl (and, in the cylindrical and annular
+geometries, the `$u_\pm$` conversion) that ``get_rhs_fn(state)`` built
+for the same state.  This costs nothing: both live in one jit scope on
+the same input, and XLA's common-subexpression elimination merges the
+identical subgraphs -- verified on the optimized HLO under either
+``solver.wall_normal_matvec`` (Cartesian, pipe and annular: the pair
+compiles to one curl `$D_1$` GEMM, or one stencil, not two) -- so no
+fused ``get_rhs`` + ``l_bf`` contract is needed.
+
+**The cnab2 fallback.**  The FFT-free base-flow-coupling corrector of
+``cnab2`` is a Picard iteration whose contraction rate can reach 1 at
+large ``dt`` (the ``L_bf`` solve is only stiff enough to diverge once
+``dt`` is well past the advective limit, e.g. plane Couette at
+``dt`` above about 0.2); it then fails to reach
+``corrector_tolerance`` within ``max_corrector_iterations``.  The step
+is then redone with the full iterative-CN corrector (``_step_core``,
+reusing the RHS already evaluated at `$u^n$`), deliberately the
+*unsplit* one: the split corrector's coupling tail is the same Picard
+iteration that just failed.  ``lax.cond`` runs that branch, and its
+extra FFTs, only on the hard steps, so the one-FFT path is unchanged
+elsewhere.  It does *not* cover the explicit-``N_nl`` advective
+stability limit that every explicit-nonlinear scheme shares, which is
+what bounds ``dt`` for a strongly non-normal base flow such as
+counter-rotating Taylor-Couette: there the corrector converges cleanly
+and the remedy is a smaller ``dt`` or ``iterative-cn`` (the
+``TimeStepping`` docstring in :mod:`dnsjax.parameters`).
 """
 
 from collections.abc import Callable
@@ -78,9 +108,10 @@ def make_stepper(
     Parameters
     ----------
     get_rhs_fn:
-        ``state -> rhs_no_lapl``.  Computes the divergence-free
-        RHS (nonlinear term minus pressure gradient, without the
-        Laplacian / viscous term).
+        ``state -> rhs_no_lapl``.  The explicit right-hand side
+        without the viscous Laplacian: the nonlinear term, projected
+        divergence-free by the triply-periodic geometry and left to
+        the influence-matrix pass by the wall-bounded ones.
     predict_fn:
         ``(state, rhs_no_lapl) -> prediction_state``.  Euler predictor
         step (flow-specific Helmholtz solve).
@@ -330,10 +361,8 @@ def make_stepper(
 
         # First correction, exactly as the unsplit corrector; also
         # form the frozen self-advection remainder and keep the
-        # coupling at the same iterate.  ``l_bf_fn`` here re-derives
-        # the spectral curl ``get_rhs_fn`` already built -- XLA CSE
-        # merges the identical subgraphs (see the ``_cnab2_lbf_core``
-        # note).
+        # coupling at the same iterate.  ``l_bf_fn`` re-derives the
+        # curl ``get_rhs_fn`` built, at no cost (Design notes).
         rhs_next = get_rhs_fn(prediction, *args)
         l_prev = l_bf_fn(prediction, *args)
         nnl = rhs_next - l_prev
@@ -493,15 +522,8 @@ def make_stepper(
         ``lax.fori_loop`` and the non-contraction fallback below is
         not traced at all (see the ``TimeStepping`` docstring).
         """
-        # ``l_bf_fn(state)`` re-derives the spectral curl (and, in the
-        # cylindrical/annular geometries, the u_+/- conversion) that
-        # ``get_rhs_fn(state)`` already built for ``full_rhs``.  This
-        # costs nothing: both live in one jit scope on the same input,
-        # and XLA CSE merges the identical subgraphs -- verified on the
-        # optimized HLO under either ``solver.wall_normal_matvec``
-        # (Cartesian, pipe and annular: the pair compiles to ONE curl
-        # D1 GEMM, or ONE stencil, not two), so no fused get_rhs+l_bf
-        # contract is needed.
+        # ``l_bf_fn`` re-derives the curl ``get_rhs_fn`` built for
+        # ``full_rhs``, at no cost (Design notes).
         l_n = l_bf_fn(state, *args)
         nnl_n = full_rhs - l_n
         _, kappa = _step_scales(*args)
@@ -546,25 +568,9 @@ def make_stepper(
             cond_fn, body_fn, (prediction, error, jnp.int32(0), aux)
         )
 
-        # Hybrid auto-fallback for a genuinely divergent corrector.  The
-        # FFT-free base-flow-coupling corrector is a Picard iteration whose
-        # contraction rate can reach 1 at large ``dt`` (the ``L_bf`` solve
-        # is only stiff enough to diverge once ``dt`` is well past the
-        # advective limit -- e.g. plane-Couette at ``dt`` >~ 0.2): it then
-        # fails to reach ``corrector_tolerance`` within
-        # ``max_corrector_iterations``.  When that happens, redo *this*
-        # step with the robust full iterative-CN corrector (``_step_core``,
-        # reusing the RHS already evaluated at `$u^n$`; deliberately the
-        # *unsplit* corrector -- the split one's coupling tail is the same
-        # Picard iteration that just failed); ``lax.cond`` runs
-        # that branch -- and its extra FFTs -- only on the hard steps, so
-        # the cheap 1-FFT path is unchanged elsewhere.  (This does *not*
-        # cover the explicit-``N_nl`` advective-stability limit shared by
-        # all explicit-nonlinear schemes, which is what bounds ``dt`` for a
-        # strongly non-normal base flow such as counter-rotating
-        # Taylor-Couette; there the corrector converges cleanly and the
-        # remedy is a smaller ``dt`` or ``iterative-cn``.  See the
-        # ``TimeStepping`` docstring in ``parameters.py``.)
+        # A coupling corrector that fails to contract redoes this step
+        # with the unsplit iterative-CN corrector, on the hard steps
+        # only (Design notes: "The cnab2 fallback").
         def _fallback(_):
             jax.debug.print(
                 "cnab2: base-flow-coupling corrector did not converge "

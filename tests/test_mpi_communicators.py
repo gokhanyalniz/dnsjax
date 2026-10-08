@@ -39,7 +39,7 @@ cannot reach by single copy across user namespaces.  Where the
 namespaces cannot be made the launch is skipped with a notice.
 
 Needs ``mpirun``, coreutils ``timeout`` and the MPIwrapper library the
-MPI collectives load (``README.md``, "Installation"); without the
+MPI collectives load (``docs/cpu-collectives.md``); without the
 library the run would be on gloo, so the script skips.  Run as a
 script::
 

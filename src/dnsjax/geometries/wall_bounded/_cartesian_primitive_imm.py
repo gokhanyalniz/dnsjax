@@ -9,10 +9,11 @@ influence-matrix method, which solves the three velocity components
 against a pressure Poisson solve and enforces continuity only at the two
 walls.  It is retained for reference and for reproducing older
 trajectories; a state it steps carries an `$O(1)$` *relative* discrete
-divergence.  The full comparison, the measured ledger and the four other
-repairs that were tried and retired: the ``Resolution.consistent_imm``
-docs (``parameters.py``) and
-:func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`.
+divergence.  The full comparison and the measured ledger: the
+:mod:`dnsjax.parameters` Design notes ("Consistent influence matrix")
+and :func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`;
+the four other repairs that were tried and retired: the
+:mod:`~dnsjax.geometries.wall_bounded.cartesian` Design notes.
 
 Everything here is reachable **only** when the flag is off, so
 ``cartesian.py`` imports this module lazily inside its flag-off branches
@@ -78,7 +79,7 @@ def _build_Lk_band_gpu(
     mean_mask:
         Mean-mode boolean mask, same shape as *k2*.
     p:
-        FD order (half-bandwidth).
+        Band half-width (``fd_order`` for the direct-fit `$D_2$`).
     """
     Ny = D2.shape[-1]
     band_D2 = _banded_from_dense(D2, p)  # (Ny, 2p+1)
@@ -96,10 +97,10 @@ def _build_Lk_band_gpu(
 def _build_Lk_dense_gpu(
     D1: Array, D2: Array, k2: Array, mean_mask: Array
 ) -> Array:
-    """Build the Neumann-BC Laplacian `$L_k$` in dense form on GPU.
+    """Build the Neumann-BC Laplacian `$L_k$` in dense form, on the device.
 
     Used only by the ``"dense"`` solver backend; allocates
-    `$(N_{kz}, N_{kx}, N_y, N_y)$`.  No CPU path.
+    `$(N_{kz}, N_{kx}, N_y, N_y)$`.
 
     Parameters follow :func:`_build_Lk_band_gpu` (sans ``p``);
     the output is the full dense operator.
@@ -168,7 +169,7 @@ def derive_homogeneous_data(
     :meth:`~dnsjax.geometries.wall_bounded.cartesian.CartesianFlow._derive_imm_homogeneous_data`
     (the dispatcher, which builds *e_cols* and calls this when
     ``res.consistent_imm`` is off).  Both backends converge here once
-    ``Lk_op`` and ``Hk_op`` are in place; nothing else on the CPU needs
+    ``Lk_op`` and ``Hk_op`` are in place; nothing else on the host needs
     another LU solve -- everything below runs against the
     already-factored device operator.
 
@@ -209,11 +210,11 @@ def derive_homogeneous_data(
     # This run-once setup stays in the mode-outer (Nkz, Nkx, Ny)
     # layout: the influence-matrix einsums below operate on it and
     # the results are transposed to field layout (Ny, Nkz, Nkx) at
-    # the end.  ``.solve`` now takes a mode-inner field, so each
-    # setup solve is wrapped (transpose in, transpose out) to keep
-    # this layout.  FUTURE: rebuild this setup natively mode-inner to
-    # drop the wrappers -- the hot path already is; here it only
-    # relocates a one-time transpose, so it is deferred.
+    # the end.  ``.solve`` takes a mode-inner field, so each setup
+    # solve is wrapped (transpose in, transpose out) to keep this
+    # layout.  A natively mode-inner setup would drop the wrappers,
+    # but it would only relocate a one-time transpose (the hot path
+    # is mode-inner already).
     e1_b, e2_b = e_cols
 
     p1_s = flow_.Lk_op.solve(e1_b.transpose(2, 0, 1)).transpose(1, 2, 0)
@@ -231,7 +232,7 @@ def derive_homogeneous_data(
     q1_s = flow_.Hk_op.solve(q_rhs1.transpose(2, 0, 1)).transpose(1, 2, 0)
     q2_s = flow_.Hk_op.solve(q_rhs2.transpose(2, 0, 1)).transpose(1, 2, 0)
 
-    # Influence matrix `$M_{ji} = (D_1 v_i)|_{\\text{wall}_j}$`.
+    # Influence matrix `$M_{ji} = (D_1 v_i)|_{\text{wall}_j}$`.
     M00 = jnp.einsum("j, zxj -> zx", flow_.D1_bnd[0], v1_s)
     M01 = jnp.einsum("j, zxj -> zx", flow_.D1_bnd[0], v2_s)
     M10 = jnp.einsum("j, zxj -> zx", flow_.D1_bnd[-1], v1_s)

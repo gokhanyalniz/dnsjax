@@ -23,6 +23,18 @@ genuine harmonic, stranding its partner on a complex axis.
 parameter layer; these generators refuse one too, so a count
 mis-derived anywhere fails loudly instead of silently describing a
 layout the solver never produces.
+
+Odd counts are refused rather than supported because they would buy
+at most one mode, and the least trustworthy one.  On a complex axis
+the stranded partner sits in a slot that is stored, sharded, padded and
+solved for but cannot hold physical content: a unit coefficient there
+survives one spectral-physical round trip at half amplitude, so it is
+silently damped on every nonlinear evaluation.  On the real-FFT axis
+the top wavenumber is merely lost (``nx = 9`` resolves no more than
+``nx = 8`` while paying for a larger padded grid).  An even count is
+what every other constraint wants anyway: an integral 3/2 dealiasing
+size, FFT-friendly padded sizes, mesh divisibility and power-of-two
+Pallas tiles.
 """
 
 import numpy as np

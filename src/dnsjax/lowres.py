@@ -63,7 +63,8 @@ and one banded solve,
 :func:`~dnsjax.geometries.wall_bounded._cartesian_pressure.static_pressure`),
 whose transient is some three fifths of the time step's.  The pressure
 operator is resident for the run once enabled: a second banded factor
-set the size of the Poisson factors (its module's "Cost").
+set the size of the Poisson factors (its module's Design notes,
+"Cost").
 """
 
 from __future__ import annotations
@@ -248,7 +249,11 @@ class LowResWriter:
         return lowres_due(it, anchor)
 
     def static_pressure(self, state_phys: Array) -> Array:
-        """The full-resolution static pressure of a physical state."""
+        """The full-resolution static pressure of a state.
+
+        *state_phys* is the spectral state in physical components; the
+        pressure exists on the plane channels only.
+        """
         from .geometries.wall_bounded._cartesian_pressure import (
             static_pressure,
         )
@@ -290,9 +295,10 @@ class LowResWriter:
     ) -> None:
         r"""Reduce and write one file (collective; every process calls it).
 
-        *fields* is the full-resolution physical field to store
-        (``(C, Ny, Nkz, Nkx)``) and *pressure* its full-resolution
-        pressure (``(Ny, Nkz, Nkx)``, ``None`` for none); *field*
+        *fields* is the full-resolution spectral field to store, in
+        physical components (``(C, Ny, Nkz, Nkx)``), and *pressure* its
+        full-resolution pressure (``(Ny, Nkz, Nkx)``, ``None`` for
+        none); *field*
         names what they are (``"state"``, ``"difference"``) and
         *pressure_note* what the pressure is, for the metadata.
         """
