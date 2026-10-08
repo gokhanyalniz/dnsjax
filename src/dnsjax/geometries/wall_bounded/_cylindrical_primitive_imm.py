@@ -9,18 +9,18 @@ influence-matrix method, which solves `$(u_z, u_+, u_-)$` against a
 pressure Poisson solve and enforces continuity only at the wall.  It is
 retained for reference and for reproducing older trajectories; a state
 it steps carries an `$O(1)$` *relative* discrete divergence.  The full
-comparison and the measured ledger: the ``Resolution.consistent_imm``
-docs (``parameters.py``) and the shared scheme record on
+comparison and the measured ledger: the :mod:`dnsjax.parameters`
+Design notes ("Consistent influence matrix") and the shared scheme
+record on
 :func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`.
 
 Everything here is reachable **only** when the flag is off, so
 ``cylindrical.py`` and ``_cylindrical_stepping.py`` import this module
 lazily inside their flag-off branches and the default path never
-imports it at all.  The dependency
-runs the other way at module scope -- this module imports the shared
-`$H_k$` builders and types from ``cylindrical.py`` -- which is why the
-import must be deferred there rather than declared at the top of that
-file.
+imports it at all.  The dependency runs the other way at module scope
+-- this module imports the shared `$H_k$` builders and types from
+``cylindrical.py`` -- which is why the import must be deferred there
+rather than declared at the top of that file.
 
 Contents: the Neumann-BC pressure Poisson operator in both storage
 backends (:func:`_build_Lk_band_gpu`, :func:`_build_Lk_dense_gpu`), the
@@ -90,7 +90,7 @@ def _build_Lk_band_gpu(
     mean_mask:
         Mean-mode boolean mask, shape ``(Nm, Nkz, 1)``.
     p:
-        FD order (half-bandwidth).
+        Band half-width (``fd_order`` for the direct-fit `$D_2$`).
     """
     Nr = band_even.shape[0]
     band_base = jnp.where(m_is_even, band_even[None], band_odd[None])
@@ -117,7 +117,7 @@ def _build_Lk_dense_gpu(
     kz2: Array,
     mean_mask: Array,
 ) -> Array:
-    r"""Build dense `$L_k$` on GPU (dense backend only).
+    r"""Build dense `$L_k$` on the device (dense backend only).
 
     Returns the full ``(Nm, Nkz, Nr, Nr)`` pressure Poisson
     operator.  The parity-dependent row selection is handled
@@ -155,7 +155,7 @@ def _hk_bands(
 
     Single-sources the band assembly for the setup-checked build, the
     adaptive ``dt_max`` stability pre-check, and the jitted ``set_dt``
-    rebuild (:func:`_build_dt_leaves`).  Pallas backend only.
+    rebuild (:func:`.cylindrical._build_dt_leaves`).  Pallas backend only.
 
     The half-width is read back from the already-factored (and
     ``dt``-independent) `$L_k$`, whose ``L`` factor is
@@ -201,8 +201,7 @@ def _hk_dense_op(
     fourier_: Fourier,
     flow_: CylindricalFlow,
 ) -> DenseJAXSolver:
-    r"""Factored dense stacked `$H_k$` (+, -, z) at *dt* (dense
-    backend)."""
+    r"""Factored dense stacked `$H_k$` (+, -, z) at *dt* (dense backend)."""
     m_s = fourier_.m[0, ..., None]
     kz2_s = fourier_.kz2[0, ..., None]
     m_is_even_s = fourier_.m_is_even[0, ..., None]
@@ -253,10 +252,10 @@ def _abase_matvec(
           + (1/r)\,\widetilde{D}_{1,\mathrm{ghost}})
           \,u}_{\text{ghost correction}}
 
-    The ghost correction matrices are stored row-sliced to
-    their `$g \sim p/2$` nonzero rows (near the pipe centre,
-    where stencils cross `$r = 0$`), so the ghost GEMMs and
-    the scatter-add touch only the first `$g$` radial points.
+    The ghost corrections are stored as their nonzero ``(g, c)``
+    corner near the pipe centre, where stencils cross `$r = 0$`, so
+    the ghost GEMM reads only the first ``c`` radial points and lands
+    on the first ``g`` rows (:func:`.cylindrical._parity_y_matvec`).
 
     Parameters
     ----------
@@ -327,11 +326,11 @@ def derive_homogeneous_data(
     # This run-once setup stays in the mode-outer (Nm, Nkz, Nr)
     # layout: the influence-matrix einsums below operate on it and
     # the results are transposed to field layout (Nr, Nm, Nkz) at
-    # the end.  ``.solve`` now takes a mode-inner field, so each
-    # setup solve is wrapped (transpose in, transpose out) to keep
-    # this layout.  FUTURE: rebuild this setup natively mode-inner to
-    # drop the wrappers -- the hot path already is; here it only
-    # relocates a one-time transpose, so it is deferred.
+    # the end.  ``.solve`` takes a mode-inner field, so each setup
+    # solve is wrapped (transpose in, transpose out) to keep this
+    # layout.  A natively mode-inner setup would drop the wrappers,
+    # but it would only relocate a one-time transpose (the hot path
+    # is mode-inner already).
     e_wall = (
         jnp.zeros(
             (Nm, Nkz, Nr),

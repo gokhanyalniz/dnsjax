@@ -1,10 +1,73 @@
-"""Shared infrastructure for wall-bounded geometries.
+r"""Shared infrastructure for wall-bounded geometries.
 
 Functions shared by the wall-bounded geometry modules (Cartesian,
 cylindrical, annular, and the two viscoelastic ones) live here to
 avoid duplication.  Geometry-specific code (operator assembly, IMM
-iteration, curl, etc.) stays in the respective geometry
-modules.
+iteration, curl, etc.) stays in the respective geometry modules.
+
+Design notes
+------------
+**The wall-normal stencil.**  The as-run step (iterative CN, one
+correction) on one pinned core of a Ryzen 7 PRO 7840U on mains power,
+both paths of :func:`apply_y_matrix` compiled in one process and
+executed alternately, first round discarded, 10-24 rounds; plane
+Poiseuille at constant bulk velocity:
+
+==============  ========  ========  ==============================
+grid            GEMM      stencil   per-pair ratio, median (IQR)
+==============  ========  ========  ==============================
+``10x385x320``  937 ms    816 ms    x1.18 (1.04-1.23)
+``64x96x64``    288 ms    277 ms    x1.04 (1.02-1.08)
+``16x49x16``    3.1 ms    3.1 ms    x1.01 (1.00-1.02)
+==============  ========  ========  ==============================
+
+and the other geometries, at a moderate and the smallest grid: the
+pipe x1.04 (``32x97x64``) and x0.97 (``16x33x16``), Taylor-Couette
+x1.08 and x0.95, viscoelastic Dean and pipe x1.04 and x1.05
+(``16x65x32``).  ``10x385x320`` has the per-rank modes and points of a
+``1280 x 385 x 320`` run on 128 ranks, where XLA's count for the step
+falls from 18.25 to 4.45 GFLOP.  The gain grows with `$N_y$` (the
+GEMM's FLOPs per point do); on the smallest test grids the stencil's
+fixed cost can leave it a few per cent behind.  The step temporaries
+are unchanged, but for viscoelastic Dean's (+0.15 %: its re/im split
+on the 9-field tensor stacks); the stored parts add ``~30 KB`` per
+matrix, and the unrolled stencils about 2.5 s of compile per step
+program.  The stencil's first form padded the field by the full
+half-bandwidth and summed `$2p + 3$` shifted slices (19 at
+``fd_order = 8``): x1.03 at the first size above and **x0.85** at the
+last, because half those terms multiply the zeros outside an interior
+row's stencil and the fused pad turns every read into a bounds-checked
+select.  Splitting off the wall rows
+(:func:`dnsjax.fd.stencil_decomposition`) removes both.  Promoting a
+real band onto a complex field cost a further ~10 % of the step at the
+first size against the part-by-part form.
+
+**One collective for several mean modes.**  :func:`extract_mean_modes`
+measured a wash on CPU: an interleaved tree-swap A/B against the
+two-call / stacked form, plane Poiseuille `$128 \times 129 \times
+128$`, ``cnab2``, ``constant_bulk_velocity``, 21 steps, three pairs
+with the order alternated and the first discarded, gave 4 ranks 354.3
+against 356.8 s/t and one process 1020 against 1017, both inside a
+2-5 % within-arm spread.  That is what the arithmetic predicts at
+``c/it = 0``, where a step sheds only two
+`$(2, N_y, N_{k_z}, N_{k_x})$` stacks (34 MB each at that size,
+written and read once) and two collectives, against a 0.7-2.0 s step:
+a few tenths of a percent, under the timing noise floor.  It is kept
+because it is bit-identical and strictly less work, and because both
+halves grow where an 8-core machine cannot show them: with the
+corrector count (every extra iteration is another stack *and* another
+collective) and with the rank count on a slower fabric, the ``psum``
+being latency- rather than volume-bound.  It is not a measured win,
+and a re-measurement on a small machine should not expect one.
+
+**The moving frame's convective form.**  The frame term is applied as
+`$+ i k_0 U_{grid} \mathbf{u}'$`, mode-diagonal and divergence-free,
+hence projection-neutral and non-stiff.  The first moving-frame
+implementation used the rotational split
+`$\boldsymbol{\omega}' \times \mathbf{c} + \nabla(\mathbf{c} \cdot
+\mathbf{u}')$` instead, whose explicit `$c\,\partial_y u'$` half is
+wall-stiff, and was removed for exactly this instability (commit
+``1a8d7dc``).
 """
 
 import copy
@@ -178,48 +241,12 @@ def apply_y_matrix(
     stencil (:func:`_stencil`), per ``solver.wall_normal_matvec``
     (``"auto"``: the stencil on CPU, the GEMM elsewhere).  A plain
     array (an interpolation matrix, a ghost corner) always takes the
-    GEMM.  The two agree to machine precision.
-
-    The GEMM costs `$2 N_y$` FLOPs per output point, almost all of
-    them on structural zeros; the stencil costs two per term of the
-    row's own stencil, about 10 terms at ``fd_order = 8``.  On CPU,
-    where the GEMM is compute-bound, that decides it.  The as-run step
-    (iterative CN, one correction) on one pinned core, both paths
-    compiled in one process and executed alternately, first round
-    discarded, 10-24 rounds; plane Poiseuille at constant bulk
-    velocity:
-
-    ==============  ========  ========  ==============================
-    grid            GEMM      stencil   per-pair ratio, median (IQR)
-    ==============  ========  ========  ==============================
-    ``10x385x320``  937 ms    816 ms    x1.18 (1.04-1.23)
-    ``64x96x64``    288 ms    277 ms    x1.04 (1.02-1.08)
-    ``16x49x16``    3.1 ms    3.1 ms    x1.01 (1.00-1.02)
-    ==============  ========  ========  ==============================
-
-    and the other geometries, at a moderate and the smallest grid:
-    the pipe x1.04 (``32x97x64``) and x0.97 (``16x33x16``),
-    Taylor-Couette x1.08 and x0.95, viscoelastic Dean and pipe x1.04
-    and x1.05 (``16x65x32``).  (A Ryzen 7 PRO 7840U on mains power;
-    ``10x385x320`` has the per-rank modes and points of a
-    ``1280 x 385 x 320`` run on 128 ranks, where XLA's count for the
-    step falls from 18.25 to 4.45 GFLOP.)  The gain grows with `$N_y$`
-    (the GEMM's FLOPs per point do); on the smallest test grids the
-    stencil's fixed cost can leave it a few per cent behind.  The step
-    temporaries are unchanged, but for viscoelastic Dean's (+0.15 %:
-    its re/im split on the 9-field tensor stacks); the stored parts add
-    ``~30 KB`` per matrix, and the unrolled stencils about 2.5 s of
-    compile per step program.
-
-    *Why the stencil has no padding.*  Its first form padded the field
-    by the full half-bandwidth and summed `$2p + 3$` shifted slices
-    (19 at ``fd_order = 8``): x1.03 at the first size above and
-    **x0.85** at the last, because half those terms multiply the
-    zeros outside an interior row's stencil and the fused pad turns
-    every read into a bounds-checked select.  Splitting off the wall
-    rows (:func:`dnsjax.fd.stencil_decomposition`) removes both.
-    Promoting a real band onto a complex field cost a further ~10 %
-    of the step at the first size against the part-by-part form.
+    GEMM.  The two agree to machine precision.  The GEMM costs
+    `$2 N_y$` FLOPs per output point, almost all of them on structural
+    zeros; the stencil costs two per term of the row's own stencil,
+    about 10 terms at ``fd_order = 8``, which decides it on CPU, where
+    the GEMM is compute-bound (Design notes: "The wall-normal
+    stencil").
 
     **Layout / transposes (GEMM path).**  The contraction runs as a
     GEMM over the wall-normal axis.  When that axis is **leading** (the
@@ -288,21 +315,20 @@ def apply_y_matrix(
 def base_flow_coupling(
     u: Array, omega: Array, base_flow: Array, curl_base_flow: Array
 ) -> Array:
-    r"""Linear base-flow coupling `$\mathbf{u}' \times \nabla\times
-    \mathbf{U} + \mathbf{U} \times \boldsymbol{\omega}'$`.
+    r"""The linear base-flow coupling of the rotational form.
 
-    The two base-flow cross-product terms of the rotational nonlinear
-    form (:mod:`dnsjax.rhs`), as a component-wise expression in a local
-    orthonormal basis -- Cartesian `$(x, y, z)$` or the cylindrical
-    `$(z, r, \theta)$` triad (both right-handed, so the standard
+    `$\mathbf{u}' \times \nabla\times\mathbf{U} + \mathbf{U} \times
+    \boldsymbol{\omega}'$`: the two base-flow cross-product terms of the
+    rotational nonlinear form (:mod:`dnsjax.rhs`), as a component-wise
+    expression in a local orthonormal basis -- Cartesian `$(x, y, z)$` or the
+    cylindrical `$(z, r, \theta)$` triad (both right-handed, so the standard
     cross-product formula applies).  All inputs are in the **same**
-    representation; *base_flow* / *curl_base_flow* are the wall-normal
-    (or radial) profiles `$(3, N, 1, 1)$`, broadcast over the Fourier
-    axes.  Evaluated with `$\boldsymbol{\omega}'$` already in hand
-    (spectral curl), this needs **no Fourier transform** -- used by the
-    CN/AB2 scheme to make the (stiff) base-flow coupling implicit; see
-    ``step_cnab2`` in :mod:`dnsjax.timestep` and each geometry's
-    ``_l_bf``.
+    representation; *base_flow* / *curl_base_flow* are the wall-normal (or
+    radial) profiles `$(3, N, 1, 1)$`, broadcast over the Fourier axes.
+    Evaluated with `$\boldsymbol{\omega}'$` already in hand (spectral curl),
+    this needs **no Fourier transform** -- used by the CN/AB2 scheme to make
+    the (stiff) base-flow coupling implicit; see ``step_cnab2`` in
+    :mod:`dnsjax.timestep` and each geometry's ``_l_bf``.
     """
     u0, u1, u2 = u[0], u[1], u[2]
     w0, w1, w2 = omega[0], omega[1], omega[2]
@@ -384,13 +410,8 @@ def pad_base_flow(flow: object) -> None:
     (:func:`dnsjax.rhs.get_nonlin`) keeps the lab-frame
     ``base_flow_padded``: the frame term is applied in *convective*
     form, `$+ i k_0 U_{grid} \mathbf{u}'$`, added spectrally in each
-    geometry's ``_get_rhs_core`` / ``_l_bf`` (mode-diagonal and
-    divergence-free, hence projection-neutral and non-stiff --
-    unlike the rotational split `$\boldsymbol{\omega}' \times
-    \mathbf{c} + \nabla(\mathbf{c} \cdot \mathbf{u}')$`, whose
-    explicit `$c\,\partial_y u'$` half is wall-stiff -- the first
-    moving-frame implementation used that split and was removed for
-    exactly this instability, commit ``1a8d7dc``).  When
+    geometry's ``_get_rhs_core`` / ``_l_bf`` (Design notes: "The moving
+    frame's convective form").  When
     `$U_{grid} = 0$` the field aliases ``base_flow_padded``
     (byte-identical to the frame-free behaviour).
 
@@ -491,27 +512,9 @@ def extract_mean_modes(*states: Array) -> tuple[Array, ...]:
     **Bit-identical to the same number of separate calls**, and
     independent of the collective's reduction order: exactly one device
     contributes a non-zero column and every other contributes exact
-    zeros, and adding zeros is exact.
-
-    **Measured a wash on CPU, and kept anyway.**  Interleaved tree-swap
-    A/B against the two-call / stacked form, plane-Poiseuille
-    `$128 \times 129 \times 128$`, ``cnab2``,
-    ``constant_bulk_velocity``, 21 steps, three pairs with the order
-    alternated and the first discarded: 4 ranks 354.3 against 356.8
-    s/t, one process 1020 against 1017 -- both inside a 2-5 %
-    within-arm spread.  That is what the arithmetic predicts at
-    ``c/it = 0``, where a step sheds only two `$(2, N_y, N_{k_z},
-    N_{k_x})$` stacks (34 MB each at that size, written and read once)
-    and two collectives, against a 0.7-2.0 s step: a few tenths of a
-    percent, under the timing noise floor.
-
-    It is kept because it is bit-identical and strictly less work, and
-    because both halves grow exactly where an 8-core box cannot show
-    them -- with the corrector count (every extra iteration is another
-    stack *and* another collective) and with rank count on a slower
-    fabric, the psum being latency- rather than volume-bound.  Do not
-    re-record this as a win, and do not re-measure it here expecting
-    one.
+    zeros, and adding zeros is exact.  On a small machine the saving is
+    below the timing noise (Design notes: "One collective for several
+    mean modes").
 
     Parameters
     ----------

@@ -49,53 +49,28 @@ I/O granularity and memory
 --------------------------
 No transpose is ever performed, and every transfer is one
 C-contiguous **slab**: a device's whole range of the chunk's slowest
-axis, for one component.  Which pieces of the file a device holds is
-decided by **which axis its shard is cut along**.  The chunk is the
-C-ordered global array ``(A, kz, kx)`` (``A`` = the wall-normal /
-`$k_y$` axis), so its slowest-varying axis is ``A`` and its fastest
-is `$k_x$`.
-
-The solver layout shards the two *fastest* axes (`$k_z$` by ``np0``,
-`$k_x$` by ``np1``), which is the worst possible cut for this file:
-with ``np1 > 1`` every ``kx_true``-element row is divided between the
-``np1`` devices, so a device's pieces are its own ``local_kx`` block
--- 512 B at ``256 x 193 x 256, np1 = 4``, and ``3 x 193 x 255`` of
-them per device.  **Measured on BeeGFS: 90 s to save a 288 MiB
-state** (151.7 µs per transfer), against 1.7 s for the same state at
-``np1 = 1``.
+axis, for one component.  The chunk is the C-ordered global array
+``(A, kz, kx)`` (``A`` = the wall-normal / `$k_y$` axis), so its
+slowest-varying axis is ``A`` and its fastest is `$k_x$`.  The solver
+layout shards the two *fastest* axes (`$k_z$` by ``np0``, `$k_x$` by
+``np1``), which fragments a device's bytes into ``local_kx``-element
+pieces (Design notes: "Why an I/O layout").
 
 So the state is resharded once per save onto an **I/O layout**
 (:func:`_io_spec`) that cuts the *slowest* axis instead: each device
 takes a contiguous slab of ``A`` and holds `$k_z$`/`$k_x$` whole, and
 its bytes become one contiguous range per component --
-``n_components * ndev`` transfers of tens of MiB instead of ~1e5 of
-512 B.  Reads take the mirror path (read the slabs, reshard back).
-The cost is one exchange per save/load -- **one jitted program**,
-routed one mesh axis at a time (:func:`_to_io_layout` says what each
-of those buys, in measured milliseconds) -- plus a transient second
-copy of the state, distributed one local shard per device.  A
-single-device mesh already *is* the I/O layout and pays neither.
-
-That count is ``n_components * ndev`` on **every** mesh, not only an
-unpadded one, because the reshard also trims the solver layout's
-divisibility padding: the I/O buffer carries the *true* mode counts,
-so it **is** the device's byte range rather than a padded superset of
-it (:func:`_to_io_layout_core`, :func:`_io_local_shape`).  Without
-that trim one padded mode in a *middle* axis breaks the contiguity of
-the whole component -- and `$n_z - 1$` being odd forces exactly that
-on any even ``np0``: one transfer per ``A`` row, 49 of 0.5 MiB rather
-than one of 25 MiB at ``256 x 193 x 256`` on four devices.  A padded
-`$k_x$` falls further, to one transfer per ``(a, k_z)`` row: measured
-at ``ny = 49, nz = 16, nx = 6`` on four devices, 2205 writes of 48 B
-against 12 of 8.8 kiB.  Neither needs an exotic grid -- ``np1`` just
-happens to divide ``nx // 2`` for the usual power-of-two ``nx``.
-
-This is **not** the pre-v5 layout change.  The store is still one
-fixed np-independent global array in the native order (that is what
-makes resume np-agnostic), and the on-disk bytes are unchanged: only
-*which device writes which byte range* moves.  Storing a sharded axis
-outermost instead is what the pre-v5 layouts did, and that cost a
-transpose of every slab on every save and load.
+``n_components * ndev`` transfers of tens of MiB.  That count holds
+on **every** mesh, not only an unpadded one, because the reshard also
+trims the solver layout's divisibility padding: the I/O buffer carries
+the *true* mode counts, so it **is** the device's byte range rather
+than a padded superset of it (:func:`_to_io_layout_core`,
+:func:`_io_local_shape`).  Reads take the mirror path (read the slabs,
+reshard back).  The cost is one exchange per save/load -- **one jitted
+program**, routed one mesh axis at a time (:func:`_via_mid`) -- plus a
+transient second copy of the state, distributed one local shard per
+device.  A single-device mesh already *is* the I/O layout and pays
+neither.
 
 **Extra memory per device by I/O engine** (beyond the resident
 state):
@@ -127,16 +102,12 @@ device then writes its disjoint byte ranges directly into the one
 file at ``component_offset + within_component_offset``.  That
 layout is built under a ``.partial`` name and renamed once every
 write has landed (:data:`_PARTIAL_SUFFIX`), because until then the
-file is a valid archive full of zeros.  The
-component base offsets are the tar members' ``offset_data`` (read
-back via ``tarfile``, so 512-aligned -- a tar block -- but not
-generally 4096-aligned, which is what cuFile's direct path prefers.
-That costs a bounce buffer for the head and tail of a transfer, so
-it was a real penalty when a transfer was 512 B and is a rounding
-error now that the I/O layout makes it tens of MiB).
-TensorStore is used only to generate the ``zarr.json`` bytes (in a
-throwaway temporary directory); compression is never used (it would
-break random-access streaming).
+file is a valid archive full of zeros.  The component base offsets
+are the tar members' ``offset_data``, read back via ``tarfile``:
+512-aligned (a tar block) but not generally 4096-aligned (Design
+notes: "cuFile alignment").  TensorStore is used only to generate the
+``zarr.json`` bytes (in a throwaway temporary directory); compression
+is never used (it would break random-access streaming).
 
 - **GDS** (NVIDIA GPUDirect Storage): when ``kvikio`` and ``cupy``
   are available, slabs move directly between GPU memory and disk.
@@ -179,10 +150,10 @@ Solver-carried fields (optional ``carry/``)
 -------------------------------------------
 A second zarr3 array beside ``state``, in the same native layout and
 per-component chunking, holds state the **solver** carries beyond the
-velocity -- today only the pipe family's default scheme, whose two
-spin-quad difference halves are evolved rather than re-derived
-(``_cylindrical_stepping._imm_iteration_vw``; metadata ``carried``
-names them).  They are solver-internal: the stored state is the
+velocity.  Only the pipe family's default scheme has any: two
+spin-quad difference halves it evolves rather than re-derives
+(``_cylindrical_stepping._imm_iteration_vw``; the metadata key
+``carried`` names them).  They are solver-internal: the stored state is the
 physical velocity as always, and nothing outside the solver's resume
 reads ``carry/``.  With it a resumed run continues its trajectory to
 round-off; without it -- an older snapshot, one a script rewrote, or
@@ -219,6 +190,57 @@ basis is converted by the caller, so these functions stay
 basis-agnostic), and the public-named parameter dump.  Older
 snapshots are rejected at read
 (:func:`dnsjax.snapshot_meta.read_snapshot_meta`), never translated.
+
+Design notes
+------------
+**Why an I/O layout.**  The solver layout is the worst possible cut
+for this file: with ``np1 > 1`` every ``kx_true``-element row is
+divided between the ``np1`` devices, so a device's pieces are its own
+``local_kx`` block -- 512 B at ``256 x 193 x 256, np1 = 4``, and
+``3 x 193 x 255`` of them per device.  Measured on BeeGFS, that saved
+a 288 MiB state in 90 s (151.7 µs per transfer), against 1.7 s for the
+same state at ``np1 = 1``; the I/O layout replaces those ~1e5 writes
+of 512 B with ``n_components * ndev`` of tens of MiB.
+
+**Trimming the padding in the reshard.**  Without the trim, one padded
+mode in a *middle* axis breaks the contiguity of the whole component,
+and `$n_z - 1$` being odd forces exactly that on any even ``np0``: one
+transfer per ``A`` row, 49 of 0.5 MiB rather than one of 25 MiB at
+``256 x 193 x 256`` on four devices.  A padded `$k_x$` falls further,
+to one transfer per ``(a, k_z)`` row: measured at ``ny = 49, nz = 16,
+nx = 6`` on four devices, 2205 writes of 48 B against 12 of 8.8 kiB.
+Neither needs an exotic grid: the first comes with any even ``np0``,
+and the second is absent from the usual power-of-two ``nx`` only
+because ``np1`` then happens to divide ``nx // 2``.
+
+**Not the pre-v5 layout.**  The store is still one fixed
+np-independent global array in the native order (that is what makes
+resume np-agnostic), and the on-disk bytes are unchanged: the I/O
+layout moves only *which device writes which byte range*.  The pre-v5
+layouts stored a sharded axis outermost instead, which cost a
+transpose of every slab on every save and load.
+
+**One jitted reshard.**  Expressed eagerly -- a :func:`jax.device_put`
+per leg -- the reshard is redistributed piece by piece instead of as a
+collective: the same 216 MiB took 230 ms on an H100 node whose fabric
+moves a 72 MiB shard device to device in 0.32 ms (223 GB/s).  Inside
+``jit`` the identical two moves take 0.68 ms, a 338x difference and
+the whole reason a multi-device snapshot is write-bound rather than
+reshard-bound.
+
+**Detecting GDS.**  Most of :func:`_gds_available`'s conditions have
+bitten this path.  ``import kvikio`` alone left ``kvikio.defaults``
+unresolved on some versions, so the check raised ``AttributeError``
+and took the "unusable" branch on a cluster that had kvikIO installed.
+And without the nvidia-fs driver, kvikIO's compat shim (POSIX I/O on a
+thread pool) measured 1.5-6x *slower* than this module's own host path
+below 1 MiB spans.
+
+**cuFile alignment.**  cuFile's direct path prefers 4096-aligned file
+offsets; the tar's 512-aligned ones cost a bounce buffer for the head
+and tail of each transfer.  That was a real penalty when a transfer
+was 512 B and is a rounding error now that the I/O layout makes it
+tens of MiB.
 """
 
 import json
@@ -253,18 +275,14 @@ class SnapshotMismatchError(Exception):
 
 
 #: Suffix of the file a snapshot is built in before it is renamed
-#: into place.  The archive is laid out full-length with
-#: **zero-filled** component regions and only then filled in, so an
-#: interrupted save under the final name would leave a structurally
-#: valid tar that loads without complaint and is blank wherever the
-#: writes did not reach -- the one corruption a run cannot detect,
-#: because zeros are a legal state.  Building under this suffix and
-#: renaming (``os.replace``, atomic within a filesystem) means the
-#: final name only ever appears on a complete archive; a killed job
-#: leaves a ``.partial`` beside the last good snapshot instead of
-#: replacing it.  Costs one metadata operation per save.  The suffix
-#: also keeps an interrupted save out of every ``*.tar`` glob, which
-#: ``scripts/ensemble_setup.py`` relies on when it harvests parents.
+#: into place (``os.replace``, atomic within a filesystem).  The
+#: archive is laid out full-length with **zero-filled** component
+#: regions and only then filled in, and zeros are a legal state: an
+#: interrupted save under the final name would load without complaint,
+#: blank wherever the writes did not reach.  A killed job therefore
+#: leaves a ``.partial`` beside the last good snapshot, outside every
+#: ``*.tar`` glob (``scripts/ensemble_setup.py`` relies on it when it
+#: harvests parents), for one metadata operation per save.
 _PARTIAL_SUFFIX = ".partial"
 
 
@@ -280,23 +298,17 @@ _NVFS_STATS = Path("/proc/driver/nvidia-fs/stats")
 def _gds_available() -> bool:
     """True when kvikIO + GDS can transfer GPU buffers.
 
-    Four things must hold, and most have bitten this path before:
+    Four things must hold (Design notes: "Detecting GDS"):
 
     - **kvikIO imports.**  ``kvikio.defaults`` is a *submodule*, not
-      an attribute of the package, so ``import kvikio`` alone does not
-      make ``kvikio.defaults`` resolve on every version -- which is
-      how this check spent its life raising ``AttributeError`` and
-      taking the "unusable" branch on a cluster that had kvikIO
-      installed.  Bind the submodule itself
+      an attribute of the package, so bind the submodule itself
       (``import kvikio.defaults as ...``, a ``sys.modules`` lookup)
       rather than reaching for it through the package.
     - **The nvidia-fs driver is loaded.**  Without it kvikIO still
       imports and still accepts every call; it just services them
-      through its *compat* shim (POSIX I/O on a thread pool), which is
-      not GDS and which measured 1.5-6x *slower* than this module's
-      own host path below 1 MiB spans.  ``AUTO`` -- the default compat
-      mode -- is exactly the case that would otherwise be mistaken for
-      "GDS is on".
+      through its *compat* shim, which is not GDS and is slower than
+      the host path.  ``AUTO`` -- the default compat mode -- is exactly
+      the case that would otherwise be mistaken for "GDS is on".
     - **Compat mode is not explicitly ``ON``.**
       ``defaults.get("compat_mode")`` returns a ``CompatMode`` enum
       (``OFF`` / ``ON`` / ``AUTO``), not a bool; a bare truth test
@@ -344,8 +356,7 @@ def _require_dense(vec) -> None:
 
     The slab each device transfers is a leading-axis prefix slice,
     contiguous only if the array it slices is dense row-major.  kvikIO
-    reads
-    ``__cuda_array_interface__`` and cupy's dlpack import honours
+    reads ``__cuda_array_interface__`` and cupy's dlpack import honours
     whatever strides it is handed, so a non-default XLA layout would
     transfer the *wrong bytes* with no error at all -- silent
     corruption of a snapshot, which is the one artefact a run cannot
@@ -450,12 +461,10 @@ def _io_spec():
     device's bytes one contiguous file range per component.
 
     The solver layout shards the two *fastest* axes instead (`$k_z$`
-    by ``np0``, `$k_x$` by ``np1``), which is why a device's bytes
-    are fragmented there: with ``np1 > 1`` every ``kx_true``-element
-    file row is divided between the ``np1`` devices, leaving pieces
-    of ``local_kx`` elements. :func:`_to_io_layout` therefore reshards
-    once per save (and :func:`load_snapshot` reshards back after the
-    read); the measured reason is in the module docstring.
+    by ``np0``, `$k_x$` by ``np1``), which fragments a device's bytes
+    into ``local_kx``-element pieces, so :func:`_to_io_layout` reshards
+    once per save and :func:`load_snapshot` reshards back after the
+    read (Design notes: "Why an I/O layout").
     """
     axes = tuple(a for a in (sharding.a0, sharding.a1) if a is not None)
     # ``(a0, a1)`` splits the axis a0-major, so the slab index is the
@@ -681,13 +690,13 @@ def apply_wall_normal_regrid(
 
     The wall-normal axis is local in the solver layout, so this is a
     device-local GEMM -- ``_base.apply_y_matrix``, a real GEMM on the
-    split real and imaginary parts.  A parity pair
-    *T* is applied per azimuthal mode by component class: *parity_even*
-    holds one :data:`PARITY_EVEN_STORED` entry per component of
-    *state*, *m_even* is ``cylindrical.fourier.m_is_even`` -- the
-    parity of the **physical** `$m = m_0 h$` over the padded axis, so
-    the regrid has to run before any `$m$` truncation.  Both
-    contractions run on every mode and the mask selects.
+    split real and imaginary parts.  A parity pair *T* is applied per
+    azimuthal mode by component class: *parity_even* holds one
+    :data:`PARITY_EVEN_STORED` entry per component of *state*,
+    *m_even* is ``cylindrical.fourier.m_is_even`` -- the parity of the
+    **physical** `$m = m_0 h$` over the padded axis, so the regrid has
+    to run before any `$m$` truncation.  Both contractions run on every
+    mode and the mask selects.
 
     *zero_velocity_walls* lists the new grid's wall rows whose
     velocity (the first three components) is reset to zero: a
@@ -896,14 +905,10 @@ def _to_io_layout(
     :func:`_to_io_layout_core` are all no-ops), so it reshards nothing
     and pays neither.
 
-    **The exchange must be one jitted program.**  Expressed eagerly --
-    a :func:`jax.device_put` per leg -- the runtime redistributes
-    piece by piece instead of emitting a collective, and the same
-    216 MiB took **230 ms** on an H100 node whose fabric moves a
-    72 MiB shard device-to-device in 0.32 ms (223 GB/s).  Inside
-    ``jit`` the identical two moves take **0.68 ms**: a 338x
-    difference, and the whole reason a multi-device snapshot is now
-    write-bound rather than reshard-bound.
+    **The exchange must be one jitted program**: expressed eagerly, a
+    :func:`jax.device_put` per leg, the runtime redistributes piece by
+    piece instead of emitting a collective, 338x slower on an H100
+    node (Design notes: "One jitted reshard").
 
     *kz_out* / *kx_out* (default: the run's true counts) are the mode
     counts the file stores (:func:`_to_io_layout_core`).  A single
@@ -1000,9 +1005,8 @@ def assemble_local_shards(
     `$k_{z,\mathrm{ax}}$`, ``np1``) range ``[kx_start, kx_start + nkx)``;
     the trailing padding modes stay zero.  Shards are placed onto
     ``sharding.spec_vector_shard`` with
-    ``jax.make_array_from_single_device_arrays`` -- np-agnostic, and **no
-    full array is ever materialized** on any device (so in-process random /
-    rolls ICs match dnsjax's per-device construction idiom).
+    ``jax.make_array_from_single_device_arrays`` -- np-agnostic, and
+    **no full array is ever materialized** on any device.
 
     Parameters
     ----------
@@ -1269,8 +1273,10 @@ def read_metadata(path: Path) -> dict:
 
 
 def _stats_json_bytes(stats: dict) -> bytes:
-    """Serialize a ``get_stats`` dict for the ``_dnsjax_stats.json``
-    member, converting the (replicated) device scalars to host floats."""
+    """The ``_dnsjax_stats.json`` bytes of a ``get_stats`` dict.
+
+    The (replicated) device scalars become host floats.
+    """
     return json.dumps(
         {k: float(v) for k, v in stats.items()}, indent=2
     ).encode("utf-8")
@@ -1331,11 +1337,13 @@ def _read_chunks_gds(
     comp_shape: tuple[int, ...],
     dtype: np.dtype,
 ) -> list[Array]:
-    r"""Read each device's leading-axis slab via kvikIO into an
-    I/O-layout shard (np-agnostic), directly into GPU memory (the slab
-    is a contiguous view of the shard -- no staging buffers), one read
+    r"""Read each device's leading-axis slab via kvikIO.
+
+    Each slab is read directly into GPU memory, onto a contiguous view
+    of an I/O-layout shard (np-agnostic; no staging buffers), one read
     per component.  The caller reshards the assembled array back to
-    the solver layout."""
+    the solver layout.
+    """
     import cupy as cp
     import kvikio
 
@@ -1420,12 +1428,12 @@ def _write_chunks_host(
     *state* is in the I/O layout at the true mode counts
     (:func:`_to_io_layout`), so a device's slab is one write per
     component.  When cupy is available (NVIDIA GPU platforms) each slab
-    is staged through ``cupy.asnumpy``; otherwise (CPU runs, non-NVIDIA
-    GPUs) the full shard is copied once with ``np.asarray`` and the
-    slabs are written directly from it.  Either way the extra host
-    memory is one slab, i.e. a whole component
-    (``shard / n_components``) rather than a plane -- the trade that
-    turns ~1e5 small writes into a handful of big ones.
+    is staged through ``cupy.asnumpy``, so the extra host memory is one
+    slab -- a whole component, ``shard / n_components``, rather than a
+    plane: the trade that turns ~1e5 small writes into a handful of big
+    ones.  Otherwise (CPU runs, non-NVIDIA GPUs) the full shard is
+    copied once with ``np.asarray`` and the slabs are written directly
+    from it (the module docstring's memory table).
     """
     a_true, kz_true, kx_true = comp_shape
     try:
@@ -1468,17 +1476,17 @@ def _read_chunks_host(
     comp_shape: tuple[int, ...],
     dtype: np.dtype,
 ) -> list[Array]:
-    r"""Read each device's leading-axis slab via host I/O into an
-    I/O-layout shard (np-agnostic).
+    r"""Read each device's leading-axis slab via host I/O.
 
-    When cupy is available (NVIDIA GPU platforms), the output buffer
-    is allocated on GPU and each component's slab is copied onto its
-    contiguous view via ``cupy.ndarray.set``.  Otherwise (CPU runs,
-    non-NVIDIA GPUs), the output is assembled on the host with
+    Each slab lands in an I/O-layout shard (np-agnostic).  When cupy
+    is available (NVIDIA GPU platforms), the output buffer is allocated
+    on GPU and each component's slab is copied onto its contiguous view
+    via ``cupy.ndarray.set``, through one slab of host memory (a
+    component, ``shard / n_components``).  Otherwise (CPU runs,
+    non-NVIDIA GPUs), the shard is assembled on the host with
     ``readinto`` (no temporaries) and transferred at the end via
-    ``jax.device_put``.  Extra host memory: one slab, i.e. a component
-    (``shard / n_components``).  The caller reshards the assembled
-    array back to the solver layout.
+    ``jax.device_put``.  The caller reshards the assembled array back
+    to the solver layout.
     """
     itemsize = dtype.itemsize
     a_true, kz_true, kx_true = comp_shape
@@ -1764,9 +1772,9 @@ def load_snapshot(
     Returns
     -------
     state:
-        Spectral state, shape ``(n_components, *spec_shape)`` (the
-        perturbation velocity, or the 9-component viscoelastic total
-        field), correctly sharded.
+        Spectral state, shape ``(n_components, *spec_shape)``, in the
+        solver layout: the stored field of :func:`save_snapshot`, the
+        perturbation velocity or the total field by flow.
     t:
         Simulation time at snapshot.
     it:
@@ -1881,8 +1889,10 @@ def validate_snapshot_params(
 ) -> None:
     r"""Check that snapshot metadata matches current parameters.
 
-    Raises :class:`SnapshotMismatchError` on critical mismatches
-    (precision or flow system).  Neither the device count nor the
+    Raises :class:`SnapshotMismatchError` when the archive is not a
+    checkpoint (:func:`dnsjax.snapshot_meta.checkpoint_refusal`) and on
+    critical mismatches: precision, flow system, or a component count
+    the flow spec does not give.  Neither the device count nor the
     **resolution** is a reason: every spectral axis is auto-padded to
     divide the mesh (``round_up_padded``), which is what makes resume
     np-agnostic in the first place, and every axis is re-gridded at
@@ -1890,9 +1900,9 @@ def validate_snapshot_params(
     (zero-padding or truncating modes), the wall-normal one by
     ``__main__._interpolate_if_needed``.  A changed resolution is still
     *trajectory-defining*, so it starts a new trajectory unless
-    ``init.force_resume`` -- that decision is
-    :func:`dnsjax.parameters.trajectory_defining_changes`', not this
-    function's.  Prints warnings for non-critical differences, one info
+    ``init.force_resume`` -- a decision that belongs to
+    :func:`dnsjax.parameters.trajectory_defining_changes`, not to this
+    function.  Prints warnings for non-critical differences, one info
     line per re-gridded axis, and one when the device count differs.
     Stored metadata records the *public* field names; comparisons run
     in internal space

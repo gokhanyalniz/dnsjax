@@ -27,17 +27,21 @@ Execution phases
    in-process random / localized-rolls / laminar IC, with random
    the default), then iterate:
 
-   - Fused predictor + corrector loop
-     (:func:`predict_and_fully_correct`); for triply-periodic
-     flows the post-step divergence correction + mean-mode
-     zeroing is fused into the step itself (``finalize_fn`` in
+   - One step: the flow module's fused predictor + corrector
+     (``predict_and_fully_correct``, iterative CN) or, under
+     ``step.scheme = "cnab2"``, one CN/AB2 step (``step_cnab2``,
+     after an iterative-CN first step); for triply-periodic flows
+     the post-step divergence correction + mean-mode zeroing is
+     fused into the step itself (``finalize_fn`` in
      :mod:`dnsjax.timestep`)
-   - Periodic diagnostic output (:func:`get_stats`)
+   - Periodic diagnostic output (the flow module's ``get_stats``)
 
    The loop terminates when the elapsed simulation time
    (``stop.max_sim_time``, counted from ``init.t0``), the
-   wall-clock time, or the corrector divergence criterion is
-   reached.  The wall-clock budget is judged at the
+   wall-clock time or the corrector divergence criterion is
+   reached, or, with ``stop.check_laminarization``, when ``E'``
+   falls below ``stop.laminarization_threshold``.  The wall-clock
+   budget is judged at the
    ``outs.it_error_check`` cadence by all processes together
    (:meth:`~dnsjax.sharding.Sharding.any_process`): each reads its
    own clock from its own start, and a budget running out between
@@ -52,27 +56,33 @@ Execution phases
    detected at most ``it_error_check`` steps late, never missed --
    and the shutdown folds in the unsynced tail the same way.
 
-Diagnostics (``stats.dat``, ``steps.dat``, ``corrector.dat``,
-``probes.bin``, ``forcing.bin``)
--------------------------------------------------------------
+Diagnostic streams
+------------------
 ``get_stats`` output is accumulated on-device in a fixed
-``(nbuffer, n_cols)`` buffer (one row every ``it_stats``
-steps) and flushed to ``stats.dat`` when the buffer fills, at
-shutdown, after the first (JIT-heavy) step, *before* every
-snapshot write (so a buffered non-finite diagnostic aborts
-before a snapshot of the same broken state is written, and the
-``.dat`` files stay consistent with each snapshot), and on a
-termination signal
-(``flush_all_buffers``, which calls the shared
-``_flush_stats``).  Buffering avoids a
-host-device sync per sample; each flush is then ``fsync``-ed,
-so the rows are on disk immediately once the on-device buffer
-is flushed.  ``stats.dat`` (written by the main device,
-appended) has a header row of column names (``t`` plus the
-``get_stats`` keys) followed by whitespace-aligned rows at
-``stats_precision`` significant digits.  The header is
-``#``-commented (:func:`_write_dat_header`), so ``numpy.loadtxt``
-reads a stream with no extra flags.
+``(nbuffer, n_cols)`` buffer (one row every ``it_stats`` steps) and
+flushed to ``stats.dat`` when the buffer fills, at shutdown, after
+the first (JIT-heavy) step, *before* every snapshot write (so a
+buffered non-finite diagnostic aborts before a snapshot of the same
+broken state is written, and the ``.dat`` files stay consistent with
+each snapshot), and on a termination signal (``flush_all_buffers``,
+which calls the shared ``_flush_stats``).  Buffering avoids a
+host-device sync per sample; each flush is then ``fsync``-ed, so the
+rows are on disk immediately once the on-device buffer is flushed.
+``stats.dat`` (written by the main device, appended) has a header row
+of column names (``t`` plus the ``get_stats`` keys) followed by
+whitespace-aligned rows at ``stats_precision`` significant digits.
+The header is ``#``-commented (:func:`_write_dat_header`), so
+``numpy.loadtxt`` reads a stream with no extra flags.
+
+Under ``phys.driving = "constant_bulk_velocity"`` or
+``phys.block_mean_spanwise_velocity``, the last ``stats.dat`` columns
+hold the applied mean-mode driving: a *step* quantity, the converged
+body force the corrector applied, threaded out of the implicit solve
+because the accepted state cannot recover it (its bulk is zero by
+construction).  The row at time ``t`` carries the value applied by
+the step that *produced* that state; the ``t = t0`` row has no such
+step and carries the flow's wall-shear inference of the same quantity
+instead (its ``get_driving``), the one inferred entry in the column.
 
 ``steps.dat`` records the CFL diagnostic every ``it_steps``
 steps with the same buffering and file format.  Each row is
@@ -121,10 +131,10 @@ times).
 
 ``forcing.bin`` records the coefficients of the stochastic mode
 kicks (the ``force`` extension section) every ``force.it_force``
-steps, with a ``forcing.json`` sidecar.  A kick fires at the top of the loop
-after the equal-``t`` probe sample and any snapshot (both
-pre-kick) and immediately before the step; format, resume
-semantics, and the kick construction: the :mod:`dnsjax.extensions.forcing`
+steps, with a ``forcing.json`` sidecar.  A kick fires at the top of
+the loop after the equal-``t`` probe sample and any snapshot (both
+pre-kick) and immediately before the step; format, resume semantics,
+and the kick construction: the :mod:`dnsjax.extensions.forcing`
 module docstring (reader: :mod:`dnsjax.analysis.response.ssi`).
 
 Every diagnostic is guarded against non-finite floats: each
@@ -160,9 +170,8 @@ When ``init.snapshot`` points at a snapshot tar file (an
 uncompressed tar wrapping a zarr3 store; see
 :mod:`dnsjax.snapshot`), the parameters embedded in its metadata
 are merged in as a configuration layer above the code defaults but
-below ``parameters.toml`` and the CLI (``read_snapshot_params``;
-the JAX-setup fields ``np0``/``np1``/``platform``/
-``double_precision`` are not inherited).  The resume is a
+below ``parameters.toml`` and the CLI (``read_snapshot_params``,
+which lists what a resume never inherits).  The resume is a
 *continuation* (inherit ``t`` / ``it`` / ``isnap`` from the
 snapshot, do not re-save the IC) only when
 :func:`dnsjax.parameters.trajectory_defining_changes` is empty -- no
@@ -178,6 +187,44 @@ Benchmarking
 ------------
 The first time step is excluded from wall-clock statistics
 because it includes JAX's JIT compilation overhead.
+
+Design notes
+------------
+**Crossing the basis boundary in the loop.**  Both out-crossings of
+the component-basis boundary run in the hot loop -- the physical view
+on every stats, snapshot or reduced-snapshot step, the ``E'`` read
+every ``outs.it_error_check`` (default 10) -- so the geometry exports
+the map already jitted: eager, it dispatches one field-sized primitive
+per operation, measured at ~5-6x the jitted cost, with as many
+field-sized transients alongside ``state``.  Nothing a flow module
+exports is jitted *again* in :func:`run`: an outer ``jit`` traces the
+flow's own functions with its global arrays as constants (every
+``get_perturbation_energy`` hands ``fourier``/``flow`` to its jitted
+core, and a metric map reads them outright), which one process accepts
+and a multi-process run refuses at trace time.  So the ``E'`` read is
+two dispatches, not one fused program, and its physical intermediate
+lives only between them, outside the step program's peak.  The
+identity map stays bare: the loop relies on ``state_phys is state``
+there for its release to free anything.
+
+**Peak versus resident host memory.**  A high-water mark keeps any
+start-up transient: on ARCHER2 (hardware: ``docs/scaling.md``) one at
+1.46 GiB a rank stood over 0.95-1.3 GiB of stepping on every 4-node
+layout (``sharding.Sharding.distribute``), and was read as the run's
+footprint.  Hence the second closing line, the resident memory at the
+end, which is what the run settles at.
+
+**A sharper relaminarization signal (not implemented).**  The
+laminarization stop compares ``E'`` with a threshold.  The norm of
+the *complete* RHS (Laplacian included) is sharper: it vanishes only
+at a genuine fixed point, not merely at low energy.  The complete RHS
+is never formed (the viscous term is implicit in the Helmholtz
+solve), but the increment-norm proxy ``||u^{n+1} - u^n|| / dt`` is
+essentially free: by construction of the Crank-Nicolson update it
+equals the time average of the complete projected RHS, needs only
+states already in hand (one extra norm, no operator evaluations, no
+pressure solve), and goes to zero at the laminar fixed point.
+Tracking it would mean keeping the pre-step state for the difference.
 """
 
 import math
@@ -293,7 +340,9 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
     Compares the snapshot's wall-normal grid against the current
     grid (from ``derived_params``).  When they differ -- either
     in number of points or in point locations -- applies the
-    optimal interpolation.
+    geometry's regrid (:func:`dnsjax.snapshot.wall_regrid_matrix`:
+    spectral between CGL grids, the local ``fd_order`` stencil
+    otherwise) and resets the wall velocity to zero.
 
     After interpolation, the first corrector iteration projects
     out any `$O(\varepsilon)$` divergence introduced by the
@@ -460,22 +509,10 @@ def run(wall_time_start: int) -> None:
         _flow_mod, "from_solver_basis", _identity_basis
     )
 
-    # Both out-crossings run in the hot loop -- the physical view on
-    # every stats/snapshot step, the ``E'`` read every
-    # ``outs.it_error_check`` (default 10) -- so the geometry exports
-    # the map already jitted (eager, it dispatches one field-sized
-    # primitive per operation: measured ~5-6x the jitted cost, with as
-    # many field-sized transients alongside ``state``).  Nothing a
-    # flow module exports is jitted *again* here: an outer jit traces
-    # the flow's own functions with its global arrays as constants --
-    # every ``get_perturbation_energy`` hands ``fourier``/``flow`` to
-    # its jitted core, and a metric map reads them outright -- which
-    # one process accepts and a multi-process run refuses at trace
-    # time.  So the ``E'`` read is two dispatches, not one fused
-    # program, and its physical intermediate lives only between them,
-    # outside the step program's peak.  The identity stays bare: the
-    # loop relies on ``state_phys is state`` there for its release to
-    # actually free anything.
+    # The ``E'`` read crosses the boundary in two dispatches, the map
+    # already jitted by the geometry, never re-jitted here; the identity
+    # stays bare (Design notes: "Crossing the basis boundary in the
+    # loop").
     if from_solver_basis is not _identity_basis:
 
         def _perturbation_energy_solver(s):
@@ -488,12 +525,11 @@ def run(wall_time_start: int) -> None:
 
     # Start-mode precedence: a provided snapshot file wins over every
     # in-process mode; then start_from_laminar, then localized_rolls,
-    # then random_field (the
-    # default).  A *continuation* resume (dnsjax snapshot with unchanged
-    # trajectory params) inherits t/it/isnap and does not re-save the IC;
-    # every other start is a fresh trajectory: isnap begins at
-    # init.isnap0 and the IC is saved as state00000.tar (see the IC-save
-    # block below).
+    # then random_field (the default).  A *continuation* resume (dnsjax
+    # snapshot with unchanged trajectory params) inherits t/it/isnap and
+    # does not re-save the IC; every other start is a fresh trajectory:
+    # isnap begins at init.isnap0 and the IC is saved as state00000.tar
+    # (see the IC-save block below).
     resumed_continuation: bool = False
     # Whether a snapshot's stored solver-carried fields may replace the
     # re-derived ones (no trajectory-defining change; see below).
@@ -663,11 +699,14 @@ def run(wall_time_start: int) -> None:
     )
 
     def _save_numbered_snapshot(state, t, it, snap_stats, isnap, carry=None):
-        """Write state{isnap}.tar (stats embedded per outs.*), return the
-        next isnap.  *state* is the physical view -- the on-disk basis
-        is physical components (see the component-basis boundary);
-        *carry* the solver-carried slots, embedded as the ``carry/``
-        member under ``outs.snapshot_embed_carry`` (``None``: none)."""
+        """Write ``state{isnap}.tar`` and return the next ``isnap``.
+
+        Stats are embedded per ``outs.*``.  *state* is the physical
+        view -- the on-disk basis is physical components (see the
+        component-basis boundary); *carry* the solver-carried slots,
+        embedded as the ``carry/`` member under
+        ``outs.snapshot_embed_carry`` (``None``: none).
+        """
         from .snapshot import save_snapshot
 
         width = params.outs.snapshot_pad_width
@@ -798,24 +837,14 @@ def run(wall_time_start: int) -> None:
         _save_lowres(state, t, it)
         last_lowres_it = it
 
-    # Applied mean-mode driving (``constant_bulk_velocity`` /
-    # ``block_mean_spanwise_velocity``): a *step* quantity, not a state
-    # one -- the converged body force the corrector applied, threaded
-    # out of the implicit solve because it is not recoverable from the
-    # accepted state (its bulk is zero by construction).  It is appended
-    # **after** the sorted ``get_stats`` keys, so it is the last
-    # column(s), and the row at time ``t`` carries the value applied by
-    # the step that *produced* that state.  The ``t = t0`` row has no
-    # such step, so it carries the wall-shear inference of the same
-    # quantity instead (``get_driving``; the one inferred entry in the
-    # column, and exact in the same limit the two agree).
-    #
-    # Read here, on the **physical** side of the basis boundary below,
-    # because that is ``get_driving``'s contract -- the same one
-    # ``get_stats`` has.  Every current ``mean_driving`` happens to
-    # touch only the axial/streamwise component, which ``to_pm_basis``
-    # leaves alone, so the crossing would not show; a key reading
-    # `$u_r$` or `$u_\theta$` would read `$u_\pm$` instead, silently.
+    # Applied mean-mode driving, the last ``stats.dat`` column(s); the
+    # ``t = t0`` row carries the wall-shear inference (the module
+    # docstring, "Diagnostic streams").  Read here, on the **physical**
+    # side of the basis boundary below, because that is
+    # ``get_driving``'s contract, as it is ``get_stats``'s.  Every
+    # current driving reads only the axial/streamwise component, which
+    # the basis change leaves alone, so a later read would not show; a
+    # key reading u_r or u_theta would read u_+/- instead, silently.
     driving = get_driving(state) if get_driving is not None else {}
     driving_names = list(driving.keys())
     last_driving = dict(driving)
@@ -888,23 +917,15 @@ def run(wall_time_start: int) -> None:
 
     # --- CN/AB2 scheme: seed the Adams-Bashforth history ---------------
     # ``step.scheme == "cnab2"`` carries a nonlinear-RHS history across
-    # steps (``rhs_prev``): the full ``N^{n-1}`` for triply-periodic, or
-    # the self-advection ``N_nl^{n-1} = (u' x omega')^{n-1}`` for
-    # wall-bounded (whose base-flow coupling is made implicit; see
-    # ``step_cnab2`` in ``timestep.py``).  The priming ``step_cnab2``
-    # call (state discarded) both computes that history at ``u^0`` and
-    # compiles ``step_cnab2`` outside the benchmark window.  The very
-    # first *time step* is then taken with iterative-CN (a self-starting,
-    # non-CFL-bound corrector), after which CN/AB2 uses this history (see
-    # the loop's ``it > it0`` guard).  ``step_cnab2`` returns ``(state,
-    # carry, error, num_c)``: triply-periodic reports ``error = num_c =
-    # 0`` (no corrector); wall-bounded reports its FFT-free
-    # base-flow-coupling corrector's count / error (with an automatic
-    # iterative-CN fallback on non-convergence), so the corrector
-    # diagnostic and the convergence-stop apply to it too.
-    # (The steppers donate their array arguments, so every
-    # pre-loop call that must keep ``state`` / ``rhs_prev`` alive
-    # passes ``jnp.copy``-ies; the main loop rebinds and needs none.)
+    # steps (``rhs_prev``; what it holds per family, and the error and
+    # count each family reports: ``step_cnab2`` in ``timestep.py``).
+    # The priming call (state discarded) computes that history at
+    # ``u^0`` and compiles ``step_cnab2`` outside the benchmark window;
+    # the first *time step* is then iterative CN, which is
+    # self-starting (the loop's ``it > it0`` guard).  The steppers
+    # donate their array arguments, so every pre-loop call that must
+    # keep ``state`` / ``rhs_prev`` alive passes ``jnp.copy``-ies; the
+    # main loop rebinds and needs none.
     scheme: str = params.step.scheme
     is_cnab2: bool = scheme == "cnab2"
     if is_cnab2:
@@ -1433,21 +1454,8 @@ def run(wall_time_start: int) -> None:
                 # is fused into the step itself), so this is a second
                 # state and gets its own single crossing of the
                 # component-basis boundary -- the top-of-loop view was
-                # of u^n and is long gone.
-                #
-                # Future feature: a sharper relaminarization signal is
-                # the norm of the *complete* RHS (Laplacian included)
-                # going to zero -- it vanishes only at a genuine fixed
-                # point, not merely at low energy.  The complete RHS is
-                # never explicitly formed (the viscous term is implicit
-                # in the Helmholtz solve), but the increment-norm proxy
-                # ``||u^{n+1} - u^n|| / dt`` is essentially free: by
-                # construction of the Crank-Nicolson update it equals
-                # the time-average of the complete projected RHS, needs
-                # only states already in hand (one extra norm, no
-                # operator evaluations, no pressure solve), and goes to
-                # zero at the laminar fixed point.  Tracking it would
-                # mean keeping the pre-step state for the difference.
+                # of u^n and is long gone.  (A sharper signal: Design
+                # notes, "A sharper relaminarization signal".)
                 e_prime_host = float(_perturbation_energy_solver(state))
                 if not math.isfinite(e_prime_host):
                     # A NaN would otherwise compare False against the
@@ -1686,12 +1694,10 @@ def _peak_host_memory_line(jax) -> str | None:
     on; a sampler (``scripts/memory_watch.py``) records it over time.
 
     A second line, ``Resident host memory at the end``, sums what each
-    rank still holds (``VmRSS``) the same way, at one moment.  A
-    high-water mark keeps any start-up transient: on ARCHER2 one at
-    1.46 GiB a rank stood over 0.95-1.3 GiB of stepping on every
-    4-node layout (``sharding.Sharding.distribute``), and was read as
-    the run's footprint.  The resident figure is what the run settles
-    at; it is absent where the platform has no ``/proc``.
+    rank still holds (``VmRSS``) the same way, at one moment: what the
+    run settles at, where a high-water mark keeps any start-up
+    transient (Design notes: "Peak versus resident host memory").  It
+    is absent where the platform has no ``/proc``.
 
     Collective on a multi-process run (an all-gather of four ``int32``
     per rank -- three KiB figures and a node key -- so the payload is
@@ -1722,8 +1728,7 @@ def _peak_host_memory_line(jax) -> str | None:
     )
 
     def per_node(held: np.ndarray) -> list[int]:
-        """Each node's *held* past the shared pages, plus one copy of
-        its largest shared part."""
+        """Each node's *held* minus shared pages, plus its largest share."""
         return [
             int(np.sum(held[node == n] - shared[node == n]))
             + int(np.max(shared[node == n]))
@@ -1767,17 +1772,14 @@ def main(argv: list[str] | None = None) -> int:
     # Parameters resolve first (fast, pre-JAX): --help / --sample-toml
     # exit in there with clean output (no banner prefix).
     setup = resolve_parameters(argv)
-    # Per-rank lifecycle heartbeats bracket the whole process (this one
-    # fires before ``configure_jax_runtime`` -- i.e. before the main
-    # device is even known -- so it cannot be main-device-gated).  They
-    # go to *stderr* so the main rank stays the sole writer of *stdout*:
-    # a peer's ``Shutdown at`` on stdout could otherwise be spliced into
-    # the middle of the main rank's final summary line by ``mpirun``'s
-    # stream merging (the two are separate ranks writing one merged
-    # stdout), which no downstream stdout parser can reassemble.  A
-    # barrier is *not* usable here -- the buffer-scan non-finite abort
-    # exits the main rank only (peers are torn down by the launcher), so
-    # a collective would deadlock.
+    # Per-rank lifecycle heartbeats bracket the whole process; this one
+    # fires before the main device is known, so it is not gated.  They
+    # go to *stderr*, keeping the main rank the sole writer of stdout:
+    # ``mpirun``'s stream merging could otherwise splice a peer's
+    # ``Shutdown at`` into the main rank's final summary line.  No
+    # barrier: the buffer-scan non-finite abort exits the main rank
+    # alone (the launcher tears down the peers), so a collective would
+    # deadlock.
     print("Alive at", datetime.now(), flush=True, file=sys.stderr)
     main_device = configure_jax_runtime()
     # Every rank: an unset seed is drawn on process 0 and broadcast, so

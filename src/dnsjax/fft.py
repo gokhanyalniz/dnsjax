@@ -1,24 +1,22 @@
-r"""2D and 3D real FFT with 3/2-rule dealiasing via zero-padding
-and truncation, plus double-parallelization reshards.
+r"""Real FFTs with 3/2-rule dealiasing, and the reshards between them.
 
-For the 2D case:
-The forward transform (physical -> spectral) is ``_rfft2d``; the inverse
-is ``_irfft2d``. They operate on scalar fields of layout ``[y, z, x]``
-and ``[y, kz, kx]`` respectively.  The spectral layout ``[y, kz, kx]``
-is the same as the public-facing convention.
+The forward transforms (physical -> spectral) are ``_rfft2d`` for the
+wall-bounded geometries (``x`` and ``z``) and ``_rfft3d`` for the
+triply-periodic box (``x``, ``z`` and ``y``); ``_irfft2d`` and
+``_irfft3d`` are the inverses.  They act on scalar fields of physical
+layout ``[y, z, x]`` and spectral layout ``[y, kz, kx]`` (wall-bounded)
+or ``[ky, kz, kx]`` (periodic), the layout a snapshot stores.
 
-For the 3D case:
-The forward transform (physical -> spectral) is ``_rfft3d``; the inverse
-is ``_irfft3d``.  They operate on scalar fields of layout ``[y, z, x]``,
-and ``[ky, kz, kx]`` respectively.
+Pipeline
+--------
+``shard_map`` runs the per-device FFTs, and two reshards carry the data
+between the three sharding stages of the two-axis decomposition
+(:mod:`dnsjax.sharding`):
 
-``shard_map`` is used for per-device FFTs.  Two reshards shuttle data
-between the three sharding stages of the pipeline:
-
-1. **phys** ``P(a0, a1, None)`` — ``[y_{np0}, z_{np1}, x]``
-2. **mid**  ``P(a0, None, a1)`` — ``[y_{np0}, z, kx_{np1}]``
+1. **phys** ``P(a0, a1, None)`` -- ``[y_{np0}, z_{np1}, x]``
+2. **mid**  ``P(a0, None, a1)`` -- ``[y_{np0}, z, kx_{np1}]``
    (after the `$z \leftrightarrow k_x$` reshard, ``np1``-way)
-3. **spec** ``P(None, a0, a1)`` — ``[y, kz_{np0}, kx_{np1}]``
+3. **spec** ``P(None, a0, a1)`` -- ``[y, kz_{np0}, kx_{np1}]``
    (after the `$y \leftrightarrow k_z$` reshard, ``np0``-way)
 
 When ``np0 == 1`` the mid and spec layouts are identical and the
@@ -26,7 +24,7 @@ second reshard is skipped.  When ``np1 == 1`` the phys and mid
 layouts are identical and the first reshard is skipped.
 
 Spectral padding
-~~~~~~~~~~~~~~~~
+----------------
 If the true mode count (`$n_z - 1$` or `$n_x / 2$`) is not
 divisible by the mesh axis, zero-valued padding modes are
 carried at the high-frequency end of the stored arrays.  They
@@ -39,10 +37,11 @@ array pass.  The padding amount is read from
 
 Dealiasing
 ----------
-The 3/2-rule expands each direction by a factor of oversampling_factor / 2
-before transforming to physical space (``zeropad_*``), and
-truncates back after the forward transform (``truncate_*``).  Nyquist
-modes are omitted in all stored spectral arrays (`$n - 1$` modes for a
+The 3/2 rule (Orszag, *J. Atmos. Sci.* **28**, 1074, 1971) expands
+each direction by a factor of ``phys.oversampling_factor / 2`` before
+transforming to physical space (``zeropad_*``), and truncates back
+after the forward transform (``truncate_*``).  Nyquist modes are
+omitted in all stored spectral arrays (`$n - 1$` modes for a
 full-complex axis, `$n / 2$` modes for the real-FFT axis).
 
 Memory
@@ -54,24 +53,28 @@ plus the reshard copies.  For the batched RHS transforms (6 fields
 Newtonian, ~36 viscoelastic) these stage buffers dominate the
 per-step working set.  The mitigation is chunking the batch
 (:func:`chunked_transform`, ``solver.rhs_transform_chunks``; default
-off -- a memory/throughput trade).  Fusing the zero-pad into the
-adjacent FFT stage instead (transforming over the padded length
-while reading only the unpadded input) is a dead end: XLA's FFT is
-an opaque custom call (cuFFT/ducc) whose operands must be
-materialized -- ``jnp.fft.irfft(a, n=)`` performs the identical pad
-inside its wrapper (byte-identical compiled HLO), and
-``jnp.fft.ifft(a, n=)`` end-pads, the wrong placement for a
-full-complex axis -- and a custom pruned-input (Pallas) FFT
-kernel is not worth it: the 3/2 zero-pattern is decimation-invariant
-(each radix-r input subsequence is again 3/2-padded), so pruning
-only a first stage saves nothing, and a full kernel would have to
-beat cuFFT to reclaim a transient (~-17%) that chunking already
-caps.
+off -- a memory/throughput trade); fusing the zero-pad into the FFT
+is not one (Design notes).
 
 Normalization
 -------------
 All transforms use ``norm="forward"``, which divides by *N* on the
 forward transform and applies no factor on the inverse.
+
+Design notes
+------------
+**Fusing the zero-pad into the FFT.**  Transforming over the padded
+length while reading only the unpadded input is a dead end.  XLA's FFT
+is an opaque custom call (cuFFT/ducc) whose operands must be
+materialized: ``jnp.fft.irfft(a, n=)`` performs the identical pad
+inside its wrapper (byte-identical compiled HLO), and
+``jnp.fft.ifft(a, n=)`` end-pads, the wrong placement for a
+full-complex axis.  A custom pruned-input (Pallas) FFT kernel is not
+worth it either: the 3/2 zero pattern is decimation-invariant (each
+radix-r input subsequence is again 3/2-padded), so pruning only a
+first stage saves nothing, and a full kernel would have to beat cuFFT
+to reclaim at most about 17 % of the transform stage's live memory
+(under 10 % of the step time), which chunking already caps.
 """
 
 from collections.abc import Callable

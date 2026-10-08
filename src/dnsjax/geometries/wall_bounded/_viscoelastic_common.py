@@ -146,8 +146,11 @@ def spin_to_phys_combos(
     c_pp: Array,
     c_mm: Array,
 ) -> tuple[Array, Array, Array, Array, Array, Array]:
-    r"""Spin components `$\to$` physical `$(c_{rr}, c_{\theta\theta},
-    c_{r\theta}, c_{rz}, c_{\theta z}, c_{zz})$`."""
+    r"""Spin components `$\to$` physical tensor components.
+
+    Returned in the order `$(c_{rr}, c_{\theta\theta}, c_{r\theta},
+    c_{rz}, c_{\theta z}, c_{zz})$`.
+    """
     d = (c_pp + c_mm) / 2  # = c_rr - c_theta_theta
     c_rr = c_pm / 2 + d / 2
     c_thth = c_pm / 2 - d / 2
@@ -165,9 +168,11 @@ def phys_combos_to_spin(
     c_thz: Array,
     c_zz: Array,
 ) -> Array:
-    r"""Physical tensor components `$\to$` stacked spin components,
-    ``(6, ...)`` in the order `$(c_{zz}, c_{z+}, c_{z-}, c_{+-},
-    c_{++}, c_{--})$`."""
+    r"""Physical tensor components `$\to$` stacked spin components.
+
+    ``(6, ...)`` in the order `$(c_{zz}, c_{z+}, c_{z-}, c_{+-}, c_{++},
+    c_{--})$`.
+    """
     c_zp = c_rz + 1j * c_thz
     c_zm = c_rz - 1j * c_thz
     c_pm = c_rr + c_thth
@@ -292,12 +297,14 @@ def narrow_abase_wall_row(
 def get_norm2_conformation(
     c_phys: Array, k_metric: Array, y_weights: Array
 ) -> Array:
-    r"""Volume-averaged Frobenius norm `$\langle \|c\|_F^2 \rangle$` from
-    the **physical** components `$(c_{zz}, c_{rz}, c_{\theta z}, c_{rr},
-    c_{\theta\theta}, c_{r\theta})$` (off-diagonal weights 2) -- the
-    diagnostic form, applied outside the solver.  Its solver-basis
+    r"""Volume-averaged Frobenius norm `$\langle \|c\|_F^2 \rangle$`.
+
+    From the **physical** components `$(c_{zz}, c_{rz}, c_{\theta z},
+    c_{rr}, c_{\theta\theta}, c_{r\theta})$` (off-diagonal weights 2):
+    the diagnostic form, applied outside the solver.  Its solver-basis
     counterpart is the spin weighting :data:`C_FROB_SQRT_SPIN` that the
-    correctors' ``_norm`` applies."""
+    correctors' ``_norm`` applies.
+    """
     w = jnp.asarray(C_FROB_SQRT, dtype=c_phys.real.dtype).reshape(
         N_TENSOR, 1, 1, 1
     )
@@ -506,8 +513,9 @@ def conformation_coupling_core(
     wi: float,
     mean: tuple[Array, Array, Array, Array, Array, Array, Array] | None,
 ) -> Array:
-    r"""The CN/AB2-implicit part of the conformation RHS, 6 spin
-    components -- the spectral algebra, free of any radial operator.
+    r"""The CN/AB2-implicit part of the conformation RHS, 6 spin slots.
+
+    The spectral algebra, free of any radial operator:
 
     - the **linear relaxation** `$-(1-3\epsilon)(c-\mathbb{I})/
       \mathrm{Wi}$` -- **always** folded in (a linear reaction term,

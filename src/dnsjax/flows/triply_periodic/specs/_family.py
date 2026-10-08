@@ -11,6 +11,7 @@ from ....flow_spec import DeferredSpec, FieldSpec
 
 
 def periodic_fields() -> tuple[FieldSpec, ...]:
+    """The relevant fields of a triply-periodic flow's surface."""
     return (
         FieldSpec("geo", "lx"),
         FieldSpec("geo", "lz"),
@@ -47,6 +48,7 @@ def periodic_fields() -> tuple[FieldSpec, ...]:
 
 
 def periodic_deferred() -> tuple[DeferredSpec, ...]:
+    """The fields a triply-periodic flow declares but refuses."""
     return (
         DeferredSpec(
             "phys",
