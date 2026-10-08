@@ -79,7 +79,7 @@ def _build_Lk_band_gpu(
     mean_mask:
         Mean-mode boolean mask, same shape as *k2*.
     p:
-        FD order (half-bandwidth).
+        Band half-width (``fd_order`` for the direct-fit `$D_2$`).
     """
     Ny = D2.shape[-1]
     band_D2 = _banded_from_dense(D2, p)  # (Ny, 2p+1)
@@ -97,10 +97,10 @@ def _build_Lk_band_gpu(
 def _build_Lk_dense_gpu(
     D1: Array, D2: Array, k2: Array, mean_mask: Array
 ) -> Array:
-    """Build the Neumann-BC Laplacian `$L_k$` in dense form on GPU.
+    """Build the Neumann-BC Laplacian `$L_k$` in dense form, on the device.
 
     Used only by the ``"dense"`` solver backend; allocates
-    `$(N_{kz}, N_{kx}, N_y, N_y)$`.  No CPU path.
+    `$(N_{kz}, N_{kx}, N_y, N_y)$`.
 
     Parameters follow :func:`_build_Lk_band_gpu` (sans ``p``);
     the output is the full dense operator.
@@ -169,7 +169,7 @@ def derive_homogeneous_data(
     :meth:`~dnsjax.geometries.wall_bounded.cartesian.CartesianFlow._derive_imm_homogeneous_data`
     (the dispatcher, which builds *e_cols* and calls this when
     ``res.consistent_imm`` is off).  Both backends converge here once
-    ``Lk_op`` and ``Hk_op`` are in place; nothing else on the CPU needs
+    ``Lk_op`` and ``Hk_op`` are in place; nothing else on the host needs
     another LU solve -- everything below runs against the
     already-factored device operator.
 
@@ -232,7 +232,7 @@ def derive_homogeneous_data(
     q1_s = flow_.Hk_op.solve(q_rhs1.transpose(2, 0, 1)).transpose(1, 2, 0)
     q2_s = flow_.Hk_op.solve(q_rhs2.transpose(2, 0, 1)).transpose(1, 2, 0)
 
-    # Influence matrix `$M_{ji} = (D_1 v_i)|_{\\text{wall}_j}$`.
+    # Influence matrix `$M_{ji} = (D_1 v_i)|_{\text{wall}_j}$`.
     M00 = jnp.einsum("j, zxj -> zx", flow_.D1_bnd[0], v1_s)
     M01 = jnp.einsum("j, zxj -> zx", flow_.D1_bnd[0], v2_s)
     M10 = jnp.einsum("j, zxj -> zx", flow_.D1_bnd[-1], v1_s)

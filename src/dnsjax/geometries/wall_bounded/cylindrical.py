@@ -969,7 +969,7 @@ def _build_Hk_dense_gpu(
     c: float,
     nu: float,
 ) -> Array:
-    r"""Build dense `$H_k$` on GPU (dense backend only).
+    r"""Build dense `$H_k$` on the device (dense backend only).
 
     Returns the full ``(Nm, Nkz, Nr, Nr)`` Helmholtz operator
     for one velocity component.

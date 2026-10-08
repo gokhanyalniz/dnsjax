@@ -413,7 +413,7 @@ def _build_Lk_dir_dense_gpu(D2: Array, k2: Array) -> Array:
 def _build_Hk_dense_gpu(
     D2: Array, k2: Array, dt: float, c: float, nu: float
 ) -> Array:
-    r"""Build dense `$H_k$` on GPU (dense backend only).
+    r"""Build dense `$H_k$` on the device (dense backend only).
 
     Returns the implicit operator
     `$H_k = (1/\Delta t) I - c \nu (D_2 - k^2 I)$`

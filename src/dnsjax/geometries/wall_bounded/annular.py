@@ -739,7 +739,7 @@ def _build_Hk_dense_gpu(
     c: float,
     nu: float,
 ) -> Array:
-    r"""Build dense `$H_k$` on GPU (dense backend only)."""
+    r"""Build dense `$H_k$` on the device (dense backend only)."""
     Nr = A_base.shape[0]
     dtype = A_base.dtype
     eye_Nr = jnp.eye(Nr, dtype=dtype)

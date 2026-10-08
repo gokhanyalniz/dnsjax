@@ -96,7 +96,7 @@ def _build_Lk_dense_gpu(
     kz2: Array,
     mean_mask: Array,
 ) -> Array:
-    r"""Build dense `$L_k$` on GPU (dense backend only)."""
+    r"""Build dense `$L_k$` on the device (dense backend only)."""
     Nr = A_base.shape[0]
     dtype = A_base.dtype
     eye_Nr = jnp.eye(Nr, dtype=dtype)

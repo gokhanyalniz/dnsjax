@@ -118,7 +118,7 @@ def _build_Lk_dense_gpu(
     kz2: Array,
     mean_mask: Array,
 ) -> Array:
-    r"""Build dense `$L_k$` on GPU (dense backend only).
+    r"""Build dense `$L_k$` on the device (dense backend only).
 
     Returns the full ``(Nm, Nkz, Nr, Nr)`` pressure Poisson
     operator.  The parity-dependent row selection is handled
