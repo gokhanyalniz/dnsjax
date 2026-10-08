@@ -5,7 +5,7 @@ paths:
   - "scripts/**/*.py"
 ---
 
-# Python conventions (JAX, sharding, docstrings)
+# Python conventions (JAX, sharding)
 
 - Sharding is Explicit mode everywhere; never call
   `jax.lax.with_sharding_constraint`.
@@ -68,6 +68,3 @@ paths:
 - Memory and throughput levers and the per-rank memory model:
   `docs/scaling.md` and the `parameters.PaddedResolution` docstring;
   measure a layout offline with `scripts/memory_budget.py`.
-- Docstring math is LaTeX: inline `` `$...$` ``, display `.. math::`.
-  A docstring containing a backslash is raw (`r"""`): in a plain one
-  `\t` becomes a TAB and a trailing `\` eats its newline.
