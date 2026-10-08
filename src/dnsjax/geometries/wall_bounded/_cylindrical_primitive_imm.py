@@ -17,11 +17,10 @@ record on
 Everything here is reachable **only** when the flag is off, so
 ``cylindrical.py`` and ``_cylindrical_stepping.py`` import this module
 lazily inside their flag-off branches and the default path never
-imports it at all.  The dependency
-runs the other way at module scope -- this module imports the shared
-`$H_k$` builders and types from ``cylindrical.py`` -- which is why the
-import must be deferred there rather than declared at the top of that
-file.
+imports it at all.  The dependency runs the other way at module scope
+-- this module imports the shared `$H_k$` builders and types from
+``cylindrical.py`` -- which is why the import must be deferred there
+rather than declared at the top of that file.
 
 Contents: the Neumann-BC pressure Poisson operator in both storage
 backends (:func:`_build_Lk_band_gpu`, :func:`_build_Lk_dense_gpu`), the
@@ -91,7 +90,7 @@ def _build_Lk_band_gpu(
     mean_mask:
         Mean-mode boolean mask, shape ``(Nm, Nkz, 1)``.
     p:
-        FD order (half-bandwidth).
+        Band half-width (``fd_order`` for the direct-fit `$D_2$`).
     """
     Nr = band_even.shape[0]
     band_base = jnp.where(m_is_even, band_even[None], band_odd[None])
@@ -156,7 +155,7 @@ def _hk_bands(
 
     Single-sources the band assembly for the setup-checked build, the
     adaptive ``dt_max`` stability pre-check, and the jitted ``set_dt``
-    rebuild (:func:`_build_dt_leaves`).  Pallas backend only.
+    rebuild (:func:`.cylindrical._build_dt_leaves`).  Pallas backend only.
 
     The half-width is read back from the already-factored (and
     ``dt``-independent) `$L_k$`, whose ``L`` factor is
@@ -202,8 +201,7 @@ def _hk_dense_op(
     fourier_: Fourier,
     flow_: CylindricalFlow,
 ) -> DenseJAXSolver:
-    r"""Factored dense stacked `$H_k$` (+, -, z) at *dt* (dense
-    backend)."""
+    r"""Factored dense stacked `$H_k$` (+, -, z) at *dt* (dense backend)."""
     m_s = fourier_.m[0, ..., None]
     kz2_s = fourier_.kz2[0, ..., None]
     m_is_even_s = fourier_.m_is_even[0, ..., None]
@@ -254,10 +252,10 @@ def _abase_matvec(
           + (1/r)\,\widetilde{D}_{1,\mathrm{ghost}})
           \,u}_{\text{ghost correction}}
 
-    The ghost correction matrices are stored row-sliced to
-    their `$g \sim p/2$` nonzero rows (near the pipe centre,
-    where stencils cross `$r = 0$`), so the ghost GEMMs and
-    the scatter-add touch only the first `$g$` radial points.
+    The ghost corrections are stored as their nonzero ``(g, c)``
+    corner near the pipe centre, where stencils cross `$r = 0$`, so
+    the ghost GEMM reads only the first ``c`` radial points and lands
+    on the first ``g`` rows (:func:`.cylindrical._parity_y_matvec`).
 
     Parameters
     ----------

@@ -123,7 +123,7 @@ def _hk_bands(
 
     Single-sources the band assembly for the setup-checked build, the
     adaptive ``dt_max`` stability pre-check, and the jitted ``set_dt``
-    rebuild (:func:`_build_dt_leaves`).  Pallas backend only.
+    rebuild (:func:`.annular._build_dt_leaves`).  Pallas backend only.
 
     The half-width is read back from the already-factored (and
     ``dt``-independent) `$L_k$`, whose ``L`` factor is
@@ -155,8 +155,7 @@ def _hk_dense_op(
     fourier_: Fourier,
     flow_: AnnularFlow,
 ) -> DenseJAXSolver:
-    r"""Factored dense stacked `$H_k$` (+, -, z) at *dt* (dense
-    backend)."""
+    r"""Factored dense stacked `$H_k$` (+, -, z) at *dt* (dense backend)."""
     m_s = fourier_.m[0, ..., None]
     kz2_s = fourier_.kz2[0, ..., None]
     ops = [
@@ -364,7 +363,7 @@ def _imm_iteration_vp(
     """
     c = params.step.implicitness
     dt = flow_.dt
-    nu = derived_params.nu  # solvent viscosity (see AnnularFlow.__post_init__)
+    nu = derived_params.nu  # solvent viscosity (update_parameters)
 
     uz_n, up_n, um_n = velocity_n[0], velocity_n[1], velocity_n[2]
     NLz_n, NLp_n, NLm_n = nonlin_n[0], nonlin_n[1], nonlin_n[2]

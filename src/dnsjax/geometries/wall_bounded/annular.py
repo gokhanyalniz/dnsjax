@@ -1810,7 +1810,7 @@ def _imm_iteration_vw(
     """
     c = params.step.implicitness
     dt = flow_.dt
-    nu = derived_params.nu  # solvent viscosity (see __post_init__)
+    nu = derived_params.nu  # solvent viscosity (update_parameters)
 
     im = 1j * fourier_.m
     ikz = 1j * fourier_.kz
