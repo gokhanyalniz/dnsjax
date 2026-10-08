@@ -4,7 +4,7 @@ Initialized at import time from the global ``params``.  The singleton
 ``sharding`` exposes the device mesh, data-type choices, partition specs
 for spectral/physical arrays, and convenience helpers (``print``, ``exit``).
 
-Double parallelization
+Two-axis decomposition
 ----------------------
 The device mesh has shape ``(np0, np1)`` with axes ``"np0"`` and
 ``"np1"``.
@@ -57,6 +57,72 @@ Cartesian) and ``(u_z, u_r, u_theta)`` (cylindrical / annular).  This
 is (streamwise, wall-normal, spanwise) order for every geometry
 except the annulus, whose azimuthal (streamwise) velocity is
 component 2 -- the ``annular.py`` docstring covers why.
+
+Design notes
+------------
+**Warming the MPI communicators.**  XLA's MPI collectives open one
+communicator per device group, the first time a program runs a
+collective over that group, and refuse unless they are on the thread
+that initialized MPI: ``MPI: Communicator requested from a thread that
+is not the one MPI was initialized from``.  The error is fatal, and
+the run does not end: the failed ranks wait in the distributed
+runtime's shutdown, the others in the collective, until the job is
+killed.  The inline dispatch :func:`dnsjax.bootstrap._select_cpu_collectives`
+turns on keeps a program's launch on the calling thread, not every
+collective in it: a program whose input is still being written when it
+is dispatched runs on the runtime's own thread pool, and a program's
+collectives can run off the launching thread anyway.  The banded
+factorization with its cross-device maxima taken inside the same
+program (``solvers._factor_checked`` has the history) failed on every
+rank of every launch on a ``(2, 2)`` mesh, its inputs ready; on
+ARCHER2 the wall-bounded influence-matrix setup program failed on 81
+of 128 ranks, once in about 30 launches.  A communicator, once open,
+serves any thread and any kind of collective over its group, so
+:func:`_warm_communicators` opens each one first, from this thread.
+The group of ``jax.experimental.multihost_utils`` -- used by
+:meth:`Sharding.any_process`, the snapshot barrier and the closing
+memory line -- gathers over every device in id order, on a mesh of its
+own, and XLA keys a communicator by the group's devices *in order*:
+where :func:`device_grid` keeps the ids' order (one node, or ranks
+numbered node by node) that is the whole mesh's group; where it
+reorders them (ranks interleaved across nodes) it is another
+communicator, opened too.  Those programs read host values, which are
+copied at once, so they would open it on this thread anyway; opening
+it here does not rest on that.  ``tests/test_mpi_communicators.py``
+runs both failing patterns, the second launch on an interleaved
+two-host layout.
+
+**Keeping the communicators alive at exit.**  The mesh is held in
+JAX's global state (``jax.set_mesh``) for the life of the process,
+which keeps XLA's MPI communicators alive past interpreter teardown.
+Without that, a multi-process run on the MPI collectives aborts at
+exit (exit 1, though the run completed): JAX finalizes MPI from an
+``atexit`` handler, and each communicator released afterwards calls
+``MPI_Comm_free``.  The launch's exit code in
+``tests/test_mpi_communicators.py`` guards it.
+
+**The device banner.**  The startup banner reports the platform and
+kind of the live devices, not the requested ``params.dist.platform``,
+so it cannot contradict the hardware (a banner once read
+"1 cpu devices ... cuda:0" when a script left the requested platform at
+its default while JAX selected a GPU); the requested platform is shown
+alongside, so a genuine mismatch stays visible.  It is rank-gated like
+every print here, because ``jax.devices()`` is the global list and
+every rank would otherwise print the same long line.
+
+**Why not ``jax.device_put``.**  Onto a sharding that spans several
+processes, ``jax.device_put`` checks a host value first by gathering
+every process's copy onto each
+(``jax.experimental.multihost_utils.assert_equal``, unconditional in
+jax 0.11), then concatenating the local copy as often to compare.
+Measured on two and four processes, each one's peak rises by `$2.125\,W$`
+times the array (float64), `$W$` being the process count, and each call
+compiles and runs that gather.  On ARCHER2, at 128 processes a node,
+the two dense wall-normal derivative matrices at ``ny = 383`` (1.12 MiB
+each) took every rank to 1.46 GiB in setup on 4 nodes, the peak of
+every layout there; the same law gives about 340 GiB a node on 8, over
+the 222 GiB a job step gets.  :meth:`Sharding.distribute` cuts each
+device's shard from the process's own copy instead.
 """
 
 import dataclasses
@@ -187,8 +253,7 @@ def device_grid(
     (``/proc/sys/kernel/random/boot_id``); a device carrying none (a
     lone CPU process's) counts as node 0.  On one node this is
     ``jax.make_mesh``'s own CPU and GPU layout (device ids, which group
-    a multi-process run's devices by rank), and so the mesh every
-    single-node run has always had.  The mesh is not built *by*
+    a multi-process run's devices by rank).  The mesh is not built *by*
     ``make_mesh`` because that refuses any device set spanning several
     slices -- its placement models a single TPU slice -- which is every
     multi-node launch.
@@ -223,49 +288,18 @@ def node_spans(grid: np.ndarray) -> tuple[int, int, int]:
 def _warm_communicators(mesh: Mesh) -> None:
     r"""Open every MPI communicator *mesh* needs, now, on this thread.
 
-    XLA's MPI collectives open one communicator per device group, the
-    first time a program runs a collective over that group, and refuse
-    unless they are on the thread that initialized MPI: ``MPI:
-    Communicator requested from a thread that is not the one MPI was
-    initialized from``.  The error is fatal, and the run does not end:
-    the failed ranks wait in the distributed runtime's shutdown, the
-    others in the collective, until the job is killed.
-
-    The inline dispatch :func:`dnsjax.bootstrap._select_cpu_collectives`
-    turns on keeps a program's launch on the calling thread, not every
-    collective in it.  A program whose input is still being written
-    when it is dispatched runs on the runtime's own thread pool
-    instead, and a program's collectives can run off the launching
-    thread anyway: the banded factorization with its cross-device
-    maxima taken inside the same program (``solvers._factor_checked``
-    has the history) failed on every rank of every launch on a
-    ``(2, 2)`` mesh, its inputs ready.  On ARCHER2 the wall-bounded
-    influence-matrix setup program failed on 81 of 128 ranks, once in
-    about 30 launches.
-
-    A communicator, once open, serves any thread and any kind of
-    collective over its group.  So one small ``psum`` per group the
-    solver's collectives use runs here, before any other program: the
-    whole mesh (which a ``ppermute`` along either axis also uses), and,
-    when both axes exceed 1, each ``np0`` group and each ``np1`` group
-    (otherwise the one non-trivial axis's group is the whole mesh).
-    Each runs on a ready input and is waited for, so it cannot itself
-    leave this thread.  Only multi-process CPU runs on the MPI
-    collectives need it.  ``tests/test_mpi_communicators.py`` runs both
-    failing patterns.
-
-    One more group is not the solver's own.
-    ``jax.experimental.multihost_utils`` -- :meth:`Sharding.any_process`,
-    the snapshot barrier, the closing memory line -- gathers over every
-    device in id order, on a mesh of its own, and XLA keys a
-    communicator by the group's devices *in order*.  Where
-    :func:`device_grid` keeps the ids' order (one node, or ranks
-    numbered node by node) that is the whole mesh's group, opened
-    above; where it reorders them (ranks interleaved across nodes) it
-    is another communicator, opened here too.  Those programs read host
-    values, which are copied at once, so they would open it on this
-    thread anyway; opening it here does not rest on that.  The test's
-    second launch, on an interleaved two-host layout, runs that case.
+    One small ``psum`` per group the solver's collectives use runs
+    here, before any other program: the whole mesh (which a
+    ``ppermute`` along either axis also uses) and, when both axes
+    exceed 1, each ``np0`` group and each ``np1`` group (otherwise the
+    one non-trivial axis's group is the whole mesh); plus the
+    process-ordered group of ``jax.experimental.multihost_utils`` when
+    :func:`device_grid` reorders the device ids.  Each runs on a ready
+    input and is waited for, so it cannot itself leave this thread.
+    Only multi-process CPU runs on the MPI collectives need it: XLA
+    opens a communicator on first use and refuses off the thread that
+    initialized MPI, which kills and hangs the run (Design notes:
+    "Warming the MPI communicators").
     """
     if (
         jax.process_count() == 1
@@ -367,21 +401,10 @@ class Sharding:
             )
         sys.exit(1)
 
-    # Report the *actual* device platform / kind read from the
-    # initialized backend, not the requested ``params.dist.platform``:
-    # once JAX is configured the two agree, and reading the live device
-    # means this banner can never contradict the hardware (the old
-    # "1 cpu devices ... cuda:0" arose when a script left
-    # ``params.dist.platform`` at its default while JAX auto-selected a
-    # GPU).  The requested platform is shown alongside so any genuine
-    # mismatch stays visible instead of being hidden.  ``Device.platform``
-    # is 'cpu'/'gpu'/'tpu' ('gpu' for a CUDA device); the device reprs and
-    # ``device_kind`` below name the concrete hardware.
-    #
-    # Rank-gated like every other print in this block: ``jax.devices()``
-    # is the *global* list, so each rank would print the identical (and
-    # long) line -- N copies of it on an N-rank CPU launch, in the first
-    # thing anyone reads.
+    # The banner reports the live devices beside the requested
+    # platform (Design notes: "The device banner").  ``Device.platform``
+    # is 'cpu'/'gpu'/'tpu' ('gpu' for a CUDA device); the device reprs
+    # and ``device_kind`` name the concrete hardware.
     actual_platform: str = devices[0].platform if devices else "?"
     device_kind: str = (
         getattr(devices[0], "device_kind", "?") if devices else "?"
@@ -401,14 +424,8 @@ class Sharding:
         axis_names=("np0", "np1"),
         axis_types=(AxisType.Explicit, AxisType.Explicit),
     )
-    # Held in JAX's global state for the life of the process, the mesh
-    # also keeps XLA's MPI communicators alive past interpreter
-    # teardown.  Without that, a multi-process run on the MPI
-    # collectives aborts at exit (exit 1, though the run completed):
-    # JAX finalizes MPI from an ``atexit`` handler, and each
-    # communicator released afterwards calls ``MPI_Comm_free``.  The
-    # launch's exit code in ``tests/test_mpi_communicators.py`` guards
-    # it.
+    # Set globally for the life of the process, which also keeps the
+    # MPI communicators alive at exit (Design notes).
     jax.set_mesh(mesh)
     _warm_communicators(mesh)
     # Across nodes, say how the grid lies on them: a group spanning
@@ -565,19 +582,10 @@ class Sharding:
         values; dnsjax builds them from the same parameters, and nothing
         here checks that they agree.
 
-        Not ``jax.device_put``: onto a sharding that spans several
-        processes, it checks a host value first by gathering every
-        process's copy onto each
-        (``jax.experimental.multihost_utils.assert_equal``, unconditional
-        in jax 0.11), then concatenating the local copy as often to
-        compare.  Measured on two and four processes, each one's peak
-        rises by `$2.125\,W$` times the array (float64), `$W$` being the
-        process count, and each call compiles and runs that gather.  On
-        ARCHER2, at 128 processes a node, the two dense wall-normal
-        derivative matrices at ``ny = 383`` (1.12 MiB each) took every
-        rank to 1.46 GiB in setup on 4 nodes, the peak of every layout
-        there; the same law gives about 340 GiB a node on 8, over the
-        222 GiB a job step gets.
+        Not ``jax.device_put``, which onto a multi-process sharding
+        first gathers every process's copy onto each, raising every
+        process's peak by about twice the array times the process count
+        (Design notes: "Why not jax.device_put").
         """
         host = np.asarray(host)
         if not isinstance(spec, NamedSharding):

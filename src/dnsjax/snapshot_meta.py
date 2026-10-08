@@ -13,6 +13,56 @@ stdlib-only :func:`git_hash` provenance helper, printed at solver
 startup and recorded in every snapshot's metadata, and
 :func:`write_sidecar_json`, the atomic writer every ``.bin`` stream's
 JSON sidecar is created with.
+
+Design notes
+------------
+**Truncated archives.**  A short archive is where a snapshot goes wrong
+in practice -- an interrupted copy, a full disk, a job killed
+mid-write -- and it is refused when the archive is opened, before a
+byte of state is read: ``tarfile`` walks to the next header by seeking
+past each member's data, so any truncation that cuts into a component
+fails there.  Measured: only a cut landing exactly at the end of the
+last chunk, removing nothing but the end-of-archive marker, still
+parses, and that file's data is complete.  Untranslated, the caller
+sees ``ReadError: unexpected end of data`` from wherever the member
+list happened to be walked, naming neither the file nor the reason, and
+on a resume it reads as a dnsjax bug rather than a damaged checkpoint;
+hence :func:`_snapshot_tar`.  The per-span short-transfer guards of
+:mod:`dnsjax.snapshot` are not the truncation defence: they cover a
+short read or write of an intact file, which POSIX permits on a network
+filesystem.
+
+**Spawning git without ``vfork``.**  CPython spawns through
+``posix_spawn`` only for an executable named with its directory and --
+in a build without ``os.POSIX_SPAWN_CLOSEFROM``, uv's interpreters
+among them -- with no descriptors to close (git inherits the caller's
+inheritable ones for its few milliseconds), hence ``shutil.which`` and
+``close_fds=False`` in :func:`git_hash`.  CPython's other path is
+``vfork``, whose child runs in the caller's memory until it execs: on a
+solver rank that child runs any exec wrapper the launcher interposed,
+and Spindle 0.13's wrapper corrupts the parent (rank 0 died between the
+``Distribution initialized`` and ``Code version`` lines, on ARCHER2 and
+on one local process).  ``posix_spawn`` runs no interposed code in the
+child and, unlike ``fork``, neither copies a large multithreaded
+process's page tables nor runs the fork handlers of the MPI and RPC
+libraries it has loaded.
+
+**Atomic sidecars.**  Every ``.bin`` stream writer --
+:mod:`dnsjax.extensions.probes`, :mod:`dnsjax.extensions.forcing`,
+:mod:`dnsjax.twin._binstream` -- creates its JSON sidecar on the
+**main** process while **every** rank tests the same path's existence
+to choose between "create" and "validate and append".  A plain
+``open(path, "w")`` makes the path exist before its content does, so a
+rank whose test lands inside that window loads zero bytes and dies in
+``json.load`` (``JSONDecodeError: Expecting value: line 1 column 1``)
+-- a race seen on a fresh output directory under ``mpirun -np 2``.
+Committing by rename (:func:`write_sidecar_json`) makes the path appear
+only once complete, so the loser of the race sees either no file (and,
+not being the main process, does nothing) or the whole of it; the
+rename is atomic on any POSIX filesystem because the ``.partial``
+sibling shares the directory.  ``twin.json`` is written the same way:
+a later resume reads it back, where a truncated write would be just as
+fatal.
 """
 
 import contextlib
@@ -70,27 +120,10 @@ class SnapshotArchiveError(ValueError):
 def _snapshot_tar(path: Path):
     """Open a snapshot archive, naming a damaged one.
 
-    A short archive is where a snapshot goes wrong in practice -- an
-    interrupted copy, a full disk, a job killed mid-write -- and it is
-    caught *here* rather than by the readers downstream: ``tarfile``
-    walks to the next header by seeking past each member's data, so
-    any truncation that cuts into a component is refused before a
-    single byte of state is read (measured: only a cut that lands
-    exactly at the end of the last chunk, removing nothing but the
-    end-of-archive marker, still parses -- and that file's data is
-    complete).
-
-    What it says while refusing is the point.  Untranslated, the
-    caller sees ``ReadError: unexpected end of data`` raised from
-    wherever the member list happened to be walked, naming neither
-    the file nor the reason -- and the same exception on a resume
-    reads as a dnsjax bug rather than a damaged checkpoint.  So every
-    read in this module goes through here.
-
-    (The per-span short-transfer guards in :mod:`dnsjax.snapshot` are
-    therefore *not* the truncation defence -- they cover a short read
-    or write of an intact file, which POSIX permits on a network
-    filesystem.)
+    Every read in this module goes through here, so a truncated or
+    corrupt file raises :class:`SnapshotArchiveError` naming the file
+    and the likely cause, rather than ``tarfile``'s bare ``ReadError``
+    (Design notes: "Truncated archives").
     """
     try:
         with tarfile.open(path, "r") as tf:
@@ -117,20 +150,10 @@ def git_hash() -> str:
     git checkout (e.g. an installed wheel) or git is unavailable.
     Cached, so at most one git process per process.
 
-    git is spawned with ``posix_spawn``, which CPython uses only for
-    an executable named with its directory and -- in a build without
-    ``os.POSIX_SPAWN_CLOSEFROM``, uv's interpreters among them -- with
-    no descriptors to close (git inherits the caller's inheritable
-    ones for its few milliseconds).  CPython's other path is
-    ``vfork``, whose child runs in the caller's memory until it
-    execs: on a solver rank that child runs any exec wrapper the
-    launcher interposed, and Spindle 0.13's wrapper corrupts the
-    parent -- rank 0 died between the ``Distribution initialized``
-    and ``Code version`` lines, on ARCHER2 and on one local process.
-    ``posix_spawn`` runs no interposed code in the child, and, unlike
-    ``fork``, neither copies a large multithreaded process's page
-    tables nor runs the fork handlers of the MPI and RPC libraries it
-    has loaded.
+    git is spawned through ``posix_spawn``, never ``vfork``: a
+    launcher's exec wrapper runs in a ``vfork`` child and can corrupt
+    the solver rank that spawned it (Design notes: "Spawning git
+    without vfork").
     """
     git = shutil.which("git")
     if git is None:
@@ -160,30 +183,13 @@ def git_hash() -> str:
 def write_sidecar_json(path: str | Path, payload: dict) -> None:
     """Write *payload* to *path* atomically (commit by rename).
 
-    Every ``.bin`` stream writer -- :mod:`dnsjax.extensions.probes`,
-    :mod:`dnsjax.extensions.forcing`, :mod:`dnsjax.twin._binstream` --
-    creates its JSON sidecar on the **main** process while **every**
-    rank tests the same path's existence to choose between "create"
-    and "validate and append".  A plain ``open(path, "w")`` makes the
-    path exist before its content does, so a rank whose test lands
-    inside that window loads zero bytes and dies in ``json.load``:
-
-        json.decoder.JSONDecodeError: Expecting value: line 1 column 1
-
-    -- a genuine multi-process race, seen on a fresh output directory
-    under ``mpirun -np 2``.  Writing a ``.partial`` sibling and
-    ``os.replace``-ing it makes the path appear only once complete,
-    so the loser of the race either sees no file (and, not being the
-    main process, does nothing) or sees the whole of it.  Same
-    directory, so the rename is atomic on any POSIX filesystem; it is
-    the commit-by-rename discipline :mod:`dnsjax.snapshot` already
-    uses for the tar itself.  A crash mid-write leaves the
-    ``.partial`` behind rather than a truncated sidecar, which no
-    reader globs for.
-
-    :mod:`dnsjax.twin.driver` writes ``twin.json`` through it too:
-    that file is read back by a later resume, where a truncated write
-    would be just as fatal.
+    The JSON goes to a ``.partial`` sibling that is ``os.replace``-d
+    onto *path*, so *path* appears only once complete, as
+    :mod:`dnsjax.snapshot` does for the tar itself.  A crash mid-write
+    leaves the ``.partial`` behind, which no reader globs for.  Every
+    ``.bin`` stream's sidecar and ``twin.json`` are written this way,
+    because other ranks test the path while the main process writes it
+    (Design notes: "Atomic sidecars").
     """
     path = Path(path)
     tmp = path.with_name(path.name + ".partial")

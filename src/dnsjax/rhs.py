@@ -24,11 +24,10 @@ The transforms (``spec_to_phys``, ``phys_to_spec``) and the
 works with both 3D FFTs (triply-periodic flows) and 2D FFTs
 (wall-bounded flows).
 
-The pressure projection is *not* performed here -- it is
-geometry-specific (algebraic in
-``geometries.triply_periodic``, influence-matrix method in
-``geometries.wall_bounded.cartesian``) and lives
-in the corresponding geometry module.
+Incompressibility is *not* enforced here: the triply-periodic
+geometry projects algebraically (:mod:`dnsjax.geometries.triply_periodic`),
+and each wall-bounded geometry enforces it in its influence-matrix
+pass (``_imm_iteration``), which by default carries no pressure at all.
 """
 
 from collections.abc import Callable
@@ -103,8 +102,9 @@ def get_nonlin(
     space on the dealiased (3/2-oversampled) grid and transforms
     the result back to spectral space.
 
-    Cost: 6 inverse FFTs (3 velocity + 3 vorticity components) + 3
-    forward FFTs (nonlinear term components).
+    Cost: 6 inverse FFTs (3 velocity + 3 vorticity components, plus
+    any *extra_spec_fn* fields) + 3 forward FFTs (nonlinear term
+    components).
 
     This is the single site where the physical-space fields
     exist, so it also hosts the *measure_fn* hook for
@@ -118,8 +118,8 @@ def get_nonlin(
     transient memory peak of a Newtonian RHS evaluation.
     ``solver.rhs_transform_chunks`` caps that transient by splitting
     the batch (:func:`dnsjax.fft.chunked_transform`; the default 1
-    keeps the single fused batch, throughput-optimal), while the
-    forward transform of the 3 outputs stays fused.  The knob matters
+    keeps the single fused batch), while the forward transform of the
+    3 outputs stays fused.  The knob matters
     most for the 36-field viscoelastic variant (the ``_get_rhs_core``
     of ``geometries/wall_bounded/_viscoelastic_stepping.py``), whose
     batch dominates its step's peak; the trade-off is documented in the

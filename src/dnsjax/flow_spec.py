@@ -61,10 +61,12 @@ class FieldSpec:
 
     @property
     def key(self) -> tuple[str, str]:
+        """The internal ``(section, name)`` address of the field."""
         return (self.section, self.name)
 
     @property
     def public_name(self) -> str:
+        """The user-facing name: *public* when set, else *name*."""
         return self.public if self.public is not None else self.name
 
 
@@ -84,6 +86,7 @@ class DeferredSpec:
 
     @property
     def key(self) -> tuple[str, str]:
+        """The internal ``(section, name)`` address of the field."""
         return (self.section, self.name)
 
 
@@ -105,7 +108,8 @@ class FlowSpec:
     ``derive(params, derived, user_set)``
         The flow's parameter derivation, run by ``update_parameters``
         after each configuration layer: required-field checks, derived
-        control parameters (e.g. the circular-Couette ``re``/``ccf``),
+        control parameters (e.g. the circular-Couette ``re`` and the
+        base-flow coefficients ``ccf_A`` / ``ccf_B``),
         geometry-forced fields (the azimuthal wedge ``lz = 2*pi/m0``),
         and ``derived_params`` entries.  ``user_set`` is the set of
         ``(section, name)`` keys explicitly provided by any layer.
@@ -138,15 +142,16 @@ class FlowSpec:
     ``phys.block_mean_spanwise_velocity``).  It supplies the extra
     ``stats.dat`` column names and the ``t = t0`` row, which has no
     step behind it to report the applied value of; ``__main__`` reads
-    it with ``getattr`` and falls back to no column.  ``n_components`` is the
-    leading state-axis size (3 velocity components unless the flow
-    carries more, e.g. the 9-component viscoelastic state); the
-    snapshot writer and loader read it, while the IC builders and the
-    FFT, sharding and stepper machinery are component-count-agnostic
-    (the leading state axis is replicated).  A flow with its own
-    component set also needs a branch in the analysis schema
-    (:func:`dnsjax.analysis._core.geometry_info`), which is keyed on the
-    system, not on this count.
+    it with ``getattr`` and falls back to no column.
+
+    ``n_components`` is the leading state-axis size (3 velocity
+    components unless the flow carries more, e.g. the 9-component
+    viscoelastic state); the snapshot writer and loader read it, while
+    the IC builders and the FFT, sharding and stepper machinery are
+    component-count-agnostic (the leading state axis is replicated).
+    A flow with its own component set also needs a branch in the
+    analysis schema (:func:`dnsjax.analysis._core.geometry_info`),
+    which is keyed on the system, not on this count.
 
     ``total_field`` declares what the state -- and so every snapshot --
     holds: ``False`` (the default) for the perturbation `$u'$` about the

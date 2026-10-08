@@ -18,24 +18,8 @@ kicks, :mod:`dnsjax.extensions.forcing`).  All three default to
 3. **Set** (command line, ``parameters.toml``, or inherited from a
    snapshot / ``twin.json``) -- used unchanged.
 
-**Why a hard-coded default is wrong here.**  With one, an ensemble of
-"independent" runs launched without an explicit seed is not an ensemble:
-every member draws the same initial condition, the same partner and the
-same kick sequence.  Reproducibility is not what the fixed default was
-buying -- recording the drawn seed buys the same thing without pinning
-every user to one realization.
-
-**Why the sentinel is ``None`` and not a pydantic ``default_factory``.**
-Several sites compare a live value against a freshly constructed model
-default -- the "stray knob" checks of the ``[force]`` and ``[twin]``
-sections, and the absent-key fallback of
-``parameters.trajectory_defining_changes`` -- and
-``param_surface.render_sample_toml`` reads ``field_info.default``
-directly.  A factory would draw a *new* seed at each of those, producing
-spurious "set without the enabling ..." errors, spurious trajectory
-changes on resume, and a ``PydanticUndefined`` in ``--sample-toml``.  A
-plain ``None`` default compares equal to itself everywhere; the draw is
-an explicit startup step (``bootstrap.resolve_run_seeds``) instead.
+The draw is an explicit startup step (``bootstrap.resolve_run_seeds``),
+and the unset value is a plain ``None`` (Design notes).
 
 **Width and cross-process transport.**  A seed is
 :data:`SEED_BITS`-bit, drawn with :func:`draw_seed`.  Under
@@ -53,6 +37,26 @@ truncated in single precision.
 
 This module is stdlib-only and JAX-free, so it is importable from the
 parameter layer, the entry points and the offline scripts alike.
+
+Design notes
+------------
+**Why an unset seed is drawn, not defaulted.**  With a hard-coded
+default, an ensemble of "independent" runs launched without an explicit
+seed is not an ensemble: every member draws the same initial condition,
+the same partner and the same kick sequence.  Reproducibility is not
+what a fixed default buys -- recording the drawn seed buys the same
+thing without pinning every user to one realization.
+
+**Why the sentinel is ``None``, not a pydantic ``default_factory``.**
+Several sites compare a live value against a freshly constructed model
+default -- the "stray knob" checks of the ``[force]`` and ``[twin]``
+sections, and the absent-key fallback of
+``parameters.trajectory_defining_changes`` -- and
+``param_surface.render_sample_toml`` reads ``field_info.default``
+directly.  A factory would draw a *new* seed at each of those, producing
+spurious "set without the enabling ..." errors, spurious trajectory
+changes on resume, and a ``PydanticUndefined`` in ``--sample-toml``.  A
+plain ``None`` default compares equal to itself everywhere.
 """
 
 import os

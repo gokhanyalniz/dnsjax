@@ -1,15 +1,29 @@
 """Shared spectral utilities: FFT wrappers and wavenumber helpers.
 
-Provides wavenumber generation functions (``real_harmonics``,
-``complex_harmonics``) and vmapped FFT wrappers for 3D
-(triply-periodic) and 2D (wall-bounded) transforms.
+Provides the device-array wavenumber generators (``real_harmonics``,
+``complex_harmonics``, ``pad_harmonics``) and the FFT wrappers over
+the velocity components for 3D (triply-periodic) and 2D (wall-bounded)
+transforms.
 
 Geometry-specific ``Fourier`` dataclasses live in the
 corresponding geometry modules
-(``geometries.triply_periodic``,
+(``geometries.triply_periodic.triply_periodic``,
 ``geometries.wall_bounded.cartesian``,
 ``geometries.wall_bounded.cylindrical``,
 ``geometries.wall_bounded.annular``).
+
+Design notes
+------------
+**Folding the components into y at ``np0 = 1``.**  With ``y``
+replicated, the 2D wrappers fold the component axis into it and run
+the transform pipeline once on the flattened batch instead of once per
+component.  This is *not* fewer collectives: ``vmap`` over the
+``shard_map`` pipeline already batches the reshard, and both forms
+compile to the same op counts at the same mesh (on a 1x4 CPU mesh, 6
+all-to-all, 6 transpose and 2 FFT either way).  What the fold saves is
+the per-component ``vmap`` dispatch: 12.3 against 14.1 ms at 1x1, 8.03
+against 8.32 ms at 1x4.  At ``np0 > 1``, where ``y`` is sharded, the
+merged reshape would be ambiguous, so those wrappers ``vmap``.
 """
 
 from jax import Array, jit, vmap
@@ -128,9 +142,8 @@ def spec_to_phys(velocity_spec: Array) -> Array:
 
 
 if sharding.np0 > 1:
-    # With 2D sharding, y is distributed by np0.  Merging the
-    # component axis with y produces an ambiguous reshape that
-    # JAX cannot automatically resolve.  Use vmap instead.
+    # y is sharded by np0, so merging the component axis into it is an
+    # ambiguous reshape: vmap over the components instead.
     @jit
     def phys_to_spec_2d(velocity_phys: Array) -> Array:
         r"""Forward 2D real FFT in `$(x, z)$`, vmapped over
@@ -174,15 +187,9 @@ if sharding.np0 > 1:
         return vmap(_irfft2d)(velocity_spec)
 
 else:
-    # np0 == 1: y is replicated, so merging the component axis
-    # with y is unambiguous, and the transform runs once on the
-    # flattened batch instead of once per component.  It is *not*
-    # fewer collectives -- ``vmap`` over the ``shard_map`` pipeline
-    # already batches the reshard, and both forms compile to the
-    # same op counts at the same mesh (measured on a 1x4 CPU mesh:
-    # 6 all-to-all, 6 transpose, 2 fft either way).  What the fold
-    # saves is the per-component ``vmap`` dispatch: 12.3 vs 14.1 ms
-    # at 1x1, 8.03 vs 8.32 ms at 1x4.
+    # np0 == 1: y is replicated, so the component axis folds into it
+    # and the transform runs once on the flattened batch (Design notes:
+    # "Folding the components into y").
     @jit
     def phys_to_spec_2d(velocity_phys: Array) -> Array:
         r"""Forward 2D real FFT in `$(x, z)$`, batched over
@@ -191,7 +198,7 @@ else:
         The leading (component) axis is folded into the y-axis
         before the transform and unfolded afterwards, so the
         pipeline runs once on the flattened batch rather than once
-        per component (see the branch comment above: the collective
+        per component (the module's Design notes: the collective
         count is unchanged; the saving is the ``vmap`` dispatch).
 
         Parameters
@@ -221,7 +228,7 @@ else:
         The leading (component) axis is folded into the y-axis
         before the transform and unfolded afterwards, so the
         pipeline runs once on the flattened batch rather than once
-        per component (see the branch comment above: the collective
+        per component (the module's Design notes: the collective
         count is unchanged; the saving is the ``vmap`` dispatch).
 
         Parameters

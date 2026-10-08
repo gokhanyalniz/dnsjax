@@ -50,7 +50,8 @@ paths:
   path (a `subprocess` call naming a bare executable, or keeping
   `close_fds=True`): a launcher's exec wrapper (Spindle's) runs in the
   child and corrupts the rank. Spawn through `posix_spawn`, as
-  `snapshot_meta.git_hash` does (the why: its docstring).
+  `snapshot_meta.git_hash` does (the why: the `snapshot_meta` Design
+  notes).
 - Scripts and in-process tests take the platform from
   `--dist.platform` (default cpu) through
   `bootstrap.configure_jax_platform` / `platform_from_argv`, before

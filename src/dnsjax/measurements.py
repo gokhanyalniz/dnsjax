@@ -20,13 +20,11 @@ that dicts returned through ``jit`` are canonicalized to
 sorted key order, which sets the column order of
 ``steps.dat`` (as with ``get_stats`` and ``stats.dat``).
 
-Future physical-space measurements should follow the same
-pattern: a ``get_*`` function here taking the physical fields
-plus precomputed flow data, wired through the geometry's
-``_get_rhs_measured`` wrapper.
-
-Currently implemented: the CFL (Courant-Friedrichs-Lewy)
-numbers, :func:`get_cfl`.
+A new physical-space measurement follows the same pattern: a
+``get_*`` function here taking the physical fields plus precomputed
+flow data, wired through the geometry's ``_get_rhs_measured``
+wrapper.  The one implemented so far is the CFL
+(Courant-Friedrichs-Lewy) number, :func:`get_cfl`.
 """
 
 from jax import Array
