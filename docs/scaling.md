@@ -386,8 +386,9 @@ ranks per node.
 $n_y \times n_y$ matrix products (`solver.wall_normal_matvec = "auto"`):
 at the per-rank size of a `1280 x 385 x 320` run on 128 ranks that
 removes three quarters of the step's floating-point work and about 15 %
-of its time on one workstation core, at unchanged memory (the measured
-table: `geometries/wall_bounded/_base.apply_y_matrix`).
+of its time on one core of a laptop processor, at unchanged memory (the
+measured table: the Design notes of
+`src/dnsjax/geometries/wall_bounded/_base.py`).
 `node_benchmark.py --variant gemm="--solver.wall_normal_matvec dense"`
 measures the same trade on the target node, in one sweep.
 

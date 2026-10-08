@@ -27,7 +27,7 @@ the grid `$[r_1, r_2]$`, applied identically to all azimuthal modes.
 Decoupled velocity formulation
 ------------------------------
 The cylindrical Navier-Stokes vector Laplacian couples `$u_r$` and
-`$u_\theta$` through `$1/r^2$` terms.  Following Openpipeflow
+`$u_\theta$` through `$1/r^2$` terms.  Following openpipeflow
 (Willis 2017), we decouple them via
 
 .. math::
@@ -44,7 +44,8 @@ reducing the vector problem to three scalar Helmholtz equations with
 
 The radial operator for each component is
 `$\partial_r^2 + (1/r)\partial_r - m_{\mathrm{eff}}^2/r^2$`.  The
-pressure Poisson operator uses `$m_{\mathrm{eff}} = m$`.
+legacy scheme's pressure Poisson operator uses
+`$m_{\mathrm{eff}} = m$`.
 
 As in cylindrical, this is the solver's **working** basis -- the
 carried state, the RHS, the corrector iterates and every operator
@@ -73,12 +74,15 @@ shared right-handed machinery.
 
 Influence-matrix method (`$2 \times 2$`)
 ----------------------------------------
-The annulus has two physical walls, at `$r = r_1$` and `$r = r_2$`.
-Enforcing continuity `$\nabla \cdot \mathbf{u} = 0$` at both walls gives
-a `$2 \times 2$` influence matrix (one boundary degree of freedom per
-wall) -- the same structure as the Cartesian Kleiser-Schumann method, but
-with the cylindrical `$u_\pm$` divergence and pressure-gradient operators.
-See :func:`_imm_iteration`.
+The annulus has two physical walls, at `$r = r_1$` and `$r = r_2$`, so
+both formulations (``res.consistent_imm``) close the step with a
+`$2 \times 2$` influence (capacitance) matrix, one boundary degree of
+freedom per wall -- the Cartesian structure with the cylindrical
+operators.  The default imposes `$(D_1 u_r)|_\text{wall} = 0$` through
+it (:func:`_imm_iteration_vw`); the legacy primitive scheme enforces
+continuity at both walls against a pressure Poisson solve, with the
+`$u_\pm$` divergence and pressure-gradient operators
+(``_annular_primitive_imm``).  See :func:`_imm_iteration`.
 
 Driving: shear-driven and force-driven flows
 --------------------------------------------
@@ -113,6 +117,43 @@ Flow-specific modules (e.g. ``flows.wall_bounded.taylor_couette``,
 ``flows.wall_bounded.dean``) subclass ``AnnularFlow``, set the base flow
 and/or ``force_theta``, then call ``build_annular_stepper`` to obtain
 ready-to-use time-stepping functions.
+
+Design notes
+------------
+**Decoupling the pair.**  The `$u_\pm$` trick diagonalizes the spin block only
+*within* one vector field's transverse pair.  This pair mixes two fields --
+`$u_r$` (velocity, whose fourth-order pressure-eliminated dynamics is exactly
+what makes the scheme stable: the ``cartesian`` Design notes, route 4) and
+`$\omega_r$` -- whose diffusion couples to `$u_\theta$` and `$\omega_\theta$`,
+outside every linear combination of the pair; closing it through the solenoidal
+constraint reimports composed `$D_1 \mathrm{diag} D_1$` operators, i.e. the
+band and truncation regression this rewrite removed.  The exactly-decoupled
+alternatives were evaluated and are all worse: `$(\omega_+, \omega_-)$`
+degenerates at `$k_z = 0$` to functions of `$u_z$` alone (leaving `$u_r$`
+undetermined on the streak plane), abandons the Kim-Moin-Moser structure, and
+needs a wide composed `$u_z$` BVP plus a `$4 \times 4$` influence matrix;
+`$((\Delta u)_+, (\Delta u)_-)$` has eight chain boundary conditions against
+six physical ones; mixed chiral pairs `$(\Phi_+, \omega_-)$` are
+chirality-asymmetric, so Hermitian mode pairs would evolve under different
+schemes and real fields would stop being real.
+
+**The lagged spin partners, measured.**  On ``taylor-couette``
+(`$\mathrm{re}_1 = 1$`, `$\mathrm{re}_2 = -0.5$`, `$n_r = n_\theta = 64$`,
+`$\Delta t = 0.01$`, corrector tolerance `$10^{-12}$` so the count is not
+floored), corrector passes per step against `$\eta$`:
+
+===========  ==========  ==========
+`$\eta$`     default     legacy
+===========  ==========  ==========
+0.5          5           3
+0.3          7           3
+0.1          10          3
+===========  ==========  ==========
+
+-- so the legacy primitive scheme is `$\eta$`-independent while this one
+reaches ``max_corrector_iterations`` by `$\eta = 0.1$`.  At the default
+tolerance `$10^{-5}$` every one of those converges in 0-1 passes, so no shipped
+configuration is affected.
 """
 
 import copy
@@ -315,8 +356,7 @@ def get_enstrophy_annular(
     k_metric: Array,
     y_weights: Array,
 ) -> Array:
-    r"""Enstrophy `$\langle |\nabla \mathbf{u}|^2 \rangle$` of the
-    given annular state.
+    r"""Enstrophy `$\langle |\nabla \mathbf{u}|^2 \rangle$` of a state.
 
     Geometry-general: the *state* may be a perturbation `$\mathbf{u}'$`
     (shear-driven Taylor-Couette) or the total field `$\mathbf{u}$`
@@ -406,7 +446,7 @@ def build_annular_grid(
     ny:
         Number of radial grid points (`$N_r$`).
     fd_order:
-        Finite-difference stencil half-bandwidth.
+        Finite-difference accuracy order (``res.fd_order``).
     wall_grid:
         Optional path to a custom radial grid file.
     grid_type:
@@ -517,12 +557,13 @@ def annular_forced_laminar_u_theta(
         \frac{(r_1 r_2)^2 (\ln r_2 - \ln r_1)}{r_1^2 - r_2^2}.
 
     Shared by the two force-driven annular flows: Newtonian Dean
-    (:func:`dean_laminar_u_theta`, `$C = 2(r_1 + r_2)$`) and the
-    viscoelastic sPTT flow (`$C = r_1 + r_2$`, the reference
-    normalization).  Pure function (no flow construction), so it is
-    importable both by the ``start_from_laminar`` state and by
-    :mod:`dnsjax.ic.random_field` (the total-field IC = laminar profile +
-    perturbation).
+    (:func:`dean_laminar_u_theta`, `$C = 2(r_1 + r_2)$`) and the viscoelastic
+    sPTT flow (`$C = r_1 + r_2$` in half-gap units, whose mid-gap force is the
+    plane channel's `$2/\mathrm{Re}$`;
+    :mod:`~dnsjax.flows.wall_bounded.viscoelastic_dean`).  Pure function (no
+    flow construction), so it is importable both by the ``start_from_laminar``
+    state and by :mod:`dnsjax.ic.random_field` (the total-field IC = laminar
+    profile + perturbation).
 
     Parameters
     ----------
@@ -566,8 +607,7 @@ def dean_laminar_u_theta(rs: Array, eta: float) -> Array:
 
 
 def _build_A_base(D1: Array, D2: Array, inv_r: Array) -> Array:
-    r"""Build the radial base operator
-    `$A_{\mathrm{base}} = D_2 + \mathrm{diag}(1/r)\,D_1$`.
+    r"""The radial base operator `$D_2 + \mathrm{diag}(1/r)\,D_1$`.
 
     Used exactly as the pipe's (:func:`.cylindrical._build_A_base`,
     which states where the fusion applies and which tests guard it).
@@ -731,9 +771,12 @@ class AnnularFlow:
     The velocity state is carried through the solver in decoupled form
     `$(u_z, u_+, u_-)$` with `$u_\pm = u_r \pm i\,u_\theta$`, and in
     the physical triad everywhere outside it (the module docstring;
-    ``to_pm_basis``/``from_pm_basis``).  Three Helmholtz operators are
-    built (`$m_{\mathrm{eff}} = m+1, m-1, m$` for `$u_+, u_-, u_z$`)
-    and one pressure Poisson operator (`$m_{\mathrm{eff}} = m$`).
+    ``to_pm_basis``/``from_pm_basis``).  The default scheme builds the
+    two-slot `$(\Phi, \omega_r)$` Helmholtz pair and the `$u_r$`
+    recovery operator; the legacy one three Helmholtz operators
+    (`$m_{\mathrm{eff}} = m+1, m-1, m$` for `$u_+, u_-, u_z$`) and a
+    pressure Poisson operator (`$m_{\mathrm{eff}} = m$`) -- ``Lk_op``
+    and ``Hk_op`` below.
 
     Attributes
     ----------
@@ -989,8 +1032,7 @@ class AnnularFlow:
     def _derive_imm_homogeneous_data(
         self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
     ) -> None:
-        r"""Fill the homogeneous responses and the `$2 \times 2$`
-        ``M_inv`` on-device: dispatch on ``res.consistent_imm``.
+        r"""Fill the homogeneous responses and ``M_inv``, per scheme.
 
         Both schemes carry the same `$2 \times 2$` capacitance
         structure; only the chain the columns solve differs.
@@ -1018,8 +1060,7 @@ class AnnularFlow:
     def _derive_vw_homogeneous_data(
         self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
     ) -> None:
-        r"""Homogeneous data of the `$u_r$`-`$\omega_r$` scheme
-        (``res.consistent_imm``).
+        r"""Homogeneous data of the `$u_r$`-`$\omega_r$` scheme.
 
         Mirrors the Cartesian ``_derive_vw_homogeneous_data``: a unit
         `$\Phi$` wall value at wall ``b`` gives
@@ -1093,8 +1134,7 @@ class AnnularFlow:
     def _precompute_bulk_response(
         self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
     ) -> None:
-        r"""Precompute the Helmholtz response for blocking the mean
-        axial velocity.
+        r"""Precompute the mean-mode response that blocks the axial bulk.
 
         Solves `$H_{k,z}\,h = \mathbf{1}$` (unit uniform RHS, zero
         Dirichlet at both walls) at the mean mode.  Its bulk
@@ -1120,10 +1160,10 @@ class AnnularFlow:
         )
         rhs = jnp.where(fourier_.mean_mask[0, ..., None], ones_vec, 0.0)
         zeros = jnp.zeros_like(rhs)
-        # The mean-mode axial Helmholtz: by default it is the mean
-        # plane of the Phi slot; on the legacy path the z slot of the
-        # (+, -, z) group
-        # IS the same operator (m_eff^2 = 0 there by the packing).
+        # The mean-mode axial Helmholtz: by default the mean plane of
+        # the Phi slot, on the legacy path the z slot of the (+, -, z)
+        # group -- the same operator (m_eff^2 = 0 there by the
+        # packing).
         if params.res.consistent_imm:
             stack, comp = [rhs, zeros], 0
         else:
@@ -1147,8 +1187,9 @@ class AnnularFlow:
 
 
 def _vw_meff2(fourier_: Fourier) -> tuple[Array, Array]:
-    r"""Per-slot `$m_{\mathrm{eff}}^2$` of the `$(\Phi, \omega_r)$`
-    pair, with the mean-plane packing exception.
+    r"""Per-slot `$m_{\mathrm{eff}}^2$` of the `$(\Phi, \omega_r)$` pair.
+
+    With the mean-plane packing exception.
 
     Both slots share the spin-diagonal `$m^2 + 1$`.  On the packed
     `$k^2 = 0$` plane the `$\Phi$` slot carries `$u_{z,00}$` and needs
@@ -1168,8 +1209,9 @@ def _hk_vw_bands(
     fourier_: Fourier,
     flow_: AnnularFlow,
 ) -> list[Array]:
-    r"""Assemble the banded `$(\Phi, \omega_r)$` Helmholtz pair at
-    *dt* (``res.consistent_imm``; Pallas backend).
+    r"""Assemble the banded `$(\Phi, \omega_r)$` Helmholtz pair at *dt*.
+
+    Default scheme, Pallas backend.
 
     Same shape contract as :func:`_hk_bands` (a per-slot stacked
     group), with two slots sharing the spin-diagonal
@@ -1201,8 +1243,7 @@ def _hk_vw_dense_op(
     fourier_: Fourier,
     flow_: AnnularFlow,
 ) -> DenseJAXSolver:
-    r"""Factored dense `$(\Phi, \omega_r)$` pair at *dt* (dense
-    backend)."""
+    r"""Factored dense `$(\Phi, \omega_r)$` pair at *dt* (dense backend)."""
     kz2_s = fourier_.kz2[0, ..., None]
     ops = [
         DenseJAXSolver(
@@ -1689,28 +1730,14 @@ def _imm_iteration_vw(
     against a damping `$1/(c\nu\Delta t) + k^2$`, so the contraction
     degrades toward small inner radius, large `$\nu$`, large
     `$\Delta t$` and high `$m$` -- `$r \to 0$` is exactly what makes it
-    diverge on the pipe.  Measured on ``taylor-couette``
-    (`$\mathrm{re}_1 = 1$`, `$\mathrm{re}_2 = -0.5$`,
-    `$n_r = n_\theta = 64$`, `$\Delta t = 0.01$`, corrector tolerance
-    `$10^{-12}$` so the count is not floored), corrector passes per
-    step against `$\eta$`:
-
-    ===========  ==========  ==========
-    `$\eta$`     default     legacy
-    ===========  ==========  ==========
-    0.5          5           3
-    0.3          7           3
-    0.1          10          3
-    ===========  ==========  ==========
-
-    -- so the legacy primitive scheme is `$\eta$`-independent while
-    this one reaches ``max_corrector_iterations`` by `$\eta = 0.1$`.
-    At the default tolerance `$10^{-5}$` every one of those converges
-    in 0-1 passes, so no shipped configuration is affected.  This is
-    **the one corner where selecting ``res.consistent_imm = False`` is
-    a reasonable answer** rather than a compatibility choice (the
-    ``consistent_imm`` field comment in :mod:`dnsjax.parameters` points
-    here for exactly that).
+    diverge on the pipe.  At a tight corrector tolerance a deep annulus
+    (small `$\eta$`) therefore needs more passes than the legacy scheme,
+    up to ``max_corrector_iterations`` (Design notes: "The lagged spin
+    partners, measured"), while at the default tolerance every case
+    measured converges in 0-1 passes.  This is **the one corner where
+    selecting ``res.consistent_imm = False`` is a reasonable answer**
+    rather than a compatibility choice (the ``consistent_imm`` field
+    comment in :mod:`dnsjax.parameters` points here for exactly that).
     The important structural point is that the lag sits **inside** the
     corrector: degradation surfaces as an iteration count and
     ultimately as a *reported* non-convergence, never as the silent
@@ -1720,27 +1747,12 @@ def _imm_iteration_vw(
 
     Retired route: decoupling the pair
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    The `$u_\pm$` trick diagonalizes the spin block only *within* one
-    vector field's transverse pair.  This pair mixes two fields --
-    `$u_r$` (velocity, whose fourth-order pressure-eliminated dynamics
-    is exactly what makes the scheme stable, see the Cartesian
-    dispatcher's route 4) and `$\omega_r$` -- whose diffusion couples
-    to `$u_\theta$` and `$\omega_\theta$`, outside every linear
-    combination of the pair; closing it through the solenoidal
-    constraint reimports composed `$D_1 \mathrm{diag} D_1$` operators,
-    i.e. the band and truncation regression this rewrite removed.  The
-    exactly-decoupled alternatives were evaluated and are all worse:
-    `$(\omega_+, \omega_-)$` degenerates at `$k_z = 0$` to functions of
-    `$u_z$` alone (leaving `$u_r$` undetermined on the streak plane),
-    abandons the Kim-Moin-Moser structure, and needs a wide composed
-    `$u_z$` BVP plus a `$4 \times 4$` influence matrix;
-    `$((\Delta u)_+, (\Delta u)_-)$` has eight chain boundary
-    conditions against six physical ones; mixed chiral pairs
-    `$(\Phi_+, \omega_-)$` are chirality-asymmetric, so Hermitian mode
-    pairs would evolve under different schemes and real fields would
-    stop being real.  Ledger: this scheme runs **three** band families
-    at half-width ``fd_order`` (the pair shares one, the recovery is
-    ``dt``-free) against the primitive scheme's four and the retired
+    The `$u_\pm$` trick cannot decouple this pair, which mixes two
+    vector fields, and every exactly decoupled alternative was
+    evaluated and found worse (Design notes: "Decoupling the pair").
+    Ledger: this scheme runs **three** band families at half-width
+    ``fd_order`` (the pair shares one, the recovery is ``dt``-free)
+    against the primitive scheme's four and the retired
     composed-`$D_2$` route's four at half-width ~``fd_order + 4``.
 
     Boundary conditions

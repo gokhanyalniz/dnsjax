@@ -239,11 +239,11 @@ def derive_homogeneous_data(
     # This run-once setup stays in the mode-outer (Nm, Nkz, Nr)
     # layout: the influence-matrix einsums below operate on it and
     # the results are transposed to field layout (Nr, Nm, Nkz) at
-    # the end.  ``.solve`` now takes a mode-inner field, so each
-    # setup solve is wrapped (transpose in, transpose out) to keep
-    # this layout.  FUTURE: rebuild this setup natively mode-inner to
-    # drop the wrappers -- the hot path already is; here it only
-    # relocates a one-time transpose, so it is deferred.
+    # the end.  ``.solve`` takes a mode-inner field, so each setup
+    # solve is wrapped (transpose in, transpose out) to keep this
+    # layout.  A natively mode-inner setup would drop the wrappers,
+    # but it would only relocate a one-time transpose (the hot path
+    # is mode-inner already).
     e_inner = (
         jnp.zeros(
             (Nm, Nkz, Nr),

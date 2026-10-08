@@ -9,10 +9,11 @@ influence-matrix method, which solves the three velocity components
 against a pressure Poisson solve and enforces continuity only at the two
 walls.  It is retained for reference and for reproducing older
 trajectories; a state it steps carries an `$O(1)$` *relative* discrete
-divergence.  The full comparison, the measured ledger and the four other
-repairs that were tried and retired: the :mod:`dnsjax.parameters`
-Design notes ("Consistent influence matrix") and
-:func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`.
+divergence.  The full comparison and the measured ledger: the
+:mod:`dnsjax.parameters` Design notes ("Consistent influence matrix")
+and :func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`;
+the four other repairs that were tried and retired: the
+:mod:`~dnsjax.geometries.wall_bounded.cartesian` Design notes.
 
 Everything here is reachable **only** when the flag is off, so
 ``cartesian.py`` imports this module lazily inside its flag-off branches
@@ -209,11 +210,11 @@ def derive_homogeneous_data(
     # This run-once setup stays in the mode-outer (Nkz, Nkx, Ny)
     # layout: the influence-matrix einsums below operate on it and
     # the results are transposed to field layout (Ny, Nkz, Nkx) at
-    # the end.  ``.solve`` now takes a mode-inner field, so each
-    # setup solve is wrapped (transpose in, transpose out) to keep
-    # this layout.  FUTURE: rebuild this setup natively mode-inner to
-    # drop the wrappers -- the hot path already is; here it only
-    # relocates a one-time transpose, so it is deferred.
+    # the end.  ``.solve`` takes a mode-inner field, so each setup
+    # solve is wrapped (transpose in, transpose out) to keep this
+    # layout.  A natively mode-inner setup would drop the wrappers,
+    # but it would only relocate a one-time transpose (the hot path
+    # is mode-inner already).
     e1_b, e2_b = e_cols
 
     p1_s = flow_.Lk_op.solve(e1_b.transpose(2, 0, 1)).transpose(1, 2, 0)

@@ -47,7 +47,8 @@ modules import neither geometry (guard: `test_no_cross_geometry_import`).
   `Flow._derive_imm_homogeneous_data` dispatch on
   `Resolution.consistent_imm` between the default reconstruction
   (`_imm_iteration_vw`) and the legacy primitive path. The derivations:
-  `cartesian._imm_iteration` (shared, with the retired routes),
+  `cartesian._imm_iteration` (shared; the retired routes: the
+  `cartesian` Design notes),
   `annular._imm_iteration_vw` (cylindrical),
   `_cylindrical_stepping._imm_iteration_vw` (the pipe's additions).
   Guards: `test_imm_continuity.py`, `test_random_smoke.py`,

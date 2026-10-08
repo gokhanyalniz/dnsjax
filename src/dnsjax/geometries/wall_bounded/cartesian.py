@@ -1,15 +1,108 @@
-"""Cartesian geometry: Fourier class, norms, integration, IMM, and solvers.
+r"""Cartesian geometry: Fourier class, norms, integration, IMM, and solvers.
 
 Provides all geometry-general infrastructure for wall-bounded Cartesian
 flows: the ``Fourier`` wavenumber class, the ``CartesianFlow`` base
-dataclass (CGL grid, FD matrices, IMM operators), spectral solvers
-(influence-matrix method, predictor-corrector time stepping), and
-diagnostic helpers (norms, perturbation energy).
+dataclass (wall-normal grid, FD matrices, IMM operators), spectral
+solvers (influence-matrix method, predictor-corrector time stepping),
+and diagnostic helpers (norms, perturbation energy).
 
 Flow-specific modules (e.g. ``flows.wall_bounded.plane_couette``) subclass
 ``CartesianFlow`` to define the base flow, then call
 ``build_cartesian_stepper`` to obtain ready-to-use time-stepping
 functions.
+
+Design notes
+------------
+**Routes tried and retired.**  Each is a plausible-looking repair of the
+primitive scheme's discrete continuity (:func:`_imm_iteration`) that measurably
+fails:
+
+1. **Operator-side identities**: `$D_2 := D_1 D_1$` -- the
+   **unique** second derivative that commutes with `$D_1$` --
+   kills the commutator and the pressure
+   mismatch, and a Kleiser-Schumann boundary closure
+   (Canuto, Hussaini, Quarteroni & Zang 1988, sec. 7.3,
+   eqs. (7.3.51)-(7.3.58)), realized as two extra homogeneous
+   columns and a `$4 \times 4$` influence matrix, kills the
+   boundary term.  It works (`$d \sim 10^{-14}$`) but widens every
+   banded operator (half-width 8 to 11 at ``fd_order = 8``) and
+   costs an order in the `$D_2$` truncation constant.  Neither
+   half works alone: the closure on the direct-fit `$D_2$`
+   measures *worse* than doing nothing, and the *split* (closure
+   plus a `$D_1^2$` Poisson, accurate `$D_2$` only in `$H_k$`)
+   leaves a pure-commutator `$d \sim 10^{-4}$` floor that does not
+   refine.  In a *cylindrical* geometry it cannot reach round-off
+   at all -- the metric commutator `$[D_1, 1/r] \ne -1/r^2$`
+   survives any single `$D_1$`, and on the pipe a parity invariant
+   forbids both parities' vanishing at once -- and its composed
+   `$D_2$`, not being grid-scale-dissipative, made the pipe
+   unstable from a grid-white random IC.
+2. **Commutator cancellation**: feeding
+   `$c\nu[D_1,D_2]v + (1-c)\nu[D_1,D_2]v_n$` back into the Poisson
+   RHS *does* reach machine-zero, but the fixed point contracts
+   like `$N_y^{-2}$` (the source is volumetric, not a two-per-wall
+   boundary term), so it is impractical at production resolution.
+3. **State-side tangential projection** (measured and rejected):
+   overwriting the tangential pair from continuity at
+   the solved `$v$` -- setting `$\chi \equiv i k_x u + i k_z w$`
+   to `$-D_1 v$` by the minimal-norm `$(u, w)$` update -- zeroes
+   the interior divergence identically on the direct-fit
+   operators, and every *linear* gate passes (laminar exact no-op;
+   one-step continuity `$\sim 10^{-16}$`).  Nonlinear integration
+   is violently unstable: per-step gain `$\sim 5$`-`$10$` at the
+   gravest horizontal modes (`$1/k^2$`-weighted), *worse per unit
+   time* at smaller `$\Delta t$`, insensitive to near-wall masking
+   of the relocation, linear in its amplitude, and **not** cured
+   by the boundary closure.  The un-projected scheme holds the
+   same residual in the divergence, where the `$d^n/\Delta t$`
+   Poisson feedback *damps* it.  This is Kleiser's instability
+   (CHQZ p. 219, "catastrophic") transferring from tau to FD
+   collocation: continuity-determined tangential velocities
+   discard a momentum combination the kept `$v$`/pressure
+   remember.
+4. **Reconstruction on the primitive `$v$`** -- solving an
+   `$\omega_y$` Helmholtz alongside the existing `$(v, p)$` IMM
+   and rebuilding `$(u, w)$` from `$(D_1 v, \omega_y)$` -- looks
+   like a much smaller diff than (5), and is *the same state map
+   as* (3) in exact arithmetic, so it inherits its instability.
+   Proof: all three components share one `$H_k$`, and the pressure
+   enters `$u, w$` only as the per-mode scalars `$-i k_x$`,
+   `$-i k_z$` times shared solves, so those scalars commute
+   through and the curl `$i k_z u - i k_x w$` of the primitive
+   update is already pressure-free and equal to what the
+   `$\omega_y$` solve returns; `$v$` is untouched; and
+   `$(u, w) \leftrightarrow (\chi, \omega_y)$` is a bijection
+   (determinant `$k^2$`), so fixing `$(v, \omega_y)$` and setting
+   `$\chi = -D_1 v$` **is** the projection.  The load-bearing
+   link is also *measured*: on a stepped plane-Couette state the
+   primitive scheme's own `$i k_z u - i k_x w$` matches
+   `$H_k^{-1}[i k_z r_u - i k_x r_w]$` to `$2\times10^{-16}$`
+   relative.  Placement (per corrector pass vs per accepted step)
+   differs by `$O(\Delta t^2)$` and cannot rescue a per-step gain
+   of 5-10.
+5. **`$v$`-`$\omega_y$`** (:func:`_imm_iteration_vw`): the route
+   that works, because `$v$` itself is advanced by the
+   pressure-eliminated fourth-order dynamics, so the
+   `$\chi$`-momentum is never solved and nothing is discarded.
+
+**The wall approximation, measured.**  The one approximation of
+:func:`_imm_iteration_vw` -- re-deriving `$\varphi^n = L v^n$` each
+pass, so its wall rows hold `$(D_2 v^n)|_\text{wall}$` instead of the
+influence values -- leaves the one-step map at spectral radius
+`$\le 1$`, matching the primitive scheme's to ~7 digits over
+`$N_y \in [25, 97]$`, `$k^2 \in [0.04, 4\times10^3]$`,
+`$\Delta t \in [10^{-4}, 10^{-1}]$`.
+
+**A second solver basis, shipped and removed.**  Carrying
+`$(\varphi, v, \omega_y)$` as a second solver basis to keep the wall
+values exactly was shipped (2026-07-25) and removed (2026-07-27).  It
+cost a third representation of the state, field-wide basis
+conversions in ``extensions/probes``, ``extensions/forcing`` and
+``__main__``, an extra pair of `$\varphi$` influence columns as
+`$\Delta t$` leaves, a state/RHS basis mismatch the stepper had to be
+careful around, and an entry projection that silently dropped a
+kick's non-solenoidal part -- for two wall rows the resume path threw
+away regardless, since snapshots store physical components.
 """
 
 import copy
@@ -183,8 +276,7 @@ def build_cartesian_grid(
     grid_type: str | None = None,
     grid_stretch: float = 1.5,
 ) -> tuple[Array, Array, Array, Array]:
-    r"""Build the Cartesian wall-normal grid, FD matrices, and
-    quadrature weights.
+    r"""Build the Cartesian wall-normal grid, FD matrices and weights.
 
     Grid selection (precedence):
 
@@ -198,7 +290,7 @@ def build_cartesian_grid(
     ny:
         Number of wall-normal grid points.
     fd_order:
-        Finite-difference stencil half-bandwidth.
+        Finite-difference accuracy order (``res.fd_order``).
     wall_grid:
         Optional path to a custom wall-normal grid file.
         File format: one coordinate per line in
@@ -393,12 +485,11 @@ _WallBoundedOp = DenseJAXSolver | PerModeBandedPallasOperator
 class CartesianFlow:
     r"""Precomputed data for wall-bounded Cartesian flows.
 
-    Subclasses must set ``base_flow`` and ``curl_base_flow``
-    *after* calling ``super().__post_init__()``, which builds
-    the CGL grid
-    (``ys``), Clenshaw-Curtis quadrature weights
-    (``y_weights``), finite-difference matrices, and all
-    per-mode IMM operators.
+    Subclasses must set ``base_flow`` and ``curl_base_flow`` *after*
+    calling ``super().__post_init__()``, which builds the wall-normal
+    grid (``ys``; CGL by default), its quadrature weights
+    (``y_weights``), the finite-difference matrices, and all per-mode
+    IMM operators.
 
     Attributes
     ----------
@@ -456,28 +547,21 @@ class CartesianFlow:
     H_bulk_inv: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        r"""Build CGL grid, quadrature weights, FD matrices,
-        and IMM operators.
+        r"""Build the grid, quadrature weights, FD matrices and operators.
 
-        Constructs the Chebyshev-Gauss-Lobatto grid for
-        the wall-normal coordinate `$y$` in `$[-1, 1]$`
-        and precomputes Clenshaw-Curtis quadrature weights
-        (``y_weights``) for spectral-accuracy integration
-        in the wall-normal direction, then builds
-        FD matrices `$D_1$` and `$D_2$`, and all per-mode
-        IMM operators directly on the device.  Under the
-        default pallas backend, `$L_k$` and `$H_k$` are
-        assembled directly in banded storage
-        (:func:`_build_Lk_band_gpu` /
-        :func:`_build_Hk_band_gpu`) and factored by the
-        setup-checked no-pivot banded LU
-        (:func:`solvers._build_pallas_operator`), with no
-        `$(N_y, N_y)$` array materialized.  Under the
-        dense backend they are built as full
-        `$(N_y, N_y)$` blocks via
-        :func:`_build_Lk_dense_gpu` /
-        :func:`_build_Hk_dense_gpu` and factorized by
-        :class:`DenseJAXSolver`.  Homogeneous IMM data
+        Builds the wall-normal grid on `$[-1, 1]$` (CGL by default,
+        with Clenshaw-Curtis weights; a tanh or custom grid with
+        composite polynomial weights; :func:`build_cartesian_grid`),
+        the FD matrices `$D_1$` and `$D_2$`, and all per-mode IMM
+        operators directly on the device.  Under the default pallas
+        backend, `$L_k$` and `$H_k$` are assembled directly in banded
+        storage (:func:`_build_Lk_dir_band_gpu` /
+        :func:`_build_Hk_band_gpu`) and factored by the setup-checked
+        no-pivot banded LU (:func:`solvers._build_pallas_operator`),
+        with no `$(N_y, N_y)$` array materialized.  Under the dense
+        backend they are built as full `$(N_y, N_y)$` blocks via
+        :func:`_build_Lk_dir_dense_gpu` / :func:`_build_Hk_dense_gpu`
+        and factorized by :class:`DenseJAXSolver`.  Homogeneous IMM data
         (``v1``, ``v2``, ``M_inv``, and the potentials ``q1``,
         ``q2`` of the primitive scheme) is derived from the GPU
         operator by :meth:`_derive_imm_homogeneous_data`, and the
@@ -485,8 +569,9 @@ class CartesianFlow:
         under one ``jit`` (:func:`_imm_leaves`).
 
         ``res.consistent_imm`` selects the `$v$`-`$\omega_y$`
-        formulation (:func:`_imm_iteration_vw`), whose `$L_k$` is
-        the Dirichlet build; everything else here is
+        formulation (:func:`_imm_iteration_vw`), whose `$L_k$` is the
+        Dirichlet build; with the flag off, the legacy module's Neumann
+        builds take its place, and everything else here is
         flag-independent.
         """
         self.ys, D1, D2, self.y_weights = build_cartesian_grid(
@@ -631,9 +716,9 @@ class CartesianFlow:
         # results are transposed to field layout (Ny, Nkz, Nkx) at the
         # end.  ``.solve`` takes a mode-inner field, so each setup solve
         # is wrapped (transpose in, transpose out) to keep this layout.
-        # FUTURE: rebuild this setup natively mode-inner to drop the
-        # wrappers -- the hot path already is; here it only relocates a
-        # one-time transpose, so it is deferred.
+        # A natively mode-inner setup would drop the wrappers, but it
+        # would only relocate a one-time transpose (the hot path is
+        # mode-inner already).
         e1_b = (
             jnp.zeros(
                 (Nkz, Nkx, Ny),
@@ -666,8 +751,7 @@ class CartesianFlow:
         fourier_: Fourier,
         e_cols: list[Array],
     ) -> None:
-        r"""Homogeneous columns and `$2 \times 2$` influence matrix of
-        the `$v$`-`$\omega_y$` scheme (``res.consistent_imm``).
+        r"""Influence columns and matrix of the `$v$`-`$\omega_y$` scheme.
 
         The scheme (:func:`_imm_iteration_vw`) splits the
         wall-normal-velocity update into two second-order solves,
@@ -762,8 +846,7 @@ class CartesianFlow:
     def _precompute_bulk_response(
         self, fourier_: Fourier, Nkz: int, Nkx: int, Ny: int
     ) -> None:
-        r"""Precompute the Helmholtz response for mean-mode
-        velocity enforcement.
+        r"""Precompute the mean-mode Helmholtz response to a body force.
 
         Solves `$H_k\,h = \mathbf{1}$` (unit uniform RHS,
         zero Dirichlet wall BCs) at the mean mode
@@ -815,7 +898,7 @@ class CartesianFlow:
         rhs = jnp.where(fourier_.mean_mask[0, ..., None], ones_vec, 0.0)
 
         # Mode-outer setup RHS; wrap the mode-inner ``.solve`` (run once;
-        # see ``_derive_imm_homogeneous_data`` for the FUTURE note).
+        # see ``_derive_imm_homogeneous_data``).
         h_full = self.Hk_op.solve(rhs.transpose(2, 0, 1)).transpose(1, 2, 0)
 
         # ``reshard`` (not ``device_put``): this method also runs
@@ -1020,20 +1103,19 @@ def _l_bf(
     fourier_: Fourier,
     flow_: CartesianFlow,
 ) -> Array:
-    r"""Linear base-flow coupling `$\mathbf{u}' \times \nabla\times
-    \mathbf{U} + \mathbf{U} \times \boldsymbol{\omega}'$` (FFT-free).
+    r"""The linear base-flow coupling, FFT-free.
 
-    The two base-flow terms of the rotational nonlinear form (see
-    :mod:`dnsjax.rhs`), evaluated entirely in spectral space: the base
-    flow `$\mathbf{U}$` and its curl are `$y$`-only profiles
-    (``flow.base_flow`` / ``flow.curl_base_flow``, shape
-    ``(3, Ny, 1, 1)``), so multiplying by them is a
-    wall-normal-pointwise multiply that does not mix the
-    `$(k_x, k_z)$` modes -- no Fourier transform (and, since they are
-    `$k_x = k_z = 0$`, no dealiasing either, so this equals the
-    corresponding physical-space terms inside :func:`get_nonlin`
-    exactly).  `$\boldsymbol{\omega}' = \nabla\times\mathbf{u}'$`
-    reuses :func:`_curl_fn` (also FFT-free).
+    `$\mathbf{u}' \times \nabla\times\mathbf{U} + \mathbf{U} \times
+    \boldsymbol{\omega}'$`, the two base-flow terms of the rotational nonlinear
+    form (see :mod:`dnsjax.rhs`), evaluated entirely in spectral space: the
+    base flow `$\mathbf{U}$` and its curl are `$y$`-only profiles
+    (``flow.base_flow`` / ``flow.curl_base_flow``, shape ``(3, Ny, 1, 1)``), so
+    multiplying by them is a wall-normal-pointwise multiply that does not mix
+    the `$(k_x, k_z)$` modes -- no Fourier transform (and, since they are
+    `$k_x = k_z = 0$`, no dealiasing either, so this equals the corresponding
+    physical-space terms inside :func:`get_nonlin` exactly).
+    `$\boldsymbol{\omega}' = \nabla\times\mathbf{u}'$` reuses :func:`_curl_fn`
+    (also FFT-free).
 
     The CN/AB2 scheme (``step.scheme == "cnab2"``) advances this
     *linear* term implicitly (Crank-Nicolson) while the pure
@@ -1156,8 +1238,7 @@ def _hk_minus_matvec(
     flow_: CartesianFlow,
     fourier_: Fourier,
 ) -> Array:
-    r"""Apply `$H_k^- u$` for the explicit-side Helmholtz
-    operator.
+    r"""Apply the explicit-side Helmholtz operator `$H_k^- u$`.
 
     Matrix-free evaluation of `$H_k^- u$`:
     `$\tfrac{1}{\Delta t} u + (1 - c) \nu (D_2 u - k^2 u)$`
@@ -1184,8 +1265,7 @@ def _hk_minus_matvec(
 def _from_solver(
     state: Array, fourier_: Fourier, flow_: CartesianFlow
 ) -> Array:
-    r"""Evolved scalars `$(\varphi, v, \omega_y)$` -> physical
-    `$(u, v, w)$`.
+    r"""Evolved scalars `$(\varphi, v, \omega_y)$` to physical `$(u, v, w)$`.
 
     Stage 7 of :func:`_imm_iteration_vw`, as a state map:
 
@@ -1217,8 +1297,7 @@ def _from_solver(
 
 
 def _to_solver(state: Array, fourier_: Fourier, flow_: CartesianFlow) -> Array:
-    r"""Physical `$(u, v, w)$` -> evolved scalars
-    `$(\varphi, v, \omega_y)$`.
+    r"""Physical `$(u, v, w)$` to evolved scalars `$(\varphi, v, \omega_y)$`.
 
     Stage 1 of :func:`_imm_iteration_vw`, the inverse of
     :func:`_from_solver` on discretely solenoidal fields:
@@ -1364,15 +1443,15 @@ def _apply_bulk_corrections(
     slots.
 
     Also returns the applied driving as a dict of 0-d diagnostics
-    (:data:`DRIVING_KEY_S` / :data:`DRIVING_KEY_N`), which the stepper
-    threads out as the corrector's *aux* (:func:`dnsjax.timestep.
-    make_stepper`).  The value is the rank-1 correction's own scalar
-    prefactor -- the uniform body force added to the mean-mode
-    Helmholtz RHS, i.e. `$-\partial p'/\partial s = -\Pi$` in the
-    convention of :mod:`dnsjax.ic.mean_mode` -- so nothing is
-    recomputed and no sign can drift between what is applied and what
-    is reported.  Empty when neither knob is on, and only the
-    **converged** corrector iterate's dict survives the step.
+    (:data:`DRIVING_KEY_S` / :data:`DRIVING_KEY_N`), which the stepper threads
+    out as the corrector's *aux* (:func:`dnsjax.timestep.make_stepper`).  The
+    value is the rank-1 correction's own scalar prefactor -- the uniform body
+    force added to the mean-mode Helmholtz RHS, i.e.
+    `$-\partial p'/\partial s = -\Pi$` in the convention of
+    :mod:`dnsjax.ic.mean_mode` -- so nothing is recomputed and no sign can
+    drift between what is applied and what is reported.  Empty when neither
+    knob is on, and only the **converged** corrector iterate's dict survives
+    the step.
     """
     if not (
         params.phys.driving == "constant_bulk_velocity"
@@ -1485,8 +1564,9 @@ def _imm_iteration_vw(
     whole design.  Substituting the reconstruction into a `$v$`
     produced by the primitive `$(v, p)$` solve
     (:func:`_imm_iteration_vp`) reproduces, state for state, the
-    tangential projection measured violently unstable on 2026-07-24
-    (see :func:`_imm_iteration`): there the solve determines `$\chi$`
+    tangential projection that measured violently unstable (Design
+    notes: "Routes tried and retired", route 3): there the solve
+    determines `$\chi$`
     from the `$\chi$`-momentum equation and the reconstruction then
     overwrites it, so the discarded combination re-excites the solve
     every step through an undamped channel.  Here the
@@ -1558,10 +1638,8 @@ def _imm_iteration_vw(
     `$\Delta t\,(1-c)\nu\|D_2\|$` otherwise.  Every excursion towards
     production -- larger `$N_y$` or `$k^2$`, smaller `$\Delta t$` --
     moves deeper into the implicit-dominated regime where that bound
-    tightens.  Measured: the one-step map keeps spectral radius
-    `$\le 1$` and matches the primitive scheme's to ~7 digits over
-    `$N_y \in [25, 97]$`, `$k^2 \in [0.04, 4\times10^3]$`,
-    `$\Delta t \in [10^{-4}, 10^{-1}]$`.  Both cylindrical geometries
+    tightens (measured: Design notes, "The wall approximation,
+    measured").  Both cylindrical geometries
     make the same trade -- they re-derive `$\Phi^n$` per pass
     (``annular._imm_iteration_vw``; the pipe's carried difference
     halves take their wall data from the accepted state too) -- and a
@@ -1573,15 +1651,8 @@ def _imm_iteration_vw(
     so they converge with it rather than persisting across steps.
 
     Carrying `$(\varphi, v, \omega_y)$` as a second solver basis to
-    keep `$\alpha$` exactly *was* shipped (2026-07-25) and removed
-    (2026-07-27): it cost a third representation of the state,
-    field-wide basis conversions in
-    ``extensions/probes``/``extensions/forcing``/``__main__``, an
-    extra pair of
-    `$\varphi$` influence columns as `$\Delta t$` leaves, a state/RHS
-    basis mismatch the stepper had to be careful around, and an entry
-    projection that silently dropped a kick's non-solenoidal part --
-    for two wall rows the resume path threw away regardless.
+    keep `$\alpha$` exactly costs far more than the two wall rows are
+    worth (Design notes: "A second solver basis, shipped and removed").
     *Zeroing* those rows, by contrast, would be a **broken** scheme
     rather than a fallback: it deletes `$O(1)$` near-wall data from
     the explicit bilaplacian.
@@ -1599,8 +1670,8 @@ def _imm_iteration_vw(
     that plane.  The `$H_k$` operator there *is* the mean-mode
     Helmholtz those components need and their pressure gradient
     vanishes, so the packed solves are the primitive scheme's
-    mean-mode update term for term, at zero extra cost.  What keeps it
-    honest: the zeroing of `$v$` (which also discards the meaningless
+    mean-mode update term for term, at zero extra cost.  What keeps
+    that plane clean: the zeroing of `$v$` (which also discards the meaningless
     `$L_k$` solve of the packed plane) and the zeroed
     ``M_inv``/columns of the influence data, so no correction ever
     reaches that plane.  Padding modes need no special-casing, as
@@ -1761,80 +1832,15 @@ def _imm_iteration(
 
     Routes tried and retired
     ~~~~~~~~~~~~~~~~~~~~~~~~
-    Kept here because each is a plausible-looking repair that
-    measurably fails:
+    Four plausible-looking repairs were tried before the
+    `$v$`-`$\omega_y$` route and each measurably fails: the module's
+    Design notes ("Routes tried and retired") keep them, with the
+    proof that reconstructing on the primitive `$v$` is the unstable
+    projection in disguise.
 
-    1. **Operator-side identities**: `$D_2 := D_1 D_1$` -- the
-       **unique** second derivative that commutes with `$D_1$` --
-       kills the commutator and the pressure
-       mismatch, and a Kleiser-Schumann boundary closure
-       (Canuto, Hussaini, Quarteroni & Zang 1988, sec. 7.3,
-       eqs. (7.3.51)-(7.3.58)), realized as two extra homogeneous
-       columns and a `$4 \times 4$` influence matrix, kills the
-       boundary term.  It works (`$d \sim 10^{-14}$`) but widens every
-       banded operator (half-width 8 to 11 at ``fd_order = 8``) and
-       costs an order in the `$D_2$` truncation constant.  Neither
-       half works alone: the closure on the direct-fit `$D_2$`
-       measures *worse* than doing nothing, and the *split* (closure
-       plus a `$D_1^2$` Poisson, accurate `$D_2$` only in `$H_k$`)
-       leaves a pure-commutator `$d \sim 10^{-4}$` floor that does not
-       refine.  In a *cylindrical* geometry it cannot reach round-off
-       at all -- the metric commutator `$[D_1, 1/r] \ne -1/r^2$`
-       survives any single `$D_1$`, and on the pipe a parity invariant
-       forbids both parities' vanishing at once -- and its composed
-       `$D_2$`, not being grid-scale-dissipative, made the pipe
-       unstable from a grid-white random IC.
-    2. **Commutator cancellation**: feeding
-       `$c\nu[D_1,D_2]v + (1-c)\nu[D_1,D_2]v_n$` back into the Poisson
-       RHS *does* reach machine-zero, but the fixed point contracts
-       like `$N_y^{-2}$` (the source is volumetric, not a two-per-wall
-       boundary term), so it is impractical at production resolution.
-    3. **State-side tangential projection** (measured and rejected):
-       overwriting the tangential pair from continuity at
-       the solved `$v$` -- setting `$\chi \equiv i k_x u + i k_z w$`
-       to `$-D_1 v$` by the minimal-norm `$(u, w)$` update -- zeroes
-       the interior divergence identically on the direct-fit
-       operators, and every *linear* gate passes (laminar exact no-op;
-       one-step continuity `$\sim 10^{-16}$`).  Nonlinear integration
-       is violently unstable: per-step gain `$\sim 5$`-`$10$` at the
-       gravest horizontal modes (`$1/k^2$`-weighted), *worse per unit
-       time* at smaller `$\Delta t$`, insensitive to near-wall masking
-       of the relocation, linear in its amplitude, and **not** cured
-       by the boundary closure.  The un-projected scheme holds the
-       same residual in the divergence, where the `$d^n/\Delta t$`
-       Poisson feedback *damps* it.  This is Kleiser's instability
-       (CHQZ p. 219, "catastrophic") transferring from tau to FD
-       collocation: continuity-determined tangential velocities
-       discard a momentum combination the kept `$v$`/pressure
-       remember.
-    4. **Reconstruction on the primitive `$v$`** -- solving an
-       `$\omega_y$` Helmholtz alongside the existing `$(v, p)$` IMM
-       and rebuilding `$(u, w)$` from `$(D_1 v, \omega_y)$` -- looks
-       like a much smaller diff than (5), and is *the same state map
-       as* (3) in exact arithmetic, so it inherits its instability.
-       Proof: all three components share one `$H_k$`, and the pressure
-       enters `$u, w$` only as the per-mode scalars `$-i k_x$`,
-       `$-i k_z$` times shared solves, so those scalars commute
-       through and the curl `$i k_z u - i k_x w$` of the primitive
-       update is already pressure-free and equal to what the
-       `$\omega_y$` solve returns; `$v$` is untouched; and
-       `$(u, w) \leftrightarrow (\chi, \omega_y)$` is a bijection
-       (determinant `$k^2$`), so fixing `$(v, \omega_y)$` and setting
-       `$\chi = -D_1 v$` **is** the projection.  The load-bearing
-       link is also *measured*: on a stepped plane-Couette state the
-       primitive scheme's own `$i k_z u - i k_x w$` matches
-       `$H_k^{-1}[i k_z r_u - i k_x r_w]$` to `$2\times10^{-16}$`
-       relative.  Placement (per corrector pass vs per accepted step)
-       differs by `$O(\Delta t^2)$` and cannot rescue a per-step gain
-       of 5-10.
-    5. **`$v$`-`$\omega_y$`** (:func:`_imm_iteration_vw`): the route
-       that works, because `$v$` itself is advanced by the
-       pressure-eliminated fourth-order dynamics, so the
-       `$\chi$`-momentum is never solved and nothing is discarded.
-
-    Route 5 is the only mechanism behind the flag, in all three
-    geometries.  Its cylindrical form
-    adds two facts this geometry never needs, both in
+    The `$v$`-`$\omega_y$` route is the only mechanism behind the flag,
+    in all three geometries.  Its cylindrical form adds two facts this
+    geometry never needs, both in
     ``annular._imm_iteration_vw``: the sources' axial curl must be the
     **conservative** `$\frac1r[D_1(r N_\theta) - i m N_r]$` (the
     metric's counterpart of `$k^2$` commuting with `$D_1$`; the direct
@@ -1861,7 +1867,7 @@ def _predict(
     fourier_: Fourier,
     flow_: CartesianFlow,
 ) -> Array:
-    """Euler predictor (Willis 2017 j=0) via Kleiser-Schumann IMM."""
+    """Euler predictor (Willis 2017, ``j = 0``): one :func:`_imm_iteration`."""
     nonlin_n = rhs_no_lapl
 
     prediction_state, _, _ = _imm_iteration(
@@ -1878,7 +1884,7 @@ def _correct(
     fourier_: Fourier,
     flow_: CartesianFlow,
 ) -> tuple[Array, Array, dict[str, Array]]:
-    """Crank-Nicolson corrector (Willis 2017 j>0) via Kleiser-Schumann IMM.
+    """Crank-Nicolson corrector (Willis 2017, ``j > 0``): one IMM pass.
 
     Third return: the corrector-side *aux* diagnostics, here the applied
     mean-mode driving (:func:`_apply_bulk_corrections`).
@@ -1925,8 +1931,7 @@ def build_cartesian_stepper(
     Callable[[float], None],
     Callable[[], None],
 ]:
-    """Build time-stepping functions for a Cartesian
-    wall-bounded flow.
+    """Build the time-stepping functions of a Cartesian wall-bounded flow.
 
     Returns ``(init_state_bound, predict_and_fully_correct,
     predict_and_fully_correct_measured, step_cnab2,

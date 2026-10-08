@@ -94,11 +94,11 @@ order in time at coarse radial resolution (trailing solver-basis slots
 plus an optional snapshot member, ``outs.snapshot_embed_carry``).  The
 price is two wall rows per mode (the influence coefficients cannot be
 carried), a bounded truncation-level substitute whose argument and
-measurement ``cartesian._imm_iteration_vw`` carries.  Construction,
-boundary conditions and the retired routes: the
-``cartesian._imm_iteration`` (shared record),
-``annular._imm_iteration_vw`` (cylindrical algebra) and
-``_cylindrical_stepping._imm_iteration_vw`` (the quad) docstrings.
+measurement ``cartesian._imm_iteration_vw`` carries.  Construction
+and boundary conditions: the ``cartesian._imm_iteration`` (shared
+record), ``annular._imm_iteration_vw`` (cylindrical algebra) and
+``_cylindrical_stepping._imm_iteration_vw`` (the quad) docstrings; the
+retired routes in full: the ``cartesian`` Design notes.
 
 *Efficacy.*  Measured at ``fd_order = 8``, one step from a random IC,
 seed 7 (ten steps from an axis-regular rolls IC on the pipe;
@@ -174,7 +174,7 @@ pressure-eliminated dynamics escapes it.  (5) Decoupling the annular
 `$(u_r, \omega_r)$` pair the way `$u_\pm$` decouples
 `$(u_r, u_\theta)$` is impossible, since it mixes two vector fields;
 the exactly decoupled candidates are enumerated and dismissed in the
-``annular._imm_iteration_vw`` docstring.
+``annular`` Design notes.
 
 *Step cost.*  The per-mode banded solve count goes 4 -> 3 on the
 Cartesian and annular families and 4 -> **5** on the pipe, the one
@@ -982,9 +982,9 @@ class Resolution(BaseModel):
     # select it: reproducing a trajectory computed before the default
     # moved, and a **deep annulus** (small ``geo.eta``) at tight
     # ``step.corrector_tolerance``, where the `$(u_r, \omega_r)$` pair's
-    # Picard-lagged spin partners contract slowly (the measured table,
-    # and why that degradation is loud rather than silent:
-    # ``annular._imm_iteration_vw``).
+    # Picard-lagged spin partners contract slowly (why that degradation
+    # is loud rather than silent: ``annular._imm_iteration_vw``; the
+    # measured table: the ``annular`` Design notes).
     consistent_imm: bool = Field(
         default=True,
         description=(
@@ -1963,7 +1963,7 @@ class Solver(BaseModel):
     # x1.18 per step at the per-rank size of a 128-rank
     # ``1280 x 385 x 320`` run, x1.04-1.08 for the other geometries at
     # moderate sizes, within a few per cent at the smallest test grids
-    # (``_base.apply_y_matrix``) -- and the GEMM elsewhere: on GPU the
+    # (the ``_base`` Design notes) -- and the GEMM elsewhere: on GPU the
     # choice is unmeasured.  Read at trace time, like
     # ``rhs_transform_chunks``.  Wall-bounded systems only.
     wall_normal_matvec: Literal["auto", "dense", "banded"] = Field(
