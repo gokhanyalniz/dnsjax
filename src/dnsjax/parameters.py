@@ -1590,7 +1590,7 @@ class TimeStepping(BaseModel):
     refinement, at lower ``Re`` and at larger ``dt``.  A smooth flow
     barely excites such a mode, but a grid-scale wall residual injected
     every step accumulates in it -- as the pipe's carried spin-quad
-    differences once did (``_cylindrical_stepping._imm_iteration_vw``).
+    differences once did (the ``_cylindrical_stepping`` Design notes).
 
     Off-centring bounds it: `$|\mu| \to (1-c)/c$` as `$x \to \infty$`,
     so ``1 - |mu|`` stays above about ``4 (c - 1/2)`` at any resolution,

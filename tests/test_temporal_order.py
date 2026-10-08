@@ -51,7 +51,7 @@ in-process on 1 forced CPU device (no ``mpirun``), one subprocess per
   neither study above implies its order -- and the one this study
   caught at first order: re-deriving the difference halves from the
   velocity every step held the pipe there at this resolution
-  (``_cylindrical_stepping._imm_iteration_vw``).  Measured: legacy 1.1e-2 at
+  (the ``_cylindrical_stepping`` Design notes).  Measured: legacy 1.1e-2 at
   0.87 / 0.97 -> default 4.1e-5 at 2.02 / 2.07.
 
 Every wall-bounded run first **relaxes** the random IC: 0.05 time

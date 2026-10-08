@@ -24,6 +24,135 @@ influence matrix in the ``cylindrical`` module docstring; the
 reconstruction scheme's shared record in
 ``cartesian._imm_iteration``; the cylindrical algebra in
 ``annular._imm_iteration_vw``.
+
+Design notes
+------------
+**The spin quad's throughput.**  The quad's extra solve is why the pipe is the
+one geometry where ``res.consistent_imm`` costs throughput: measured per step
+on an H100, the flag is -17 % on plane Couette and -12 % on Taylor-Couette,
+both of which go from four solves to three, against +6 % on the pipe.  Memory
+moves the other way for all three (four band families to three, and the
+pressure-response columns replaced by the cheaper `$u_r$` ones).
+
+**Why this pass costs ~2x Cartesian.**  Solve counts do not explain the pipe's
+cost.  Measured with ``scripts/pallas_solve_profile.py`` Parts B/A2 on CPU, one
+device, at matched resolution (`$128^3$`, ``fd_order 8``):
+
+==============  =================  ==============
+geometry        ``_imm_iteration``  isolated Lk+Hk
+==============  =================  ==============
+plane-couette   350 ms              278 ms
+taylor-couette  448 ms              274 ms
+pipe            749 ms              275 ms
+==============  =================  ==============
+
+The solve cost is **geometry-independent to 1.5 %**, so the whole spread is
+non-solve.  Subtracting the isolated solve from ``_imm_iteration`` does not
+give the non-solve work: the isolated timing over-counts the fused one, and the
+difference goes negative in the Cartesian row.
+
+The annulus is the control that attributes the rest, since it
+shares every curvilinear cost (`$u_\pm$` basis crossings, the
+`$1/r$` metric, the `$A_{\mathrm{base}}$` pair) but has neither the
+spin quad nor the parity reduction: curvilinear accounts for
+`$1.28\times$`, the quad and parity for a further `$1.67\times$`.
+Within this pass the two `$A_{\mathrm{base}}$` stages -- the
+quad-wide explicit CN half (18 % of the pass) and the stage-1 pair
+assembly (17 %) -- were together about equal to the solves, while
+the mechanisms the quad adds are individually small: parity costs
+only `$1.26\times$` a plain GEMM, quad assembly 0.9 %, the basis
+crossings 4.5 %, the metric multiplies 0.2 %.  So the excess is
+matvec **volume** (a 4-wide quad, each matvec parity-doubled), not
+the parity machinery -- which is what made fusing
+`$D_2 + (1/r) D_1$` into one operator the lever, worth ~10 % of
+this pass and ~11 % of the annulus's (interleaved A/B, both
+orderings).
+
+A related idea, measured and **rejected**: this pass is dense in
+real-coefficient products on complex fields (`$1/r$`, `$1/r^2$`,
+`$k_z^2$`, `$m_{\mathrm{eff}}^2$`, the parity signs), and each
+promotes its real operand to ``c128`` and runs a full complex
+multiply -- 4 real multiplies where 2 would do.  Hand-splitting
+them buys nothing: the products move ~24 bytes per element for 2-4
+flops, so they are memory-bound and the extra multiplies are free
+(three interleaved repeats straddle zero: +25 %, +4 %, -29 %).
+The promotion is also bit-identical to the split form, since
+`$(w + 0i)(a + bi)$` evaluates the zero cross-terms exactly.
+
+**Wall differences on the iterate.**  This pass lagged the two differences to
+`$t^n$` until 2026-08-01.  What the sums do not cancel is
+`$(L_{s+}^{-1} - L_{s-}^{-1})\,d$`: the two spin families differ by `$4m/r^2$`
+in `$m_{\mathrm{eff}}^2$` against a Helmholtz scale `$1/(c\nu\Delta t)$`, so
+the leftover is small only while `$\nu/\Delta r$` is.  Being computed from the
+state, it fed the next step's wall data, closing a growth loop **across time
+steps**, where nothing damped or observed it.  Measured on ``pipe`` (`$32^2$`
+transverse modes, `$l_z = 5$`, `$\Delta t = 0.01$`, random IC of amplitude
+0.1), lagged against iterated, with a legacy-path control clean in every row:
+
+- `$\mathrm{Re} = 1$` / `$n_r = 32$`: lagged non-finite at
+  `$t = 0.37$`; iterated decays monotonically to 1.7e-4 over 100
+  steps (legacy 1.6e-4).
+- `$\mathrm{Re} = 10$` / `$n_r = 32$`: lagged non-finite at
+  `$t = 2.06$`; iterated clean, 3.0e-4 at `$t = 3$`.
+- `$\mathrm{Re} = 100$` / `$n_r = 64$`: lagged tracked the legacy
+  path to
+  **six significant figures for 600 steps** and then departed
+  exponentially (0.65 against 1.5e-2 at `$t = 9$`); iterated tracks
+  it throughout (1.733550e-2 against 1.733529e-2 at step 800).
+- `$\mathrm{Re} = 100$` / `$n_r = 128$`: lagged non-finite at
+  `$t = 5.1$`; iterated 9.351495e-3 against the legacy path's
+  9.351498e-3
+  at step 999 -- seven significant figures.
+- `$\mathrm{Re} = 1800$` / `$n_r = 128$`, the shipped
+  ``pipe-consistent-imm`` regime at a production wall-normal
+  resolution: both forms clean and identical to seven significant
+  figures (2.758548e-1 at step 1999).  **The repair is a no-op
+  where the lag was already benign** -- and its price is nil:
+  identical ``pipe-consistent-imm`` temporal self-convergence to
+  four significant figures and a step time inside CPU noise
+  (measured on the pass before its difference halves were
+  carried; next entry).
+
+Two properties of the old failure say what a guard for this class
+of defect has to look like.  Its growth rate was proportional to
+`$\nu$` and **independent of `$\Delta t$`** (a 10x smaller step
+diverged at the same physical time, so no step reduction helped),
+and its boundary was crossed by **refinement** at fixed
+`$\mathrm{Re}$`.  A fixed-horizon, fixed-resolution smoke entry can
+see neither; what catches it is a default-vs-legacy comparison at
+the intended `$(\mathrm{Re}, n_r)$`, read digit by digit.  It also
+had nothing to do with the polymer, though it was first found and
+misattributed there: ``viscoelastic-pipe`` reproduced every row,
+including at `$\beta = 1$` where the polymer stress is decoupled
+from the velocity entirely, and raising `$\kappa$` 200x changed
+nothing.
+
+Zeroing the differences instead of lagging them was also tried and
+is *worse* than the lag (non-finite at `$t \approx 0.35$` against
+`$0.37$`).
+
+**Carrying the difference halves.**  Until 2026-09 the differences were dropped
+and re-derived kinematically from the reconstructed state at the next step,
+which made the pass first order wherever the `$O(\Delta t\,\varepsilon_h)$`
+error of :func:`_imm_iteration_vw` dominates.  It did at small `$n_r$`:
+self-convergence from a relaxed state (8x17x8, Re 100) measured orders 0.96 /
+1.01 / 1.08 and 175x the annulus's error at `$\Delta t = 0.01$` (7.9e-4 against
+4.5e-6), with the corrector at `$10^{-12}$`; still first order at `$n_r = 33$`,
+second order by `$n_r = 65$`.  The Cartesian and annular passes discard nothing
+that feeds back and were clean order 2 under the same protocol.  Carried, the
+same configuration measures 2.00 / 2.00 / 2.02, its errors 8x smaller at
+`$\Delta t = 0.02$` and 64x at `$0.0025$` (1.88e-4 ...  2.89e-6); carrying
+either half alone leaves it first order (0.98 / 1.02 / 1.09 and 0.95 / 1.01 /
+1.08).  The gap between the carried halves and the ones the velocity implies,
+20 steps from a relaxed state, is 1.1e-1 / 1.2e-2 / 1.1e-3 relative at `$n_r$`
+= 17 / 33 / 65.  Without the re-anchoring, a weakly damped mode of the pipe's
+step (present before the carry, at low `$\mathrm{Re}$` on fine grids) let the
+last iterate's residual accumulate: at Re 100 / `$n_r = 128$` and the default
+tolerance it moved `$E'$` by 1.7e-3 after 1000 steps.  Re-anchored, that run
+sits 1.6e-5 from its own `$10^{-12}$` result, and at the default tolerance
+(`$10^{-5}$`) the order study reaches the corrector's ordinary floor at its
+smallest step (3.7e-6 against 2.9e-6), still 8-50x below the re-derived pass at
+every step size.
 """
 
 from __future__ import annotations
@@ -417,7 +546,8 @@ def _grad_pm(
     fourier_: Fourier,
     flow_: CylindricalFlow,
 ) -> Array:
-    r"""Transverse spin pair of a scalar gradient,
+    r"""Transverse spin pair of a scalar gradient.
+
     `$(\nabla_0 g)_\pm = \partial_r g \mp (m/r)\,g$`, stacked on
     axis 1 like the quad's spin pairs.  The scalar carries the
     `$(-1)^m$` parity class.
@@ -493,8 +623,9 @@ def kinematic_differences(
 
 
 class ModeColumns(NamedTuple):
-    r"""The ``Fourier`` members :func:`kinematic_differences` reads, for
-    a set of single mode columns rather than the whole mode plane.
+    r"""What :func:`kinematic_differences` reads of ``Fourier``, per column.
+
+    For a set of single mode columns rather than the whole mode plane.
 
     Each is ``(1, K, 1)`` over the ``K`` columns (the physical azimuthal
     and axial wavenumbers of each, its `$(-1)^m$` class as ``0``/``1``,
@@ -513,9 +644,11 @@ class ModeColumns(NamedTuple):
 def column_differences(
     columns: Array, fourier_: ModeColumns, flow_: CylindricalFlow
 ) -> Array:
-    """:func:`kinematic_differences` of ``(K, 3, N_r)`` solver-basis
-    mode columns, as ``(K, N_CARRIED, N_r)`` -- a forcing kick's
-    contribution to the carried slots (:mod:`dnsjax.extensions.forcing`)."""
+    """:func:`kinematic_differences` of solver-basis mode columns.
+
+    ``(K, 3, N_r)`` in, ``(K, N_CARRIED, N_r)`` out: a forcing kick's
+    contribution to the carried slots (:mod:`dnsjax.extensions.forcing`).
+    """
     field_ = jnp.moveaxis(columns, 0, -1)[..., None]  # (3, N_r, K, 1)
     diff = kinematic_differences(field_, fourier_, flow_)
     return jnp.moveaxis(diff[..., 0], -1, 0)
@@ -580,8 +713,7 @@ def _imm_iteration_vw(
     flow_: CylindricalFlow,
     carried_n: Array,
 ) -> tuple[Array, Array, dict[str, Array], Array]:
-    r"""`$u_r$`-`$\omega_r$` step via the spin quad
-    (``res.consistent_imm``).
+    r"""`$u_r$`-`$\omega_r$` step via the spin quad (``res.consistent_imm``).
 
     The pipe's form of the reconstruction scheme whose derivation the
     Cartesian ``_imm_iteration_vw`` carries and whose cylindrical
@@ -639,64 +771,13 @@ def _imm_iteration_vw(
     against its four (the quad shares two; the recovery is
     ``dt``-free), all at half-width ``fd_order``.
 
-    That extra solve is why the pipe is the one geometry where this
-    flag costs throughput: measured per step on an H100,
-    ``res.consistent_imm`` is **-17 %** on plane-couette and **-12 %**
-    on Taylor-Couette -- both of which go 4 solves to 3 -- against
-    **+6 %** here.  Memory moves the other way for all three (four band
-    families to three, and the pressure-response columns are replaced
-    by the cheaper `$u_r$` ones).  The trade is forced, not chosen: the
-    `$\mp 2im/r^2$` spin coupling is what the annulus lags and the axis
-    forbids lagging, so exact diagonalization -- and the doubling it
-    brings -- is the only route here.
-
-    Why this pass costs ~2x Cartesian, measured
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    Those figures count *solves*, and the pipe's cost is not in them.
-    Measured with ``scripts/pallas_solve_profile.py`` Parts B/A2 on
-    CPU, one device, at matched resolution (`$128^3$`, ``fd_order 8``):
-
-    ==============  =================  ==============
-    geometry        ``_imm_iteration``  isolated Lk+Hk
-    ==============  =================  ==============
-    plane-couette   350 ms              278 ms
-    taylor-couette  448 ms              274 ms
-    pipe            749 ms              275 ms
-    ==============  =================  ==============
-
-    The solve cost is **geometry-independent to 1.5 %**, so the whole
-    spread is non-solve.  Do *not* subtract the isolated solve from
-    ``_imm_iteration`` to get "non-solve work": the isolated timing
-    over-counts the fused one and the difference goes negative in the
-    Cartesian row.
-
-    The annulus is the control that attributes the rest, since it
-    shares every curvilinear cost (`$u_\pm$` basis crossings, the
-    `$1/r$` metric, the `$A_{\mathrm{base}}$` pair) but has neither the
-    spin quad nor the parity reduction: curvilinear accounts for
-    `$1.28\times$`, the quad and parity for a further `$1.67\times$`.
-    Within this pass the two `$A_{\mathrm{base}}$` stages -- the
-    quad-wide explicit CN half (18 % of the pass) and the stage-1 pair
-    assembly (17 %) -- were together about equal to the solves, while
-    the mechanisms the quad adds are individually small: parity costs
-    only `$1.26\times$` a plain GEMM, quad assembly 0.9 %, the basis
-    crossings 4.5 %, the metric multiplies 0.2 %.  So the excess is
-    matvec **volume** (a 4-wide quad, each matvec parity-doubled), not
-    the parity machinery -- which is what made fusing
-    `$D_2 + (1/r) D_1$` into one operator the lever, worth ~10 % of
-    this pass and ~11 % of the annulus's (interleaved A/B, both
-    orderings).
-
-    A related idea, measured and **rejected**: this pass is dense in
-    real-coefficient products on complex fields (`$1/r$`, `$1/r^2$`,
-    `$k_z^2$`, `$m_{\mathrm{eff}}^2$`, the parity signs), and each
-    promotes its real operand to ``c128`` and runs a full complex
-    multiply -- 4 real multiplies where 2 would do.  Hand-splitting
-    them buys nothing: the products move ~24 bytes per element for 2-4
-    flops, so they are memory-bound and the extra multiplies are free
-    (three interleaved repeats straddle zero: +25 %, +4 %, -29 %).
-    The promotion is also bit-identical to the split form, since
-    `$(w + 0i)(a + bi)$` evaluates the zero cross-terms exactly.
+    That extra solve makes the pipe the one geometry where this flag
+    costs throughput (Design notes: "The spin quad's throughput"), and
+    the pass's cost beyond its solves is matvec volume (Design notes:
+    "Why this pass costs ~2x Cartesian").  The trade is forced, not
+    chosen: the `$\mp 2im/r^2$` spin coupling is what the annulus lags
+    and the axis forbids lagging, so exact diagonalization -- and the
+    doubling it brings -- is the only route here.
 
     Boundary conditions, and the two iterated wall differences
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -723,123 +804,61 @@ def _imm_iteration_vw(
     conditions plus the influence unknown, so neither has a free wall
     value to source at all.
 
-    Why the iterate and not `$t^n$` -- measured
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    Lagging the two differences to `$t^n$`, which this scheme did until
-    2026-08-01, is **unstable**, and invisible until it is fatal.  What
-    the sums do not cancel is `$(L_{s+}^{-1} - L_{s-}^{-1})\,d$`: the
-    two spin families differ by `$4m/r^2$` in `$m_{\mathrm{eff}}^2$`
-    against a Helmholtz scale `$1/(c\nu\Delta t)$`, so the leftover is
-    small only while `$\nu/\Delta r$` is.  Being computed from the
-    state, it fed the next step's wall data, closing a growth loop
-    **across time steps**, where nothing damped or observed it.
-    Measured on ``pipe`` (`$32^2$` transverse modes, `$l_z = 5$`,
-    `$\Delta t = 0.01$`, random IC of amplitude 0.1), lagged against
-    iterated, with a legacy-path control clean in every row:
+    Why the iterate and not `$t^n$`
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Lagging the two differences to `$t^n$` is **unstable**, and
+    invisible until it is fatal.  What the sums do not cancel is
+    `$(L_{s+}^{-1} - L_{s-}^{-1})\,d$`: the two spin families differ by
+    `$4m/r^2$` in `$m_{\mathrm{eff}}^2$` against a Helmholtz scale
+    `$1/(c\nu\Delta t)$`, so the leftover is small only while
+    `$\nu/\Delta r$` is.  Computed from the state, it would feed the
+    next step's wall data, closing a growth loop **across time steps**,
+    where nothing damps or observes it; evaluated on the iterate, the
+    loop sits inside the corrector, whose contraction bounds and
+    reports it.  Zeroing the differences instead -- formally
+    admissible, since only the sums are physical -- is worse than the
+    lag: they are load-bearing, not arbitrary.  The measurements, and
+    what a guard for this class of defect has to look like: Design
+    notes, "Wall differences on the iterate".
 
-    - `$\mathrm{Re} = 1$` / `$n_r = 32$`: lagged non-finite at
-      `$t = 0.37$`; iterated decays monotonically to 1.7e-4 over 100
-      steps (legacy 1.6e-4).
-    - `$\mathrm{Re} = 10$` / `$n_r = 32$`: lagged non-finite at
-      `$t = 2.06$`; iterated clean, 3.0e-4 at `$t = 3$`.
-    - `$\mathrm{Re} = 100$` / `$n_r = 64$`: lagged tracked the legacy
-      path to
-      **six significant figures for 600 steps** and then departed
-      exponentially (0.65 against 1.5e-2 at `$t = 9$`); iterated tracks
-      it throughout (1.733550e-2 against 1.733529e-2 at step 800).
-    - `$\mathrm{Re} = 100$` / `$n_r = 128$`: lagged non-finite at
-      `$t = 5.1$`; iterated 9.351495e-3 against the legacy path's
-      9.351498e-3
-      at step 999 -- seven significant figures.
-    - `$\mathrm{Re} = 1800$` / `$n_r = 128$`, the shipped
-      ``pipe-consistent-imm`` regime at a production wall-normal
-      resolution: both forms clean and identical to seven significant
-      figures (2.758548e-1 at step 1999).  **The repair is a no-op
-      where the lag was already benign** -- and its price is nil:
-      identical ``pipe-consistent-imm`` temporal self-convergence to
-      four significant figures and a step time inside CPU noise
-      (measured on the pass before its difference halves were
-      carried; see below).
-
-    Two properties of the old failure say what a guard for this class
-    of defect has to look like.  Its growth rate was proportional to
-    `$\nu$` and **independent of `$\Delta t$`** (a 10x smaller step
-    diverged at the same physical time, so no step reduction helped),
-    and its boundary was crossed by **refinement** at fixed
-    `$\mathrm{Re}$`.  A fixed-horizon, fixed-resolution smoke entry can
-    see neither; what catches it is a default-vs-legacy comparison at
-    the intended `$(\mathrm{Re}, n_r)$`, read digit by digit.  It also
-    had nothing to do with the polymer, though it was first found and
-    misattributed there: ``viscoelastic-pipe`` reproduced every row,
-    including at `$\beta = 1$` where the polymer stress is decoupled
-    from the velocity entirely, and raising `$\kappa$` 200x changed
-    nothing.
-
-    Zeroing the differences instead of lagging them -- formally as
-    admissible, since only the sums are physical -- was also tried and
-    is *worse* than the lag (`$t \approx 0.35$` against `$0.37$`): they
-    are load-bearing, not arbitrary.
-
-    The two difference halves are carried, not re-derived -- measured
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    The two difference halves are carried, not re-derived
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     Only the sums feed the recovery and the reconstruction, so the
     differences `$d_\Phi = (\Phi_+ - \Phi_-)/2$` and
     `$d_\omega = (\omega_+ - \omega_-)/2$` that this pass *solves for*
-    never reach the velocity.  Until 2026-09 they were dropped and, at
-    the next step, re-derived kinematically from the reconstructed
-    state for the explicit half.  The discrete kinematics do not
-    commute with the discrete dynamics -- the commutators are
+    never reach the velocity.  Re-deriving them kinematically from the
+    reconstructed state each step would replace the solved values by
+    ones `$O(\varepsilon_h)$` off -- the discrete kinematics do not
+    commute with the discrete dynamics, and the commutators are
     truncation-sized and largest near the axis, where only
-    `$m = \pm 1$` is nonzero -- so each step replaced the solved
-    differences by values `$O(\varepsilon_h)$` off, and that mismatch
-    re-entered the sums through the `$\mp 2im/r^2$` coupling with
-    weight `$\Delta t$`: an `$O(\Delta t\,\varepsilon_h)$` **global**
-    error, i.e. first order in time wherever it dominates the
-    second-order term.  It did at small `$n_r$`: self-convergence from a
-    relaxed state (8x17x8, Re 100) measured orders 0.96 / 1.01 / 1.08
-    and 175x the annulus's error at `$\Delta t = 0.01$` (7.9e-4 against
-    4.5e-6), with the corrector at `$10^{-12}$`;
-    still first order at `$n_r = 33$`, second order by `$n_r = 65$`.
-    The Cartesian and annular passes discard nothing that feeds back
-    and were clean order 2 under the same protocol.
-
-    So the two halves ride as trailing slots of the solver-basis state
-    (*carried_n* in, the last return out; evaluated on the
-    accepted state by :func:`kinematic_differences` only when a state
-    enters the solver): the same configuration then measures 2.00 /
-    2.00 / 2.02, its errors 8x smaller at `$\Delta t = 0.02$` and 64x
-    at `$0.0025$` (1.88e-4 ... 2.89e-6).  Carrying either half alone
-    leaves it first order (0.98 / 1.02 / 1.09 and 0.95 / 1.01 / 1.08).
-    The carried halves do not stay equal to the ones the velocity
-    implies -- they are two discretizations of one continuum quantity
-    -- but the gap between them is spatial truncation, bounded in time
-    and removed by refinement: 20 steps from a relaxed state it is
-    1.1e-1 / 1.2e-2 / 1.1e-3 relative at `$n_r$` = 17 / 33 / 65.
+    `$m = \pm 1$` is nonzero -- and that mismatch re-enters the sums
+    through the `$\mp 2im/r^2$` coupling with weight `$\Delta t$`: an
+    `$O(\Delta t\,\varepsilon_h)$` **global** error, first order in
+    time wherever it dominates the second-order term.  So the two
+    halves ride as trailing slots of the solver-basis state
+    (*carried_n* in, the last return out; evaluated on the accepted
+    state by :func:`kinematic_differences` only when a state enters the
+    solver).  The carried halves do not stay equal to the ones the
+    velocity implies -- they are two discretizations of one continuum
+    quantity -- but the gap between them is spatial truncation, bounded
+    in time and removed by refinement.
 
     The halves come from the corrector's *last iterate*, whose wall
     data the wall row sources through the wall stencil.  Carried as
     solved, they would keep that iterate's residual, amplified by the
-    stencil (whose weight grows like `$n_r^4$`) -- a residual the
-    re-derived pass threw away every step, and one that a weakly
-    damped mode of the pipe's step (present before the carry, at low
-    `$\mathrm{Re}$` on fine grids) lets accumulate: at Re 100 /
-    `$n_r = 128$` and the default tolerance it moved `$E'$` by 1.7e-3
-    after 1000 steps.  So the last stage re-anchors both halves on the
-    *accepted* velocity's wall data, a rank-one update per mode through
-    the unit response's sum half (``phi_1_sum``), leaving what a fully
-    converged corrector would carry; that run then sits 1.6e-5 from
-    its own `$10^{-12}$` result.  At the default tolerance (`$10^{-5}$`)
-    the order study above reaches the corrector's ordinary floor at its
-    smallest step (3.7e-6 against 2.9e-6), still 8-50x below the
-    re-derived pass at every step size.
-    The influence-matrix correction reaches the differences as well,
-    through ``flow.phi_1_diff``, the difference half of the unit-wall
-    `$\Phi$` response.  They are not a representation of the state in
-    their own right, only the part of the evolved quad the velocity
-    does not determine, so nothing outside the stepper reads them
-    (``from_solver_basis`` drops them); a snapshot stores them
+    stencil (whose weight grows like `$n_r^4$`), so the last stage
+    re-anchors both halves on the *accepted* velocity's wall data, a
+    rank-one update per mode through the unit response's sum half
+    (``phi_1_sum``), leaving what a fully converged corrector would
+    carry.  The influence-matrix correction reaches the differences as
+    well, through ``flow.phi_1_diff``, the difference half of the
+    unit-wall `$\Phi$` response.  They are not a representation of the
+    state in their own right, only the part of the evolved quad the
+    velocity does not determine, so nothing outside the stepper reads
+    them (``from_solver_basis`` drops them); a snapshot stores them
     separately so that a resume continues exactly
-    (``outs.snapshot_embed_carry``).
+    (``outs.snapshot_embed_carry``).  The measured orders and residuals:
+    Design notes, "Carrying the difference halves".
 
     Parity
     ~~~~~~
@@ -1144,8 +1163,7 @@ def _imm_iteration(
     flow_: CylindricalFlow,
     carried_n: Array | None = None,
 ) -> tuple[Array, Array, dict[str, Array], Array | None]:
-    r"""One implicit cylindrical step: dispatch on
-    ``res.consistent_imm``.
+    r"""One implicit cylindrical step: dispatch on ``res.consistent_imm``.
 
     Returns ``(velocity_new, correction, aux, carried_new)``: the
     default pass takes and returns the two carried spin-quad
@@ -1189,7 +1207,7 @@ def _imm_iteration(
     identity at all, both `$D_2$` fits stay direct, and the residual is
     machine-eps and flat under refinement on any initial condition.
     That failure is also why the `$x = r^2$` fit has no remaining job
-    (:func:`~.cylindrical.build_parity_reduced_matrices`).
+    (the ``cylindrical`` Design notes).
     """
     if params.res.consistent_imm:
         return _imm_iteration_vw(

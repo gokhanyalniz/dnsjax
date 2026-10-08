@@ -839,7 +839,7 @@ def _build_A_base(D1: Array, D2: Array, inv_r: Array) -> Array:
 
     Applied as one matvec wherever a field needs
     `$D_2 x + (1/r) D_1 x$` and `$D_1 x$` has no other consumer (why it
-    pays: :func:`._cylindrical_stepping._imm_iteration_vw`); where
+    pays: the ``_cylindrical_stepping`` Design notes); where
     `$D_1 x$` is reused, the split form stays.  The fused product is
     not bit-identical to the split one, so a change to it is guarded by
     ``tests/test_imm_continuity.py``, the band-vs-dense parity tests
