@@ -1,5 +1,4 @@
-"""Triply-periodic geometry: Fourier class, differential operators, norms,
-base dataclass, solvers, and stepper factory.
+r"""Triply-periodic geometry: operators, norms, solvers and stepper.
 
 Provides all geometry-general infrastructure for triply-periodic flows:
 the ``Fourier`` wavenumber class, the ``TriplyPeriodicFlow`` base
@@ -8,8 +7,7 @@ correct operations, divergence correction, state initialization, and the
 ``build_triply_periodic_stepper`` factory.
 
 Flow-specific modules (e.g. ``flows.triply_periodic.monochromatic``)
-subclass
-``TriplyPeriodicFlow`` to define the base flow, then call
+subclass ``TriplyPeriodicFlow`` to define the base flow, then call
 ``build_triply_periodic_stepper`` to obtain ready-to-use time-stepping
 functions.
 """
@@ -53,7 +51,10 @@ class Fourier:
 
     ``k_metric`` equals 2 for `$k_x > 0$` and 1 for
     `$k_x = 0$`, accounting for the Hermitian symmetry of
-    the real FFT.
+    the real FFT.  ``lapl`` is `$-k^2$` and ``inv_lapl`` its inverse,
+    zero wherever `$k^2 = 0$`: at the mean mode, and at padding slots,
+    whose wavenumbers here are zero rather than placeholders -- their
+    fields are identically zero and no per-mode operator is solved.
 
     The wavenumber arrays are global multi-device arrays: host-side
     consumers recompute them from the JAX-free
@@ -170,9 +171,7 @@ def divergence(velocity_spec: Array, kx: Array, ky: Array, kz: Array) -> Array:
 
 
 def curl(velocity_spec: Array, kx: Array, ky: Array, kz: Array) -> Array:
-    r"""Spectral curl (vorticity):
-    `$i \mathbf{k} \times \mathbf{u}_{\text{spec}}$`.
-    """
+    r"""Spectral curl (vorticity): `$i \mathbf{k} \times \mathbf{u}$`."""
     return 1j * jnp.array(
         [
             ky * velocity_spec[2] - kz * velocity_spec[1],
@@ -188,8 +187,7 @@ def gradient(data_spec: Array, kx: Array, ky: Array, kz: Array) -> Array:
 
 
 def inverse_laplacian(data_spec: Array, inv_lapl_spec: Array) -> Array:
-    """Apply the inverse spectral Laplacian
-    (pointwise multiply by `$-1/k^2$`)."""
+    """Apply the inverse spectral Laplacian (multiply by `$-1/k^2$`)."""
     return inv_lapl_spec * data_spec
 
 
@@ -223,16 +221,14 @@ class TriplyPeriodicFlow:
 
         For the triply-periodic case the Helmholtz operator is diagonal
         in Fourier space, so the implicit solve reduces to pointwise
-        operations:
+        operations, the explicit part and the inverse of the implicit
+        part:
 
-            `$ldt_1 = \frac{1}{\Delta t}
-            + (1-c) \frac{\nabla^2}{\mathrm{Re}}$`
-            (explicit part)
-            `$ildt_2 = \left(
-            \frac{1}{\Delta t}
-            - c \frac{\nabla^2}{\mathrm{Re}}
-            \right)^{-1}$`
-            (inverse of implicit part)
+        .. math::
+            \mathrm{ldt}_1 = \frac{1}{\Delta t}
+              + (1-c)\,\frac{\nabla^2}{\mathrm{Re}}, \qquad
+            \mathrm{ildt}_2 = \Bigl(\frac{1}{\Delta t}
+              - c\,\frac{\nabla^2}{\mathrm{Re}}\Bigr)^{-1}.
 
         The mean mode `$(k_y, k_z, k_x) = (0, 0, 0)$` is zeroed out,
         since it is passive (constant shift) for periodic flows.
@@ -421,7 +417,7 @@ def _get_rhs_core(
     )
     if measure_fn is not None:
         nonlin, measurements = nonlin
-    # Pressure Poisson: `$\\nabla^2 p = \\nabla \\cdot \\mathbf{NL}$`
+    # Pressure Poisson: `$\nabla^2 p = \nabla \cdot \mathbf{NL}$`
     lapl_pressure = divergence(nonlin, fourier_.kx, fourier_.ky, fourier_.kz)
     # Subtract pressure gradient to enforce incompressibility
     rhs_no_lapl = nonlin - gradient(
@@ -581,8 +577,8 @@ def build_triply_periodic_stepper(
     7-tuple as the wall-bounded builder (``set_dt`` /
     ``reset_ab2_kappa`` are the adaptive-dt hooks backed by
     ``_build_dt_leaves``).  ``step_cnab2`` and its measured variant
-    are the CN/AB2 scheme
-    (``step.scheme == "cnab2"``).  The post-step divergence
+    are the CN/AB2 scheme (``step.scheme == "cnab2"``).  The post-step
+    divergence
     projection + mean-mode zeroing (:func:`_finalize_state`) is
     fused into every step via ``make_stepper``'s *finalize_fn*,
     so the accepted state is already projected on return (no
@@ -610,30 +606,36 @@ def build_triply_periodic_stepper(
 
     def predict_and_fully_correct(
         state: Array,
-    ) -> tuple[Array, Array, Array]:
-        """Fused predict + corrector loop with bound singletons."""
+    ) -> tuple[Array, Array, Array, dict[str, Array]]:
+        """Fused predict + corrector loop with bound singletons.
+
+        Returns ``(state, error, num_c, aux)``, *aux* empty here.
+        """
         return _predict_and_fully_correct_jit(state, fourier, flow)
 
     def predict_and_fully_correct_measured(
         state: Array,
-    ) -> tuple[Array, Array, Array, dict[str, Array]]:
+    ) -> tuple[Array, Array, Array, dict[str, Array], dict[str, Array]]:
         """Fused step + physical-space measurements (at `$u^n$`)."""
         return _predict_and_fully_correct_measured_jit(state, fourier, flow)
 
     def step_cnab2(
         state: Array, carry: Array
-    ) -> tuple[Array, Array, Array, Array]:
-        """One CN/AB2 step with bound singletons.  Returns
-        ``(state_next, carry, error, num_c)`` (``error``/``num_c`` are
-        ``0`` -- triply-periodic needs no base-flow-coupling corrector,
-        its Fourier ``y`` making that term non-stiff).  The divergence
-        projection (:func:`_finalize_state`) is fused into the step,
-        as for the corrector scheme."""
+    ) -> tuple[Array, Array, Array, Array, dict[str, Array]]:
+        """One CN/AB2 step with bound singletons.
+
+        Returns ``(state_next, carry, error, num_c, aux)``: ``error`` and
+        ``num_c`` are ``0`` -- triply-periodic needs no base-flow-coupling
+        corrector, its Fourier ``y`` making that term non-stiff -- and
+        *aux* is empty.  The divergence projection
+        (:func:`_finalize_state`) is fused into the step, as for the
+        corrector scheme.
+        """
         return _step_cnab2_jit(state, carry, fourier, flow)
 
     def step_cnab2_measured(
         state: Array, carry: Array
-    ) -> tuple[Array, Array, Array, Array, dict[str, Array]]:
+    ) -> tuple[Array, Array, Array, Array, dict[str, Array], dict[str, Array]]:
         """CN/AB2 step + physical-space measurements (at `$u^n$`)."""
         return _step_cnab2_measured_jit(state, carry, fourier, flow)
 
