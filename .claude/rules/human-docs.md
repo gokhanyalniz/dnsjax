@@ -22,7 +22,11 @@ paths:
   only mathematical claims, verified against the code, never
   phenomenological ones.
 - Display math goes in ```` ```math ```` fences: GitHub's double-dollar
-  blocks break on a line that starts with `-` or `+`. No dollar sign
-  directly after an en-dash. An inline `$...$` never spans a line break
-  (GitHub renders it raw).
+  blocks break on a line that starts with `-` or `+`. An inline `$...$`
+  never spans a line break (GitHub renders it raw).
+- GitHub's Markdown parser runs before the math renderer. In inline
+  math `\,` and `\{` lose their backslash, `<` arrives double-escaped
+  and `[a](b)` becomes a link: write `\ `, `\lbrace` / `\rbrace` and
+  `\lt`, or use a math block. A `$` directly after a hyphen or an
+  en-dash does not open math.
 - Em-dashes stay: a spaced hyphen ` - ` used as a dash becomes ` — `.
