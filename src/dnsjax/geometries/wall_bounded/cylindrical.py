@@ -2,19 +2,18 @@ r"""Cylindrical geometry: Fourier class, norms, IMM, and solvers.
 
 Provides all geometry-general infrastructure for wall-bounded
 cylindrical flows: the ``Fourier`` wavenumber class, the
-``CylindricalFlow`` base dataclass (radial CGL grid -- half-CGL
-under the default ``iterative-cn`` scheme, rigged-CGL under
-``cnab2``, selected by ``geo.grid_type``, parity-reduced FD
-matrices, IMM operators),
-spectral solvers (influence-matrix method, predictor-corrector
-time stepping), and diagnostic helpers (norms, perturbation
-energy, centreline interpolation).
+``CylindricalFlow`` base dataclass (the radial grid -- half-CGL under
+the default ``iterative-cn`` scheme, rigged-CGL under ``cnab2``,
+selected by ``geo.grid_type`` -- its parity-reduced FD matrices and
+the IMM operators), spectral solvers (influence-matrix method,
+predictor-corrector time stepping), and diagnostic helpers (norms,
+perturbation energy, centreline interpolation).
 
 Decoupled velocity formulation
 ------------------------------
 The cylindrical Navier-Stokes vector Laplacian couples
 `$u_r$` and `$u_\theta$` through `$1/r^2$` terms.
-Following Openpipeflow (Willis 2017), we decouple them via
+Following openpipeflow (Willis 2017), we decouple them via
 
 .. math::
     u_+ = u_r + i\,u_\theta, \qquad
@@ -115,6 +114,27 @@ corrector / norm and the stepper factory -- lives once in
 :mod:`._cylindrical_stepping`, shared with the curved (toroidal) pipe
 and parametrized by the flow dataclass; the names below re-exported
 from it keep this module the single import site it has always been.
+
+Design notes
+------------
+**No axis-regular fit in** `$x = r^2$`.  An axis-regular field is
+analytic in `$x = r^2$`, and a fit there gives
+`$D_{1,\mathrm{even}} = 2\,\mathrm{diag}(r) D_x$`,
+`$D_{1,\mathrm{odd}} = S + \mathrm{diag}(r) D_{1,\mathrm{even}} S$`
+with a matching direct `$D_2 = 2 D_x + 4x D_{xx}$`.  It buys a
+5-1000x *pointwise near-axis* accuracy gain but loses on every global
+measure: the refit trades away accuracy at `$r \approx 1$`, where the
+pipe's optimal-growth and wall-shear physics live.  On the Schmid &
+Henningson `$G_{\max} = 649$` case the mirrored fold
+(:func:`build_parity_reduced_matrices`) errs by -4.1 / -0.6 / -0.06 /
++0.01 % at `$N_r = 20/28/40/72$` against the fit's +357 / +37 / +3.5 /
++0.25 % (unchanged with ``res.consistent_imm`` either way), and on a
+random-IC pipe run the fit cost ~17x the corrector iterations.  Its
+other job -- making the near-axis `$1/r$` commutator exact, which only
+the rejected composed-`$D_2$` ``consistent_imm`` route needed -- is
+moot: the reconstruction scheme
+(:func:`._cylindrical_stepping._imm_iteration_vw`) needs no operator
+identity at all.
 """
 
 import copy
@@ -504,22 +524,18 @@ def build_radial_cgl_grid(Nr: int, axis_gap: int = 1) -> Array:
       default; even auxiliary total, no point on the axis,
       staggered `$r_0 \approx \Delta r/2$`).
 
-    No degree of freedom lives in `$[0, r_0)$` (the parity
-    ghosts close the FD stencils across the axis and the
-    quadrature covers the segment via the parity-specific
-    spectral rule in :func:`build_cylindrical_grid` /
-    :func:`~dnsjax.fd.cgl_radial_quadrature_weights`), so
-    `$r_0$` is a free discretization choice.  It bounds the near-axis azimuthal
-    advection CFL `$\propto 1/r_0$` -- the pipe's explicit
-    (cnab2) timestep limit -- so the rigged grid's
-    `$2\times$`-larger `$r_0$` raises the admissible cnab2
-    ``dt`` (by 1.4x, measured: the :mod:`dnsjax.parameters` Design
-    notes), which is why it is the ``cnab2`` default; the tighter
-    half-CGL axis destabilizes cnab2 (a near-axis explicit
-    instability) and is restricted to
-    ``iterative-cn`` (``geo.grid_type = "half-cgl"``), which
-    integrates it cleanly, gains its finer near-axis
-    resolution, and defaults to it.
+    No degree of freedom lives in `$[0, r_0)$` (the parity ghosts close the FD
+    stencils across the axis and the quadrature covers the segment via the
+    parity-specific spectral rule in :func:`build_cylindrical_grid` /
+    :func:`~dnsjax.fd.cgl_radial_quadrature_weights`), so `$r_0$` is a free
+    discretization choice.  It bounds the near-axis azimuthal advection CFL
+    `$\propto 1/r_0$` -- the pipe's explicit (cnab2) timestep limit -- so the
+    rigged grid's `$2\times$`-larger `$r_0$` raises the admissible cnab2 ``dt``
+    (by 1.4x, measured: the :mod:`dnsjax.parameters` Design notes), which is
+    why it is the ``cnab2`` default; the tighter half-CGL axis destabilizes
+    cnab2 (a near-axis explicit instability) and is restricted to
+    ``iterative-cn`` (``geo.grid_type = "half-cgl"``), which integrates it
+    cleanly, gains its finer near-axis resolution, and defaults to it.
 
     Parameters
     ----------
@@ -561,25 +577,9 @@ def build_parity_reduced_matrices(
     where `$D_{\mathrm{pos}}$` is the positive-row,
     positive-column block and `$\widetilde{D}_{\mathrm{ghost}}$`
     is the positive-row, ghost-column block with columns
-    flipped.
-
-    Rejected alternative: an axis-regular fit in `$x = r^2$` (an
-    axis-regular field is analytic in `$x$`), which gives
-    `$D_{1,\mathrm{even}} = 2\,\mathrm{diag}(r) D_x$`,
-    `$D_{1,\mathrm{odd}} = S + \mathrm{diag}(r) D_{1,\mathrm{even}} S$`
-    with a matching direct `$D_2 = 2 D_x + 4x D_{xx}$`.  It buys a
-    5-1000x *pointwise near-axis* accuracy gain but loses on every
-    global measure: the refit trades away accuracy
-    at `$r \approx 1$`, where the pipe's optimal-growth and wall-shear
-    physics live.  On the Schmid & Henningson `$G_{\max} = 649$` case
-    the mirrored fold errs by -4.1 / -0.6 / -0.06 / +0.01 % at
-    `$N_r = 20/28/40/72$` against the fit's +357 / +37 / +3.5 / +0.25 %
-    (unchanged with ``res.consistent_imm`` either way), and on a
-    random-IC pipe run the fit cost ~17x the corrector iterations.  Its
-    other job -- making the near-axis `$1/r$` commutator exact, which
-    only the rejected composed-`$D_2$` ``consistent_imm`` route needed
-    -- is moot: the reconstruction scheme
-    (:func:`_imm_iteration_vw`) needs no operator identity at all.
+    flipped.  The mirrored fold beats an axis-regular fit in
+    `$x = r^2$` on every global measure (Design notes: "No axis-regular
+    fit in `$x = r^2$`").
 
     Returns
     -------
@@ -615,8 +615,7 @@ def build_cylindrical_grid(
     grid_type: str | None = None,
     grid_stretch: float = 1.5,
 ) -> tuple[Array, Array, Array, Array, Array, Array, Array]:
-    r"""Build radial grid, parity-reduced D1 matrices, weights,
-    and `$1/r$` for the cylindrical geometry.
+    r"""Build the radial grid, parity-reduced D1 matrices, weights and `$1/r$`.
 
     Grid selection (precedence):
 
@@ -642,7 +641,7 @@ def build_cylindrical_grid(
     ny:
         Number of radial grid points (`$N_r$`).
     fd_order:
-        Finite-difference stencil half-bandwidth.
+        Finite-difference accuracy order (``res.fd_order``).
     wall_grid:
         Optional path to a custom radial grid file.
         File format: one coordinate per line in
@@ -1034,11 +1033,10 @@ _WallBoundedOp = DenseJAXSolver | PerModeBandedPallasOperator
 class CylindricalFlow:
     r"""Precomputed data for wall-bounded cylindrical flows.
 
-    Subclasses must set ``base_flow`` and ``curl_base_flow``
-    *after* calling
-    ``super().__post_init__()``, which builds the radial CGL
-    grid (half-CGL or rigged-CGL, per the resolved
-    ``geo.grid_type``), parity-reduced FD matrices, and all
+    Subclasses must set ``base_flow`` and ``curl_base_flow`` *after*
+    calling ``super().__post_init__()``, which builds the radial grid
+    (half-CGL or rigged-CGL by default, per the resolved
+    ``geo.grid_type``), the parity-reduced FD matrices, and all
     per-mode IMM operators.
 
     The velocity state is carried through the solver in decoupled
@@ -1051,19 +1049,15 @@ class CylindricalFlow:
     and in the physical triad everywhere outside it (the module
     docstring; ``to_pm_basis``/``from_pm_basis``).
 
-    Three separate Helmholtz operators are built:
-
-    - `$H_{k,+}$` with `$m_{\mathrm{eff}} = m + 1$`
-    - `$H_{k,-}$` with `$m_{\mathrm{eff}} = m - 1$`
-    - `$H_{k,z}$` with `$m_{\mathrm{eff}} = m$`
-
-    The pressure Poisson operator `$L_k$` uses
-    `$m_{\mathrm{eff}} = m$`.  Parity selection:
-
-    - `$L_k$` and `$H_{k,z}$` use parity `$(-1)^m$`
-      (``m_is_even`` from ``fourier``).
-    - `$H_{k,+}$` and `$H_{k,-}$` use parity `$(-1)^{m+1}$`
-      (the opposite: ``~m_is_even``).
+    The default scheme builds the spin pair `$(L_{s+}, L_{s-})$` -- the
+    `$H_{k,\pm}$` families, `$m_{\mathrm{eff}} = m \pm 1$` on the
+    velocity parity `$(-1)^{m+1}$` (:func:`_hk_vw_bands`) -- and the
+    `$u_r$` recovery operator `$L_{v,\mathrm{mod}}$` in the ``Lk_op``
+    slot (:func:`_build_Lv_dir_band_gpu`).  The legacy scheme builds
+    three Helmholtz operators, `$H_{k,\pm}$` and `$H_{k,z}$`
+    (`$m_{\mathrm{eff}} = m$`), and the pressure Poisson `$L_k$`
+    (`$m_{\mathrm{eff}} = m$`), with `$L_k$` and `$H_{k,z}$` on parity
+    `$(-1)^m$` (``m_is_even``) and `$H_{k,\pm}$` on `$(-1)^{m+1}$`.
 
     Attributes
     ----------
@@ -1072,16 +1066,14 @@ class CylindricalFlow:
         first-derivative FD matrix, shape ``(Nr, Nr)``.
     D1_ghost:
         Ghost correction for `$D_1$`
-        (`$D_{1,\mathrm{even}} - D_{1,\mathrm{pos}}$`).
-        Nonzero only in the first
-        `$g \sim (p+2)//2$` rows near `$r = 0$`, so only
-        those rows are stored: shape ``(g, Nr)``.  Applied
-        via ``out.at[:g].add(...)`` so the ghost GEMM cost
-        is `$g/N_r$` of the pos part instead of doubling it.
+        (`$D_{1,\mathrm{even}} - D_{1,\mathrm{pos}}$`), nonzero only in
+        a small leading corner near `$r = 0$`, so only that ``(g, c)``
+        corner is stored (:func:`_ghost_extent`) and applied to the
+        first ``c`` radial points (:func:`_parity_y_matvec`).
     A_base_pos, A_base_ghost:
         The radial base operator
         `$A_{\mathrm{base}} = D_2 + (1/r) D_1$` in that same
-        ``pos``/``ghost`` pair, shapes ``(Nr, Nr)`` / ``(g, Nr)``.
+        ``pos``/``ghost`` pair, shapes ``(Nr, Nr)`` / ``(g, c)``.
         Every runtime consumer of `$D_2$` needs exactly this
         combination and nothing else from it, so the combination is
         what is carried; `$D_{2,\mathrm{pos}}$` and its ghost stay
@@ -1176,11 +1168,10 @@ class CylindricalFlow:
     def __post_init__(self) -> None:
         r"""Build radial grid, FD matrices, and IMM operators.
 
-        Constructs the radial CGL grid on `$(0, 1]$` (half-CGL or
-        rigged-CGL, per the resolved ``geo.grid_type``), builds
-        parity-reduced FD matrices,
-        assembles and factorizes `$L_k$`, `$H_{k,+}$`,
-        `$H_{k,-}$`, `$H_{k,z}$` directly on the device, then
+        Constructs the radial grid on `$(0, 1]$` (per the resolved
+        ``geo.grid_type``), builds the parity-reduced FD matrices,
+        assembles and factorizes the scheme's operators directly on the
+        device (the class docstring lists them per scheme), then
         derives all homogeneous IMM data.
         """
         Nr = params.res.ny
@@ -1452,8 +1443,7 @@ class CylindricalFlow:
     def _derive_imm_homogeneous_data(
         self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
     ) -> None:
-        r"""Fill the homogeneous responses and the `$1 \times 1$`
-        ``M_inv`` on-device: dispatch on ``res.consistent_imm``.
+        r"""Fill the homogeneous responses and the 1x1 ``M_inv``, per scheme.
 
         Both schemes carry the same scalar (one-wall) capacitance
         structure; only the chain the column solves differs.
@@ -1480,8 +1470,7 @@ class CylindricalFlow:
     def _derive_vw_homogeneous_data(
         self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
     ) -> None:
-        r"""Homogeneous data of the `$u_r$`-`$\omega_r$` scheme
-        (``res.consistent_imm``).
+        r"""Homogeneous data of the `$u_r$`-`$\omega_r$` scheme.
 
         The pipe's single wall gives one free `$\Phi$` wall value, so
         the influence matrix is `$1 \times 1$`.  `$\Phi$` is the *sum*
@@ -1545,8 +1534,7 @@ class CylindricalFlow:
     def _precompute_bulk_response(
         self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
     ) -> None:
-        r"""Precompute the Helmholtz response for constant-bulk-
-        velocity enforcement.
+        r"""Precompute the mean-mode response that holds the bulk velocity.
 
         Solves `$H_{k,z}\,h = \mathbf{1}$` (unit uniform RHS,
         zero wall BC) at the mean mode `$(m, k_z) = (0, 0)$`.
@@ -1581,11 +1569,10 @@ class CylindricalFlow:
         ones_vec = jnp.ones(Nr, dtype=sharding.float_type).at[-1].set(0.0)
         rhs = jnp.where(fourier_.mean_mask[0, ..., None], ones_vec, 0.0)
 
-        # The mean-mode axial Helmholtz: by default it is the mean
-        # plane of the minus slot; on the legacy path the z slot of the
-        # (+, -, z) group
-        # IS the same operator (spliced there by the packing, see
-        # :func:`_vw_spin_groups`).
+        # The mean-mode axial Helmholtz: by default the mean plane of
+        # the minus slot (spliced there by the packing,
+        # :func:`_vw_spin_groups`), on the legacy path the z slot of
+        # the (+, -, z) group -- the same operator.
         zeros = jnp.zeros_like(rhs)
         if params.res.consistent_imm:
             stack, comp = [zeros, rhs], 1
@@ -1637,10 +1624,11 @@ class CylindricalFlow:
         return nonlin_phys
 
     def divergence_defect(self, state: Array, fourier_: Fourier) -> None:
-        r"""The straight divergence `$\nabla_0\cdot$` of the carried
-        state, which incompressibility forces to **zero** here, and to
-        an `$O(\kappa)$` field on the curved pipe.  ``None`` means
-        zero, and removes every dependent term at trace time.
+        r"""The straight divergence `$\nabla_0\cdot$` of the carried state.
+
+        Incompressibility forces it to **zero** here, and to an
+        `$O(\kappa)$` field on the curved pipe.  ``None`` means zero,
+        and removes every dependent term at trace time.
         """
         return None
 
@@ -1690,8 +1678,9 @@ class CylindricalFlow:
 def _vw_spin_groups(
     fourier_: Fourier,
 ) -> tuple[tuple[Array, Array], tuple[Array, Array]]:
-    r"""Per-slot `$(\text{parity}, m_{\mathrm{eff}}^2)$` of the spin
-    pair `$(+, -)$` used by the vw scheme, with the mean-plane packing
+    r"""Per-slot `$(\text{parity}, m_{\mathrm{eff}}^2)$` of the spin pair.
+
+    The pair `$(+, -)$` the vw scheme uses, with the mean-plane packing
     exception folded into the `$-$` slot.
 
     The vw quad `$(\Phi_\pm, \omega_\pm)$` rides the **existing**
@@ -1719,8 +1708,9 @@ def _hk_vw_bands(
     fourier_: Fourier,
     flow_: CylindricalFlow,
 ) -> list[Array]:
-    r"""Assemble the banded spin pair `$(L_{s+}, L_{s-})$` Helmholtz
-    group at *dt* (``res.consistent_imm``; Pallas backend).
+    r"""Assemble the banded spin-pair Helmholtz group at *dt*.
+
+    `$(L_{s+}, L_{s-})$`, default scheme, Pallas backend.
 
     Two families, not four: the vw quad solves `$(\Phi_+, \Phi_-)$` and
     `$(\omega_+, \omega_-)$` as two separate two-component batches
@@ -1769,9 +1759,11 @@ def _hk_vw_dense_mats(
     fourier_: Fourier,
     flow_: CylindricalFlow,
 ) -> list[Array]:
-    r"""Dense spin pair `$(L_{s+}, L_{s-})$` at *dt*, unfactored --
-    the twin of :func:`_hk_vw_bands` (which the band-vs-dense parity
-    test compares against)."""
+    r"""Dense spin pair `$(L_{s+}, L_{s-})$` at *dt*, unfactored.
+
+    The twin of :func:`_hk_vw_bands`, which the band-vs-dense parity
+    test compares against.
+    """
     kz2_s = fourier_.kz2[0, ..., None]
     mean_s = fourier_.mean_mask[0, ..., None]
     m_s = fourier_.m[0, ..., None]
@@ -1806,8 +1798,7 @@ def _hk_vw_dense_op(
     fourier_: Fourier,
     flow_: CylindricalFlow,
 ) -> DenseJAXSolver:
-    r"""Factored dense spin pair `$(L_{s+}, L_{s-})$` at *dt* (dense
-    backend)."""
+    r"""Factored dense spin pair `$(L_{s+}, L_{s-})$` at *dt* (dense)."""
     ops = [DenseJAXSolver(M) for M in _hk_vw_dense_mats(dt, fourier_, flow_)]
     return DenseJAXSolver.from_factors(
         lu=jnp.stack([o.lu for o in ops]),
