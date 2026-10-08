@@ -428,7 +428,8 @@ def static_pressure(
     *state* is the physical spectral perturbation the solver stores
     (``(3, Ny, Nkz, Nkx)``); returns ``(Ny, Nkz, Nkx)`` in the same
     layout.  Every array argument is a global array and reaches the
-    program as an argument (``.claude/rules/jax.md``).
+    program as an argument
+    (:func:`dnsjax.sharding.register_dataclass_pytree` says why).
     """
     n_hat, div_n = convective_nonlinear(state, fourier_, flow_)
     return pressure.solve(state, div_n, n_hat[1], flow_, fourier_)

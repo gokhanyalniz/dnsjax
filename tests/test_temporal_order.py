@@ -258,11 +258,7 @@ def _worker(
     *default_implicitness* leaves the model default."""
     os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1"
 
-    import jax
-
-    jax.config.update("jax_enable_x64", True)
-    jax.config.update("jax_platforms", "cpu")
-
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.parameters import (
         Parameters,
         padded_res,
@@ -284,7 +280,7 @@ def _worker(
         geo["lz"] = LZ
     update_parameters(
         Parameters(
-            dist={"np0": 1, "np1": 1, "platform": "cpu"},
+            dist={"np0": 1, "np1": 1},
             phys=phys,
             geo=geo,
             res={
@@ -310,6 +306,7 @@ def _worker(
         )
     )
     padded_res.set_padded_resolution(params)
+    configure_jax_platform(platform_from_argv())
 
     import importlib
 

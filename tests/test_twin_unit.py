@@ -73,10 +73,10 @@ os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
 # Configure JAX and the parameter singletons before importing sharding
 # or any geometry module (the bootstrap contract); the twin module
 # config is the plane-Couette minimal flow unit at a tiny resolution.
-from dnsjax.bootstrap import configure_jax_platform  # noqa: E402
-
-configure_jax_platform("cpu")
-
+from dnsjax.bootstrap import (  # noqa: E402
+    configure_jax_platform,
+    platform_from_argv,
+)
 from dnsjax.parameters import (  # noqa: E402
     Parameters,
     padded_res,
@@ -99,6 +99,7 @@ update_parameters(
     )
 )
 padded_res.set_padded_resolution(params)
+configure_jax_platform(platform_from_argv())
 
 import math  # noqa: E402
 

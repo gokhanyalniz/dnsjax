@@ -181,11 +181,7 @@ def _configure(system: str, np0: int, np1: int) -> None:
     )
     os.environ["NPROC"] = "1"
 
-    import jax
-
-    jax.config.update("jax_enable_x64", True)
-    jax.config.update("jax_platforms", "cpu")
-
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.parameters import (
         Parameters,
         padded_res,
@@ -215,7 +211,7 @@ def _configure(system: str, np0: int, np1: int) -> None:
 
     update_parameters(
         Parameters(
-            dist={"np0": np0, "np1": np1, "platform": "cpu"},
+            dist={"np0": np0, "np1": np1},
             phys=phys,
             geo=geo,
             res={
@@ -229,6 +225,7 @@ def _configure(system: str, np0: int, np1: int) -> None:
         )
     )
     padded_res.set_padded_resolution(params)
+    configure_jax_platform(platform_from_argv())
 
 
 # ── per-geometry discrete divergence (host numpy) ────────────────
@@ -306,7 +303,9 @@ def _max_divergence(true: np.ndarray, system: str) -> float:
         from dnsjax.geometries.wall_bounded.annular import build_annular_grid
 
         r1, r2 = derived_params.r_inner, derived_params.r_outer
-        _, d1, _, _, inv_r = build_annular_grid(ny, fd, r1, r2, *grid_args)
+        _, d1, _, _, inv_r = build_annular_grid(
+            ny, fd, *grid_args, r_inner=r1, r_outer=r2
+        )
         d1, inv_r = np.asarray(d1), np.asarray(inv_r)
 
     div = np.zeros_like(true[0])
@@ -561,11 +560,7 @@ def _peak_build(system: str, box: float, n: int) -> int:
     """Subprocess: build rolls at a resolved box; print ``PEAK=max|u'|``."""
     os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1"
     os.environ["NPROC"] = "1"
-    import jax
-
-    jax.config.update("jax_enable_x64", True)
-    jax.config.update("jax_platforms", "cpu")
-
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.parameters import (
         Parameters,
         padded_res,
@@ -584,7 +579,7 @@ def _peak_build(system: str, box: float, n: int) -> int:
     ny = n if system == "kolmogorov" else 33
     update_parameters(
         Parameters(
-            dist={"np0": 1, "np1": 1, "platform": "cpu"},
+            dist={"np0": 1, "np1": 1},
             phys=phys,
             geo=geo,
             res={
@@ -598,6 +593,7 @@ def _peak_build(system: str, box: float, n: int) -> int:
         )
     )
     padded_res.set_padded_resolution(params)
+    configure_jax_platform(platform_from_argv())
 
     from dnsjax.ic.localized_rolls import generate_localized_rolls
     from dnsjax.operators import spec_to_phys, spec_to_phys_2d

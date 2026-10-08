@@ -92,11 +92,9 @@ RTOL_PRESSURE = 1e-11
 
 
 def _configure(ndev: int, phys: dict, geo: dict, res: dict, lowres: dict):
-    """JAX on *ndev* CPU devices, then the parameter singletons."""
+    """The parameter singletons, then JAX on *ndev* CPU devices."""
     os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={ndev}"
-    from dnsjax.bootstrap import configure_jax_platform
-
-    configure_jax_platform("cpu")
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.parameters import (
         Parameters,
         padded_res,
@@ -117,6 +115,7 @@ def _configure(ndev: int, phys: dict, geo: dict, res: dict, lowres: dict):
     )
     validate_parameters()
     padded_res.set_padded_resolution(params)
+    configure_jax_platform(platform_from_argv())
     return params
 
 

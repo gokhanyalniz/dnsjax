@@ -40,7 +40,8 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
   (`--dist.np0 4`) but not several CPU devices. `np0 * np1` counts
   devices. The launch contract, SLURM and the per-task-visibility trap:
   the `parameters.Distribution` docstring.
-- Laminar smoke on a 1D and a 2D mesh (pick `ny` divisible by `np0`).
+- Laminar smoke on a 1D and a 2D mesh (any `ny` runs; one that `np0`
+  divides skips the y auto-pad).
   Expect `c/it = 0.00` (`c` counts corrections past the first), a
   stepping error of O(1e-18) or less and `E'` of O(1e-32) or less:
 
@@ -57,10 +58,6 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
   `uv run python -m dnsjax.analysis.transient_growth`. Converge `ny` /
   `nr` first: an unconverged `G_max` is an artefact (the module
   docstring, "Converging N_y").
-- Offline multi-device tests force CPU devices with
-  `XLA_FLAGS=--xla_force_host_platform_device_count=N` and set
-  `params.dist.np0`/`np1` before importing `sharding`. Never combine
-  that with `mpirun`.
 - A flow that decays is a matter of regime or time, not a solver bug.
   Sustained turbulence needs O(100) advective time units (smoke tests
   reach `t = 1`), `Re` above sustainment (plane Couette: ~350-500) and a
@@ -78,6 +75,11 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
   do not "fix" it), so concurrent suites oversubscribe and abort
   spuriously. A failure that does not reproduce on a clean serial rerun
   was contention: say so rather than re-running silently.
+- A heavy suite can take the machine down. First write what a fresh
+  session needs to resume into persistent memory, signed with the
+  session and boot time (parallel sessions share it): goal, changes,
+  what is verified, commands and log paths (logs outside the
+  scratchpad), what is left. Keep it current; delete it when done.
 - Background a long run with its output captured (`> log 2>&1`), queue
   suites with `&&` inside one background command, and read the verdict
   by grepping the log, never from a `tail` of a run you have not seen
@@ -99,9 +101,8 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
 - Before replacing a specialised numerical routine (quadrature,
   interpolation, a solve) with a general one, compare their accuracy on
   the special case, and keep the specialised one where it wins.
-- When a mask, branch or name exists only because of an upstream
-  representation, propose changing that representation before settling
-  for a rename or a docs fix.
+- Fix a problem at its source where possible; where not, make the
+  exception explicit where it lives, with the reason.
 
 ## Documentation rules
 

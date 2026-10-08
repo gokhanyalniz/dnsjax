@@ -46,20 +46,17 @@ Run as a script via
 from __future__ import annotations
 
 import os
-import sys
-
-sys.stdout.reconfigure(line_buffering=True)
 
 os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
 
-import jax  # noqa: E402
-
-jax.config.update("jax_enable_x64", True)
-jax.config.update("jax_platforms", "cpu")
-
-# Mutate global ``params`` before importing any dnsjax module that
-# captures values from it (``sharding.Sharding`` does so at class
-# definition time).  nz = 8 keeps nz_padded = 12 divisible by np1 = 2.
+# Set global ``params``, then configure JAX, before importing any
+# dnsjax module that captures values from it (``sharding.Sharding``
+# does so at class definition time).  nz = 8 keeps nz_padded = 12
+# divisible by np1 = 2.
+from dnsjax.bootstrap import (  # noqa: E402
+    configure_jax_platform,
+    platform_from_argv,
+)
 from dnsjax.parameters import params  # noqa: E402
 
 params.phys.system = "plane-couette"
@@ -70,7 +67,9 @@ params.res.fd_order = 4
 params.res.double_precision = True
 params.dist.np0 = 2
 params.dist.np1 = 2
+configure_jax_platform(platform_from_argv())
 
+import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 from jax.sharding import PartitionSpec as P  # noqa: E402

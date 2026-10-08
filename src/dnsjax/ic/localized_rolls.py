@@ -542,11 +542,11 @@ def generate_annular_rolls(
     rs, *_ = build_annular_grid(
         nr,
         params.res.fd_order,
-        r1,
-        r2,
         params.geo.wall_grid,
         params.geo.grid_type,
         params.geo.grid_stretch,
+        r_inner=r1,
+        r_outer=r2,
     )
     derived_params.wall_normal_grid = [float(v) for v in np.asarray(rs)]
 

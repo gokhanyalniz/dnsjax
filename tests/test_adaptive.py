@@ -248,11 +248,7 @@ def _configure(system: str, backend: str, consistent_imm: bool = True) -> None:
     """Configure JAX + the parameter singletons (1 CPU device, x64)."""
     os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1"
 
-    import jax
-
-    jax.config.update("jax_enable_x64", True)
-    jax.config.update("jax_platforms", "cpu")
-
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.parameters import (
         Parameters,
         padded_res,
@@ -280,7 +276,7 @@ def _configure(system: str, backend: str, consistent_imm: bool = True) -> None:
 
     update_parameters(
         Parameters(
-            dist={"np0": 1, "np1": 1, "platform": "cpu"},
+            dist={"np0": 1, "np1": 1},
             phys=phys,
             geo=geo,
             res={
@@ -297,6 +293,7 @@ def _configure(system: str, backend: str, consistent_imm: bool = True) -> None:
         )
     )
     padded_res.set_padded_resolution(params)
+    configure_jax_platform(platform_from_argv())
 
 
 class _LogCapture(logging.Handler):
@@ -430,20 +427,19 @@ def _worker(system: str, backend: str, consistent_imm: bool = True) -> None:
     cap = _LogCapture()
     jax_logger = logging.getLogger("jax")
     old_level = jax_logger.level
-    jax.config.update("jax_log_compiles", True)
     jax_logger.addHandler(cap)
     jax_logger.setLevel(logging.DEBUG)
     try:
-        fmod.set_dt(DT2)
-        s_cn, c_cn, *_ = fmod.step_cnab2(jnp.copy(state0), jnp.copy(carry))
-        *_, m2 = fmod.step_cnab2_measured(jnp.copy(s_cn), jnp.copy(c_cn))
-        s_ic, *_ = fmod.predict_and_fully_correct(jnp.copy(state0))
-        *_, m3 = fmod.predict_and_fully_correct_measured(jnp.copy(state0))
-        jax.block_until_ready((s_ic, m2["dt"], m3["dt"]))
+        with jax.log_compiles(True):
+            fmod.set_dt(DT2)
+            s_cn, c_cn, *_ = fmod.step_cnab2(jnp.copy(state0), jnp.copy(carry))
+            *_, m2 = fmod.step_cnab2_measured(jnp.copy(s_cn), jnp.copy(c_cn))
+            s_ic, *_ = fmod.predict_and_fully_correct(jnp.copy(state0))
+            *_, m3 = fmod.predict_and_fully_correct_measured(jnp.copy(state0))
+            jax.block_until_ready((s_ic, m2["dt"], m3["dt"]))
     finally:
         jax_logger.removeHandler(cap)
         jax_logger.setLevel(old_level)
-        jax.config.update("jax_log_compiles", False)
     assert not cap.messages, (
         f"{system}: set_dt({DT2}) retraced/recompiled:\n"
         + "\n".join(cap.messages)

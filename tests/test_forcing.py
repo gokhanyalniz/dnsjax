@@ -66,18 +66,16 @@ from __future__ import annotations
 import os
 import sys
 
-sys.stdout.reconfigure(line_buffering=True)
-
 os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
 
-import jax  # noqa: E402
-
-jax.config.update("jax_enable_x64", True)
-jax.config.update("jax_platforms", "cpu")
-
-# Mutate global ``params`` (and the ``force``/``probes`` extension
-# singletons) before importing any dnsjax module that captures values
-# from them (``sharding.Sharding`` does so at class definition time).
+# Set global ``params`` (and the ``force``/``probes`` extension
+# singletons), then configure JAX, before importing any dnsjax module
+# that captures values from them (``sharding.Sharding`` does so at
+# class definition time).
+from dnsjax.bootstrap import (  # noqa: E402
+    configure_jax_platform,
+    platform_from_argv,
+)
 from dnsjax.extensions import force_params, probes_params  # noqa: E402
 from dnsjax.parameters import derived_params, params  # noqa: E402
 
@@ -107,6 +105,7 @@ import numpy as np  # noqa: E402
 derived_params.wall_normal_grid = [
     float(v) for v in np.linspace(1.0, -1.0, NY)
 ]
+configure_jax_platform(platform_from_argv())
 
 import json  # noqa: E402
 import shutil  # noqa: E402
@@ -114,6 +113,7 @@ import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 
+import jax  # noqa: E402
 from _live import run_live  # noqa: E402
 from numpy.testing import (  # noqa: E402
     assert_allclose,

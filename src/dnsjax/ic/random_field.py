@@ -829,11 +829,11 @@ def generate_annular(
     rs, D1, _, y_weights, inv_r = build_annular_grid(
         Nr,
         params.res.fd_order,
-        r1,
-        r2,
         params.geo.wall_grid,
         params.geo.grid_type,
         params.geo.grid_stretch,
+        r_inner=r1,
+        r_outer=r2,
     )
     derived_params.wall_normal_grid = [float(v) for v in np.asarray(rs)]
 
@@ -942,11 +942,11 @@ def add_dean_laminar(state: Array) -> Array:
     rs, *_ = build_annular_grid(
         params.res.ny,
         params.res.fd_order,
-        derived_params.r_inner,
-        derived_params.r_outer,
         params.geo.wall_grid,
         params.geo.grid_type,
         params.geo.grid_stretch,
+        r_inner=derived_params.r_inner,
+        r_outer=derived_params.r_outer,
     )
     u_theta = dean_laminar_u_theta(rs, params.geo.eta)  # (Nr,) real
     # Place U_theta at the mean mode as the u_theta component.
@@ -1029,11 +1029,11 @@ def add_viscoelastic_laminar(vel_state: Array) -> Array:
     rs, D1, *_ = build_annular_grid(
         params.res.ny,
         params.res.fd_order,
-        r1,
-        r2,
         params.geo.wall_grid,
         params.geo.grid_type,
         params.geo.grid_stretch,
+        r_inner=r1,
+        r_outer=r2,
     )
     prof = viscoelastic_laminar_profiles(
         rs, D1, r1, r2, params.phys.wi, params.phys.epsilon
@@ -1088,11 +1088,11 @@ def generate_viscoelastic_dean(
     rs, D1, _, y_weights, inv_r = build_annular_grid(
         Nr,
         params.res.fd_order,
-        r1,
-        r2,
         params.geo.wall_grid,
         params.geo.grid_type,
         params.geo.grid_stretch,
+        r_inner=r1,
+        r_outer=r2,
     )
     derived_params.wall_normal_grid = [float(v) for v in np.asarray(rs)]
 

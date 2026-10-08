@@ -98,12 +98,8 @@ import time
 
 import jax
 
-# x64 must be set before any dnsjax module creates arrays (f64 is the
-# whole point of the question).
-jax.config.update("jax_enable_x64", True)
-
-from dnsjax.bootstrap import configure_jax_platform  # noqa: E402
-from dnsjax.parameters import (  # noqa: E402
+from dnsjax.bootstrap import configure_jax_platform
+from dnsjax.parameters import (
     Parameters,
     padded_res,
     params,
@@ -2281,10 +2277,6 @@ def main() -> None:
         if val is not None:
             solver_overrides[field] = val
 
-    # Select the backend before importing any geometry / sharding module
-    # (they capture the platform at import, all deferred into main here).
-    configure_jax_platform(args.platform)
-
     _configure_system(
         args.system,
         args.ny,
@@ -2294,6 +2286,9 @@ def main() -> None:
         solver_overrides or None,
         legacy_imm=args.legacy_imm,
     )
+    # Select the backend before importing any geometry / sharding module
+    # (they capture the platform at import, all deferred into main here).
+    configure_jax_platform(args.platform)
     geom = _geom_module(args.system)
     m = _import_flow(args.system)
     flow = m.flow

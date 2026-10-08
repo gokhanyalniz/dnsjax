@@ -241,7 +241,7 @@ def _test_jax_free() -> None:
 
 def _worker(system: str) -> None:
     """Per-system: hook == builtin coupling, and block-diagonality."""
-    from dnsjax.bootstrap import configure_jax_platform
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.parameters import (
         Parameters,
         derived_params,
@@ -251,7 +251,6 @@ def _worker(system: str) -> None:
         validate_parameters,
     )
 
-    configure_jax_platform("cpu")
     phys = {"system": system, "re": 100.0}
     geo: dict = {}
     if system == "taylor-couette":
@@ -282,6 +281,7 @@ def _worker(system: str) -> None:
     )
     validate_parameters()
     padded_res.set_padded_resolution(params)
+    configure_jax_platform(platform_from_argv())
 
     import importlib
 

@@ -246,9 +246,7 @@ def case_wedge_annular() -> None:
     """m0 = 2 annular Fourier: lz, m scaling, CFL, mean mode."""
     import numpy as np
 
-    from dnsjax.bootstrap import configure_jax_platform
-
-    configure_jax_platform("cpu")
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.harmonics import complex_harmonics
     from dnsjax.parameters import (
         Parameters,
@@ -266,6 +264,7 @@ def case_wedge_annular() -> None:
         )
     )
     validate_parameters()
+    configure_jax_platform(platform_from_argv())
     from dnsjax.geometries.wall_bounded.annular import AnnularFlow, fourier
 
     assert math.isclose(params.geo.lz, math.pi), params.geo.lz
@@ -285,9 +284,7 @@ def case_wedge_cylindrical() -> None:
     """m0 = 3 pipe Fourier: m scaling + physical-parity mask."""
     import numpy as np
 
-    from dnsjax.bootstrap import configure_jax_platform
-
-    configure_jax_platform("cpu")
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.harmonics import complex_harmonics
     from dnsjax.parameters import (
         Parameters,
@@ -304,6 +301,7 @@ def case_wedge_cylindrical() -> None:
         )
     )
     validate_parameters()
+    configure_jax_platform(platform_from_argv())
     from dnsjax.geometries.wall_bounded.cylindrical import fourier
 
     assert math.isclose(params.geo.lz, 2 * math.pi / 3), params.geo.lz
@@ -411,13 +409,13 @@ def case_wedge_nonlinear_wedge() -> None:
     """Wedge arm: build a random state, step it, save both."""
     import numpy as np
 
-    from dnsjax.bootstrap import configure_jax_platform
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
 
-    configure_jax_platform("cpu", double_precision=True)
     _wedge_common(WEDGE_M0, NZ_WEDGE)
     from dnsjax.parameters import validate_parameters
 
     validate_parameters()
+    configure_jax_platform(platform_from_argv(), double_precision=True)
     from dnsjax.ic.random_field import generate_random_state
 
     state = generate_random_state(0.2, 0.6, 0.4, 0.14, seed=17)
@@ -435,14 +433,14 @@ def case_wedge_nonlinear_full() -> None:
     """Full-circle arm: embed the wedge state, step, compare."""
     import numpy as np
 
-    from dnsjax.bootstrap import configure_jax_platform
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
 
-    configure_jax_platform("cpu", double_precision=True)
     nz_full = WEDGE_M0 * NZ_WEDGE
     _wedge_common(1, nz_full)
     from dnsjax.parameters import validate_parameters
 
     validate_parameters()
+    configure_jax_platform(platform_from_argv(), double_precision=True)
     import jax
     from jax.sharding import NamedSharding
 

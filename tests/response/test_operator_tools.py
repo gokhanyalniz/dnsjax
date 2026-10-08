@@ -95,10 +95,9 @@ def test_controllability_modes_ordering() -> None:
 
 def test_growth_curves() -> None:
     """Normal + non-normal growth curves and the input response."""
-    import jax
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
 
-    jax.config.update("jax_enable_x64", True)
-    jax.config.update("jax_platforms", "cpu")
+    configure_jax_platform(platform_from_argv())
 
     ts = np.linspace(0.0, 2.0, 9)
     # Normal: G(t) = exp(2 lambda_max t).
@@ -198,10 +197,9 @@ def _run_tg_with_operator(tmp: Path) -> tuple[Path, Path]:
 
 
 def test_export_faithfulness_and_cli() -> None:
-    import jax
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
 
-    jax.config.update("jax_enable_x64", True)
-    jax.config.update("jax_platforms", "cpu")
+    configure_jax_platform(platform_from_argv())
 
     with tempfile.TemporaryDirectory() as tmpname:
         tmp = Path(tmpname)

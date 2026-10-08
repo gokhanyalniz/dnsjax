@@ -379,11 +379,12 @@ def get_enstrophy_annular(
 def build_annular_grid(
     ny: int,
     fd_order: int,
-    r_inner: float,
-    r_outer: float,
     wall_grid: str | None = None,
     grid_type: str | None = None,
     grid_stretch: float = 1.5,
+    *,
+    r_inner: float,
+    r_outer: float,
 ) -> tuple[Array, np.ndarray, np.ndarray, Array, Array]:
     r"""Build the radial grid, FD matrices, weights, and `$1/r$`.
 
@@ -396,20 +397,24 @@ def build_annular_grid(
     3. Default: CGL of `$[-1, 1]$` affinely mapped to `$[r_1, r_2]$`,
        clustering at **both** walls.
 
+    The positional parameters are those of ``build_cartesian_grid`` and
+    ``build_cylindrical_grid``; the radii, which only the annulus has,
+    are keyword-only.
+
     Parameters
     ----------
     ny:
         Number of radial grid points (`$N_r$`).
     fd_order:
         Finite-difference stencil half-bandwidth.
-    r_inner, r_outer:
-        Non-dimensional inner / outer radii `$r_1$`, `$r_2$`.
     wall_grid:
         Optional path to a custom radial grid file.
     grid_type:
         Named grid type (``"cgl"`` or ``"tanh"``).
     grid_stretch:
         Stretching parameter for ``grid_type="tanh"``.
+    r_inner, r_outer:
+        Non-dimensional inner / outer radii `$r_1$`, `$r_2$`.
 
     Returns
     -------
@@ -813,11 +818,11 @@ class AnnularFlow:
         self.rs, D1_np, D2_np, self.y_weights, self.inv_r = build_annular_grid(
             Nr,
             params.res.fd_order,
-            derived_params.r_inner,
-            derived_params.r_outer,
             params.geo.wall_grid,
             params.geo.grid_type,
             params.geo.grid_stretch,
+            r_inner=derived_params.r_inner,
+            r_outer=derived_params.r_outer,
         )
         self.inv_r2 = self.inv_r**2
 

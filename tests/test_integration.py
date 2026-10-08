@@ -439,7 +439,9 @@ def test_grid_nodes_match_builders():
             )
             assert_allclose(
                 grid_nodes("annular", ny, gt, 1.7, r1, r2),
-                build_annular_grid(ny, 4, r1, r2, None, gt, 1.7)[0],
+                build_annular_grid(
+                    ny, 4, None, gt, 1.7, r_inner=r1, r_outer=r2
+                )[0],
                 rtol=0,
                 atol=1e-14,
                 err_msg=f"annular {gt} ny={ny}",

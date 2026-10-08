@@ -322,7 +322,7 @@ def case_fallback() -> None:
 
 def case_odd_pad() -> None:
     """Single device, nz = 6: the natural odd pad (9) runs unrounded."""
-    from dnsjax.bootstrap import configure_jax_platform
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.parameters import (
         Parameters,
         padded_res,
@@ -340,7 +340,8 @@ def case_odd_pad() -> None:
     assert padded_res.nz_padded == 9, padded_res.nz_padded
     assert padded_res.notes == [], padded_res.notes
 
-    configure_jax_platform("cpu")  # x64 for the exactness thresholds
+    # x64 for the exactness thresholds
+    configure_jax_platform(platform_from_argv())
     from dnsjax.sharding import sharding
 
     assert sharding.phys_shape == (9, 9, 6), sharding.phys_shape
@@ -360,7 +361,7 @@ def case_spec_pad() -> None:
     stay out of the physical field.
     """
     os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
-    from dnsjax.bootstrap import configure_jax_platform
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.parameters import (
         Parameters,
         padded_res,
@@ -380,7 +381,8 @@ def case_spec_pad() -> None:
     assert padded_res.nx_padded == 10, padded_res.nx_padded
     assert len(padded_res.notes) == 1, padded_res.notes
 
-    configure_jax_platform("cpu")  # x64 for the exactness thresholds
+    # x64 for the exactness thresholds
+    configure_jax_platform(platform_from_argv())
     from dnsjax.sharding import sharding
 
     assert sharding.nz_spec_pad == 1, sharding.nz_spec_pad
@@ -400,7 +402,7 @@ def case_smooth() -> None:
     FFT-friendly note, and the exactness checks confirm the extra
     slots stay out of the physical field.
     """
-    from dnsjax.bootstrap import configure_jax_platform
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.parameters import (
         Parameters,
         padded_res,
@@ -417,7 +419,8 @@ def case_smooth() -> None:
     padded_res.set_padded_resolution(params)
     assert padded_res.nz_padded == 144, padded_res.nz_padded
 
-    configure_jax_platform("cpu")  # x64 for the exactness thresholds
+    # x64 for the exactness thresholds
+    configure_jax_platform(platform_from_argv())
     from dnsjax.sharding import sharding
 
     assert sharding.phys_shape == (9, 144, 6), sharding.phys_shape
@@ -428,7 +431,7 @@ def case_smooth() -> None:
 
 def case_odd_real() -> None:
     """Single device, nx = 22: the odd real-FFT pad is made even."""
-    from dnsjax.bootstrap import configure_jax_platform
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.parameters import (
         Parameters,
         padded_res,
@@ -445,7 +448,8 @@ def case_odd_real() -> None:
     padded_res.set_padded_resolution(params)
     assert padded_res.nx_padded == 36, padded_res.nx_padded
 
-    configure_jax_platform("cpu")  # x64 for the exactness thresholds
+    # x64 for the exactness thresholds
+    configure_jax_platform(platform_from_argv())
     from dnsjax.sharding import sharding
 
     assert sharding.phys_shape == (9, 6, 36), sharding.phys_shape

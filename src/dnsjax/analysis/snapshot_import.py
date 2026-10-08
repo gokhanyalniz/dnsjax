@@ -146,7 +146,6 @@ re=..., wall_normal_grid=rs``) or, for finer control::
 
 from __future__ import annotations
 
-import os
 from typing import Any, Literal
 
 import numpy as np
@@ -466,21 +465,11 @@ def configure_target(
         The three resolutions are required; unknown names are hard
         errors; omitted fields fall to the flow's defaults.
     """
-    # Same single-threaded CPU pin as the production entry point
-    # (``bootstrap.configure_jax_runtime``): ``NPROC`` sizes the pool,
-    # and the Eigen flag is prepended so a caller's own ``XLA_FLAGS``
-    # survives and the composed value still starts with a ``--`` token
-    # (XLA reads a leading bare token as a flagfile name and dies).
-    if os.environ.setdefault("NPROC", "1") == "1":
-        _existing = os.environ.get("XLA_FLAGS", "")
-        os.environ["XLA_FLAGS"] = (
-            f"--xla_cpu_multi_thread_eigen=false {_existing}".rstrip()
-        )
+    # The production entry point's single-threaded CPU pin, before
+    # anything loads JAX.
+    from ..bootstrap import configure_jax_platform, pin_cpu_threads
 
-    import jax
-
-    jax.config.update("jax_enable_x64", double_precision)
-    jax.config.update("jax_platforms", "cpu")
+    pin_cpu_threads()
 
     from ..flows.registry import periodic_systems, spec_for
     from ..parameters import (
@@ -514,7 +503,6 @@ def configure_target(
         sections.setdefault(section, {})[internal] = value
 
     cli = Parameters(
-        dist={"np": 1, "platform": "cpu"},
         phys={"system": system, **sections.get("phys", {})},
         geo=sections.get("geo", {}),
         res={
@@ -527,6 +515,7 @@ def configure_target(
     if extra_params is not None:
         update_parameters(Parameters(**extra_params))
     padded_res.set_padded_resolution(params)
+    configure_jax_platform("cpu", double_precision=double_precision)
 
     family = _geo_family(system)
     ny = params.res.ny

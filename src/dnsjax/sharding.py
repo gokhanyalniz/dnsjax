@@ -109,6 +109,15 @@ def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
     an unassigned field inside the step still raises
     ``AttributeError``.
 
+    Why every array-carrying object is one: a global (multi-device)
+    array reaches a jitted function as an argument, never through a
+    closure or ``static_argnames``.  A baked-in global is legal in one
+    process and fails at trace time in two, and an outer ``jit`` around
+    a function that hands module globals to an inner ``jit`` bakes them
+    in all the same.  Only a real multi-process run catches a slip:
+    ``test_np2_run`` in ``tests/test_twin_driver.py``, the
+    ``*-mpi-pad`` rows of ``tests/test_random_smoke.py``.
+
     Used by the geometry base dataclasses
     (``TriplyPeriodicFlow``, ``CartesianFlow``,
     ``CylindricalFlow``, ``AnnularFlow``,

@@ -314,13 +314,13 @@ def configure_from_snapshot(
     stored_dp = bool(
         read_snapshot_meta(snapshot)["params"]["res"]["double_precision"]
     )
-    configure_jax_platform(platform, double_precision=stored_dp)
     params.res.double_precision = stored_dp
     update_parameters(snap_params)
     validate_parameters()
     padded_res.set_padded_resolution(params)
     if params.dist.np0 * params.dist.np1 != 1:
         raise SystemExit("snapshot_perturb is single-device (np0*np1 = 1)")
+    configure_jax_platform(platform, double_precision=stored_dp)
 
     return _dispatch_supported(params.phys.system)
 

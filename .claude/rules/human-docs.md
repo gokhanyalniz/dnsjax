@@ -16,9 +16,11 @@ paths:
 - Spelling is Oxford: -ize (matching identifiers such as
   `check_laminarization`) with British -our, -re and -lling
   (centreline, modelling, travelling).
-- Never use "flagship", "oracle" or "anchor"; the Pallas kernel is
-  "custom", not "hand-written". Make only mathematical claims, verified
-  against the code, never phenomenological ones.
+- Plain words, not fancy ones: never "flagship", "oracle" or "anchor".
+  The Pallas kernel is "custom", not "hand-written": the README's "Use
+  of AI" section keeps "by hand" for the AI-free first version. Make
+  only mathematical claims, verified against the code, never
+  phenomenological ones.
 - Display math goes in ```` ```math ```` fences: GitHub's double-dollar
   blocks break on a line that starts with `-` or `+`. No dollar sign
   directly after an en-dash. An inline `$...$` never spans a line break

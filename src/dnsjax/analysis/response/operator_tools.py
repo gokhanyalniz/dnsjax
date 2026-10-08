@@ -27,9 +27,9 @@ JAX and SciPy
 =============
 The dense time sweeps (:func:`growth_curve`,
 :func:`input_response_curve`) run batched ``expm`` + SVD on the JAX
-default device -- GPU-capable; enable float64 first
-(``bootstrap.configure_jax_platform(..., double_precision=True)``, or
-``jax.config.update("jax_enable_x64", True)``); both raise otherwise.
+default device -- GPU-capable; enable float64 first, through
+``bootstrap.configure_jax_platform(..., double_precision=True)``; both
+raise otherwise.
 JAX is imported inside those functions only, so importing this module
 (and the Gramian path, which is NumPy/SciPy) stays JAX-free.  SciPy is
 a core dependency but is likewise imported lazily; the Lyapunov solve
@@ -365,8 +365,7 @@ def _require_x64() -> None:
     if not jax.config.jax_enable_x64:
         raise RuntimeError(
             "growth curves need float64: call bootstrap."
-            "configure_jax_platform(..., double_precision=True) or "
-            'jax.config.update("jax_enable_x64", True) first'
+            "configure_jax_platform(..., double_precision=True) first"
         )
 
 

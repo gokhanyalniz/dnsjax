@@ -943,7 +943,6 @@ def _configure(args) -> None:
 
     params.dist.np0 = args.np0
     params.dist.np1 = args.np1
-    configure_jax_platform(args.platform)
     params.phys.system = args.system
     params.phys.re = 400.0
     params.res.nx = args.nx
@@ -953,6 +952,7 @@ def _configure(args) -> None:
     update_parameters(Parameters())
     padded_res.set_padded_resolution(params)
     validate_parameters()
+    configure_jax_platform(args.platform)
 
 
 def main() -> None:

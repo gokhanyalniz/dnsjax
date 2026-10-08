@@ -169,6 +169,30 @@ def configure_jax_platform(
     jax.config.update("jax_platforms", platform)
 
 
+def pin_cpu_threads() -> None:
+    """Pin XLA's CPU thread pool to one thread; call before JAX loads.
+
+    ``NPROC`` is what actually sizes the pool (one thread per rank:
+    the ``Distribution`` docstring); it is only defaulted, so a wide
+    node can override it from the environment.  At one thread the
+    Eigen pool goes too, through a flag *prepended* to ``XLA_FLAGS``:
+    XLA reads a leading token without ``--`` as a flagfile name and
+    dies, so the composed value must start with a flag, and a caller's
+    own ``XLA_FLAGS`` must survive.
+
+    :func:`configure_jax_runtime` pins every CPU solver run this way,
+    and :func:`dnsjax.analysis.snapshot_import.configure_target` builds
+    its states the same way.  :func:`configure_jax_platform` does not
+    pin (its docstring says why).
+    """
+    threads = os.environ.setdefault("NPROC", "1")
+    if threads == "1":
+        existing = os.environ.get("XLA_FLAGS", "")
+        os.environ["XLA_FLAGS"] = (
+            f"--xla_cpu_multi_thread_eigen=false {existing}".rstrip()
+        )
+
+
 # ── Production surface parsing ───────────────────────────────────
 
 
@@ -1222,19 +1246,7 @@ def configure_jax_runtime(distributed: bool = True) -> bool:
         )
     mpiwrapper = None
     if distributed and params.dist.platform == "cpu":
-        # ``NPROC`` is what actually sizes the CPU thread pool (see the
-        # ``Distribution`` docstring); ``setdefault`` so a wide node can
-        # override it from the environment.  The Eigen flag only makes
-        # sense alongside the 1-thread pin, and it is *prepended* --
-        # XLA reads a leading token without ``--`` as a flagfile name
-        # and dies, so the composed value must start with a flag, and
-        # a user's own ``XLA_FLAGS`` must survive.
-        threads = os.environ.setdefault("NPROC", "1")
-        if threads == "1":
-            existing = os.environ.get("XLA_FLAGS", "")
-            os.environ["XLA_FLAGS"] = (
-                f"--xla_cpu_multi_thread_eigen=false {existing}".rstrip()
-            )
+        pin_cpu_threads()
         # Before JAX is imported: MPItrampoline reads the variable as
         # jaxlib loads (see ``_mpiwrapper_lib``).  Exporting it even
         # for a run that ends up on gloo costs nothing -- nothing

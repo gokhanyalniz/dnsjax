@@ -344,6 +344,9 @@ def _make_complex(jax, shape, seed, sharding, spec):
 
 def run_child(a: argparse.Namespace) -> None:
     """One (system, backend, resolution) measurement, single device."""
+    import jax
+    import jaxlib
+
     from dnsjax.bootstrap import configure_jax_platform
     from dnsjax.parameters import (
         Parameters,
@@ -352,15 +355,6 @@ def run_child(a: argparse.Namespace) -> None:
         update_parameters,
         validate_parameters,
     )
-
-    # Select the backend explicitly (the driver passes --platform;
-    # CUDA_VISIBLE_DEVICES / JAX_PLATFORMS in the child env still pin the
-    # concrete device) so the child's sharding banner and
-    # params.dist.platform match the hardware it actually runs on.
-    configure_jax_platform(a.platform)
-
-    import jax
-    import jaxlib
 
     params.phys.system = a.system
     for dotted, v in SYS_ARGS[a.system].items():
@@ -393,6 +387,11 @@ def run_child(a: argparse.Namespace) -> None:
     update_parameters(Parameters(solver={"backend": a.backend}))
     padded_res.set_padded_resolution(params)
     validate_parameters()
+    # Select the backend explicitly (the driver passes --dist.platform;
+    # CUDA_VISIBLE_DEVICES / JAX_PLATFORMS in the child env still pin the
+    # concrete device) so the child's sharding banner and
+    # params.dist.platform match the hardware it actually runs on.
+    configure_jax_platform(a.platform)
 
     t0 = time.perf_counter()
     m = _import_flow(a.system)
@@ -661,7 +660,7 @@ def _spawn_child(
     # The section's env carries the platform: JAX_PLATFORMS=cpu for the
     # CPU sections, otherwise a GPU pinned via CUDA_VISIBLE_DEVICES.  Pass
     # it through explicitly so the child records the right platform.
-    cmd += ["--platform", env_extra.get("JAX_PLATFORMS", "cuda")]
+    cmd += ["--dist.platform", env_extra.get("JAX_PLATFORMS", "cuda")]
     env = dict(os.environ)
     env.update(env_extra)
     t0 = time.perf_counter()
@@ -2466,7 +2465,8 @@ def main() -> None:
     # Child JAX backend, set by the driver from the section's env
     # (JAX_PLATFORMS=cpu for the CPU sections, cuda otherwise).
     ap.add_argument(
-        "--platform",
+        "--dist.platform",
+        dest="platform",
         default="cpu",
         choices=["cpu", "cuda", "rocm", "tpu"],
         help=argparse.SUPPRESS,

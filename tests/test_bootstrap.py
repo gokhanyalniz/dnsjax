@@ -30,7 +30,10 @@ nothing here dlopens it.
 
 Cases mutate ``os.environ`` and restore it (``_env``), so ordering is
 free -- except that the last case leaves JAX's collectives config
-back on its default explicitly.
+back on its default explicitly.  That reset and the visible-devices
+and dispatch ones call ``jax.config.update`` directly rather than
+through :mod:`dnsjax.bootstrap`: they undo what the bootstrap
+functions under test set.
 
 Run as a script::
 

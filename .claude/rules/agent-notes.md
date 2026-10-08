@@ -29,6 +29,9 @@ paths:
   not a limit), but the line test still decides what goes in.
 - State a rule as what to do, with its reason or a pointer to it: the
   reason is what carries a rule to a case it does not name.
+- A note's general statement that code contradicts is a case for the
+  root's Conduct rule: fix the code, and narrow or edit the note only
+  where the note is what is wrong.
 - Emphasis (bold, capitals) goes on one line per file at most; on many
   lines it marks none.
 - Outside the indexes and the root's opening description, name the

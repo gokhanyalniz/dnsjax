@@ -4284,11 +4284,11 @@ def write_moments_npz(
     tracks: dict[tuple[str, int | None], PeakTrack],
     options: MapOptions,
 ) -> Path:
-    """Dump the moments of each tracked panel, and how they were taken.
+    r"""Dump the moments of each tracked panel, and how they were taken.
 
     A row per tracked panel: the centroid in the plotted units, the
-    spreads and `$\\sqrt{\\det C}$` in natural-log units (decades are a
-    division by `$\\ln 10$` away), the correlation, the ridge slope,
+    spreads and `$\sqrt{\det C}$` in natural-log units (decades are a
+    division by `$\ln 10$` away), the correlation, the ridge slope,
     the principal-axis angle, the mass and the negative share.
     """
     units = options.units
@@ -5785,11 +5785,11 @@ _MOMENT_ROWS_JOINT: tuple[tuple[str, str], ...] = (
 
 
 def moment_terms(marginal: str) -> tuple[str, ...]:
-    """The term groups of one moment budget (:data:`MOMENT_TERMS`).
+    r"""The term groups of one moment budget (:data:`MOMENT_TERMS`).
 
     The wall-distance budget covers every mode, `$(0, 0)$` included,
     so its pressure group carries the driving input as well
-    (``press_input``); a marginal's covers `$m \\ge 1$`, where the
+    (``press_input``); a marginal's covers `$m \ge 1$`, where the
     input has no entry and the pressure transport is all there is.
     """
     if marginal:
@@ -6385,7 +6385,7 @@ class GrowthCurves:
 
     @property
     def r(self) -> np.ndarray:
-        """`$R = E/E_\\mathrm{sat}$`, per curve."""
+        r"""`$R = E/E_\mathrm{sat}$`, per curve."""
         return self.energy / self.saturation[:, None]
 
     @property

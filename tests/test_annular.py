@@ -148,7 +148,7 @@ def _build_Lk_reference_annular(
 def test_annular_grid_properties() -> None:
     """Annular grid: spans [r1, r2], strictly increasing, endpoints."""
     for ny in [8, 16, 33]:
-        rs, _, _, _, _ = build_annular_grid(ny, 4, R1, R2)
+        rs, _, _, _, _ = build_annular_grid(ny, 4, r_inner=R1, r_outer=R2)
         rs_np = np.asarray(rs)
         assert rs_np.shape == (ny,), f"ny={ny}: wrong shape"
         assert_allclose(rs_np[0], R1, atol=1e-14, err_msg=f"ny={ny}: r[0]")
@@ -651,7 +651,9 @@ def test_annular_integration_weights() -> None:
     be only ``~1e-7`` at this resolution)."""
     p = params.res.fd_order
     for ny in [8, 16, 33]:
-        rs, _, _, y_weights, _ = build_annular_grid(ny, p, R1, R2)
+        rs, _, _, y_weights, _ = build_annular_grid(
+            ny, p, r_inner=R1, r_outer=R2
+        )
         rs_np = np.asarray(rs)
         yw = np.asarray(y_weights)
         # sum(w_j r_j) = int_{r1}^{r2} r dr = (r2^2 - r1^2)/2 (exact).
@@ -694,7 +696,9 @@ def test_annular_custom_grid() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "grid.txt"
         np.savetxt(path, grid[::-1])  # wall-to-interior: r2 first
-        rs, d1, _, y_weights, _ = build_annular_grid(ny, p, R1, R2, str(path))
+        rs, d1, _, y_weights, _ = build_annular_grid(
+            ny, p, str(path), r_inner=R1, r_outer=R2
+        )
     rs_np = np.asarray(rs)
     yw = np.asarray(y_weights)
     assert_allclose(rs_np, grid, rtol=0, atol=1e-15)

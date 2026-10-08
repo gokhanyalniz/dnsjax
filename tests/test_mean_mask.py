@@ -54,6 +54,7 @@ def _worker(system: str, nx: int, nz: int, np0: int, np1: int) -> None:
 
     import numpy as np
 
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.parameters import padded_res, params
 
     params.phys.system = system
@@ -70,13 +71,8 @@ def _worker(system: str, nx: int, nz: int, np0: int, np1: int) -> None:
     params.res.double_precision = True
     params.dist.np0 = np0
     params.dist.np1 = np1
-    params.dist.platform = "cpu"
     padded_res.set_padded_resolution(params)
-
-    import jax
-
-    jax.config.update("jax_enable_x64", True)
-    jax.config.update("jax_platforms", "cpu")
+    configure_jax_platform(platform_from_argv())
 
     from dnsjax.sharding import sharding
 
