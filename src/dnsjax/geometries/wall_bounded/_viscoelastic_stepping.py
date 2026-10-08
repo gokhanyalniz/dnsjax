@@ -59,6 +59,45 @@ azimuthal body force; the pipe takes parity-reduced ones on the
 `$(-1)^{m+s}$` bands, has one wall (the axis is closed by parity) and
 an axial body force.  Each module's docstring carries its own
 derivation.
+
+Design notes
+------------
+**The duplicated** `$s = 0$` **slot.**  The stacked `$H_c$` storage
+duplicates the shared `$s = 0$` operator's factors (slots 0 and 3 hold
+the same data), because the uniform stacked ``.solve`` contract pairs
+component ``i`` of the RHS with operator ``i``.  Deduplicating would
+need a nonuniform component-to-operator solve mapping (5 operators
+against 6 RHS components) in **every** backend, which is why it is
+deferred -- not size: ``Hc_op`` is the largest array the flow holds,
+three times the default velocity ``Hk_op`` (6 stacked slots against
+the spin pair's 2; twice the legacy path's 3) and ~2/3 of the flow's
+persistent bytes, so the duplicate slot is ~1/6 of it and ~11 % of
+those bytes (measured on both sPTT flows at ``64 x 48 x 64``,
+``fd_order = 8``).
+
+**No interleaved transform and accumulate.**  Chunking
+(``solver.rhs_transform_chunks``) caps only the transform transient of
+:func:`_get_rhs_core`: all 36 physical fields must still coexist as
+inputs of the single pointwise stage, so they plus the 9 outputs (~45
+oversampled fields) are the floor the knob cannot cut.  That floor is
+decomposable because the pointwise stage has sparse field incidence:
+the 18 advection derivatives are strictly per-component (only
+`$\mathrm{adv}(c_i)$` reads the `$(\partial_r, \partial_\theta,
+\partial_z) c_i$` triple), while the velocities, `$L_{ij}$` and tensor
+combos are shared.  Interleaving would hold the shared fields, then
+per component transform its derivative triple, multiply-accumulate its
+advection contribution into the output, and let the triple die before
+the next component's transform -- cutting the held floor to ~30 fields
+(further if the `$L_{ij}$` contributions are accumulated and freed
+first).  It is deferred because it hard-codes chunking's throughput
+cost even when memory is not tight: the fused one-pass pointwise stage
+shatters into per-group kernels, the outputs are re-read and
+re-written once per group, the transform batches become permanently
+small, the schedule is specific to this RHS's term structure (unlike
+the flow-agnostic ``chunked_transform``), and the freeing relies on XLA
+liveness rather than construction.  The 9-output forward transform
+stays fused for the related reason that all outputs exist before it
+starts, so chunking it could shave only its own minor transient.
 """
 
 # Deferred annotations: the two type aliases below exist only under
@@ -129,8 +168,9 @@ def _build_Hc_dense_gpu(
     c: float,
     kappa: float,
 ) -> Array:
-    r"""Dense `$H_c = \tfrac1{\Delta t} I - c\kappa\nabla^2$` for one spin
-    component (dense backend).
+    r"""Dense `$H_c = \tfrac1{\Delta t} I - c\kappa\nabla^2$`, one spin slot.
+
+    Dense backend.
 
     Interior rows carry the diagonal Helmholtz shift on *A_base* (the
     geometry's already parity-selected base operator,
@@ -162,8 +202,9 @@ def _build_Hc_band_gpu(
     kappa: float,
     p: int,
 ) -> Array:
-    r"""Banded `$H_c$` for one spin component (Pallas backend), layout
-    ``(Nm, Nkz, Nr, 2p+1)``; narrow Laplacian BC wall rows.
+    r"""Banded `$H_c$` for one spin component (Pallas backend).
+
+    Layout ``(Nm, Nkz, Nr, 2p+1)``, with narrow Laplacian BC wall rows.
 
     *band_base* is the geometry's parity-selected base band, already
     broadcast to the operator's mode layout (``flow.hc_spin_bases``);
@@ -199,15 +240,7 @@ def _build_hc_operator(
     The stacked storage **duplicates** that shared operator's factors
     (slot 0 and slot 3 hold the same data), because the uniform stacked
     ``.solve`` contract pairs component ``i`` of the RHS with operator
-    ``i``.  Deduplicating would need a nonuniform
-    component-to-operator solve mapping (5 operators against 6 RHS
-    components) in **every** backend, which is the reason it is
-    deferred -- not size: ``Hc_op`` is the largest array the flow
-    holds, three times the default velocity ``Hk_op`` (6 stacked slots
-    against the spin pair's 2; twice the legacy path's 3) and ~2/3 of
-    the flow's persistent bytes, so the duplicate slot is ~1/6 of it
-    and ~11% of those bytes (measured on both sPTT flows at
-    ``64 x 48 x 64``, ``fd_order = 8``).
+    ``i`` (Design notes: "The duplicated `$s = 0$` slot").
 
     *label* selects the pallas factorization path: a string runs the
     setup-checked :func:`solvers._build_pallas_operator` under that
@@ -237,7 +270,7 @@ def _build_hc_operator(
         # (``_viscoelastic_common.narrow_abase_wall_row``) and
         # ``_banded_wall_row`` *silently zeroes* whatever falls outside
         # the band, so an under-measured ``p`` would quietly degrade the
-        # BC stencil rather than fail.  The two are equal today (the
+        # BC stencil rather than fail.  The two are equal (the
         # direct-fit ``D_2`` reaches offset ``p`` at row 1), i.e. the
         # fit has no slack -- hence the check, both being host ints.
         if p < params.res.fd_order:
@@ -400,31 +433,9 @@ def _get_rhs_core(
     ``k``x the FFT dispatches (and ``k`` smaller reshard rounds per
     stage on multi-device runs); the results are identical.
 
-    **Deferred optimization (interleaved transform/accumulate)**:
-    chunking caps only the transform transient -- all 36 physical
-    fields must still coexist as inputs of the single pointwise
-    stage, so they plus the 9 outputs (~45 oversampled fields) are
-    the floor the knob cannot cut.  That floor is decomposable
-    because the pointwise stage has sparse field incidence: the 18
-    advection derivatives are strictly per-component (only
-    `$\mathrm{adv}(c_i)$` reads the
-    `$(\partial_r, \partial_\theta, \partial_z) c_i$` triple),
-    while the velocities, `$L_{ij}$`, and tensor combos are shared.
-    Interleaving would hold the shared fields, then per component
-    transform its derivative triple, multiply-accumulate its
-    advection contribution into the output, and let the triple die
-    before the next component's transform -- cutting the held floor
-    to ~30 fields (further if the `$L_{ij}$` contributions are
-    accumulated and freed first).  Deferred because it hard-codes
-    chunking's throughput cost even when memory is not tight: the
-    fused one-pass pointwise stage shatters into per-group kernels,
-    the outputs are re-read/re-written once per group, the transform
-    batches become permanently small, the schedule is specific to
-    this RHS's term structure (unlike the flow-agnostic
-    ``chunked_transform``), and the freeing relies on XLA liveness
-    rather than construction.  The 9-output forward transform stays
-    fused for the related reason that all outputs exist before it
-    starts, so chunking it could shave only its own minor transient.
+    Interleaving the transforms with the pointwise accumulation would
+    cut the held fields further but cost throughput everywhere, so it is
+    not done (Design notes: "No interleaved transform and accumulate").
     """
     im = 1j * fourier_.m
     ikz = 1j * fourier_.kz
@@ -576,18 +587,12 @@ def _conformation_coupling(
     if params.step.implicit_mean_coupling:
         # Instantaneous mean velocity profile (u_z, u_r, u_theta); the
         # mean u_r is structurally 0, so its d_r term vanishes.
-        #
-        # Extract from the *carried* (spin) state and cross the basis
-        # on the resulting (3, N_r) column, rather than assembling a
-        # physical triad to hand the extractor: the two are
-        # bit-identical (extraction is a copy, so combining before or
-        # after gives the same floats), but the assembled triad is a
-        # field-sized array built only to be read at ``[:, :, 0, 0]``
-        # and discarded -- a ``shard_map`` operand, so XLA cannot sink
-        # that slice back into its producer (see
-        # :func:`._base.extract_mean_modes`).  ``state`` is passed
-        # whole for the same reason: ``state[:3]`` would be the copy
-        # again.
+        # Extracted from the carried (spin) state and crossed on the
+        # (3, N_r) column: bit-identical to extracting from a physical
+        # triad, without that field-sized ``shard_map`` operand XLA
+        # cannot slice back into its producer
+        # (:func:`._base.extract_mean_modes`) -- which is also why
+        # ``state`` is passed whole rather than as ``state[:3]``.
         mean_vel = from_pm_basis(extract_mean_mode(state)[:3])  # (3, Nr)
         # Mean velocity gradient profiles: D1 on the bare (N_r,) mean
         # profiles, at the spin weight of each (0 for u_z, 1 for
@@ -761,8 +766,10 @@ def _norm(
     fourier_: Fourier,
     flow_: ViscoelasticFlow,
 ) -> Array:
-    r"""Combined L2 convergence norm, `$\sqrt{\|u\|^2 + \|c\|_F^2}$`
-    (:func:`._viscoelastic_common.combined_norm`)."""
+    r"""Combined L2 convergence norm, `$\sqrt{\|u\|^2 + \|c\|_F^2}$`.
+
+    :func:`._viscoelastic_common.combined_norm`.
+    """
     return combined_norm(correction, fourier_.k_metric, flow_.y_weights)
 
 
