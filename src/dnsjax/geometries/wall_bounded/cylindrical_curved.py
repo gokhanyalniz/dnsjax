@@ -113,17 +113,9 @@ toroidal operators:
 That iteration is what pays for keeping every operator: continuity
 holds at the corrector's **fixed point**, so its residual tracks
 ``step.corrector_tolerance`` rather than machine epsilon, and the
-corrector needs more passes than the straight pipe's.  Both are
-measured (``tests/test_curved_pipe.py``).  At `$\kappa = 0.037$`,
-`$n_r = 24$`, the relative toroidal divergence of a stepped random
-state is `$7\times10^{-7}$`, `$2.7\times10^{-9}$` and
-`$9\times10^{-13}$` at tolerances `$10^{-6}$`, `$10^{-9}$` and
-`$10^{-12}$`, reached in 1, 3 and 6 extra corrector passes -- a
-contraction of roughly `$\kappa$` per pass, as the `$O(\kappa)$` size
-of the lagged terms predicts.  At `$\kappa = 0.13$` the same decades
-cost more than the default cap of 10, which is a statement about a
-tolerance seven decades tighter than the default `$10^{-5}$`, not
-about a production run.
+corrector needs more passes than the straight pipe's, contracting by
+roughly `$\kappa$` per pass (Design notes: "Continuity at the
+corrector's fixed point").
 
 Driving
 -------
@@ -158,6 +150,19 @@ form's `$\nabla(|u|^2/2) - u\times\omega$` and `$\nabla(\nabla\cdot u)
 - \nabla\times\nabla\times u$` in this metric, so the curvature terms
 are never transcribed here -- they follow from the operators
 (``tests/test_curved_pipe.py`` pins that equivalence).
+
+Design notes
+------------
+**Continuity at the corrector's fixed point.**  Measured in
+``tests/test_curved_pipe.py``: at `$\kappa = 0.037$`, `$n_r = 24$`, the
+relative toroidal divergence of a stepped random state is
+`$7\times10^{-7}$`, `$2.7\times10^{-9}$` and `$9\times10^{-13}$` at
+tolerances `$10^{-6}$`, `$10^{-9}$` and `$10^{-12}$`, reached in 1, 3
+and 6 extra corrector passes -- a contraction of roughly `$\kappa$` per
+pass, as the `$O(\kappa)$` size of the lagged terms predicts.  At
+`$\kappa = 0.13$` the same decades cost more than the default cap of
+10, which is a statement about a tolerance seven decades tighter than
+the default `$10^{-5}$`, not about a production run.
 """
 
 from dataclasses import dataclass, field
