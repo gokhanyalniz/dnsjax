@@ -180,10 +180,12 @@ state being readable but not importable.
 The importer is a library (not a CLI) and **assumes the field is already
 in dnsjax's native layout**: components leading, axes $(y, z, x)$ for the
 Cartesian and triply-periodic systems and $(r, \theta, z)$ for the
-cylindrical and annular flows (pipe, Taylor–Couette, quasi-Keplerian,
-Dean) — whose components are $(u_z, u_r, u_\theta)$ — so any axis
-permutation and component reordering from the source code's conventions
-is the caller's first step.
+cylindrical and annular flows (pipe, curved pipe, Taylor–Couette,
+quasi-Keplerian, Dean) — whose components are $(u_z, u_r, u_\theta)$ — so
+any axis permutation and component reordering from the source code's
+conventions is the caller's first step. The field is what a snapshot of
+that flow stores ([What is stored](#what-is-stored)): the perturbation
+for a base-flow system, the total field for Dean and the curved pipe.
 
 Two conventions to keep in mind. The resolutions are the solver's
 nominal (physical) mode counts *without* the 3/2 dealiasing expansion —
@@ -192,8 +194,8 @@ parameters — and every Fourier count must be **even**, so resample an
 odd-sized source axis before importing it. And every wall-bounded flow
 needs its wall-normal/radial grid points, **ascending** in dnsjax's
 convention: bottom wall $-1$ to top wall $+1$ (Cartesian), near-axis to
-the outer wall on $(0, 1]$ (pipe), inner to outer radius
-(Taylor–Couette); the triply-periodic systems take no grid. Parameters
+the outer wall on $(0, 1]$ (the pipes), inner to outer radius (the
+annulus); the triply-periodic systems take no grid. Parameters
 go by the flow's public names, exactly as on the CLI:
 
 ```python

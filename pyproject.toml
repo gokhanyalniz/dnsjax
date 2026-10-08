@@ -1,7 +1,7 @@
 [project]
 name = "dnsjax"
 version = "0.1.0"
-description = "A GPU-accelerated & parallelized pseudo-spectral solver for direct numerical simulations of Navier–Stokes equations in JAX."
+description = "A GPU-accelerated pseudo-spectral solver for direct numerical simulation of the 3D incompressible Navier–Stokes equations, written in JAX."
 authors = [
     { name = "Gökhan Yalnız", email = "g.yalniz@imperial.ac.uk" }
 ]

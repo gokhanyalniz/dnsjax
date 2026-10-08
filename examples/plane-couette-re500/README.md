@@ -1,11 +1,12 @@
 # Plane-Couette flow in the minimal flow unit
 
 Two walls sliding past each other, in the smallest box that will hold
-turbulence between them. The domain is the classic minimal flow unit —
-$1.75\pi$ long by $1.2\pi$ wide, in half-gap units — which fits exactly
-one pair of streamwise rolls across the span: the self-sustaining cycle
-of rolls, streaks and streak instability, and nothing else. That is what
-makes it cheap enough to run on a laptop.
+turbulence between them. The domain is the minimal flow unit of
+Hamilton, Kim & Waleffe (1995) — $1.75\pi$ long by $1.2\pi$ wide, in
+half-gap units — which fits exactly one pair of streamwise rolls across
+the span: the self-sustaining cycle of rolls, streaks and streak
+instability, and nothing else. That is what makes it cheap enough to
+run on a laptop.
 
 ```bash
 mkdir -p /tmp/plane-couette && cd /tmp/plane-couette
@@ -29,13 +30,13 @@ Do *not* read the perturbation energy `E'` as the turbulence indicator on
 its own: it also contains the mean profile's deviation from laminar, so
 it can fall smoothly while the flow is still fully turbulent.
 
-**It will relaminarize, and that is the point.** A minimal flow unit at
-this Reynolds number is a chaotic saddle, not an attractor: turbulence
-here has a finite, stochastic lifetime and the flow falls back to laminar
-Couette flow. When it does is not a property of the flow: lifetimes here
-are distributed, and a different perturbation, or the same one at a
-different amplitude, gives a different one. Raising `re` tends to
-lengthen the episode; a larger box does too.
+**It relaminarizes eventually, and that is the point.** A minimal flow
+unit at this Reynolds number is a chaotic saddle, not an attractor:
+turbulence here has a finite, stochastic lifetime and the flow falls
+back to laminar Couette flow. When it does is not a property of the
+flow: lifetimes here are distributed, and a different perturbation, or
+the same one at a different amplitude, gives a different one. Raising
+`re` tends to lengthen the episode; a larger box does too.
 
 `stop.check_laminarization` is on by default and ends the run once the
 *perturbation energy* drops below its threshold. That is a later event
@@ -45,3 +46,7 @@ already laminar but `E'` still decaying.
 
 All four examples' sizes are collected in
 [`examples/README.md`](../README.md).
+
+**Reference.** J. M. Hamilton, J. Kim and F. Waleffe, *Regeneration
+mechanisms of near-wall turbulence structures*, J. Fluid Mech. **287**,
+317–348 (1995).

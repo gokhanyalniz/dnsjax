@@ -114,9 +114,9 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
 - Keep docstrings, comments, type hints and these notes current, at 79
   columns.
 - The human-facing docs change in the same pass as what they describe:
-  `README.md`, `CONTRIBUTING.md`, `tests/README.md`, `docs/*.md`,
-  `examples/**/README.md`, and the READMEs of `extensions/`, `twin/`
-  and `analysis/response/` (their conventions:
+  `README.md`, `CONTRIBUTING.md`, `tests/README.md`, `scripts/README.md`,
+  `docs/*.md`, `examples/**/README.md`, and the READMEs of
+  `extensions/`, `twin/` and `analysis/response/` (their conventions:
   `.claude/rules/human-docs.md`).
 - Nothing committed carries a placeholder, an invisible marker or a
   claim whose backing artefact has not landed: no `TODO(author)`, no
