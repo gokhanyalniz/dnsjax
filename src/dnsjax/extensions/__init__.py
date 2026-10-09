@@ -475,23 +475,6 @@ def _validate_force(values: ForceParams, params) -> None:
                 "(its coefficient is real, and under bulk-velocity "
                 "driving it is constrained)."
             )
-        if i3 == 0 and n2 - i2 == i2:
-            # On the real-FFT plane the kick is applied together with
-            # its conjugate partner at the mirrored index n2 - i2.
-            # For odd ``res.nz`` that index is self-mirroring, so the
-            # kick and its own conjugate land in the *same* column:
-            # the applied kick would be 2*Re(w . profile) while
-            # forcing.bin records the complex ``w``, i.e. a silent
-            # identification error.
-            raise ValueError(
-                f"force.modes: mode ({i2},{i3}) is its own conjugate "
-                f"partner on the real-FFT plane (axis 2 has {n2} "
-                "modes, so index "
-                f"{i2} mirrors to itself); the applied kick could "
-                "not match the recorded coefficient.  Use an even "
-                "res.nz (annular/cylindrical: ntheta) or force a "
-                "different axis-2 mode."
-            )
     probes = probes_params
     if probes.it_probes is not None:
         if values.it_force % probes.it_probes != 0:
