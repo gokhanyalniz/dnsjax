@@ -20,9 +20,15 @@ axis.
 :func:`to_physical` / :func:`to_spectral` bridge the two spaces.
 
 Directions are named per geometry: ``"x"/"y"/"z"`` (cartesian),
-``"r"/"z"/"theta"`` (cylindrical/annular, ``z`` axial), ``"x"/"y"/"z"``
+``"r"/"z"/"theta"`` (cylindrical/annular, ``z`` axial; ``"s"`` for the
+curved pipe's streamwise arclength), ``"x"/"y"/"z"``
 (triply-periodic).  Wall-normal derivatives/integrals require the full
 wall-normal grid -- do not subset ``wall_normal_points`` first.
+
+On a ``curved-pipe`` snapshot every operator here takes the straight
+pipe's form: neither the toroidal metric `$h = 1 + \kappa r\cos\theta$`
+of the divergence and curl nor the `$r h$` volume element is applied,
+so the results differ from the solver's own by `$O(\kappa)$` terms.
 """
 
 from __future__ import annotations

@@ -143,8 +143,11 @@ def _production_padding(p, np0: int, np1: int, periodic: bool) -> str:
 
 
 def _y_scale(ny: int, ny_red: int, np0: int) -> float:
-    """Production / reduced per-device wall-normal rows (the larger of
-    the physical rows, padding included, and the spectral ones)."""
+    """Production / reduced per-device wall-normal rows.
+
+    The larger of the physical rows' ratio, padding included, and the
+    spectral rows'.
+    """
     if ny_red == ny:
         return 1.0
     phys = math.ceil(ny / np0) / math.ceil(ny_red / np0)

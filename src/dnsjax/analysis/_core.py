@@ -16,12 +16,10 @@ all rests on ``src/dnsjax/__init__.py`` being empty: importing any
 Snapshot-native layout
 ----------------------
 A component chunk read straight off disk and reshaped to
-``(a_size, n_kz, n_kx)`` *is* the snapshot-native layout -- which,
-in format 6 (the reader's floor), is also the solver's in-memory
-spectral layout (the state is stored untransposed); we never
-transpose it.
-Axis 2 is always the real-FFT axis (``n_kx = nx // 2``).  Per
-family:
+``(a_size, n_kz, n_kx)`` *is* the snapshot-native layout -- which, in format 6
+(the reader's floor), is also the solver's in-memory spectral layout (the state
+is stored untransposed), and this reader never transposes it.  Axis 2 is always
+the real-FFT axis (``n_kx = nx // 2``).  Per family:
 
 ==================  =======================  =================
 family              spectral axes (as read)  physical axes
@@ -140,13 +138,16 @@ class Namespace:
         return key in object.__getattribute__(self, "_data")
 
     def get(self, key: str, default=None):
+        """``self[key]``, or *default* when the key is absent."""
         data = object.__getattribute__(self, "_data")
         return self._wrap(data[key]) if key in data else default
 
     def keys(self):
+        """The keys of the wrapped dict."""
         return object.__getattribute__(self, "_data").keys()
 
     def items(self):
+        """``(key, value)`` pairs, nested dicts wrapped as above."""
         for k in self.keys():
             yield k, self[k]
 
@@ -181,10 +182,10 @@ def params_namespace(meta: dict) -> Namespace:
 
 @dataclass(frozen=True)
 class GeometryInfo:
-    r"""Axis semantics for a snapshot, in the native axis order
-    (identical on disk and in the solver's spectral state).
+    r"""Axis semantics of a snapshot, in the native axis order.
 
-    All tuples are indexed by the on-disk axis (0, 1, 2).
+    The native order is the same on disk and in the solver's spectral
+    state; all tuples are indexed by the on-disk axis (0, 1, 2).
     """
 
     family: str  # "cartesian" | "cylindrical" | "annular" | "triply_periodic"
@@ -500,8 +501,11 @@ def physical_grids(info: GeometryInfo, wall_normal_grid) -> tuple:
 
 
 def spectral_coords(info: GeometryInfo, wall_normal_grid) -> tuple:
-    """Spectral coordinates: wavenumbers, with the wall-normal grid at
-    its (grid) axis for wall-bounded geometries."""
+    """Spectral coordinates, one array per axis (axis order).
+
+    Wavenumbers on the Fourier axes, and the wall-normal grid on the
+    grid axis of a wall-bounded geometry.
+    """
     coords = []
     for ax in range(3):
         kind = info.kind[ax]
@@ -625,7 +629,8 @@ def derivative_axis(
 
     Fourier axis: ``× i k`` (exact, per stored mode).  Grid axis
     (always axis 0 for wall-bounded families): the finite-difference
-    ``D1`` on *coord*, parity-reduced for the pipe when *parity* is set
+    ``D1`` on *coord*, parity-reduced for the pipe when *parity* is
+    set.
     """
     if info.kind[axis] in ("real", "complex"):
         return fourier_derivative(field, axis, coord)

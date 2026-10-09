@@ -287,7 +287,7 @@ def test_matches_live_streams() -> None:
     assert meta["it_yspectra"] == 1 and meta["includes_ref"] is False
     assert read_twin_yspectra_ref(out).meta["it_yspectra_ref"] == 1
     # The perturbation's provenance is the member's, as the live
-    # sidecar recorded it -- not whatever the defaults are today.
+    # sidecar recorded it -- not whatever the current defaults are.
     live = read_twin_yspectra(member).meta["twin"]
     assert meta["twin"] == live, (meta["twin"], live)
 
@@ -296,7 +296,7 @@ def test_member_without_record() -> None:
     """No ``twin.json``: the provenance is unknown, and says so.
 
     Seed, ``e0`` and the perturbation shape are all written ``null``
-    rather than back-filled from today's defaults, which a member
+    rather than back-filled from the current defaults, which a member
     recorded under other ones did not run with.
     """
     member = _member("plain", PARENT, 4, ["--twin.e0", str(E0)])

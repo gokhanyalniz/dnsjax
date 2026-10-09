@@ -1,10 +1,9 @@
 r"""JAX-free analysis API for dnsjax snapshots.
 
-For physics/applied-maths researchers post-processing snapshots without
-the solver runtime.  Depends only on NumPy, the standard library, and
-dnsjax's JAX-free leaf modules (:mod:`dnsjax.fd`,
-:mod:`dnsjax.snapshot_meta`, :mod:`dnsjax.harmonics`) -- importing
-``dnsjax.analysis`` never imports JAX.
+For post-processing snapshots without the solver runtime.  Depends only on
+NumPy, the standard library, and dnsjax's JAX-free leaf modules
+(:mod:`dnsjax.fd`, :mod:`dnsjax.snapshot_meta`, :mod:`dnsjax.harmonics`) --
+importing ``dnsjax.analysis`` never imports JAX.
 
 Read a snapshot::
 

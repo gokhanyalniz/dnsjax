@@ -30,18 +30,18 @@ The monochromatic base flow `$U(y)$` is a single Fourier harmonic
 (`$q_f = 1$`): the Kolmogorov profile `$U = \sin(2\pi y/L_y)$`,
 coefficient `-0.5j` at mode `$q_f$`.
 
-The base flow is transformed to physical space on the 3/2-oversampled
-grid for use in the nonlinear term.  Its curl
-(`$-\partial U_x/\partial y$` in the z-component) and the
-self-interaction `$\mathbf{U} \times \nabla \times \mathbf{U}$`
-are precomputed once.
+The base flow and its curl (`$-\partial U_x/\partial y$` in the
+z-component) are precomputed once, on the 3/2-oversampled grid of the
+nonlinear term.  The base flow's self-interaction
+`$\mathbf{U} \times (\nabla \times \mathbf{U}) = \nabla(U^2/2)$` is a
+gradient, which the pressure absorbs, so the nonlinear term never
+forms it.
 
 Tilt
 ----
 When the forcing direction is tilted by an angle `$\theta$` away from
 the x-axis in the (x, z) plane, the base flow and its derivatives are
-rotated:
-    `$U_x \to U_x \cos\theta$`, `$U_z \to U_x \sin\theta$`.
+rotated, `$U_x \to U_x \cos\theta$` and `$U_z \to U_x \sin\theta$`.
 """
 
 from dataclasses import dataclass, field
@@ -97,7 +97,7 @@ class MonochromaticFlow(TriplyPeriodicFlow):
         )
 
         # Forcing amplitude that sustains the laminar state:
-        # `$F = \\nu k^2 U$`
+        # `$F = \nu k^2 U$` with `$k = 2\pi/L_y = \pi/2$`.
         self.force_amplitude = jnp.pi**2 / (4 * params.phys.re)
         self.ekin_lam = 1.0 / 4.0
         self.input_lam = jnp.pi**2 / (8 * params.phys.re)
@@ -184,7 +184,12 @@ def get_energy(
     fourier_: Fourier,
     flow_: MonochromaticFlow,
 ) -> Array:
-    """Total kinetic energy"""
+    r"""Total kinetic energy `$E = E' - E_\mathrm{lam} + I/F$`.
+
+    The cross term `$\langle \mathbf{U} \cdot \mathbf{u}' \rangle
+    = (I - I_\mathrm{lam})/F$` is read off the power input, and
+    `$I_\mathrm{lam}/F = 2E_\mathrm{lam}$`.
+    """
     return perturbation_energy - flow_.ekin_lam + input / flow_.force_amplitude
 
 
@@ -194,9 +199,14 @@ def get_enstrophy(
     fourier_: Fourier,
     flow_: MonochromaticFlow,
 ) -> Array:
-    r"""Total enstrophy times Re.
+    r"""Total enstrophy `$\langle |\boldsymbol{\omega}|^2 \rangle$`.
 
-    The perturbation part is the Parseval sum
+    The base and cross terms come from the power input:
+    `$\langle |\boldsymbol{\omega}_U|^2 \rangle = \mathrm{Re}\,
+    I_\mathrm{lam}$` and `$2\langle \boldsymbol{\omega}_U \cdot
+    \boldsymbol{\omega}' \rangle = 2\mathrm{Re}\,(I - I_\mathrm{lam})$`,
+    since `$-\nabla^2 \mathbf{U} = k^2 \mathbf{U}$`.  The perturbation
+    part is the Parseval sum
     `$\sum_k k^2 |\hat{u}'_k|^2$` over the full mode set --
     ``get_norm2`` with the `$k^2$`-weighted metric carries the
     Hermitian real-FFT weight (2 for `$k_x > 0$`), matching the other
@@ -222,7 +232,7 @@ def get_dissipation(
 def get_input(
     state: Array, fourier_: Fourier, flow_: MonochromaticFlow
 ) -> Array:
-    """Power input from the forcing"""
+    """Power input `$I$` of the forcing, the laminar part included."""
     return (
         jnp.sum(
             jnp.conj(flow_.unit_force * flow_.force_amplitude)
@@ -264,7 +274,7 @@ def _get_stats_jit(
 
 
 def get_stats(state: Array) -> dict[str, Array]:
-    """Wrapper around ``_get_stats_jit``."""
+    """The ``stats.dat`` columns of *state*: E, I, D and E'."""
     return _get_stats_jit(state, fourier, flow)
 
 

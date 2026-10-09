@@ -2061,21 +2061,36 @@ class Parameters(BaseModel):
 
 @dataclass
 class DerivedParameters:
-    """Parameters derived from the user-facing configuration.
+    r"""Parameters derived from the user-facing configuration.
 
-    ``volume_fac`` is fixed by the geometry
-        (1 for periodic, 2 for Cartesian, 0.5 for cylindrical, and
-        ``(r2^2 - r1^2)/2`` for the annulus).
-    ``ccf_A``, ``ccf_B`` are the circular-Couette base-flow coefficients
-    ``U_theta = ccf_A * r + ccf_B / r`` and ``r_inner``, ``r_outer`` the
-    non-dim annular radii (set for the circular-Couette systems
-    "taylor-couette" and "quasi-keplerian").
-    ``u_grid`` is the resolved moving-frame speed (always a concrete
-    float; see ``params.phys.u_grid`` and ``update_parameters``).
-    ``nu`` is the (solvent) kinematic viscosity multiplying the velocity
-    Laplacian: ``1/re`` for the Newtonian systems, ``beta/re`` for the
-    viscoelastic system (whose polymer stress carries the remaining
-    ``(1-beta)/(re wi)``).
+    Attributes
+    ----------
+    volume_fac
+        The cross-section's measure in the wall-normal coordinate, which
+        turns a wall-normal integral into an average: 1 (triply
+        periodic), 2 (channel), `$\int_0^1 r\,dr = 1/2$` (pipe) or
+        `$(r_2^2 - r_1^2)/2$` (annulus).
+    cos_tilt, sin_tilt
+        Cosine and sine of ``geo.tilt_degree``, exact at multiples of 90
+        degrees.
+    wall_normal_grid
+        The wall-normal grid as built (``None`` for the triply-periodic
+        flows); every snapshot records it, and a resume regrids when it
+        differs.
+    ccf_A, ccf_B
+        The circular-Couette base-flow coefficients,
+        ``U_theta = ccf_A * r + ccf_B / r`` (taylor-couette and
+        quasi-keplerian).
+    r_inner, r_outer
+        The annulus's dimensionless radii (every annular flow).
+    u_grid
+        The resolved moving-frame speed, always a float (see
+        ``phys.u_grid`` and ``update_parameters``).
+    nu
+        The (solvent) kinematic viscosity multiplying the velocity
+        Laplacian: ``1/re`` for the Newtonian flows, ``beta/re`` for the
+        viscoelastic ones, whose polymer stress carries the remaining
+        ``(1-beta)/(re wi)``.
     """
 
     volume_fac: float = 1

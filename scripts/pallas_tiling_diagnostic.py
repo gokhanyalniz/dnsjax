@@ -470,10 +470,13 @@ BUG_DEMO = frozenset(
 
 
 def _expected_fail(probe: str, mlabel: str) -> bool:
-    """A bug-demo probe on a partial plane is an expected XFAIL (the raw
-    Triton partial-tile miscompile, which the real solve pads around).  Any
-    other failure -- a must-pass probe, or a bug-demo probe on a full plane
-    -- is a real regression."""
+    """Whether a probe failure is the expected XFAIL.
+
+    A bug-demo probe on a partial plane is (the raw Triton partial-tile
+    miscompile, which the real solve pads around).  Any other failure --
+    a must-pass probe, or a bug-demo probe on a full plane -- is a real
+    regression.
+    """
     return probe in BUG_DEMO and mlabel == "partial"
 
 

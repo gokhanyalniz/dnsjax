@@ -25,7 +25,7 @@ magnitude below a snapshot.  FFT-free (a masked reduction of data
 already in spectral space), so any cadence is cheap.
 
 File format
-===========
+-----------
 ``twin_spectra.bin`` is a flat sequence of fixed-size records,
 
 .. code-block:: python
@@ -159,12 +159,15 @@ class TwinSpectraStream(BinStream):
         *,
         includes_ref: bool = False,
     ) -> None:
-        """*twin_values* is the resolved ``[twin]`` section (the
-        driver's ``twin_params`` singleton), passed in rather than
-        imported: the ``[twin]`` extension is registered by
-        :mod:`dnsjax.twin.driver` alone, and taking the values as an
-        argument keeps this writer importable and testable without
-        pulling in the driver and its import-time registration."""
+        """Open (or append to) the stream for a run's ``[twin]`` values.
+
+        *twin_values* is the resolved ``[twin]`` section (the driver's
+        ``twin_params`` singleton), passed in rather than imported: the
+        ``[twin]`` extension is registered by :mod:`dnsjax.twin.driver`
+        alone, and taking the values as an argument keeps this writer
+        importable and testable without pulling in the driver and its
+        import-time registration.
+        """
         self.includes_ref = includes_ref
         sidecar = _common_sidecar(twin_values) | {
             "format_version": FORMAT_VERSION,

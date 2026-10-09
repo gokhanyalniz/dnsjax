@@ -13,7 +13,7 @@ tool: offline it would need full snapshots at that cadence, and the
 pressure has to come from the full-resolution field.
 
 What a file holds
-=================
+-----------------
 A format-6 snapshot (:mod:`dnsjax.snapshot`), read by
 :func:`dnsjax.analysis.read_state` like any other, with
 
@@ -33,7 +33,7 @@ checkpoint, and a resume refuses one
 (:func:`dnsjax.snapshot_meta.checkpoint_refusal`).
 
 How a field is reduced
-======================
+----------------------
 Every field is computed at the run's resolution first -- the pressure
 above all, whose source is quadratic in the velocity -- and only then
 reduced, axis by axis, where each axis is local:
@@ -56,15 +56,14 @@ reduced, axis by axis, where each axis is local:
   dropped at no extra collective (``snapshot._to_io_layout_core``).
 
 Cost
-====
-Per file: the reshard and write of a reduced field, a wall-normal GEMM,
-and with the pressure one static-pressure sample (15 field transforms
-and one banded solve,
+----
+Per file: the reshard and write of a reduced field, a wall-normal GEMM, and
+with the pressure one static-pressure sample (15 field transforms and one
+banded solve,
 :func:`~dnsjax.geometries.wall_bounded._cartesian_pressure.static_pressure`),
-whose transient is some three fifths of the time step's.  The pressure
-operator is resident for the run once enabled: a second banded factor
-set the size of the Poisson factors (its module's Design notes,
-"Cost").
+whose transient is some three fifths of the time step's.  The pressure operator
+is resident for the run once enabled: a second banded factor set the size of
+the Poisson factors (its module's Design notes, "Cost").
 """
 
 from __future__ import annotations

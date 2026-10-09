@@ -70,8 +70,8 @@ usable window considerably.
 ``+/-`` pairs for ensemble variance cancellation).
 
 The injected profile need not be discretely divergence-free: the
-influence-matrix pressure solve projects any residual divergence out
-on the first corrector step of the resumed run.  Transient-growth
+influence-matrix step of the resumed run removes any residual
+divergence on its first corrector pass.  Transient-growth
 optimals and controllability modes are divergence-free by
 construction.  The mean mode ``(0, 0)`` is a valid target on the
 Cartesian flows only, and the profile is **checked, not reshaped** --

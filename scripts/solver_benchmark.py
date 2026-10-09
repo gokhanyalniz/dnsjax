@@ -72,14 +72,14 @@ back**::
 
 The driver is a **single process**: do not fan it out
 (``srun -n 4 python ...`` runs four interleaved drivers fighting over
-the same GPU; surplus SLURM tasks now exit at startup).  The
+the same GPU; surplus SLURM tasks exit at startup).  The
 multi-process ``-m dnsjax`` runs are launched via ``--launcher``
 (default ``auto``: ``mpirun`` when on PATH, else ``srun -n N
 --overlap`` job steps inside the surrounding allocation;
 site-specific step flags go through ``--srun-args``, e.g.
 ``--srun-args "--gpus-per-task=1"``).
 
-On a CPU node (or the dev laptop)::
+On a CPU node::
 
     .venv/bin/python scripts/solver_benchmark.py --cpu-bench
     .venv/bin/python scripts/solver_benchmark.py --cpu-smoke  # harness
@@ -201,9 +201,11 @@ def _to_text(x: str | bytes | None) -> str:
 
 
 def _echo_tail(name: str, stdout: str, stderr: str) -> None:
-    """Inline the end of a failed run's output into the driver stdout
-    (the workdir often sits on a node-local /tmp that vanishes with
-    the job, so the paste-back must carry its own diagnosis)."""
+    """Inline the end of a failed run's output into the driver stdout.
+
+    The workdir often sits on a node-local /tmp that vanishes with the
+    job, so the paste-back must carry its own diagnosis.
+    """
     # Separate windows per stream: a chatty stderr (jax/XLA INFO) must
     # not crowd the stdout breadcrumbs out of the tail.
     print(f"          --- {name}: stdout tail ---")
@@ -239,10 +241,12 @@ def _import_flow(system: str):
 
 
 def _rebuild_pfc(system: str, flow):
-    """Rebuild ``predict_and_fully_correct`` from the geometry stepper
-    builder, picking up the *current* ``params.step.split_corrector``
-    (read at stepper-construction time) -- same operators, same flow,
-    no re-import.  Used for the split-vs-unsplit corrector A/B."""
+    """Rebuild ``predict_and_fully_correct`` from the geometry builder.
+
+    Picks up the *current* ``params.step.split_corrector`` (read at
+    stepper-construction time) -- same operators, same flow, no
+    re-import.  Used for the split-vs-unsplit corrector A/B.
+    """
     if system in ("plane-couette", "plane-poiseuille"):
         from dnsjax.geometries.wall_bounded.cartesian import (
             build_cartesian_stepper as build,
@@ -312,9 +316,11 @@ def _bench_step(jax, jnp, step, state, n: int, warmup: int = 3):
 
 
 def _bench_step_cnab2(jax, jnp, step_cnab2, state, n: int, warmup: int = 3):
-    """Time the CN/AB2 step by chaining ``(state, rhs_prev)`` from
-    copies (both arguments are donated); a discarded priming call
-    seeds the AB2 history, as the ``__main__`` driver does."""
+    """Time the CN/AB2 step, chaining ``(state, rhs_prev)`` from copies.
+
+    Both arguments are donated; a discarded priming call seeds the AB2
+    history, as the ``__main__`` driver does.
+    """
     from dnsjax.flows.registry import spec_for
     from dnsjax.parameters import params
 
@@ -390,7 +396,7 @@ def run_child(a: argparse.Namespace) -> None:
     # Select the backend explicitly (the driver passes --dist.platform;
     # CUDA_VISIBLE_DEVICES / JAX_PLATFORMS in the child env still pin the
     # concrete device) so the child's sharding banner and
-    # params.dist.platform match the hardware it actually runs on.
+    # params.dist.platform match the hardware it runs on.
     configure_jax_platform(a.platform)
 
     t0 = time.perf_counter()
@@ -568,8 +574,11 @@ def run_child(a: argparse.Namespace) -> None:
 
 
 def _probe_env() -> dict:
-    """Versions + devices via a subprocess, so the driver process
-    itself never initializes a (GPU-attached) JAX client."""
+    """Versions and devices, read in a subprocess.
+
+    The driver process itself never initializes a (GPU-attached) JAX
+    client.
+    """
     code = (
         "import json, jax, jaxlib\n"
         "d = jax.devices()\n"
@@ -597,8 +606,10 @@ def _probe_env() -> dict:
 def _dense_gb(
     system: str, nx: int, ny: int, nz: int, legacy_imm: bool = False
 ) -> float:
-    """Analytic dense-backend factor estimate (f64, all groups), for
-    the formulation the run uses (*legacy_imm*: ``--legacy-imm``)."""
+    """Analytic dense-backend factor estimate (f64, all groups), in GiB.
+
+    For the formulation the run uses (*legacy_imm*: ``--legacy-imm``).
+    """
     n_ops = (N_OPS_LEGACY if legacy_imm else N_OPS)[system]
     return n_ops * (nz - 1) * (nx // 2) * ny * ny * 8 / 2**30
 
@@ -777,10 +788,13 @@ def _next_port() -> int:
 
 
 def _echo_wrapper() -> list[str]:
-    """Per-task launch proof + env truth, echoed to the captured
-    stderr before exec'ing the real command: an empty tail after a
-    timeout cannot otherwise distinguish "the step never launched its
-    tasks" from "hung inside jax.distributed.initialize()"."""
+    """Per-task launch proof and environment, echoed before the command.
+
+    Written to the captured stderr before exec'ing the real command: an
+    empty tail after a timeout cannot otherwise distinguish "the step
+    never launched its tasks" from "hung inside
+    jax.distributed.initialize()".
+    """
     return [
         "bash",
         "-c",
@@ -916,7 +930,7 @@ _INIT_PROBE = (
 )
 
 # A minimal 2-process jax.distributed program exercising the NCCL
-# collective *patterns* the solver actually uses -- an all-gather and,
+# collective *patterns* the solver uses -- an all-gather and,
 # crucially, a jit resharding between orthogonal partition specs (the
 # all-to-all class behind dnsjax's FFT reshard pipeline; a launch mode
 # whose communicator comes up for an all-gather can still hang there).
@@ -1037,8 +1051,10 @@ def _probe_step(
 def _preflight_launcher(
     args: argparse.Namespace, platform: str, workdir: Path
 ) -> tuple[bool, str]:
-    """Fail fast when a multi-task launch cannot work -- and, on cuda,
-    pick a working GPU launch mode via an escalating probe ladder.
+    """Fail fast when a multi-task launch cannot work.
+
+    On cuda, also pick a working GPU launch mode via an escalating probe
+    ladder.
 
     Each rung runs with a short timeout and, on failure, echoes its
     output tail immediately -- localizing a multi-rank bootstrap
@@ -1364,9 +1380,11 @@ def _preflight_launcher(
 
 
 def _echo_nccl_logs(rundir: Path, max_files: int = 3) -> None:
-    """Echo the tail of each per-rank NCCL log of a failed run: under
-    NCCL_DEBUG=INFO/SUBSYS=COLL the last enqueued collective before
-    silence names the hung operation."""
+    """Echo the tail of each per-rank NCCL log of a failed run.
+
+    Under NCCL_DEBUG=INFO/SUBSYS=COLL the last enqueued collective
+    before silence names the hung operation.
+    """
     for nf in sorted(rundir.glob("nccl.*.log"))[:max_files]:
         try:
             lines = nf.read_text(errors="replace").splitlines()[-8:]
@@ -1731,12 +1749,14 @@ def _single_device_section(
 
 
 def _sp_ify(run: dict) -> dict:
-    """Rewrite one multi-device run to single-process multi-GPU: one
-    task whose PJRT client addresses all ``np0 * np1`` devices (the
-    offline-test topology on real GPUs) -- used when multi-process
-    launches hang at this site.  The global mesh, partitioning, and
-    outputs are identical; only the transport differs (no
-    cross-process NCCL)."""
+    """Rewrite one multi-device run to single-process multi-GPU.
+
+    The run becomes one task whose PJRT client addresses all
+    ``np0 * np1`` devices (the offline-test topology on real GPUs),
+    used when multi-process launches hang at this site.  The global
+    mesh, partitioning and outputs are identical; only the transport
+    differs (no cross-process NCCL).
+    """
     n = run["np0"] * run["np1"]
     if n > 1:
         run["tasks"] = 1

@@ -1,10 +1,11 @@
 r"""Shared spec fragments for the triply-periodic flows.
 
-One surface for the family (currently kolmogorov alone): the periodic
-box lengths/tilt, the identity-named resolution, the Reynolds number
-and the localized-rolls IC.  The moving frame and the mean-mode
-perturbation are deferred features here; the wall-bounded-only fields
-(grids, probes, forcing, ...) are simply not part of the surface.
+One surface for the family's flows (kolmogorov): the periodic box
+lengths and tilt, the identity-named resolution, the Reynolds number
+and the localized-rolls IC.  The moving frame, the mean-mode
+perturbation and the reduced snapshots' pressure are deferred here; the
+wall-bounded-only fields (grids, probes, forcing, ...) are not part of
+the surface.
 """
 
 from ....flow_spec import DeferredSpec, FieldSpec
@@ -76,5 +77,5 @@ def periodic_deferred() -> tuple[DeferredSpec, ...]:
 
 
 def periodic_derive(params, derived, user_set) -> None:
-    """Periodic box: the ky sum already comes as a density."""
+    """Set the volume factor to 1: a mode sum is already an average."""
     derived.volume_fac = 1

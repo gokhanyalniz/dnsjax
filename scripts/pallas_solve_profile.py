@@ -377,7 +377,7 @@ def _part_a_cpu(op, sharding, reps: int) -> None:
     Reported: the full solve, the sweep alone (RHS pre-split), and the
     split / recombine alone.  As on GPU the isolated pieces over-count
     -- each pays a round trip it does not pay when fused -- so the
-    honest figure for anything fused into the solve is ``full - sweep``.
+    true figure for anything fused into the solve is ``full - sweep``.
 
     **The factors are passed as jit arguments, not closed over.**  That
     is not a detail: the real stepper takes ``flow`` as an argument
@@ -705,10 +705,10 @@ def _split_helpers():
 
 
 def _part_a2(system, flow, sharding, reps, t_step, n) -> None:
-    r"""Size the split-real hoist: is the round trip between two
-    solves worth removing?
+    r"""Size the split-real hoist between two solves.
 
-    Every wall-bounded IMM runs the same chain -- one ``Hk`` solve, a
+    Is the round trip between two solves worth removing?  Every
+    wall-bounded IMM runs the same chain -- one ``Hk`` solve, a
     **linear map with real coefficients** over its components, one
     ``Lk`` solve:
 
@@ -1621,7 +1621,7 @@ def _stage_verdict(t_sum, t_imm, t_step, n, rows, t_solve) -> None:
     as a fidelity read, not a decomposition: far above 1 means the
     transcription is dominated by round trips, far below 1 means it is
     missing work.  Shares are of the fused ``_imm_iteration``, which is
-    the honest denominator.
+    the right denominator.
     """
     print(
         f"\n    sum/IMM = {t_sum / t_imm:4.2f} (isolated stages over-count; "

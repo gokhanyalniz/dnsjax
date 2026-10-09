@@ -148,7 +148,7 @@ Design notes
 **Fusing** `$A_{\mathrm{base}}$` **on the tensor slots.**
 :meth:`ViscoelasticCylindricalFlow.tensor_abase_matvec` buys no measurable wall
 time on CPU: interleaved A/B at `$64^3$`, both orderings, warm-up discarded,
-gave this flow -1.8 % at ``num_c = 0`` and the annular twin -0.7 % at
+gave this flow -1.8 % at ``num_c = 0`` and the annular flow -0.7 % at
 ``num_c = 0`` *and* -0.7 % again at ``num_c = 3-4`` (chained, so the field
 develops).  Every one of those sits inside a 5-25 % within-arm spread (11-25 %
 on the annulus), and the two operating points agreeing to 0.0 pp on the annulus
@@ -288,7 +288,7 @@ def viscoelastic_laminar_profiles(
     Velocity: the Hagen-Poiseuille profile `$W(r) = 1 - r^2$`, which is
     the exact balance of `$-\Pi_z = 4/\mathrm{Re}$` against the *total*
     (solvent + polymer) stress at `$\epsilon = 0$`; the shear-thinning
-    correction at `$\epsilon > 0$` is neglected, as in the annular twin.
+    correction at `$\epsilon > 0$` is neglected, as in the annular flow.
 
     Conformation: the pointwise sPTT equilibrium on the **discrete**
     local shear `$S = D_1 W$` (no curvature term -- the flow is

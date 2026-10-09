@@ -32,11 +32,24 @@ Consequences for the diagnostics:
   profile, and is exactly the transition indicator here, so
   ``stop.check_laminarization`` reads "relaminarized to 2D".
 
-Exports the flow interface consumed by ``__main__``:
-``predict_and_fully_correct`` (+ the measured variant), ``init_state``,
-``get_stats``, ``get_perturbation_energy``, ``get_driving`` and the
-basis pair ``to_solver_basis`` / ``from_solver_basis`` -- which here
-carry the metric weight `$h$` as well as the `$u_\pm$` rotation.
+The module exports the flow-module surface that
+:class:`~dnsjax.flow_spec.FlowSpec` lists under ``flow_module``, the
+optional ``get_driving``, ``CARRIED_FIELDS`` (the snapshot ``carry/``
+member) and the basis pair ``to_solver_basis`` / ``from_solver_basis``,
+which here carry the metric weight `$h$` as well as the `$u_\pm$`
+rotation.
+
+Design notes
+------------
+**The dissipation's two forms.**  ``get_stats`` reports `$D$` in the
+enstrophy form, which equals the gradient form in the continuum;
+discretely the two differ by the finite-difference integration-by-parts
+residual.  Measured against ``pipe``'s own gradient-form `$D$` at
+`$\kappa = 0$` on the same stepped state, the gap is
+`$4.0\times10^{-4}$` relative at `$n_r = 24$`, `$3.5\times10^{-5}$` at
+40 and `$1.9\times10^{-6}$` at 64 (``fd_order`` 6), while every other
+reported quantity agrees with ``pipe`` to ten digits there: the gap is
+a usable under-resolution diagnostic.
 """
 
 from dataclasses import dataclass
@@ -312,13 +325,8 @@ def _get_stats_jit(
       it costs one transform round trip and no toroidal gradient
       operator -- which is why this form and not the other.
       Discretely the two differ by the finite-difference
-      integration-by-parts residual, and the gap is a usable
-      under-resolution diagnostic: measured against ``pipe``'s own
-      gradient-form `$D$` at `$\kappa = 0$` on the same stepped state,
-      it is `$4.0\times10^{-4}$` relative at `$n_r = 24$`,
-      `$3.5\times10^{-5}$` at 40 and `$1.9\times10^{-6}$` at 64
-      (``fd_order`` 6).  Every other reported quantity agrees with
-      ``pipe`` to ten digits there.
+      integration-by-parts residual, a usable under-resolution
+      diagnostic (Design notes: "The dissipation's two forms").
     - `$I$`: energy input `$-\Pi\,U_b$` -- the driving does work only
       against the mass flux, because its `$1/h$` profile and the `$h$`
       of the volume element cancel exactly.
@@ -361,7 +369,7 @@ def _get_stats_jit(
 
 
 def get_stats(state: Array) -> dict[str, Array]:
-    """Wrapper around ``_get_stats_jit`` (physical-basis *state*)."""
+    """The ``stats.dat`` columns of the physical-basis *state*."""
     return _get_stats_jit(state, fourier, flow)
 
 
