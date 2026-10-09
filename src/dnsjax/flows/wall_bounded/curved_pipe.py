@@ -37,7 +37,8 @@ The module exports the flow-module surface that
 optional ``get_driving``, ``CARRIED_FIELDS`` (the snapshot ``carry/``
 member) and the basis pair ``to_solver_basis`` / ``from_solver_basis``,
 which here carry the metric weight `$h$` as well as the `$u_\pm$`
-rotation.
+rotation.  ``toroidal_perturbation`` serves the random initial
+condition (:mod:`dnsjax.ic.random_field`).
 
 Design notes
 ------------
@@ -194,6 +195,35 @@ def init_state() -> Array:
     u_s = jnp.where(fourier.mean_mask, profile[:, None, None], 0.0)
     zero = jnp.zeros_like(u_s)
     return jnp.stack([u_s, zero, zero]).astype(sharding.complex_type)
+
+
+def toroidal_perturbation(straight: Array, amplitude: float) -> Array:
+    r"""Map a straight-solenoidal perturbation onto toroidal continuity.
+
+    *straight* is a physical `$(v_s, v_r, v_\theta)$` perturbation whose
+    **straight** discrete divergence vanishes, as the pipe's random draw
+    does.  Toroidal continuity reads
+    `$\nabla_0\cdot(u_s,\, h u_r,\, h u_\theta) = 0$`, so
+
+    .. math::
+        \mathbf{u} = (v_s,\; h^{-1} v_r,\; h^{-1} v_\theta) ,
+
+    with the inverse taken exactly on the stored modes
+    (:meth:`~dnsjax.geometries.wall_bounded.cylindrical_curved.CurvedCylindricalFlow.metric_solve`),
+    meets the solver's own continuity row to roundoff: that row applies
+    the straight divergence to `$(u_s, h u_r, h u_\theta)$`, which is
+    `$v$` again.  The map acts radius by radius, so the wall values
+    and the axis-regularity envelope survive it.  It leaves `$u_s$`,
+    and with it the mass flux, untouched; the `$(0, 0)$` means of
+    `$h u_r$` and `$h u_\theta$` stay the draw's zero, so `$u_r$` and
+    `$u_\theta$` take the `$O(\kappa)$` means the metric then implies
+    (the radial one is what ``CurvedCylindricalFlow.mean_radial``
+    would supply).
+    Returns the result rescaled to *amplitude* in the flow's own norm,
+    the `$r h$`-weighted one of ``E``.
+    """
+    u = straight.at[1:3].set(flow.metric_solve(straight[1:3]))
+    return u * (amplitude / _metric_norm2(u, fourier, flow) ** 0.5)
 
 
 # ── Diagnostic statistics ────────────────────────────────────────

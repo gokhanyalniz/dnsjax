@@ -102,7 +102,12 @@ no-slip at both walls) and, under a held mean
 (``phys.driving = "constant_bulk_velocity"`` /
 ``phys.block_mean_spanwise_velocity``), carries an unchanged bulk
 velocity.  The wall-normal component's mean mode is identically zero by
-continuity in every geometry.
+continuity in every geometry but the curved pipe, where continuity
+zeroes the mean of `$h u_r$` instead: mapping the draw onto toroidal
+continuity gives its `$u_r$` and `$u_\theta$` the `$O(\kappa)$` means
+the metric implies, while the streamwise mean, which carries the flux,
+stays dropped
+(:func:`~dnsjax.flows.wall_bounded.curved_pipe.toroidal_perturbation`).
 
 **Per-device, non-JAX construction**: each device fills only its own
 spectral modes -- keyed by the *global* mode index, so the field is
@@ -985,14 +990,11 @@ def add_curved_pipe_laminar(state: Array) -> Array:
     at the mean mode, plus the random perturbation; the flow relaxes
     from there on a viscous timescale.
 
-    Two properties of that perturbation are worth naming.  It is
-    axisymmetric and vanishes at the wall, so no-slip survives.  But it
-    is divergence-free with respect to the **straight** cylindrical
-    divergence, not the toroidal one, so it starts `$O(\kappa)$` off
-    the constraint -- which costs nothing: the reconstruction rebuilds
-    the tangential pair from continuity on the very first step, so the
-    state is exactly constraint-satisfying from `$t = t_0 + \Delta t$`
-    onwards.
+    The profile is axisymmetric, streamwise-invariant and vanishes at
+    the wall, so it is solenoidal in the toroidal metric too and keeps
+    no-slip; the perturbation it is added to has already been mapped
+    onto toroidal continuity
+    (:func:`~dnsjax.flows.wall_bounded.curved_pipe.toroidal_perturbation`).
     """
     from jax import numpy as jnp
 
@@ -1594,7 +1596,13 @@ def generate_random_state(
             amplitude, smoothness, wall_smoothness, wall_confinement, seed
         )
         if system == "curved-pipe":
-            state = add_curved_pipe_laminar(state)
+            from ..flows.wall_bounded.curved_pipe import (
+                toroidal_perturbation,
+            )
+
+            state = add_curved_pipe_laminar(
+                toroidal_perturbation(state, amplitude)
+            )
         return state
     if system in annular_systems:
         state = generate_annular(

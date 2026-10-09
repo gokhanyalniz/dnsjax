@@ -156,7 +156,10 @@ wall-normal selection.
 The companion `dnsjax.analysis.snapshot_ops` module provides `derivative`,
 `gradient`, `divergence`, `curl`, and `integrate` that reproduce the
 solver's *discrete* operators node-for-node, plus `to_physical` and
-`to_spectral` for moving a field between the two representations.
+`to_spectral` for moving a field between the two representations. On
+the curved pipe they carry its toroidal metric; how `integrate` splits
+it between the cross-section and the streamwise direction is in its
+docstring.
 
 Four more names round out the JAX-free API for the cases where the
 field data is not what you are after. `read_meta` returns a snapshot's

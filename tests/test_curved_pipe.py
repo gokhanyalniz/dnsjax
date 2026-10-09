@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 r"""Curved (toroidal) pipe guards (offline, subprocess per config).
 
-Seven checks, cheapest first.  Each runs in its own subprocess because
+Nine checks, cheapest first.  Each runs in its own subprocess because
 the geometry singletons are captured at import, and `$\kappa$` is one
 of the things they capture.
 
@@ -23,8 +23,10 @@ of the things they capture.
     single azimuthal mode by `$h$` produces exactly `$m$` and
     `$m \pm 1$` with neighbour amplitude `$\kappa/2$` at `$r = 1$`; the
     shift **truncates** rather than wraps at `$|m| = M$`; and the
-    `$1/h$` harmonics the flux read contracts with match the closed
-    form `$q^{|m|}/\sqrt{1-\epsilon^2}$` to machine precision.
+    `$1/h$` harmonics the flux read contracts with, and the `$1/h^2$`
+    ones ``dnsjax.analysis.divergence`` divides by, match their closed
+    forms (:func:`dnsjax.harmonics.inverse_metric_harmonics`) to
+    machine precision.
 
 ``defect``
     The algebraic identity behind
@@ -37,9 +39,23 @@ of the things they capture.
         = h\,\partial_r(r h w_r) + h\,\partial_\theta(h w_\theta)
           + r\,\partial_s w_s ,
 
-    whose right-hand side is `$r h$` times the toroidal divergence.
+    whose right-hand side is `$r h^2$` times the toroidal divergence.
     Discretized with the *scheme's* radial form, so it also pins the
     choice of `$r D_1 x + x$` over `$D_1(r x)$`.
+
+``initial``
+    The random initial condition meets that toroidal discrete
+    continuity to roundoff before the first step
+    (``curved_pipe.toroidal_perturbation`` maps the pipe's
+    straight-solenoidal draw onto it), and keeps its amplitude in the
+    flow's own norm.
+
+``dealias``
+    ``phys.curvature_padding`` makes the right-hand side independent of
+    the azimuthal grid: one random state's RHS on the padded grid
+    matches a reference grid far past it to roundoff, where the 3/2
+    rule alone leaves the aliasing of `$1/h^2$` (three grids, one
+    subprocess each, compared at the end).
 
 ``straight``
     `$\kappa = 0$` must reproduce ``pipe``.  Five nonlinear steps from
@@ -91,6 +107,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _live import report  # noqa: E402
 
 KAPPA = 0.037  # the shipped default
+#: Largest RHS gap, relative, between the curvature-padded grid and the
+#: reference grid of the dealiasing comparison.
+DEALIAS_TOL = 1e-13
 
 
 # ── reference: Webster & Humphrey (2)-(5) vs the rotational form ──
@@ -269,18 +288,15 @@ def _check_metric(kappa: float) -> str:
     r"""The metric products `$h$` and `$1/h$` act on modes exactly.
 
     `$h\,e^{im\theta}$` is exactly `$m, m\pm1$` with weight
-    `$\kappa r/2$`, truncating at the top mode; and the `$1/h$`
-    harmonics match the closed form.
+    `$\kappa r/2$`, truncating at the top mode; and the `$1/h$` and
+    `$1/h^2$` harmonics match their closed forms.
     """
     _configure(kappa)
     import numpy as np
     from jax import numpy as jnp
 
     import dnsjax.flows.wall_bounded.curved_pipe as cp
-    from dnsjax.geometries.wall_bounded.cylindrical_curved import (
-        _inv_h_harmonics,
-    )
-    from dnsjax.harmonics import complex_harmonics
+    from dnsjax.harmonics import complex_harmonics, inverse_metric_harmonics
     from dnsjax.operators import pad_harmonics
     from dnsjax.parameters import params
     from dnsjax.sharding import sharding
@@ -321,22 +337,26 @@ def _check_metric(kappa: float) -> str:
     # the wall neighbour amplitude the handover quotes
     wall_amp = 0.5 * kappa * rs[-1]
 
-    # exact 1/h harmonics vs an FFT of 1/h
+    # exact 1/h and 1/h^2 harmonics vs an FFT of each
     nth = 4096
     th = 2 * np.pi * np.arange(nth) / nth
     err_c = 0.0
     for r in (rs[len(rs) // 3], rs[-1]):
-        num = np.fft.fft(1.0 / (1.0 + kappa * r * np.cos(th))) / nth
-        ana = _inv_h_harmonics(np.array([r]), np.arange(6))[0]
-        err_c = max(err_c, float(np.abs(num[:6] - ana).max()))
+        for power in (1, 2):
+            h = 1.0 + kappa * r * np.cos(th)
+            num = np.fft.fft(h**-power) / nth
+            ana = inverse_metric_harmonics(
+                kappa, np.array([r]), np.arange(6), power
+            )[0]
+            err_c = max(err_c, float(np.abs(num[:6] - ana).max()))
 
     assert worst_nb < 1e-14, f"neighbour weight off by {worst_nb:.2e}"
     assert worst_zero < 1e-14, f"non-neighbour leakage {worst_zero:.2e}"
     assert worst_trunc == 0.0, f"top mode wrapped: {worst_trunc:.2e}"
-    assert err_c < 1e-14, f"1/h harmonics off by {err_c:.2e}"
+    assert err_c < 1e-14, f"1/h^p harmonics off by {err_c:.2e}"
     return (
         f"neighbour {worst_nb:.1e}, leakage {worst_zero:.1e}, "
-        f"truncation exact, 1/h {err_c:.1e}; kappa/2 at the wall = "
+        f"truncation exact, 1/h^p {err_c:.1e}; kappa/2 at the wall = "
         f"{wall_amp:.6f}"
     )
 
@@ -380,7 +400,7 @@ def _check_defect(kappa: float) -> str:
     err = float(jnp.abs(straight - defect - toroidal).max())
     scale = float(jnp.abs(straight).max())
     assert err < 1e-12 * max(scale, 1.0), f"defect identity off by {err:.2e}"
-    return f"|r div0 w - r g - r h div_c u| = {err:.1e} (scale {scale:.1e})"
+    return f"|r div0 w - r g - r h^2 div_c u| = {err:.1e} (scale {scale:.1e})"
 
 
 def _steps(module, state, n: int):
@@ -438,27 +458,22 @@ def _check_straight(_kappa: float, out: str = "", system: str = "") -> str:
     return f"{system}: err={err:.1e} nc={nc}"
 
 
-def _check_continuity(kappa: float, tol: float = 1e-9) -> str:
-    r"""A stepped state's toroidal divergence against the tolerance.
+def _toroidal_residual(state, kappa: float) -> float:
+    r"""Relative toroidal discrete divergence of a solver-basis *state*.
 
-    The tolerance is ``step.corrector_tolerance``.
+    `$h\,\partial_r(r h w_r) + h\,\partial_\theta(h w_\theta)
+    + r\,\partial_s w_s$`, `$r h^2$` times the toroidal divergence, in
+    the scheme's radial form, over the largest `$\partial_r(r w_r)$`.
     """
-    _configure(kappa, step={"corrector_tolerance": tol})
     from jax import numpy as jnp
 
     import dnsjax.flows.wall_bounded.curved_pipe as cp
     import dnsjax.geometries.wall_bounded._cylindrical_stepping as cs
     from dnsjax.geometries.wall_bounded._base import from_pm_basis
     from dnsjax.geometries.wall_bounded.cylindrical import fourier
-    from dnsjax.ic.random_field import generate_random_state
 
     flow = cp.flow
-    s, err, _nc = _steps(
-        cp,
-        cp.to_solver_basis(generate_random_state(0.15, 0.4, 0.4, 0.14, 7)),
-        4,
-    )
-    w = from_pm_basis(s)
+    w = from_pm_basis(state)
     psv = 1 - fourier.m_is_even * 2
     r_col = flow.rs[:, None, None]
 
@@ -476,7 +491,61 @@ def _check_continuity(kappa: float, tol: float = 1e-9) -> str:
         + r_col * 1j * fourier.kz * w[0]
     )
     scale = float(jnp.abs(dr(w[1])).max())
-    rel = float(jnp.abs(res).max()) / max(scale, 1e-30)
+    return float(jnp.abs(res).max()) / max(scale, 1e-30)
+
+
+def _check_initial(kappa: float) -> str:
+    r"""The random initial condition meets toroidal continuity.
+
+    ``generate_random_state`` maps the pipe's straight-solenoidal draw
+    onto the toroidal constraint
+    (``curved_pipe.toroidal_perturbation``), so the solver's discrete
+    continuity row vanishes to roundoff before the first step, and the
+    perturbation keeps its amplitude in the flow's own norm.  The
+    straight draw it starts from misses the row by `$O(\kappa)$`
+    (reported, for scale).
+    """
+    _configure(kappa)
+    from jax import numpy as jnp
+
+    import dnsjax.flows.wall_bounded.curved_pipe as cp
+    from dnsjax.geometries.wall_bounded.cylindrical import fourier
+    from dnsjax.ic.random_field import (
+        add_curved_pipe_laminar,
+        generate_cylindrical,
+        generate_random_state,
+    )
+
+    amplitude = 0.15
+    state = generate_random_state(amplitude, 0.4, 0.4, 0.14, 7)
+    rel = _toroidal_residual(cp.to_solver_basis(state), kappa)
+    straight = generate_cylindrical(amplitude, 0.4, 0.4, 0.14, 7)
+    rel_straight = _toroidal_residual(cp.to_solver_basis(straight), kappa)
+    pert = state - add_curved_pipe_laminar(jnp.zeros_like(state))
+    norm = float(cp._metric_norm2(pert, fourier, cp.flow)) ** 0.5
+    assert rel < 1e-13, f"initial continuity residual {rel:.2e}"
+    assert abs(norm - amplitude) < 1e-12 * amplitude, f"amplitude {norm}"
+    return (
+        f"relative divergence {rel:.1e} (the straight draw: "
+        f"{rel_straight:.1e}); amplitude {norm:.6f}"
+    )
+
+
+def _check_continuity(kappa: float, tol: float = 1e-9) -> str:
+    r"""A stepped state's toroidal divergence against the tolerance.
+
+    The tolerance is ``step.corrector_tolerance``.
+    """
+    _configure(kappa, step={"corrector_tolerance": tol})
+    import dnsjax.flows.wall_bounded.curved_pipe as cp
+    from dnsjax.ic.random_field import generate_random_state
+
+    s, err, _nc = _steps(
+        cp,
+        cp.to_solver_basis(generate_random_state(0.15, 0.4, 0.4, 0.14, 7)),
+        4,
+    )
+    rel = _toroidal_residual(s, kappa)
     # The defect is read on the corrector iterate, so continuity holds
     # at the fixed point and the residual is bounded by how far the
     # accepted iterate is from it -- not by machine epsilon, as it is
@@ -486,6 +555,33 @@ def _check_continuity(kappa: float, tol: float = 1e-9) -> str:
         f"continuity residual {rel:.2e} at tolerance {tol:.0e}"
     )
     return f"tol={tol:.0e} err={err:.1e} -> relative divergence {rel:.2e}"
+
+
+#: ``phys`` overrides per grid of the dealiasing comparison: the 3/2
+#: rule alone, the default curvature padding, and a reference grid
+#: whose aliasing is far below roundoff (``N - 3M = 3M + 6``).
+_DEALIAS_GRIDS = {
+    "off": {"curvature_padding": False},
+    "on": {},
+    "reference": {"curvature_padding": False, "oversampling_factor": 6},
+}
+
+
+def _check_dealias(kappa: float, variant: str, out: str) -> str:
+    """One grid of the dealiasing comparison; writes its RHS to *out*."""
+    _configure(kappa, phys=_DEALIAS_GRIDS[variant])
+    import numpy as np
+
+    import dnsjax.flows.wall_bounded.curved_pipe as cp
+    import dnsjax.geometries.wall_bounded._cylindrical_stepping as cs
+    from dnsjax.geometries.wall_bounded.cylindrical import fourier
+    from dnsjax.ic.random_field import generate_random_state
+    from dnsjax.parameters import padded_res
+
+    state = generate_random_state(0.2, 0.4, 0.4, 0.14, 3)
+    carried = cp._carried_velocity(state, cp.flow)
+    np.save(out, np.asarray(cs._get_rhs(carried, fourier, cp.flow)))
+    return f"{variant}: nz_padded = {padded_res.nz_padded}"
 
 
 def _check_dean(kappa: float) -> str:
@@ -590,7 +686,9 @@ WORKERS = {
     "metric": lambda a: _check_metric(a.kappa),
     "defect": lambda a: _check_defect(a.kappa),
     "straight": lambda a: _check_straight(a.kappa, a.out, a.system),
+    "initial": lambda a: _check_initial(a.kappa),
     "continuity": lambda a: _check_continuity(a.kappa, a.tol),
+    "dealias": lambda a: _check_dealias(a.kappa, a.variant, a.out),
     "driving": lambda a: _check_driving(a.kappa),
     "dean": lambda a: _check_dean(a.kappa),
 }
@@ -600,6 +698,10 @@ CASES: list[tuple[str, str, list[str]]] = [
     ("reference (W&H Eqs. 2-5)", "reference", []),
     ("metric coupling", "metric", []),
     ("divergence defect", "defect", []),
+    ("initial continuity", "initial", []),
+    ("dealiasing grid: 3/2 rule", "dealias", ["--variant", "off"]),
+    ("dealiasing grid: curvature padding", "dealias", ["--variant", "on"]),
+    ("dealiasing grid: reference", "dealias", ["--variant", "reference"]),
     ("continuity @ 1e-6", "continuity", ["--tol", "1e-6"]),
     ("continuity @ 1e-9", "continuity", ["--tol", "1e-9"]),
     ("continuity @ 1e-12", "continuity", ["--tol", "1e-12"]),
@@ -627,8 +729,8 @@ def main(only: str | None, kappa: float) -> int:
                 str(kappa),
                 *extra,
             ]
-            if check == "straight":
-                args += ["--out", f"{tmp}/{extra[1]}.npy"]
+            if check in ("straight", "dealias"):
+                args += ["--out", f"{tmp}/{check}-{extra[1]}.npy"]
             proc = subprocess.run(args, capture_output=True, text=True)
             tail = (proc.stdout + proc.stderr).strip().splitlines()
             note = tail[-1] if tail else "(no output)"
@@ -639,7 +741,7 @@ def main(only: str | None, kappa: float) -> int:
             print(f"  PASS  {label}: {note}")
             passed += 1
         # the straight-limit comparison needs both halves
-        both = [f"{tmp}/pipe.npy", f"{tmp}/curved-pipe.npy"]
+        both = [f"{tmp}/straight-pipe.npy", f"{tmp}/straight-curved-pipe.npy"]
         if all(Path(p).exists() for p in both):
             import numpy as np
 
@@ -659,6 +761,26 @@ def main(only: str | None, kappa: float) -> int:
             passed += ok
             if not ok:
                 failures.append(("straight limit", f"{rel:.2e} / {stat:.1e}"))
+        # the dealiasing comparison needs all three grids
+        grids = {v: Path(f"{tmp}/dealias-{v}.npy") for v in _DEALIAS_GRIDS}
+        if all(p.exists() for p in grids.values()):
+            import numpy as np
+
+            rhs = {v: np.load(p) for v, p in grids.items()}
+            ref = rhs["reference"]
+
+            def gap(v: str) -> float:
+                return float(np.abs(rhs[v] - ref).max() / np.abs(ref).max())
+
+            ok = gap("on") < DEALIAS_TOL
+            print(
+                f"  {'PASS' if ok else 'FAIL'}  dealiasing: RHS vs the "
+                f"reference grid {gap('on'):.1e} with the curvature "
+                f"padding, {gap('off'):.1e} with the 3/2 rule alone"
+            )
+            passed += ok
+            if not ok:
+                failures.append(("dealiasing", f"{gap('on'):.2e}"))
     return report(passed, failures)
 
 
@@ -670,6 +792,7 @@ if __name__ == "__main__":
     parser.add_argument("--tol", type=float, default=1e-9)
     parser.add_argument("--system", default="curved-pipe")
     parser.add_argument("--out", default="")
+    parser.add_argument("--variant", default="on")
     args = parser.parse_args()
     if args.worker:
         print(WORKERS[args.worker](args))

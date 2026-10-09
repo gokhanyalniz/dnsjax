@@ -63,7 +63,11 @@ from numpy import ndarray
 
 from ..fd import build_diff_matrices
 from ..flows import registry as _registry
-from ..harmonics import complex_harmonics, real_harmonics
+from ..harmonics import (
+    complex_harmonics,
+    inverse_metric_harmonics,
+    real_harmonics,
+)
 from ..snapshot_meta import (
     STATE_KIND,
     is_snapshot_file,
@@ -206,6 +210,10 @@ class GeometryInfo:
     # sets the pipe's axis parity class (:func:`radial_derivative`).
     # 1 for every family without an azimuthal direction.
     azimuthal_m0: int = 1
+    # The curved pipe's `$\kappa$` (``geo.curvature``), which sets its
+    # toroidal metric `$h = 1 + \kappa r\cos\theta$`
+    # (:func:`metric_product`); 0 for every other system.
+    curvature: float = 0.0
 
     def axis_of(self, direction: str) -> int:
         """On-disk axis index of a named direction."""
@@ -285,6 +293,9 @@ def geometry_info(params: Namespace) -> GeometryInfo:
             # ``tests/test_viscoelastic.py`` hands it the *live pydantic*
             # ``params`` singleton, whose ``geo`` has no mapping API.
             azimuthal_m0=int(getattr(params.geo, "m0", 1) or 1),
+            curvature=(
+                float(params.geo.curvature) if system == "curved-pipe" else 0.0
+            ),
         )
     if system in PERIODIC_SYSTEMS:
         return GeometryInfo(
@@ -641,3 +652,53 @@ def derivative_axis(
         info,
         parity=parity,
     )
+
+
+def metric_product(
+    field: ndarray, grid, info: GeometryInfo, power: int
+) -> ndarray:
+    r"""Multiply a spectral curved-pipe field by `$h^p$`, exactly.
+
+    `$h = 1 + \kappa r\cos\theta$` is the toroidal metric
+    (:attr:`GeometryInfo.curvature`) and *power* `$p$` is 1, -1 or -2.
+    Each is a convolution along the azimuthal axis (axis 1) with the
+    harmonics `$c_j(r)$` of `$h^p$` on each radius of *grid* (axis 0):
+    `$h$` has three, `$c_0 = 1$` and `$c_{\pm1} = \kappa r/2$`, and
+    :func:`~dnsjax.harmonics.inverse_metric_harmonics` gives those of
+    `$1/h$` and `$1/h^2$` in closed form.  Every stored coefficient of
+    the product is the full sum `$\sum_n c_{m-n}\hat f_n$` over the
+    input's modes, so the result is exact on the stored set and drops
+    only what lies beyond `$|m| = M$`, as the solver's truncating shift
+    does for `$h$`.
+
+    The solver forms the inverse powers by collocation on its
+    dealiased grid of `$N$` azimuthal points instead, so the two agree
+    to the aliased harmonics, `$O(|q|^{N - 2M})$` with
+    `$q \approx -\kappa r/2$`: below roundoff on the default
+    ``phys.curvature_padding`` grid, `$N \ge 3M + J(\kappa)$`.
+
+    Every power preserves the radial parity class (`$\chi = r\cos\theta$`
+    shifts `$m$` by one and multiplies by `$r$`), so the product takes
+    the radial operator its input did.
+    """
+    field = np.asarray(field)
+    rs = np.asarray(grid, dtype=float)
+    m = complex_harmonics(info.n[1]) * info.azimuthal_m0
+    offset = np.abs(m[:, None] - m[None, :])  # |m_a - m_b|, (n_m, n_m)
+    n_harm = int(offset.max()) + 2  # at least c_0 and c_1
+    if power == 1:
+        coeffs = np.zeros((len(rs), n_harm))
+        coeffs[:, 0] = 1.0
+        coeffs[:, 1] = 0.5 * info.curvature * rs
+    elif power in (-1, -2):
+        coeffs = inverse_metric_harmonics(
+            info.curvature, rs, np.arange(n_harm), -power
+        )
+    else:
+        raise ValueError(f"power must be 1, -1 or -2, got {power}.")
+    # One (n_m, n_m) Toeplitz matrix per radius: stacking them would
+    # cost n_r times the memory.
+    out = np.empty_like(field)
+    for j in range(len(rs)):
+        out[j] = coeffs[j][offset].astype(field.dtype) @ field[j]
+    return out

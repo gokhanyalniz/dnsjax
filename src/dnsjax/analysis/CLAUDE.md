@@ -20,7 +20,11 @@ The external-facing snapshot API: `snapshot_export.read_state` and
   node for node (pinned by `test_snapshot_export.py`): re-run it after
   changing any primitive. The pipe's parity follows the physical
   `m = m0·h` (`GeometryInfo.azimuthal_m0` -> `_core.radial_derivative`),
-  exactly as `cylindrical.Fourier.m_is_even` does.
+  exactly as `cylindrical.Fourier.m_is_even` does. The curved pipe's
+  take the solver's metric-weighted forms (the carried `h u_s`, the
+  continuity row) and agree to roundoff on the default
+  `phys.curvature_padding` grid (`_core.metric_product`): change them
+  with `cylindrical_curved`.
 - The `*_SYSTEMS` sets mirror the registry. The geometry, rheology and
   total-field axes overlap, so an ordered branch mixing them tests
   rheology first (`flows/registry.py`).
