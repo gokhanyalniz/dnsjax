@@ -718,6 +718,23 @@ class Physics(BaseModel):
             "(default 3 = the 3/2 rule)."
         ),
     )
+    # Off in the model, on in the curved-pipe spec: a snapshot written
+    # before the field existed ran without it, which is what a resume's
+    # trajectory comparison reads for an absent key.
+    curvature_padding: bool = Field(
+        default=False,
+        description=(
+            "Curved pipe: raise the azimuthal dealiasing grid from the "
+            "3/2 rule's 3M + 3 points to 3M + J(kappa), M the largest "
+            "stored azimuthal wavenumber.  The nonlinear term carries "
+            "1/h^2, h = 1 + kappa r cos(theta), whose harmonics never "
+            "end, so no oversampling factor dealiases it exactly; J is "
+            "the smallest pad that bounds the aliasing below the "
+            "working precision's roundoff (see "
+            "dnsjax.harmonics.curvature_dealiasing_pad).  "
+            "Trajectory-defining; needs oversampling_factor >= 3."
+        ),
+    )
     driving: Literal[
         "constant_pressure_gradient", "constant_bulk_velocity"
     ] = Field(
@@ -2849,7 +2866,8 @@ class PaddedResolution:
     then rounded up to a mesh-divisible, FFT-friendly 7-smooth length
     (:meth:`apply_rounding`), with every adjustment recorded in
     :attr:`notes` for the startup diagnostics printed by
-    :mod:`dnsjax.sharding`.
+    :mod:`dnsjax.sharding`.  The curved pipe's azimuthal grid may be
+    raised further first (:meth:`apply_curvature_padding`).
 
     Only the triply-periodic flows pad ``y`` (``ny_padded`` stays
     ``None`` for a wall-normal grid), so at the default oversampling
@@ -2957,7 +2975,48 @@ class PaddedResolution:
         self.nz_padded = (
             parameters.phys.oversampling_factor * parameters.res.nz // 2
         )
+        if parameters.phys.curvature_padding:
+            self.apply_curvature_padding(parameters)
         self.apply_rounding(parameters)
+
+    def apply_curvature_padding(self, parameters: Parameters) -> None:
+        r"""Raise the curved pipe's ``nz_padded`` to `$3M + J(\kappa)$`.
+
+        `$M$` is the largest stored azimuthal wavenumber and `$J$` the
+        pad :func:`dnsjax.harmonics.curvature_dealiasing_pad` returns
+        for ``geo.curvature`` at the working precision's unit roundoff,
+        so the `$1/h^2$` in the nonlinear term aliases below roundoff
+        at any resolution.  A larger natural size (a higher
+        ``oversampling_factor``) is kept.  Appends the startup note
+        either way, so an active pad is always reported.
+        """
+        from .harmonics import curvature_dealiasing_pad
+
+        kappa = parameters.geo.curvature
+        double = parameters.res.double_precision
+        j_pad = curvature_dealiasing_pad(
+            kappa, 2.0**-53 if double else 2.0**-24
+        )
+        m_top = parameters.res.nz // 2 - 1
+        target = 3 * m_top + j_pad
+        natural = self.nz_padded
+        if target > natural:
+            change = f"raised from {natural} to {target} = 3M + J"
+            self.nz_padded = target
+        else:
+            change = f"kept at {natural} (at least 3M + J = {target})"
+        self.notes.append(
+            f"Curvature padding: the azimuthal dealiasing grid "
+            f"(nz_padded) is {change}, with M = {m_top} the largest "
+            f"stored azimuthal wavenumber and J = {j_pad} at kappa = "
+            f"{kappa:g}.  The curved pipe's nonlinear term carries 1/h^2, "
+            f"h = 1 + kappa r cos(theta), whose harmonics never end, so "
+            f"the 3/2 rule alone leaves them aliased; the J points put "
+            f"that aliasing below "
+            f"{'double' if double else 'single'}-precision roundoff at "
+            f"any resolution.  Turn off with phys.curvature_padding = "
+            f"false (CLI: --phys.curvature_padding False)."
+        )
 
 
 padded_res: PaddedResolution = PaddedResolution()

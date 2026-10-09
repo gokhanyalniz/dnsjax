@@ -26,6 +26,16 @@ azimuthal wavenumber ``m = m0 * h``, which for every *odd* ``m0``
 (the full circle included) agrees with the harmonic index ``h`` -- so
 only an even wedge can catch a selector keyed on ``h``.
 
+The curved pipe is the row with a metric, `$h = 1 + \kappa r\cos\theta$`.
+Its references are the solver's own metric-weighted quantities with
+the weight divided out as ``get_stats`` does: the curl of the carried
+`$(h u_s, u_r, u_\theta)$`, and the continuity row
+`$h^2\nabla\cdot\mathbf{u}$` its corrector drives to zero.  They
+agree to roundoff because the fixture runs on the default
+``phys.curvature_padding`` grid; on the 3/2 rule alone the solver's
+collocation of `$1/h$` would show at about `$10^{-9}$` here.  Its
+``integrate`` checks pin where `$h$` enters the volume element.
+
 ``div_true.npy`` does the same for ``divergence``, with one wrinkle:
 operator *equality* is invisible on a solenoidal field, so the ground
 truth is taken on ``DIV_PROBE`` -- the IC rescaled per component,
@@ -57,6 +67,9 @@ sys.stdout.reconfigure(line_buffering=True)
 NX, NY, NZ = 8, 24, 8
 LX, LZ = 5.0, 5.0
 RE = 100.0
+#: Curved-pipe curvature: the straight-pipe forms miss it by 3-5e-2 in
+#: the curl and divergence checks below.
+KAPPA = 0.1
 
 # (system, family, m0); families exercise both basis paths + parity
 # (pipe) + the 9-component conformation schema (both viscoelastic
@@ -69,11 +82,14 @@ RE = 100.0
 # separates them.  ``viscoelastic-pipe`` runs at that wedge for the
 # same reason *and* carries 9 components, so it is the row where the
 # analysis package's tensor parity classes must be right.
+# ``curved-pipe`` is the one row with a metric (no wedge: curvature
+# breaks the symmetry).
 SYSTEMS = [
     ("plane-couette", "cartesian", 1),
     ("pipe", "cylindrical", 1),
     ("pipe", "cylindrical", 2),
     ("viscoelastic-pipe", "cylindrical", 2),
+    ("curved-pipe", "cylindrical", 1),
     ("taylor-couette", "annular", 1),
     ("viscoelastic-dean", "annular", 1),
     ("kolmogorov", "triply_periodic", 1),
@@ -173,6 +189,8 @@ def _generate(system: str, outdir: str, m0: int = 1) -> None:
         init["random_conformation_amplitude"] = 10.0
     else:
         phys["re"] = RE
+    if system == "curved-pipe":
+        geo["curvature"] = KAPPA
 
     update_parameters(
         Parameters(
@@ -227,6 +245,33 @@ def _generate(system: str, outdir: str, m0: int = 1) -> None:
         div_true = _solver_divergence(
             to_solver_basis(probe), system, flow, fourier
         )
+    elif system == "curved-pipe":
+        # The solver's metric-weighted quantities, with the weight
+        # divided out by its own dealiased collocation (as get_stats
+        # does): the curl of the carried (h u_s, u_r, u_th) is
+        # (om_s, h om_r, h om_th), and its continuity row -- the
+        # straight divergence of the carried state less
+        # divergence_defect -- is h^2 div u.
+        from dnsjax.flows.wall_bounded import curved_pipe as cp
+        from dnsjax.flows.wall_bounded.curved_pipe import flow, get_stats
+        from dnsjax.geometries.wall_bounded._base import from_pm_basis
+        from dnsjax.geometries.wall_bounded._cylindrical_stepping import (
+            _curl_fn,
+        )
+        from dnsjax.geometries.wall_bounded.cylindrical import fourier
+        from dnsjax.operators import phys_to_spec_2d, spec_to_phys_2d
+
+        def _over_h(f, power):
+            return phys_to_spec_2d(spec_to_phys_2d(f) * flow.inv_h_phys**power)
+
+        carried = from_pm_basis(cp.to_solver_basis(state))
+        omega_h = _curl_fn(carried, fourier, flow)
+        omega = jnp.concatenate([omega_h[:1], _over_h(omega_h[1:], 1)])
+        probe_w = cp.to_solver_basis(probe)
+        row = _solver_divergence(
+            probe_w, system, flow, fourier
+        ) - flow.divergence_defect(probe_w, fourier)
+        div_true = _over_h(row[None], 2)[0]
     elif system == "taylor-couette":
         from dnsjax.flows.wall_bounded.taylor_couette import (
             flow,
@@ -466,6 +511,21 @@ def _check_system(system: str, family: str, outdir: str) -> None:
         else:
             exp *= info.length[ax]
     assert abs(vol - exp) / exp < VOL_TOL, f"{system}: vol {vol} != {exp}"
+    if info.curvature:
+        # The metric h = 1 + kappa r cos(theta) rides with s: cos(theta)
+        # integrates to kappa pi L_s R^3 / 3 over the volume, and to
+        # zero over each cross-section, whose element carries no h.
+        r_max = float(np.asarray(st.physical_coords[0])[-1])
+        cos_th = np.cos(st.physical_coords[1])[None, :, None] * ones
+        got = float(integrate(cos_th, st.params, st.physical_coords))
+        want = info.curvature * np.pi * info.length[2] * r_max**3 / 3
+        assert abs(got - want) / want < VOL_TOL, (
+            f"{system}: volume metric {got} != {want}"
+        )
+        section = integrate(
+            cos_th, st.params, st.physical_coords, directions=("r", "theta")
+        )
+        assert np.abs(section).max() < VOL_TOL, f"{system}: section metric"
 
     _check_subsetting(system, family, d, st)
     wedge = "" if info.azimuthal_m0 == 1 else f" (m0={info.azimuthal_m0})"
