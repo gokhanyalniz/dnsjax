@@ -414,8 +414,10 @@ def _child(entry_point: str, argv: list[str]) -> int:
 
 
 def _write_profiles(path: Path, system: str, grid: list[float]) -> None:
-    """Two channels of random 3-component profiles for mode ``(1, 1)``,
-    on *grid* (``extensions/forcing.py`` refuses any other)."""
+    """Two channels of random 3-component profiles for mode ``(1, 1)``.
+
+    On *grid*, which ``extensions/forcing.py`` requires.
+    """
     rng = np.random.default_rng(7)
     shape = (2, 3, len(grid))
     profiles = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)

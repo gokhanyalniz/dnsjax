@@ -278,8 +278,9 @@ def _simulate_forced_run(
 
 
 def test_identify_ssi_files() -> None:
-    """Statistical recovery through the full file pipeline (+pooling,
-    causality, sidecar-default basis, CLI).
+    """Statistical recovery through the full file pipeline.
+
+    With pooling, causality, the sidecar-default basis and the CLI.
 
     The simulated law is the restricted reference operator with extra
     damping: the laminar test operator is nearly neutral (spectral

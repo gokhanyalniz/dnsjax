@@ -146,8 +146,7 @@ if sharding.np0 > 1:
     # ambiguous reshape: vmap over the components instead.
     @jit
     def phys_to_spec_2d(velocity_phys: Array) -> Array:
-        r"""Forward 2D real FFT in `$(x, z)$`, vmapped over
-        components.
+        r"""Forward 2D real FFT in `$(x, z)$`, vmapped over components.
 
         Parameters
         ----------
@@ -167,8 +166,7 @@ if sharding.np0 > 1:
 
     @jit
     def spec_to_phys_2d(velocity_spec: Array) -> Array:
-        r"""Inverse 2D real FFT in `$(x, z)$`, vmapped over
-        components.
+        r"""Inverse 2D real FFT in `$(x, z)$`, vmapped over components.
 
         Parameters
         ----------
@@ -192,8 +190,7 @@ else:
     # "Folding the components into y").
     @jit
     def phys_to_spec_2d(velocity_phys: Array) -> Array:
-        r"""Forward 2D real FFT in `$(x, z)$`, batched over
-        components.
+        r"""Forward 2D real FFT in `$(x, z)$`, batched over components.
 
         The leading (component) axis is folded into the y-axis
         before the transform and unfolded afterwards, so the
@@ -222,8 +219,7 @@ else:
 
     @jit
     def spec_to_phys_2d(velocity_spec: Array) -> Array:
-        r"""Inverse 2D real FFT in `$(x, z)$`, batched over
-        components.
+        r"""Inverse 2D real FFT in `$(x, z)$`, batched over components.
 
         The leading (component) axis is folded into the y-axis
         before the transform and unfolded afterwards, so the

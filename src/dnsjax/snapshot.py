@@ -143,7 +143,7 @@ validation.  It is read with the standard library (no JAX) via
 
 When stats are supplied, an optional ``_dnsjax_stats.json`` member
 holds the state's physical diagnostics (the ``get_stats`` dict as
-``{name: value}``); readers that do not need it simply ignore the
+``{name: value}``); readers that do not need it ignore the
 extra member.
 
 Solver-carried fields (optional ``carry/``)
@@ -479,7 +479,7 @@ def _a_local(a_true: int, ndev: int) -> int:
     ``a_true`` is rarely divisible by the device count (wall-normal
     grids are odd), and a :class:`NamedSharding` cannot split an axis
     unevenly -- so the array is zero-padded to ``_a_local * ndev``
-    before resharding and the trailing rows are simply never written
+    before resharding and the trailing rows are never written
     or read (:func:`_a_ranges` clamps to ``a_true``).
     """
     return -(-a_true // ndev)
@@ -994,7 +994,7 @@ def assemble_local_shards(
     Builds a state directly in the **solver** layout, for the
     in-process IC generators.  (:func:`load_snapshot` assembles on the
     I/O layout instead and reshards -- its shards come from the file,
-    whose axis order is fixed, whereas a generator can simply fill
+    whose axis order is fixed, whereas a generator can fill
     whichever block it is asked for.)  Each local device's padded
     shard is allocated zero-filled (shape
     :func:`_padded_local_shape`) and handed to

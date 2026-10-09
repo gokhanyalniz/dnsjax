@@ -130,8 +130,10 @@ def test_read_probes_paths_and_values() -> None:
 
 
 def test_read_probes_truncated_and_nonmonotonic() -> None:
-    """A partial trailing record is dropped; overlapping timestamps
-    (a resumed re-run) only warn."""
+    """A partial trailing record is dropped; overlapping timestamps warn.
+
+    Overlapping timestamps (a resumed re-run) only warn.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         _write_stream(tmp, np.array([0.0, 0.01, 0.005]), truncate_bytes=100)
         data = rp.read_probes(tmp)  # prints two warnings
@@ -139,8 +141,10 @@ def test_read_probes_truncated_and_nonmonotonic() -> None:
 
 
 def test_read_probes_drops_resume_seams() -> None:
-    """Exact-duplicate consecutive timestamps (continuation seams) are
-    dropped keeping the last, restoring the uniform grid."""
+    """Exact-duplicate consecutive timestamps are dropped, keeping the last.
+
+    Continuation seams; dropping them restores the uniform grid.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         _write_stream(tmp, np.array([0.0, 0.01, 0.01, 0.02, 0.02]))
         data = rp.read_probes(tmp)  # prints the seam-drop note
@@ -195,10 +199,13 @@ def test_mean_profile_and_t_min() -> None:
 
 
 def test_re_tau_closed_form() -> None:
-    r"""Closed-form check: the sample mean of scales (1, 2) is 1.5,
-    so the total profile is `$(1 + 1.5/4)(1 - y^2)$` with wall slope
-    `$|dU/dy|_w = 2.75$`, resolved exactly by the FD stencils on the
-    quadratic; `$Re_\tau = \sqrt{Re \cdot 2.75}$`."""
+    r"""A closed-form check of the mean profile and ``re_tau``.
+
+    The sample mean of scales (1, 2) is 1.5, so the total profile is
+    `$(1 + 1.5/4)(1 - y^2)$` with wall slope `$|dU/dy|_w = 2.75$`,
+    resolved exactly by the FD stencils on the quadratic;
+    `$Re_\tau = \sqrt{Re \cdot 2.75}$`.
+    """
     t = np.array([0.0, 0.01])
     with tempfile.TemporaryDirectory() as tmp:
         _write_stream(tmp, t)

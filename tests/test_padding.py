@@ -1,5 +1,7 @@
-r"""Padded-size rounding tests (mesh divisibility, FFT-friendly
-7-smooth lengths) and odd-pad FFTs.
+r"""Padded-size rounding tests and odd-pad FFTs.
+
+The rounding covers mesh divisibility and FFT-friendly 7-smooth
+lengths.
 
 Covers :func:`dnsjax.parameters.round_up_padded` /
 :func:`round_up_padded_smooth` and their two application sites:

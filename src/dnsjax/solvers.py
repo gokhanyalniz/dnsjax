@@ -759,7 +759,7 @@ def _banded_from_dense(A: Array, p: int) -> Array:
     Jitted, like the other band helpers here, because the setup calls
     them eagerly: one compiled program per shape instead of
     ``3 (2p+1)`` separately compiled operations, every build (inside a
-    jitted caller, such as the ``set_dt`` rebuild, it simply inlines).
+    jitted caller, such as the ``set_dt`` rebuild, it inlines).
     """
     N = A.shape[-1]
     cols = []

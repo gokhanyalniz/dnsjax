@@ -233,8 +233,10 @@ def _recon(
 
 
 def _assert_streams_identical(live: Path, rebuilt: Path) -> None:
-    """Every binary stream equal, value for value, on a shared grid
-    (the reference spectra both merged and on their own stream)."""
+    """Every binary stream is equal, value for value, on a shared grid.
+
+    The reference spectra both merged and on their own stream.
+    """
     for reader in (
         read_twin_yspectra,
         read_twin_yspectra_ref,

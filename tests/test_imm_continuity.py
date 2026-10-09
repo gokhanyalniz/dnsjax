@@ -1,5 +1,7 @@
-r"""Discrete continuity of a stepped state, on the default
-``res.consistent_imm`` formulation and on the legacy one.
+r"""Discrete continuity of a stepped state, under both IMM formulations.
+
+Checked on the default ``res.consistent_imm`` formulation and on the
+legacy one.
 
 The influence-matrix method's continuity argument (Kleiser-Schumann;
 Canuto, Hussaini, Quarteroni & Zang 1988, sec. 7.3) is derived for

@@ -293,8 +293,10 @@ def _synthetic_responses(
     noise: float,
     seed: int,
 ) -> list[Path]:
-    """Response npzs mimicking ``aggregate_tree`` outputs: the basis
-    responses of the dynamics ``l_true`` on the basis ``p``."""
+    """Response npzs mimicking ``aggregate_tree`` outputs.
+
+    The basis responses of the dynamics ``l_true`` on the basis ``p``.
+    """
     from scipy.linalg import expm
 
     rng = np.random.default_rng(seed)

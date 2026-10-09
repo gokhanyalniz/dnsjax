@@ -135,8 +135,10 @@ def _pallas_op_from_dense(
 
 
 def _mode_inner_factors(Lo: jnp.ndarray, Uo: jnp.ndarray):
-    """Kernel-layout (mode-inner, reciprocated-diagonal) factors from
-    the mode-outer ``_banded_factor`` output, as plain local arrays.
+    """Kernel-layout factors from the ``_banded_factor`` output, locally.
+
+    Mode-inner, reciprocated-diagonal factors from the mode-outer
+    output, as plain local arrays.
 
     Bypasses ``from_banded_factors``, whose shard_map commits the
     result to the Explicit mesh: the direct ``_pallas_banded_solve``
@@ -179,8 +181,10 @@ def _abstract_gpu_mesh(
 
 
 def test_pallas_banded_matches_dense() -> None:
-    """Pallas banded operator (CPU path) matches ``np.linalg.solve``
-    across a sweep of half-bandwidth ``p``, real and complex RHS."""
+    """The Pallas banded operator (CPU path) matches ``np.linalg.solve``.
+
+    Across a sweep of half-bandwidth ``p``, real and complex RHS.
+    """
     Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
     for p in (2, 4, 6):
         Ny = 5 * p
@@ -200,8 +204,9 @@ def test_pallas_banded_matches_dense() -> None:
 
 
 def test_mode_inner_sweep_matches_mode_outer() -> None:
-    """The CPU sweep on the stored mode-inner factors reproduces the
-    mode-outer :func:`_banded_solve_batched` mode by mode.
+    """The CPU sweep on mode-inner factors matches the mode-outer one.
+
+    Against :func:`_banded_solve_batched`, mode by mode.
 
     Every mode gets its own operator (a single tiled one would hide a
     mode-axis mix-up), and the sweep runs over ``p`` from 1 (a one-slot
@@ -244,8 +249,10 @@ def test_mode_inner_sweep_matches_mode_outer() -> None:
 
 
 def test_pallas_factors_prepadded_to_tiles() -> None:
-    """Per-backend storage: whole-tile on the kernel path, true-plane
-    on the CPU one; ``.solve`` keeps the true-plane contract on both.
+    """Per-backend factor storage, under one ``.solve`` contract.
+
+    Whole-tile on the kernel path, true-plane on the CPU one;
+    ``.solve`` keeps the true-plane contract on both.
 
     On the kernel path the stored mode plane is rounded up to the
     ``(bm0, bm1)`` Pallas tile at construction, so no per-solve factor
@@ -293,8 +300,7 @@ def test_pallas_factors_prepadded_to_tiles() -> None:
 
 
 def test_pallas_interpret_matches_cpu_path() -> None:
-    """The Pallas kernel (interpret mode) reproduces the pure-JAX
-    banded sweep used on CPU.
+    """The Pallas kernel (interpret mode) matches the pure-JAX CPU sweep.
 
     Swept over half-bandwidth ``p``, wall-normal size ``Ny``, real
     (``k=1``) / complex-as-real (``k=2``) RHS, and two mode-plane sizes --
@@ -401,9 +407,10 @@ def test_pallas_transpose_identity() -> None:
 
 
 def test_pallas_adjoint_matches_portable_sweep() -> None:
-    r"""The kernel's ``custom_vjp`` reproduces the portable sweep's own
-    autodiff, in all three cotangents, and every band slot survives a
-    finite difference.
+    r"""The kernel's ``custom_vjp`` matches the portable sweep's autodiff.
+
+    In all three cotangents, and every band slot survives a finite
+    difference.
 
     The pure-JAX :func:`_banded_solve_batched` differentiates through
     its ``lax.scan`` with no custom rule, so it is an
@@ -558,8 +565,7 @@ def test_pallas_cuda_lowering() -> None:
 
 
 def test_pallas_cuda_lowering_sharded_solve() -> None:
-    """The full ``.solve`` shard_map region lowers for cuda
-    (compile-only, no GPU).
+    """The full ``.solve`` shard_map region lowers for cuda (no GPU).
 
     Forces the Pallas-kernel branch (``solvers._force_kernel_path``) so
     tracing on CPU reaches ``pallas_call`` *inside* the ``.solve``
@@ -673,8 +679,7 @@ def test_pallas_adjoint_composes_in_solve() -> None:
 
 
 def test_pallas_stacked_operators() -> None:
-    """Stacked multi-component Pallas operator solves each component
-    with its own factors."""
+    """A stacked Pallas operator solves each component with its factors."""
     Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
     p, Ny = 4, 16
     As = [_make_random_banded(Ny, p, seed=s) for s in (1, 2, 3)]
@@ -694,11 +699,13 @@ def test_pallas_stacked_operators() -> None:
 
 
 def test_build_pallas_operator_checks() -> None:
-    """``_build_pallas_operator``: a healthy operator builds a working
-    Pallas operator; a no-pivot breakdown (zero leading pivot) and
-    genuine element growth (tiny leading pivot) hard-error; an
-    above-tolerance residual with benign growth prints the
-    ill-conditioning notice and still builds."""
+    """``_build_pallas_operator``'s health checks.
+
+    A healthy operator builds a working Pallas operator; a no-pivot
+    breakdown (zero leading pivot) and genuine element growth (tiny
+    leading pivot) hard-error; an above-tolerance residual with benign
+    growth prints the ill-conditioning notice and still builds.
+    """
     Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
     p, Ny = 4, 16
     A = _make_random_banded(Ny, p, seed=0)
