@@ -83,7 +83,7 @@ variants; the claims the scripts back are mapped in
 |---|---|
 | Banded solve and Pallas kernel | `banded_solver`, `banded_solver_sharded` |
 | Geometry operators and grids | `cartesian`, `cylindrical`, `annular`, `curved_pipe`, `viscoelastic`, `viscoelastic_pipe`, `integration`, `mean_mask`, `padding` |
-| Stepping | `laminar_smoke`, `random_smoke`, `cnab2`, `temporal_order`, `adaptive`, `imm_continuity`, `energy_budget`, `autodiff`, `monochromatic`, `wall_normal_matvec`, `wall_time_stop` |
+| Stepping | `laminar_smoke`, `random_smoke`, `cnab2`, `temporal_order`, `adaptive`, `imm_continuity`, `energy_budget`, `autodiff`, `monochromatic`, `wall_normal_matvec`, `wall_time_stop`, `run_status` |
 | Parameters, bootstrap, device mesh, seeds | `param_surface`, `bootstrap`, `seeding`, `device_grid`, `host_placement`, `mpi_communicators` |
 | Initial conditions | `localized_rolls`, `rolls_smoke`, `mean_mode`, `snapshot_perturb` |
 | Snapshots, resume, analysis | `snapshot`, `resume`, `snapshot_import`, `snapshot_export`, `transient_growth`, `quasi_keplerian`, `lowres` |

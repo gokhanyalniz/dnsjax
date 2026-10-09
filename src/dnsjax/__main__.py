@@ -39,15 +39,17 @@ Execution phases
    The loop terminates when the elapsed simulation time
    (``stop.max_sim_time``, counted from ``init.t0``), the
    wall-clock time or the corrector divergence criterion is
-   reached, or, with ``stop.check_laminarization``, when ``E'``
-   falls below ``stop.laminarization_threshold``.  The wall-clock
-   budget is judged at the
-   ``outs.it_error_check`` cadence by all processes together
-   (:meth:`~dnsjax.sharding.Sharding.any_process`): each reads its
-   own clock from its own start, and a budget running out between
-   two processes' readings would otherwise send one into another
-   step's collectives while the other leaves the loop, hanging
-   both.  The corrector error and iteration counters stay on
+   reached, with ``stop.check_laminarization`` when ``E'``
+   falls below ``stop.laminarization_threshold``, or on a stop
+   request (``RUNNING`` deleted, or ``SIGUSR1``; "Run status"
+   below).  The wall-clock budget and the stop request are judged
+   at the ``outs.it_error_check`` cadence by all processes together
+   (:meth:`~dnsjax.run_status.RunStatus.stop_flags`, one
+   :meth:`~dnsjax.sharding.Sharding.any_process_each`): each process
+   reads its own clock from its own start, and a budget running out
+   between two processes' readings would otherwise send one into
+   another step's collectives while the other leaves the loop,
+   hanging both.  The corrector error and iteration counters stay on
    the device; the error is synced to the host only every
    ``outs.it_error_check`` steps so that JAX async dispatch can
    pipeline steps.  What is synced is the device-side running
@@ -183,6 +185,21 @@ When the current wall-normal grid differs from the snapshot's,
 ``_interpolate_if_needed`` interpolates the state at load time (see
 :mod:`dnsjax.fd` for the interpolation methods).
 
+Run status
+----------
+:func:`main` runs everything after the JAX setup inside a
+:class:`dnsjax.run_status.RunStatus`: ``RUNNING`` in the run directory
+while the run is live, then ``FINISHED`` (a stop criterion of the
+run's own), ``STOPPED`` (on request) or ``TERMINATED`` (a failure,
+with its reason).  A stop request takes the closing path the
+wall-clock budget takes: the final stats row, probe sample and
+snapshot (``outs.snapshot_save_final``), then every stream flushed.
+Exit codes: 0 for ``FINISHED`` and ``STOPPED``; for ``TERMINATED``, 4
+when the corrector failed to converge (after the final snapshot, which
+is the post-mortem state), 3 for the non-finite guard, ``128 + n`` for
+signal ``n`` and 1 otherwise.  The files, the MPI rules and what no
+file can record: the :mod:`dnsjax.run_status` module docstring.
+
 Benchmarking
 ------------
 The first time step is excluded from wall-clock statistics
@@ -237,6 +254,7 @@ from time import perf_counter_ns
 
 from .adaptive import propose_dt
 from .bootstrap import (
+    ResolvedSetup,
     configure_jax_runtime,
     resolve_parameters,
     resolve_run_seeds,
@@ -255,6 +273,13 @@ from .parameters import (
     params,
     random_ic_selected,
     trajectory_defining_changes,
+)
+from .run_status import (
+    EXIT_NON_FINITE,
+    Outcome,
+    RunStatus,
+    install_stop_signal,
+    loop_outcome,
 )
 from .snapshot_meta import git_hash, read_snapshot_meta
 
@@ -421,12 +446,16 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
     return state
 
 
-def run(wall_time_start: int) -> None:
+def run(wall_time_start: int, status: RunStatus) -> Outcome:
     """Run the time-stepping loop after parameters and JAX are initialized.
 
     *wall_time_start* is the ``perf_counter_ns`` timestamp taken at
     process start (:func:`main`) -- the reference for the
     ``stop.max_wall_time`` budget and the shutdown diagnostics.
+    *status* is the run directory's status file (entered by
+    :func:`main`): the loop polls it for a stop request and reports
+    each snapshot and abort reason to it.  Returns how the loop ended
+    (:func:`dnsjax.run_status.loop_outcome`); an abort exits instead.
     """
     import importlib
 
@@ -710,16 +739,18 @@ def run(wall_time_start: int) -> None:
         from .snapshot import save_snapshot
 
         width = params.outs.snapshot_pad_width
+        name = f"state{isnap:0{width}d}.tar"
         save_snapshot(
             state,
             t,
             it,
-            f"state{isnap:0{width}d}.tar",
+            name,
             stats=(snap_stats if params.outs.snapshot_embed_stats else None),
             isnap=isnap,
             carry=carry if embed_carry else None,
             carry_names=carried_names,
         )
+        status.snapshot_written(name, t, it)
         return isnap + 1
 
     def _carried(solver_state):
@@ -810,11 +841,13 @@ def run(wall_time_start: int) -> None:
         # A broken initial condition; nothing is buffered yet, so
         # print and exit directly (the in-run guard proper is
         # ``_abort_non_finite`` below).
-        sharding.print(
-            f"FATAL: non-finite initial statistic(s) "
-            f"{', '.join(bad_init)} at t = {t:.6e}; aborting."
+        reason = (
+            f"non-finite initial statistic(s) {', '.join(bad_init)} "
+            f"at t = {t:.6e}"
         )
-        sys.exit(3)
+        status.note(reason)
+        sharding.print(f"FATAL: {reason}; aborting.")
+        sys.exit(EXIT_NON_FINITE)
 
     if check_laminarization:
         # Compile the E' kernel outside the benchmark window; it is
@@ -1126,9 +1159,10 @@ def run(wall_time_start: int) -> None:
         ``sharding.exit``; the scalar-guard aborts (corrector error,
         ``E'``, initial/final stats) fire identically on every rank.
         """
+        status.note(reason)
         sharding.print(f"FATAL: {reason}; aborting.")
         flush_all_buffers(check=False)
-        sys.exit(3)
+        sys.exit(EXIT_NON_FINITE)
 
     # On a termination signal (e.g. a scheduler wall-time kill or
     # Ctrl-C) flush the buffers before exiting so no diagnostics are
@@ -1156,16 +1190,17 @@ def run(wall_time_start: int) -> None:
         # Deferred check of the t0 probe record (see the probe setup).
         _abort_non_finite(probe_bad_t0)
 
-    # The wall-clock budget: judged by all processes together, here and
-    # at the it_error_check cadence (the module docstring says why).
+    # The stop poll -- the wall-clock budget and a stop request
+    # (``RUNNING`` deleted, SIGUSR1) -- judged by all processes
+    # together, here and at the it_error_check cadence (the module
+    # docstring says why).
     timed: bool = params.stop.max_wall_time is not None
 
-    def _out_of_time() -> bool:
-        return sharding.any_process(
-            perf_counter_ns() - wall_time_start >= wall_time_stop
-        )
+    def _poll_stop() -> tuple[bool, str | None]:
+        late = timed and perf_counter_ns() - wall_time_start >= wall_time_stop
+        return status.stop_flags(late, sharding.any_process_each)
 
-    out_of_time: bool = timed and _out_of_time()
+    out_of_time, request = _poll_stop()
 
     sharding.print("Started timestepping at", datetime.now())
 
@@ -1175,6 +1210,7 @@ def run(wall_time_start: int) -> None:
         and not out_of_time
         and (fixed_corrector or last_error < params.step.corrector_tolerance)
         and not laminarized
+        and request is None
     ):
         if it == params.init.it0 + 1:
             # Start the benchmark clock after the first (JIT-heavy)
@@ -1466,7 +1502,7 @@ def run(wall_time_start: int) -> None:
                     )
                 laminarized = e_prime_host < laminarization_threshold
 
-            out_of_time = timed and _out_of_time()
+            out_of_time, request = _poll_stop()
 
     # --- Post-processing -----------------------------------------------------
     # Single shutdown sync of the device-side corrector counters
@@ -1484,6 +1520,11 @@ def run(wall_time_start: int) -> None:
         c_tot = 0
         c_first_int = 0
 
+    # A failed corrector ends the run as TERMINATED (exit 4, after the
+    # final snapshot below); a fixed count makes the error a diagnostic.
+    corrector_failed: bool = (
+        not fixed_corrector and last_error > params.step.corrector_tolerance
+    )
     if last_error > params.step.corrector_tolerance:
         if fixed_corrector:
             sharding.print(
@@ -1506,6 +1547,8 @@ def run(wall_time_start: int) -> None:
             f"Laminarized: E' = {e_prime_host:.3e} < "
             f"{laminarization_threshold:.3e} at t={t}, it={it}."
         )
+    if request is not None:
+        sharding.print(f"Stop requested ({request}) at t={t}, it={it}.")
 
     sharding.print("Stopped timestepping at", datetime.now())
 
@@ -1629,6 +1672,14 @@ def run(wall_time_start: int) -> None:
 
     # Flush any remaining buffered diagnostic rows.
     flush_all_buffers()
+    return loop_outcome(
+        t,
+        it,
+        corrector_error=last_error if corrector_failed else None,
+        request=request,
+        out_of_time=out_of_time,
+        laminarized=laminarized,
+    )
 
 
 def _peak_device_bytes(jax) -> int | None:
@@ -1765,9 +1816,17 @@ def main(argv: list[str] | None = None) -> int:
     any seed this run needs but was not given
     (:func:`dnsjax.bootstrap.resolve_run_seeds`), prints the final
     configuration on the main process, and runs the simulation
-    (:func:`run`).  *argv* defaults to ``sys.argv``.
+    (:func:`run`) inside the run directory's status file
+    (:class:`dnsjax.run_status.RunStatus`).  Returns the exit code of
+    the run's outcome: 0, or
+    :data:`~dnsjax.run_status.EXIT_CORRECTOR` when the corrector
+    failed to converge (every other failure exits on its own).  *argv*
+    defaults to ``sys.argv``.
     """
     wall_time_start = perf_counter_ns()
+    # Before anything slow: until it is installed, a SIGUSR1 (the stop
+    # request) would kill the process.
+    install_stop_signal()
 
     # Parameters resolve first (fast, pre-JAX): --help / --sample-toml
     # exit in there with clean output (no banner prefix).
@@ -1782,79 +1841,90 @@ def main(argv: list[str] | None = None) -> int:
     # deadlock.
     print("Alive at", datetime.now(), flush=True, file=sys.stderr)
     main_device = configure_jax_runtime()
-    # Every rank: an unset seed is drawn on process 0 and broadcast, so
-    # the ranks build one random field rather than one each.  Before the
-    # gate below -- a collective inside it would deadlock.
-    seed_notes = resolve_run_seeds(setup)
 
-    if main_device:
-        print("Distribution initialized at", datetime.now(), flush=True)
-        print("Code version:", git_hash(), flush=True)
-        if setup.snapshot_params_used:
-            # The initial-condition snapshot's own provenance.
-            print(
-                "Snapshot was recorded by code version:",
-                read_snapshot_meta(setup.snapshot_path)["git_hash"],
-                flush=True,
-            )
-        if setup.snapshot_params_used:
-            print(
-                f"Inherited parameters embedded in snapshot "
-                f"'{setup.snapshot_path}' (except np0/np1/platform/"
-                "double_precision); parameters.toml and command-line "
-                "arguments override them.",
-                flush=True,
-            )
-        if setup.params_from_disk:
-            print(
-                "Loaded parameters.toml, "
-                "which override the snapshot and default parameters. "
-                "Command-line arguments will further override "
-                "the loaded parameters.",
-                flush=True,
-            )
-        else:
-            print(
-                "Loaded the default parameters, "
-                "as parameters.toml was not found. "
-                "Command-line arguments will further override "
-                "the default parameters.",
-                flush=True,
-            )
-        # Never gated on DNSJAX_QUIET_STARTUP below: a drawn seed is
-        # the one piece of the configuration that cannot be recovered
-        # from the launching command.
-        for note in seed_notes:
-            print(note, flush=True)
-        # The full resolved-parameter dump is provenance for a real run
-        # but pure repeated noise when a test launches the solver dozens
-        # of times (the launching command already carries every argument
-        # and a failing test dumps the child output).  The mpirun smoke
-        # tests set ``DNSJAX_QUIET_STARTUP=1`` (``tests/_live.run_live``)
-        # to skip it; a normal run is unaffected.
-        if os.environ.get("DNSJAX_QUIET_STARTUP") != "1":
-            print_resolved_parameters(
-                params,
-                setup.spec,
-                tuple(relevant_extensions(setup.system).values()),
-            )
+    # The status file (``RUNNING`` until the end; :mod:`dnsjax.run_status`)
+    # brackets everything from here, so a refusal or a crash in the setup
+    # below is recorded too.  Every rank enters it: entering is a
+    # collective on a multi-process run.
+    import jax
 
-        print(
-            "Running with the physical-space (x, y, z) resolution:",
-            padded_res.nx_padded,
-            padded_res.ny_padded
-            if padded_res.ny_padded is not None
-            else params.res.ny,
-            padded_res.nz_padded,
-            flush=True,
-        )
-
-    run(wall_time_start)
+    with RunStatus(jax.process_index(), jax.process_count()) as status:
+        # Every rank: an unset seed is drawn on process 0 and broadcast,
+        # so the ranks build one random field rather than one each.
+        # Before the gate below -- a collective inside it would deadlock.
+        seed_notes = resolve_run_seeds(setup)
+        if main_device:
+            _print_banner(setup, seed_notes)
+        status.outcome = run(wall_time_start, status)
 
     # Per-rank shutdown heartbeat -- stderr, see the "Alive at" note
     # above (keeps the main rank's stdout summary line un-spliced).
     print("Shutdown at", datetime.now(), flush=True, file=sys.stderr)
-    return 0
+    return status.outcome.exit_code
+
+
+def _print_banner(setup: ResolvedSetup, seed_notes: list[str]) -> None:
+    """The main process's startup banner: provenance and parameters."""
+    print("Distribution initialized at", datetime.now(), flush=True)
+    print("Code version:", git_hash(), flush=True)
+    if setup.snapshot_params_used:
+        # The initial-condition snapshot's own provenance.
+        print(
+            "Snapshot was recorded by code version:",
+            read_snapshot_meta(setup.snapshot_path)["git_hash"],
+            flush=True,
+        )
+    if setup.snapshot_params_used:
+        print(
+            f"Inherited parameters embedded in snapshot "
+            f"'{setup.snapshot_path}' (except np0/np1/platform/"
+            "double_precision); parameters.toml and command-line "
+            "arguments override them.",
+            flush=True,
+        )
+    if setup.params_from_disk:
+        print(
+            "Loaded parameters.toml, "
+            "which override the snapshot and default parameters. "
+            "Command-line arguments will further override "
+            "the loaded parameters.",
+            flush=True,
+        )
+    else:
+        print(
+            "Loaded the default parameters, "
+            "as parameters.toml was not found. "
+            "Command-line arguments will further override "
+            "the default parameters.",
+            flush=True,
+        )
+    # Never gated on DNSJAX_QUIET_STARTUP below: a drawn seed is
+    # the one piece of the configuration that cannot be recovered
+    # from the launching command.
+    for note in seed_notes:
+        print(note, flush=True)
+    # The full resolved-parameter dump is provenance for a real run
+    # but pure repeated noise when a test launches the solver dozens
+    # of times (the launching command already carries every argument
+    # and a failing test dumps the child output).  The mpirun smoke
+    # tests set ``DNSJAX_QUIET_STARTUP=1`` (``tests/_live.run_live``)
+    # to skip it; a normal run is unaffected.
+    if os.environ.get("DNSJAX_QUIET_STARTUP") != "1":
+        print_resolved_parameters(
+            params,
+            setup.spec,
+            tuple(relevant_extensions(setup.system).values()),
+        )
+
+    print(
+        "Running with the physical-space (x, y, z) resolution:",
+        padded_res.nx_padded,
+        padded_res.ny_padded
+        if padded_res.ny_padded is not None
+        else params.res.ny,
+        padded_res.nz_padded,
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

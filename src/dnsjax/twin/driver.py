@@ -147,8 +147,10 @@ iteration: there is no measured/unmeasured split between them.
 The corrector convergence guard and the non-finite exit-3 guard watch
 **both** states' errors at the ``outs.it_error_check`` cadence.  Flush
 sites, snapshot consistency (one checked flush before each snapshot
-*pair*), SIGTERM/SIGINT flushing, and the FATAL / exit-3 semantics all
-mirror :mod:`dnsjax.__main__`.
+*pair*), SIGTERM/SIGINT flushing, the FATAL / exit-3 semantics and the
+run status files (a stop request ends the member with a final pair;
+its ``snapshot`` line names the reference tar) all mirror
+:mod:`dnsjax.__main__`.
 
 Ensembles
 ---------
@@ -287,6 +289,7 @@ from ..__main__ import (
     _stats_row as _row,
 )
 from ..bootstrap import (
+    ResolvedSetup,
     configure_jax_runtime,
     resolve_parameters,
     resolve_seed,
@@ -306,6 +309,13 @@ from ..parameters import (
     padded_res,
     params,
     trajectory_defining_changes,
+)
+from ..run_status import (
+    EXIT_NON_FINITE,
+    Outcome,
+    RunStatus,
+    install_stop_signal,
+    loop_outcome,
 )
 from ..seeding import (
     SOURCE_CLI,
@@ -985,11 +995,16 @@ class _ScalarStream:
         return bad
 
 
-def run(wall_time_start: int, seed_source: str | None = None) -> None:
+def run(
+    wall_time_start: int,
+    status: RunStatus,
+    seed_source: str | None = None,
+) -> Outcome:
     """Run the twin time-stepping loop (parameters and JAX final).
 
-    Mirrors :func:`dnsjax.__main__.run` with two states; see the
-    module docstring for what differs.  *seed_source* is the
+    Mirrors :func:`dnsjax.__main__.run` with two states, *status*
+    and the returned :class:`~dnsjax.run_status.Outcome` included; see
+    the module docstring for what differs.  *seed_source* is the
     ``seeding.SOURCE_*`` label of the layer that supplied ``twin.seed``
     (``None`` when none did, and the seed is resolved in here).
     """
@@ -1391,6 +1406,8 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             stats=(snap_stats2 if embed else None),
             isnap=isnap,
         )
+        # The reference names the pair (its partner: ``_partner_path``).
+        status.snapshot_written(f"{name}.tar", t, it)
         return isnap + 1
 
     # --- Warm-ups (JIT outside the benchmark window) ----------------------
@@ -1425,11 +1442,13 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             k for k, v in bvals.items() if not math.isfinite(float(v))
         ]
     if bad_init:
-        sharding.print(
-            f"FATAL: non-finite initial statistic(s) "
-            f"{', '.join(bad_init)} at t = {t:.6e}; aborting."
+        reason = (
+            f"non-finite initial statistic(s) {', '.join(bad_init)} "
+            f"at t = {t:.6e}"
         )
-        sys.exit(3)
+        status.note(reason)
+        sharding.print(f"FATAL: {reason}; aborting.")
+        sys.exit(EXIT_NON_FINITE)
 
     if check_laminarization:
         jax.block_until_ready(get_perturbation_energy(state1))
@@ -1844,9 +1863,10 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
 
     def _abort_non_finite(reason: str) -> None:
         """FATAL / flush-unchecked / exit-3 (the ``__main__`` path)."""
+        status.note(reason)
         sharding.print(f"FATAL: {reason}; aborting.")
         flush_all_buffers(check=False)
-        sys.exit(3)
+        sys.exit(EXIT_NON_FINITE)
 
     _terminating: bool = False
 
@@ -1869,17 +1889,16 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     for bad in spectral_bad_t0:
         _abort_non_finite(bad)
 
-    # The wall-clock budget, judged by all processes together, here and
-    # at the it_error_check cadence (as in ``dnsjax.__main__``, whose
-    # module docstring says why).
+    # The stop poll (the wall-clock budget and a stop request), judged
+    # by all processes together, here and at the it_error_check cadence
+    # (as in ``dnsjax.__main__``, whose module docstring says why).
     timed: bool = params.stop.max_wall_time is not None
 
-    def _out_of_time() -> bool:
-        return sharding.any_process(
-            perf_counter_ns() - wall_time_start >= wall_time_stop
-        )
+    def _poll_stop() -> tuple[bool, str | None]:
+        late = timed and perf_counter_ns() - wall_time_start >= wall_time_stop
+        return status.stop_flags(late, sharding.any_process_each)
 
-    out_of_time: bool = timed and _out_of_time()
+    out_of_time, request = _poll_stop()
 
     sharding.print("Started twin timestepping at", datetime.now())
 
@@ -1889,6 +1908,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         and not out_of_time
         and (fixed_corrector or last_error < params.step.corrector_tolerance)
         and not laminarized
+        and request is None
     ):
         if it == it0 + 1:
             jax.block_until_ready(state1)
@@ -2072,7 +2092,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
                     )
                 laminarized = e_prime_host < laminarization_threshold
 
-            out_of_time = timed and _out_of_time()
+            out_of_time, request = _poll_stop()
 
     # --- Post-processing -------------------------------------------------
     n_steps: int = it - it0
@@ -2085,6 +2105,11 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     else:
         c_tot = 0
 
+    # A failed corrector ends the run as TERMINATED (exit 4), as in
+    # ``dnsjax.__main__``.
+    corrector_failed: bool = (
+        not fixed_corrector and last_error > params.step.corrector_tolerance
+    )
     if last_error > params.step.corrector_tolerance:
         if fixed_corrector:
             sharding.print(
@@ -2105,6 +2130,8 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             f"Laminarized: E' = {e_prime_host:.3e} < "
             f"{laminarization_threshold:.3e} at t={t}, it={it}."
         )
+    if request is not None:
+        sharding.print(f"Stop requested ({request}) at t={t}, it={it}.")
 
     sharding.print("Stopped twin timestepping at", datetime.now())
 
@@ -2204,6 +2231,14 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             sharding.print(host)
 
     flush_all_buffers()
+    return loop_outcome(
+        t,
+        it,
+        corrector_error=last_error if corrector_failed else None,
+        request=request,
+        out_of_time=out_of_time,
+        laminarized=laminarized,
+    )
 
 
 def _twin_sidecar_stub() -> dict:
@@ -2270,9 +2305,12 @@ def main(argv: list[str] | None = None) -> int:
     at this module's import, is the entry point's own: it rides every
     flow's surface and the bare ``--help``), configure the distributed
     JAX runtime, print the banner on the main process, run the twin
-    loop.
+    loop inside the run directory's status file
+    (:class:`dnsjax.run_status.RunStatus`), and return the exit code
+    of its outcome.
     """
     wall_time_start = perf_counter_ns()
+    install_stop_signal()
 
     setup = resolve_parameters(
         argv, own_extensions=(TWIN_EXTENSION,), prog=_PROG
@@ -2280,42 +2318,51 @@ def main(argv: list[str] | None = None) -> int:
     print("Alive at", datetime.now(), flush=True, file=sys.stderr)
     main_device = configure_jax_runtime()
 
-    if main_device:
-        print("Distribution initialized at", datetime.now(), flush=True)
-        print("Code version:", git_hash(), flush=True)
-        if setup.snapshot_params_used:
-            # The parent snapshot's own provenance (``_metadata_bytes``
-            # always records it; the format-6 floor rejects anything
-            # older), as in :func:`dnsjax.__main__.main`.
-            print(
-                "Snapshot was recorded by code version:",
-                read_snapshot_meta(setup.snapshot_path)["git_hash"],
-                flush=True,
-            )
-            print(
-                f"Inherited parameters embedded in snapshot "
-                f"'{setup.snapshot_path}' (except np0/np1/platform/"
-                "double_precision); parameters.toml and command-line "
-                "arguments override them.",
-                flush=True,
-            )
-        if os.environ.get("DNSJAX_QUIET_STARTUP") != "1":
-            print_resolved_parameters(
-                params,
-                setup.spec,
-                tuple(relevant_extensions(setup.system).values()),
-            )
-        print(
-            "Running with the physical-space (x, y, z) resolution:",
-            padded_res.nx_padded,
-            padded_res.ny_padded
-            if padded_res.ny_padded is not None
-            else params.res.ny,
-            padded_res.nz_padded,
-            flush=True,
+    import jax
+
+    with RunStatus(jax.process_index(), jax.process_count()) as status:
+        if main_device:
+            _print_banner(setup)
+        status.outcome = run(
+            wall_time_start, status, setup.seed_layers.get("twin.seed")
         )
 
-    run(wall_time_start, setup.seed_layers.get("twin.seed"))
-
     print("Shutdown at", datetime.now(), flush=True, file=sys.stderr)
-    return 0
+    return status.outcome.exit_code
+
+
+def _print_banner(setup: ResolvedSetup) -> None:
+    """The main process's startup banner (:func:`dnsjax.__main__.main`'s)."""
+    print("Distribution initialized at", datetime.now(), flush=True)
+    print("Code version:", git_hash(), flush=True)
+    if setup.snapshot_params_used:
+        # The parent snapshot's own provenance (``_metadata_bytes``
+        # always records it; the format-6 floor rejects anything
+        # older), as in :func:`dnsjax.__main__.main`.
+        print(
+            "Snapshot was recorded by code version:",
+            read_snapshot_meta(setup.snapshot_path)["git_hash"],
+            flush=True,
+        )
+        print(
+            f"Inherited parameters embedded in snapshot "
+            f"'{setup.snapshot_path}' (except np0/np1/platform/"
+            "double_precision); parameters.toml and command-line "
+            "arguments override them.",
+            flush=True,
+        )
+    if os.environ.get("DNSJAX_QUIET_STARTUP") != "1":
+        print_resolved_parameters(
+            params,
+            setup.spec,
+            tuple(relevant_extensions(setup.system).values()),
+        )
+    print(
+        "Running with the physical-space (x, y, z) resolution:",
+        padded_res.nx_padded,
+        padded_res.ny_padded
+        if padded_res.ny_padded is not None
+        else params.res.ny,
+        padded_res.nz_padded,
+        flush=True,
+    )

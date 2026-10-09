@@ -605,11 +605,24 @@ class Sharding:
         collective on a multi-process run, so every process must call
         it at the same point; free on a single process.
         """
+        return self.any_process_each((flag,))[0]
+
+    def any_process_each(self, flags: Sequence[bool]) -> tuple[bool, ...]:
+        """Each of *flags* OR-ed over the processes, in one collective.
+
+        :meth:`any_process` for several decisions at once (the stop
+        poll's wall-clock budget and stop request,
+        :meth:`dnsjax.run_status.RunStatus.stop_flags`): one gather of
+        an ``int32`` vector rather than one per flag.  The same
+        contract: every process calls it at the same point, with the
+        same number of flags.
+        """
         if jax.process_count() == 1:
-            return flag
+            return tuple(bool(f) for f in flags)
         from jax.experimental.multihost_utils import process_allgather
 
-        return bool(np.any(process_allgather(np.int32(flag))))
+        rows = np.asarray(process_allgather(np.asarray(flags, np.int32)))
+        return tuple(bool(v) for v in rows.reshape(-1, len(flags)).any(0))
 
 
 sharding: Sharding = Sharding()
