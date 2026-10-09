@@ -143,6 +143,31 @@ integral needs only `$m = 0, \pm 1$`:
 exact, spectral, and parity-correct (`$\hat f_{\pm1}$` and the extra
 `$r$` land back in the even class).
 
+Dealiasing
+----------
+The 3/2 rule dealiases a quadratic product exactly, and most of the
+right-hand side is one: the `$s$` slot's `$h\,(\mathbf{u}\times
+\boldsymbol{\omega})_s = u_r\Omega_\theta - u_\theta\Omega_r$` (the
+metric weight cancels the `$1/h$` of the physical vorticity point by
+point), while the viscous remainder of
+:meth:`CurvedCylindricalFlow.metric_rhs` is linear in `$\Omega$`.  The
+`$r$` and `$\theta$` slots are not: their `$u_s\omega_\theta$` and
+`$u_s\omega_r$` are `$w_s\Omega_\theta/h^2$` and `$w_s\Omega_r/h^2$`,
+a quadratic product times `$1/h^2$`, whose harmonics never end, so no
+oversampling factor dealiases them exactly.  On `$N$` azimuthal points
+the product (harmonics `$|n| \le 2M$`) folds back onto the stored
+`$|m| \le M$` only through harmonics `$|j| \ge N - 3M$` of `$1/h^2$`,
+which decay like `$|q|^j$` with `$q \approx -\kappa/2$` at the wall.
+``phys.curvature_padding`` (on by default) therefore raises the
+azimuthal grid to `$N = 3M + J$`, with `$J$` from
+:func:`~dnsjax.harmonics.curvature_dealiasing_pad` the smallest pad
+whose aliasing bound lies below the working precision's unit roundoff.
+The pad is additive and independent of the resolution because that
+bound holds for any product, resolved or not; the `$3M$` is the 3/2
+rule's own share, which grows with `$M$`.  The linear terms alias only
+through `$|j| \ge N - 2M$` and need nothing more (Design notes:
+"Dealiasing the metric").
+
 Reference: the toroidal equation set this reproduces is Webster &
 Humphrey, *Phys. Fluids* **9**, 407 (1997), Eqs. (2)-(5); their
 primitive-variable convective and viscous terms are the rotational
@@ -163,8 +188,24 @@ pass, as the `$O(\kappa)$` size of the lagged terms predicts.  At
 `$\kappa = 0.13$` the same decades cost more than the default cap of
 10, which is a statement about a tolerance seven decades tighter than
 the default `$10^{-5}$`, not about a production run.
+
+**Dealiasing the metric.**  A random band-limited quadratic product
+over `$h^2$` at `$M = 31$`, collocated on `$N$` points against its
+exact projection: the error tracks `$|c^{(2)}_{N-3M}|$` times the
+product of the top modes, at `$N - 3M = 3, 5, 8$` 2.7e-5, 1.4e-8 and
+roundoff for `$\kappa = 0.037$`, 6.0e-4, 2.2e-6 and 4.2e-10 for
+`$\kappa = 0.1$`; at `$\kappa = 0.3$` and `$N - 3M = 3, 5, 8, 12, 16$`
+2.7e-2, 9.1e-4, 4.8e-6, 3.8e-9 and 2.7e-12.  The pad is then
+`$J = 10, 14, 22$` in double precision for `$\kappa = 0.037, 0.1, 0.3$`
+(5, 7, 11 in single).  In the solver (``tests/test_curved_pipe.py``,
+the dealiasing grids), one random state's right-hand side at
+`$\kappa = 0.037$` and ``ntheta = 12`` sits 2.3e-8 off a reference grid
+on the 3/2 rule's 18 azimuthal points and 2.2e-15 on the padded 25.
+The cost is `$J - 3$` azimuthal points before rounding, e.g. 192 to
+200 at ``ntheta = 128``.
 """
 
+import math
 from dataclasses import dataclass, field
 from typing import ClassVar
 
@@ -173,7 +214,11 @@ from jax import Array, lax, shard_map
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
-from ...harmonics import complex_harmonics, real_harmonics
+from ...harmonics import (
+    complex_harmonics,
+    inverse_metric_harmonics,
+    real_harmonics,
+)
 from ...operators import pad_harmonics
 from ...parameters import derived_params, padded_res, params
 from ...sharding import register_dataclass_pytree, sharding
@@ -216,30 +261,6 @@ FORCE_S: float = (
 #: `$U_b = 2\int_0^1 (1 - r^2) r\,dr = 1/2$`, so the two flows are
 #: driven to the same mass flux at the same ``phys.re``.
 BULK_TARGET: float = 0.5
-
-
-def _inv_h_harmonics(rs: np.ndarray, m_vals: np.ndarray) -> np.ndarray:
-    r"""Exact Fourier coefficients `$\widehat{(1/h)}_m(r)$`.
-
-    .. math::
-        \frac{1}{1 + \epsilon\cos\theta}
-        = \frac{1}{\sqrt{1-\epsilon^2}}
-          \Big[1 + 2\sum_{n\ge1} q^n \cos n\theta\Big], \qquad
-        q = \frac{-\epsilon}{1 + \sqrt{1-\epsilon^2}},
-
-    with `$\epsilon = \kappa r$`, so the complex coefficients are
-    `$c_m = q^{|m|}/\sqrt{1-\epsilon^2}$` -- real, even in `$m$`, and
-    `$O(r^{|m|})$` at the axis, hence in the `$(-1)^m$` parity class
-    like the field they weight.  Exact to machine precision (checked
-    against an FFT of `$1/h$`), so the flux read below is exact rather
-    than truncated.
-
-    Returns shape ``(len(rs), len(m_vals))``.
-    """
-    eps = KAPPA * rs[:, None]
-    root = np.sqrt(1.0 - eps**2)
-    q = -eps / (1.0 + root)
-    return q ** np.abs(m_vals)[None, :] / root
 
 
 @register_dataclass_pytree
@@ -363,7 +384,7 @@ class CurvedCylindricalFlow(CylindricalFlow):
         # Exact 1/h harmonics -> the mass-flux quadrature.  y_weights
         # already carry the radial Jacobian, so
         # `$Q/\pi = 2\sum_m \int r\,\hat w_{s,m} c_m\,dr$`.
-        c_m = _inv_h_harmonics(rs, m_vals)
+        c_m = inverse_metric_harmonics(KAPPA, rs, m_vals)
         c_m[:, n_true:] = 0.0
         yw = np.asarray(self.y_weights)
         self.flux_weights = sharding.distribute(
@@ -497,6 +518,29 @@ class CurvedCylindricalFlow(CylindricalFlow):
                 out_specs=field_spec,
             )(field_, *masks)
         return self.half_rs.reshape((1,) * lead + (-1, 1, 1)) * shifted
+
+    def metric_solve(self, field_: Array) -> Array:
+        r"""Solve `$h\,u = f$` on the stored modes for *field_* `$= f$`.
+
+        The inverse of the truncating product `$h u = u + \kappa\chi u$`
+        (:meth:`chi_mul`), as the fixed point of
+        `$u \leftarrow f - \kappa\chi u$`.  That is a contraction of
+        factor at most `$\kappa$` (`$|\chi| \le r \le 1$`), so after
+        the `$n$` passes that bring `$\kappa^n$` below the working
+        precision's unit roundoff, `$h u = f$` holds to roundoff on every
+        stored mode.  A collocation division would not: the truncated
+        `$f/h$` loses the `$|m| = M$` outflow its product with `$h$`
+        needs.  Takes what :meth:`chi_mul` takes, and returns *field_*
+        unchanged at `$\kappa = 0$`.
+        """
+        if KAPPA == 0.0:
+            return field_
+        roundoff = float(np.finfo(sharding.float_type).eps) / 2
+        n_pass = math.ceil(math.log(roundoff) / math.log(KAPPA))
+        u = field_
+        for _ in range(n_pass):
+            u = field_ - KAPPA * self.chi_mul(u)
+        return u
 
     def rhs_extra_spec_fn(self, fourier_: Fourier):
         r"""`$\partial_s\Omega_{r,\theta}$`, riding the RHS transform.
@@ -663,8 +707,9 @@ class CurvedCylindricalFlow(CylindricalFlow):
     def bulk_of_mean_profile(self, profile: Array) -> Array:
         r"""Flux contribution of a mean-mode `$w_s$` profile.
 
-        The bulk-correction response is a `$(0,0)$` profile, so only
-        `$c_0$` of :func:`_inv_h_harmonics` weights it.
+        The bulk-correction response is a `$(0,0)$` profile, so only the
+        `$c_0$` of :func:`~dnsjax.harmonics.inverse_metric_harmonics`
+        weights it.
         """
         return jnp.dot(self.flux_weights_mean, profile)
 

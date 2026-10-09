@@ -38,6 +38,10 @@ paths:
   - deferred (`DeferredSpec`) on every other flow, Kolmogorov
     included; rejected for `[force]` kicks and in transient growth;
   - localized rolls stay mean-free.
+  - the curved pipe's random IC keeps `(0, 0)` means of `u_r` and
+    `u_θ`: toroidal continuity slaves them to the other modes
+    (`curved_pipe.toroidal_perturbation`), so do not zero them; its
+    `u_s` mean, which carries the flux, stays zero.
 
   Guards: `tests/test_mean_mode.py`, `test_localized_rolls.py`,
   `test_forcing.py`, `test_snapshot_perturb.py`.

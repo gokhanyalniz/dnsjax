@@ -85,6 +85,19 @@ def _derive(params, derived, user_set) -> None:
 
 
 def _validate(params, derived) -> None:
+    if not params.geo.curvature < 1.0:
+        raise ValueError(
+            f"geo.curvature = {params.geo.curvature} must be below 1 "
+            "(R_c > a): the metric h = 1 + kappa r cos(theta) vanishes "
+            "on the inner wall at kappa = 1."
+        )
+    if params.phys.curvature_padding and params.phys.oversampling_factor < 3:
+        raise ValueError(
+            "phys.curvature_padding extends the 3/2 rule to the 1/h^2 "
+            "of the nonlinear term and needs phys.oversampling_factor "
+            f">= 3 (got {params.phys.oversampling_factor}); set "
+            "phys.curvature_padding = false to run below the 3/2 rule."
+        )
     if params.step.scheme != "iterative-cn":
         raise ValueError(
             "curved-pipe requires step.scheme='iterative-cn' (got "
@@ -132,6 +145,7 @@ SPEC = FlowSpec(
         ),
         FieldSpec("phys", "re", default=5480.0),
         FieldSpec("phys", "driving"),
+        FieldSpec("phys", "curvature_padding", default=True),
     ),
     deferred=(
         DEFERRED_TILT,
