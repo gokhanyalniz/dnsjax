@@ -37,8 +37,9 @@ The module exports the flow-module surface that
 optional ``get_driving``, ``CARRIED_FIELDS`` (the snapshot ``carry/``
 member) and the basis pair ``to_solver_basis`` / ``from_solver_basis``,
 which here carry the metric weight `$h$` as well as the `$u_\pm$`
-rotation.  ``toroidal_perturbation`` serves the random initial
-condition (:mod:`dnsjax.ic.random_field`).
+rotation.  ``toroidal_map`` serves both initial conditions, the random
+field through ``toroidal_perturbation`` (:mod:`dnsjax.ic.random_field`)
+and the localized rolls (:mod:`dnsjax.ic.localized_rolls`).
 
 Design notes
 ------------
@@ -197,12 +198,13 @@ def init_state() -> Array:
     return jnp.stack([u_s, zero, zero]).astype(sharding.complex_type)
 
 
-def toroidal_perturbation(straight: Array, amplitude: float) -> Array:
-    r"""Map a straight-solenoidal perturbation onto toroidal continuity.
+def toroidal_map(straight: Array) -> Array:
+    r"""Map a straight-solenoidal velocity onto toroidal continuity.
 
-    *straight* is a physical `$(v_s, v_r, v_\theta)$` perturbation whose
+    *straight* is a physical `$(v_s, v_r, v_\theta)$` field whose
     **straight** discrete divergence vanishes, as the pipe's random draw
-    does.  Toroidal continuity reads
+    does (the pipe's localized rolls: to truncation).  Toroidal
+    continuity reads
     `$\nabla_0\cdot(u_s,\, h u_r,\, h u_\theta) = 0$`, so
 
     .. math::
@@ -210,19 +212,28 @@ def toroidal_perturbation(straight: Array, amplitude: float) -> Array:
 
     with the inverse taken exactly on the stored modes
     (:meth:`~dnsjax.geometries.wall_bounded.cylindrical_curved.CurvedCylindricalFlow.metric_solve`),
-    meets the solver's own continuity row to roundoff: that row applies
-    the straight divergence to `$(u_s, h u_r, h u_\theta)$`, which is
-    `$v$` again.  The map acts radius by radius, so the wall values
-    and the axis-regularity envelope survive it.  It leaves `$u_s$`,
-    and with it the mass flux, untouched; the `$(0, 0)$` means of
-    `$h u_r$` and `$h u_\theta$` stay the draw's zero, so `$u_r$` and
-    `$u_\theta$` take the `$O(\kappa)$` means the metric then implies
-    (the radial one is what ``CurvedCylindricalFlow.mean_radial``
-    would supply).
-    Returns the result rescaled to *amplitude* in the flow's own norm,
-    the `$r h$`-weighted one of ``E``.
+    misses the solver's own continuity row by what *straight* missed
+    the straight one, plus roundoff: that row applies the straight
+    divergence to `$(u_s, h u_r, h u_\theta)$`, which is `$v$` again.
+    The map acts radius by radius, so the wall values and the
+    axis-regularity envelope survive it.  It leaves `$u_s$`, and with it
+    the mass flux, untouched; the `$(0, 0)$` means of `$h u_r$` and
+    `$h u_\theta$` stay those of `$v_r$` and `$v_\theta$`, so mean-free
+    ones give `$u_r$` and `$u_\theta$` the `$O(\kappa)$` means the
+    metric then implies (the radial one is what
+    ``CurvedCylindricalFlow.mean_radial`` would supply).  Linear, and
+    the identity at `$\kappa = 0$`.
     """
-    u = straight.at[1:3].set(flow.metric_solve(straight[1:3]))
+    return straight.at[1:3].set(flow.metric_solve(straight[1:3]))
+
+
+def toroidal_perturbation(straight: Array, amplitude: float) -> Array:
+    r"""The random initial condition's map onto toroidal continuity.
+
+    :func:`toroidal_map` of *straight*, rescaled to *amplitude* in the
+    flow's own norm, the `$r h$`-weighted one of ``E``.
+    """
+    u = toroidal_map(straight)
     return u * (amplitude / _metric_norm2(u, fourier, flow) ** 0.5)
 
 

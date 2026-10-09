@@ -992,9 +992,9 @@ def add_curved_pipe_laminar(state: Array) -> Array:
 
     The profile is axisymmetric, streamwise-invariant and vanishes at
     the wall, so it is solenoidal in the toroidal metric too and keeps
-    no-slip; the perturbation it is added to has already been mapped
-    onto toroidal continuity
-    (:func:`~dnsjax.flows.wall_bounded.curved_pipe.toroidal_perturbation`).
+    no-slip; the perturbation it is added to, the random draw or the
+    localized rolls, has already been mapped onto toroidal continuity
+    (:func:`~dnsjax.flows.wall_bounded.curved_pipe.toroidal_map`).
     """
     from jax import numpy as jnp
 

@@ -51,8 +51,9 @@ docstring. Curvature also reaches the dealiasing: the nonlinear term
 carries $1/h^2$, whose harmonics never end, so the 3/2 rule alone leaves
 it aliased. `phys.curvature_padding`, on by default, adds a fixed number
 of azimuthal points, set by $\kappa$ and the working precision, that
-puts that aliasing below roundoff at any resolution; the random initial
-condition is mapped onto the toroidal continuity constraint.
+puts that aliasing below roundoff at any resolution. Both initial
+conditions, the random field and the localized rolls, are mapped onto the
+toroidal continuity constraint.
 
 The viscoelastic flows couple a symmetric **conformation tensor** $\mathbf{c}$
 through a simplified Phan-Thien–Tanner constitutive law,
