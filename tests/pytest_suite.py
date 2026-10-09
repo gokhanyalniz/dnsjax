@@ -31,13 +31,14 @@ Usage::
 
     uv run pytest                            # everything available
     uv run pytest -m "not slow and not mpi"  # offline: no mpirun launch
-    uv run pytest -m "not slow"              # + the eight quick mpirun
+    uv run pytest -m "not slow"              # + the nine quick mpirun
                                              #   rows (probes, forcing,
                                              #   seeding, twin_postprocess,
                                              #   device_grid,
                                              #   host_placement,
                                              #   mpi_communicators,
-                                             #   wall_time_stop)
+                                             #   wall_time_stop,
+                                             #   run_status)
     uv run pytest -k padding                 # a single script
 """
 
@@ -84,7 +85,8 @@ _NO_MPI_ONLY = (
 # no-mpirun unit fallback + the full run), ``test_driving`` (the
 # always-run unit half + the slow full run),
 # ``test_transient_growth`` (offline ``--fast`` structure checks +
-# the slow full run with the published values), and
+# the slow full run with the published values), ``test_run_status``
+# (the ``--no-mpi`` tiers + the ``--mpi-only`` one, disjoint), and
 # ``test_laminar_smoke`` (single-device + the ``--np 2`` mesh row
 # whose reason is spelled out at that entry).
 _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
@@ -127,6 +129,9 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("response/test_probes_reader.py", (), (), 1800),
     ("response/test_ssi.py", (), (), 1800),
     ("test_resume.py", ("--unit-only",), (), 1800),
+    # ~2 min: the units plus seven one-process solver and twin launches
+    # (no launcher); the mpirun tier is its own row below.
+    ("test_run_status.py", ("--no-mpi",), (), 1800),
     ("test_snapshot.py", (), (), 1800),
     ("test_snapshot_export.py", (), (), 1800),
     ("test_snapshot_import.py", (), (), 1800),
@@ -184,6 +189,9 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     # ~2.5 min: one solver and one twin run, each to its 60 s wall-clock
     # budget on two ranks -- not a _SLOW row.
     ("test_wall_time_stop.py", (), _MPI, 1800),
+    # ~2 min: one solver run for the twin's parent, then four short
+    # two-rank runs, each stopped on request.
+    ("test_run_status.py", ("--mpi-only",), _MPI, 1800),
 ]
 
 

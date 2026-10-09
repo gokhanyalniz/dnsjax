@@ -12,8 +12,8 @@ cadence).
 Here rank 1 starts ``--skew`` seconds after rank 0, which puts that
 split on every run rather than on an unlucky one: both drivers must
 stop on the budget, inside the stepping loop, and shut down on both
-ranks.  The per-process stop hangs on each case until ``timeout``
-ends it.
+ranks, leaving a ``FINISHED`` that names the budget.  The per-process
+stop hangs on each case until ``timeout`` ends it.
 
 1. **Solver** (``mpirun -np 2 dnsjax``): plane Couette from a seeded
    random field; its initial snapshot is the twin's parent.
@@ -113,6 +113,12 @@ def _run_skewed(exe, args, cwd, delay, cli) -> str | None:
     shutdowns = res.stderr.count("Shutdown at")
     if shutdowns != 2:
         return f"{exe}: {shutdowns} of 2 ranks shut down"
+    # The budget is one of the run's own criteria (dnsjax.run_status).
+    finished = Path(cwd) / "FINISHED"
+    if not finished.is_file() or (Path(cwd) / "RUNNING").exists():
+        return f"{exe} left no FINISHED, or left its RUNNING"
+    if "stop.max_wall_time reached" not in finished.read_text():
+        return f"{exe}: FINISHED does not name the wall-clock budget"
     return None
 
 

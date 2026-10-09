@@ -34,6 +34,8 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
 - Launch from a scratch directory: a run reads `./parameters.toml` and
   writes its `.dat` streams and snapshots to the cwd. Templates:
   `examples/*/parameters.toml`.
+- Stop a live run with `rm RUNNING` (or SIGUSR1): it ends on a final
+  snapshot. Status files, exit codes: the `run_status` docstring.
 - Several processes: `mpirun -np N .venv/bin/dnsjax ...` (`uv run` does
   not compose with `mpirun`; `python -m dnsjax` is the same entry
   point). One process: `uv run dnsjax ...`; it may span several GPUs
@@ -127,14 +129,16 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
 
 JAX-free leaves, importable before JAX is configured: `parameters.py`,
 `flow_spec.py`, `harmonics.py`, `fd.py`, `adaptive.py`,
-`snapshot_meta.py`, `seeding.py`, `flows/registry.py`, the flow
-`specs/`, and `analysis/` (bar the members its notes name). Reuse them
-(extract a helper into one rather than copying it), and put a module
-used only outside the solver in a subpackage, not at this level.
+`snapshot_meta.py`, `seeding.py`, `run_status.py`, `flows/registry.py`,
+the flow `specs/`, and `analysis/` (bar the members its notes name).
+Reuse them (extract a helper into one rather than copying it), and put
+a module used only outside the solver in a subpackage, not at this
+level.
 
 ```
 __main__.py       the `dnsjax` entry point: run loop, streams, resume
 bootstrap.py      setup for every entry point: parameters, JAX, ranks, seeds
+run_status.py     RUNNING / FINISHED / STOPPED / TERMINATED, the stop request
 parameters.py     pydantic models; params / derived_params / padded_res
 flow_spec.py      FieldSpec / DeferredSpec / FlowSpec
 param_surface.py  per-flow CLI/TOML surfaces, public names, params dump
