@@ -7,10 +7,11 @@ grid defaults, strict relevance for direct assignment), and the
 surface machinery (``dnsjax.param_surface``): dynamic CLI/TOML models,
 alias round-trips, strict rejection of irrelevant parameters,
 deferred-feature messages, ``externalize``/``internalize_stored``
-mapping, and the annotated sample-TOML rendering.  The entry-point
+mapping, the annotated sample-TOML rendering, and ``--help`` listing
+every field of the bare and of each flow's surface.  The entry-point
 smoke cases additionally shell out ``python -m dnsjax --help`` /
-``--help <system>`` / ``--sample-toml`` (no ``mpirun``: help exits at
-the parser).
+``--help <system>`` / ``--sample-toml``, and the ``dnsjax-twin`` and
+transient-growth help (no ``mpirun``: help exits at the parser).
 
 Cases mutate the ``params`` singleton and restore it via ``_reset``
 (fresh section models + cleared explicit-set tracking + reset
@@ -98,6 +99,27 @@ def case_coherence() -> None:
         # Global fields are never re-declared by a spec.
         overlap = set(spec.field_map) & set(R.GLOBAL_FIELDS)
         check(not overlap, f"{system}: no global overlap", overlap)
+
+    # A field every flow carries unchanged (no alias, default,
+    # description or choices of its own) is global: listed per spec
+    # instead, the bare --help, which shows the global fields alone,
+    # would never show it.
+    from dnsjax.flow_spec import FieldSpec
+
+    unchanged_everywhere = sorted(
+        f"{section}.{name}"
+        for section, model in models.items()
+        for name in model.model_fields
+        if all(
+            spec.field_map.get((section, name)) == FieldSpec(section, name)
+            for spec in R.SPECS.values()
+        )
+    )
+    check(
+        not unchanged_everywhere,
+        "a field every flow carries unchanged is in GLOBAL_FIELDS",
+        unchanged_everywhere,
+    )
 
 
 # ── Case A2: the storage-form axis (``FlowSpec.total_field``) ────────
@@ -888,6 +910,62 @@ def case_sample_toml() -> None:
         check(True, f"sample toml {system} validates")
 
 
+# ── Case F2: --help shows the whole surface ─────────────────────────
+
+
+def case_help_completeness() -> None:
+    """Every parameter a surface accepts is listed by its ``--help``.
+
+    In-process (the help path is JAX-free and exits at the parser):
+    the bare help lists the global fields, and ``--help <system>``
+    every non-deferred field of that flow's surface plus the fields of
+    its relevant extension sections.
+    """
+    import contextlib
+    import io
+    import re
+    from unittest import mock
+
+    from dnsjax.bootstrap import resolve_parameters
+    from dnsjax.extensions import relevant_extensions
+    from dnsjax.flows import registry as R
+    from dnsjax.param_surface import surface_entries
+
+    def help_flags(*args: str) -> set[str]:
+        out = io.StringIO()
+        # Python's argparse colours its help unless told otherwise,
+        # and a FORCE_COLOR in the host env would split the flags.
+        with (
+            mock.patch.dict(os.environ, {"NO_COLOR": "1"}),
+            contextlib.redirect_stdout(out),
+            contextlib.suppress(SystemExit),
+        ):
+            resolve_parameters(["--help", *args], toml_path=False)
+        return set(re.findall(r"--(\w+\.\w+)", out.getvalue()))
+
+    want = {f"{section}.{name}" for section, name in R.GLOBAL_FIELDS}
+    got = help_flags()
+    check(
+        got == want,
+        "bare --help lists exactly the global fields",
+        sorted(got ^ want),
+    )
+    for system, spec in R.SPECS.items():
+        want = {
+            f"{e.section}.{e.public}"
+            for e in surface_entries(spec)
+            if e.deferred_message is None
+        }
+        for name, ext in relevant_extensions(system).items():
+            want |= {f"{name}.{field}" for field in ext.model.model_fields}
+        got = help_flags(system)
+        check(
+            got == want,
+            f"--help {system} lists its whole surface",
+            sorted(got ^ want),
+        )
+
+
 # ── Case G: entry-point smoke (help / sample-toml / strict errors) ───
 
 
@@ -898,9 +976,9 @@ def case_entry_smoke() -> None:
     # root config must not shape these checks.
     tmp = tempfile.mkdtemp(prefix="param_surface_smoke_")
 
-    def run(*args: str) -> subprocess.CompletedProcess:
+    def run(*args: str, module: str = "dnsjax") -> subprocess.CompletedProcess:
         return subprocess.run(
-            [sys.executable, "-m", "dnsjax", *args],
+            [sys.executable, "-m", module, *args],
             capture_output=True,
             text=True,
             timeout=120,
@@ -961,6 +1039,44 @@ def case_entry_smoke() -> None:
         r.stderr[-300:],
     )
 
+    # An entry point's own section is on its bare --help, and its flow
+    # help carries only the built-in sections that flow accepts.  In
+    # subprocesses: importing either driver registers its section.
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from dnsjax.twin.driver import TwinParams as m; "
+            "print(' '.join(m.model_fields))",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    twin_flags = {f"--twin.{name}" for name in r.stdout.split()}
+    r = run("--help", module="dnsjax.twin")
+    missing = sorted(f for f in twin_flags if f not in r.stdout)
+    check(
+        r.returncode == 0 and twin_flags and not missing,
+        "dnsjax-twin --help lists every [twin] field",
+        missing or r.stderr[-300:],
+    )
+    tg = "dnsjax.analysis.transient_growth"
+    for args, shown, hidden in (
+        ((), ("--tg.",), ("--probes.", "--force.")),
+        (("kolmogorov",), ("--tg.",), ("--probes.", "--force.")),
+        (("viscoelastic-pipe",), ("--tg.", "--probes."), ("--force.",)),
+    ):
+        r = run("--help", *args, module=tg)
+        check(
+            r.returncode == 0
+            and all(s in r.stdout for s in shown)
+            and not any(h in r.stdout for h in hidden),
+            f"transient-growth --help {' '.join(args)}: "
+            f"shows {shown}, hides {hidden}",
+            r.stderr[-300:],
+        )
+
 
 # ── runner ───────────────────────────────────────────────────────────
 
@@ -985,6 +1101,7 @@ def main() -> int:
     case_externalize()
     case_extensions()
     case_sample_toml()
+    case_help_completeness()
     if not args.skip_entry_smoke:
         case_entry_smoke()
 

@@ -130,13 +130,16 @@ def surface_entries(spec: FlowSpec | None) -> list[SurfaceEntry]:
 class _SurfaceBase(BaseSettings):
     """Config carrier for the CLI surface models.
 
-    Dotted ``--section.field`` flags, no JSON blobs, strictness.
+    Dotted ``--section.field`` flags, no JSON blobs, strictness, and
+    each section model's docstring (:data:`_SECTION_DOCS`, an
+    extension's ``summary``) as its ``--help`` group description.
     """
 
     model_config = SettingsConfigDict(
         cli_parse_args=True,
         cli_avoid_json=True,
         cli_hide_none_type=True,
+        cli_use_class_docs_for_groups=True,
         cli_prog_name="dnsjax",
         nested_model_default_partial_update=True,
         extra="forbid",

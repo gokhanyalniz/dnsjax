@@ -830,7 +830,10 @@ TWIN_EXTENSION = register_extension(
         name="twin",
         model=TwinParams,
         relevant=lambda system: system in cartesian_systems,
-        summary=("Twin-run perturbation-growth driver (dnsjax-twin only)."),
+        summary=(
+            "Twin-run perturbation-growth driver (dnsjax-twin only; "
+            "Cartesian flows)."
+        ),
         validate=_validate_twin,
         record_in_metadata=False,
         off_cadences=_TWIN_OFF_CADENCES,
@@ -2263,14 +2266,17 @@ def main(argv: list[str] | None = None) -> int:
     """``dnsjax-twin`` console-script entry point.
 
     The :func:`dnsjax.__main__.main` phases with the twin surface:
-    resolve the parameter layers (the ``[twin]`` section registers at
-    this module's import and rides the shared per-flow surface),
-    configure the distributed JAX runtime, print the banner on the
-    main process, run the twin loop.
+    resolve the parameter layers (the ``[twin]`` section, registered
+    at this module's import, is the entry point's own: it rides every
+    flow's surface and the bare ``--help``), configure the distributed
+    JAX runtime, print the banner on the main process, run the twin
+    loop.
     """
     wall_time_start = perf_counter_ns()
 
-    setup = resolve_parameters(argv, prog=_PROG)
+    setup = resolve_parameters(
+        argv, own_extensions=(TWIN_EXTENSION,), prog=_PROG
+    )
     print("Alive at", datetime.now(), flush=True, file=sys.stderr)
     main_device = configure_jax_runtime()
 

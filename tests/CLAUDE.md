@@ -69,8 +69,9 @@ Stepping:
   `stop.max_wall_time` together when the ranks' clocks disagree.
 
 Parameters, bootstrap, mesh, seeds:
-- `test_param_surface.py` (registry, surfaces, the total-field axis),
-  `test_bootstrap.py`, `test_seeding.py` (`--unit-only`).
+- `test_param_surface.py` (registry, surfaces and their `--help`, the
+  total-field axis), `test_bootstrap.py`, `test_seeding.py`
+  (`--unit-only`).
 - `test_device_grid.py` (`--unit-only`): the mesh across nodes, two
   hosts faked on one machine under `mpirun`.
 - `test_host_placement.py` (`mpirun`, `--only`): no host array reaches

@@ -43,7 +43,8 @@ not. `python -m dnsjax.twin` is the equivalent module form.
 ```
 
 The parameter surface is the flow's own plus the `[twin]` section,
-which `dnsjax-twin` registers and the solver does not.
+which `dnsjax-twin` registers and the solver does not;
+`dnsjax-twin --help` lists it.
 
 | Knob | Default | Meaning |
 |---|---|---|

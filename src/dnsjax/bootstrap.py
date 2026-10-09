@@ -536,6 +536,7 @@ def resolve_parameters(
     *,
     toml_path: Path | Literal[False] | None = None,
     extensions: tuple | None = None,
+    own_extensions: tuple = (),
     prog: str = "dnsjax",
 ) -> ResolvedSetup:
     r"""Resolve the production parameter layers into the global ``params``.
@@ -560,11 +561,17 @@ def resolve_parameters(
     ``./parameters.toml`` lookup (``False`` skips the TOML layer
     entirely -- see :func:`peek_run_context`); *extensions* pins the
     extension sections riding the surface (``None`` -- the production
-    default --
-    selects every registered extension relevant to the resolved flow,
-    :func:`dnsjax.extensions.relevant_extensions`; an entry point with
-    its own section, e.g. the transient-growth ``[tg]``, passes an
-    explicit tuple); *prog* names the program in help/usage/errors.
+    default -- selects every registered extension relevant to the
+    resolved flow, :func:`dnsjax.extensions.relevant_extensions`; a
+    script whose surface carries its own section alone, e.g.
+    ``[perturb]``, passes an explicit tuple); *own_extensions* names
+    the entry point's own sections (the ``dnsjax-twin`` ``[twin]``,
+    the transient-growth ``[tg]``), added to every flow's surface,
+    relevant or not, so a flow the entry point does not support meets
+    its own check rather than an unrecognized flag.  The bare
+    ``--help`` shows the sections that do not depend on the flow: an
+    explicit *extensions* tuple and *own_extensions*.  *prog* names
+    the program in help/usage/errors.
 
     Ends with ``validate_parameters()`` and
     ``padded_res.set_padded_resolution(params)``, so ``params`` and
@@ -575,10 +582,16 @@ def resolve_parameters(
     argv = list(sys.argv[1:] if cli_args is None else cli_args)
     ctx = peek_run_context(argv, toml_path=toml_path, prog=prog)
 
+    def _with_own(base: tuple) -> tuple:
+        names = {ext.name for ext in base}
+        return base + tuple(
+            ext for ext in own_extensions if ext.name not in names
+        )
+
     def _exts(system: str) -> tuple:
         if extensions is not None:
-            return extensions
-        return tuple(relevant_extensions(system).values())
+            return _with_own(extensions)
+        return _with_own(tuple(relevant_extensions(system).values()))
 
     if ctx.sample_toml is not None:
         print(
@@ -591,13 +604,13 @@ def resolve_parameters(
 
     if ctx.help_requested:
         spec = spec_for(ctx.help_system) if ctx.help_system else None
-        # Global help (no flow named) shows no *flow-relevant* built-in
-        # sections, but an entry point's own explicit sections (e.g.
-        # the transient-growth [tg]) are system-independent and stay.
+        # Global help (no flow named) shows no *flow-relevant* section,
+        # only the flow-independent ones: an explicit tuple and the
+        # entry point's own sections (e.g. the transient-growth [tg]).
         help_exts = (
             _exts(spec.system)
             if spec is not None
-            else (extensions if extensions is not None else ())
+            else _with_own(extensions if extensions is not None else ())
         )
         model = build_surface_model(spec, settings=True, extensions=help_exts)
         epilog = (

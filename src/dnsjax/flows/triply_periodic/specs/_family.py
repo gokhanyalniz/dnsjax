@@ -1,11 +1,10 @@
 r"""Shared spec fragments for the triply-periodic flows.
 
 One surface for the family's flows (kolmogorov): the periodic box
-lengths and tilt, the identity-named resolution, the Reynolds number
-and the localized-rolls IC.  The moving frame, the mean-mode
-perturbation and the reduced snapshots' pressure are deferred here; the
-wall-bounded-only fields (grids, probes, forcing, ...) are not part of
-the surface.
+lengths and tilt, the identity-named resolution and the Reynolds
+number.  The moving frame, the mean-mode perturbation and the reduced
+snapshots' pressure are deferred here; the wall-bounded-only fields
+(grids, probes, forcing, ...) are not part of the surface.
 """
 
 from ....flow_spec import DeferredSpec, FieldSpec
@@ -28,13 +27,6 @@ def periodic_fields() -> tuple[FieldSpec, ...]:
         ),
         FieldSpec("res", "nz"),
         FieldSpec("phys", "re"),
-        # The localized spot needs no wall-normal grid: its `y` factor
-        # is the same fixed-physical localization the homogeneous
-        # directions take (``ic/localized_rolls.py``).
-        FieldSpec("init", "localized_rolls"),
-        FieldSpec("init", "localized_rolls_amplitude"),
-        FieldSpec("init", "localized_rolls_width"),
-        FieldSpec("init", "localized_rolls_wavelength"),
         FieldSpec("lowres", "nx"),
         FieldSpec(
             "lowres",
