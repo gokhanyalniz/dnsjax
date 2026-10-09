@@ -24,7 +24,8 @@ SPECS: dict[str, FlowSpec] = {
 #: The parameter fields every flow accepts, ``(section, name)`` on the
 #: internal ``parameters.Parameters`` models (public name = internal
 #: name for all of these).  A flow's full surface is these plus its
-#: ``spec.fields``.
+#: ``spec.fields``.  A field every flow would list unchanged belongs
+#: here, not in the specs: the bare ``--help`` shows these alone.
 GLOBAL_FIELDS: tuple[tuple[str, str], ...] = (
     ("dist", "np0"),
     ("dist", "np1"),
@@ -42,6 +43,13 @@ GLOBAL_FIELDS: tuple[tuple[str, str], ...] = (
     ("init", "random_amplitude"),
     ("init", "random_smoothness"),
     ("init", "random_seed"),
+    # Every family: the triply-periodic spot needs no wall-normal grid,
+    # its `y` factor being the same fixed-physical localization the
+    # homogeneous directions take (``ic/localized_rolls.py``).
+    ("init", "localized_rolls"),
+    ("init", "localized_rolls_amplitude"),
+    ("init", "localized_rolls_width"),
+    ("init", "localized_rolls_wavelength"),
     ("outs", "it_stats"),
     ("outs", "it_steps"),
     ("outs", "it_snapshot"),

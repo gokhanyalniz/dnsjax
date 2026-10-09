@@ -384,7 +384,6 @@ from .. import harmonics
 from ..bootstrap import (
     _scan_flag,
     configure_jax_platform,
-    peek_run_context,
     resolve_parameters,
 )
 from ..extensions import ParamExtension, register_extension
@@ -769,34 +768,25 @@ def _configure_parameters(argv: list[str]) -> None:
     under their public names, strict relevance, ``--help`` /
     ``--help <system>`` / ``--sample-toml``, plus the ``[tg]``
     extension section carrying this driver's own knobs
-    (``--tg.<field>``).  The flow-relevant *solver-run* extension
-    sections (``[probes]``, ``[force]``) are accepted too, so a
-    ``parameters.toml`` shared with a probed production run parses --
-    the driver ignores them (a note is printed when one is
-    configured); bare ``--help`` shows only ``[tg]``.  It then forces
-    the TG-required settings (single device, backward-Euler linear
-    probe, no mean coupling, tight corrector, lab frame, double
-    precision) so the geometry / flow singletons -- imported *after*
-    the platform is configured -- bake them into the operators.
+    (``--tg.<field>``), passed as the entry point's own section: it is
+    on every flow's surface, so an unsupported flow meets the system
+    check below rather than an unrecognized flag.  The flow-relevant
+    *solver-run* extension sections (``[probes]``, ``[force]``) are
+    accepted too, so a ``parameters.toml`` shared with a probed
+    production run parses -- the driver ignores them (a note is
+    printed when one is configured); bare ``--help`` shows only
+    ``[tg]``.  It then forces the TG-required settings (single device,
+    backward-Euler linear probe, no mean coupling, tight corrector, lab
+    frame, double precision) so the geometry / flow singletons --
+    imported *after* the platform is configured -- bake them into the
+    operators.
     """
-    from ..extensions import relevant_extensions
-
     toml_flag = _scan_flag(argv, "--tg.parameters")
     toml_path = Path(toml_flag) if toml_flag is not None else None
-    ctx = peek_run_context(argv, toml_path=toml_path, prog=_PROG)
-    if ctx.help_requested and ctx.help_system is None:
-        ext_map = {"tg": TG_EXTENSION}
-    else:
-        # ``tg`` is registered, so it is already relevant for every
-        # TG-supported system; setdefault keeps the section (and its
-        # unknown-flag errors) for unsupported systems too, which the
-        # explicit system check below rejects with a clearer message.
-        ext_map = dict(relevant_extensions(ctx.system))
-        ext_map.setdefault("tg", TG_EXTENSION)
     resolve_parameters(
         argv,
         toml_path=toml_path,
-        extensions=tuple(ext_map.values()),
+        own_extensions=(TG_EXTENSION,),
         prog=_PROG,
     )
 
