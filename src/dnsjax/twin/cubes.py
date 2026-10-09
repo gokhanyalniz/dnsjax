@@ -34,7 +34,7 @@ With no subsampling, summing a cube over `$k_x$` (`$|k_z|$`) gives the
 `$y$`-folded ``*_x`` (``*_z``) marginal of the matching 2-D stream.
 
 The container
-=============
+-------------
 The snapshot format (:mod:`dnsjax.snapshot`), written by its own
 :func:`~dnsjax.snapshot.write_archive`: an uncompressed tar of
 ``_dnsjax_meta.json`` and one zarr3 ``state/`` array of real
@@ -200,8 +200,11 @@ class CubeStore:
             )
 
     def write(self, cube: Array, t: float, it: int) -> str | None:
-        """Write one sample: *cube* ``(n_fields, n_y, n_kz, n_kx)``,
-        replicated (:func:`dnsjax.twin.diagnostics._cube_replicated`)."""
+        """Write one sample as a dnsjax tar.
+
+        *cube* is ``(n_fields, n_y, n_kz, n_kx)``, replicated
+        (``diagnostics._cube_replicated``).
+        """
         path = self.directory / f"{self.kind}_{it:010d}.tar"
         static = self._static
 

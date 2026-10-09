@@ -49,14 +49,14 @@ is the separate ``wall_smoothness`` argument
 (``init.random_wall_smoothness`` / ``twin.wall_smoothness``); why the
 two are separate knobs: Design notes, "Two knobs, not one".
 
-**Two defaults for one law.**  ``init.random_smoothness`` defaults to
-0.4: it seeds a *laminar* state, where large scales are what trigger
-transition.  The twin partner perturbs a *turbulent* one, and
-``twin.smoothness`` (:class:`dnsjax.twin.driver.TwinParams`) puts it
-below the minimal flow unit instead, with the choice of `$\lambda^{*+}$`
-and its values per flow.  Neither default is fitted to the `$(y, k)$`
-shape a turbulent difference field settles into (Design notes: "Shape
-is not growth").
+**Two defaults for one law.**  ``init.random_smoothness`` defaults to 0.4: it
+seeds a *laminar* state, where large scales are what trigger transition.  The
+twin partner perturbs a *turbulent* one, and ``twin.smoothness``
+(:class:`dnsjax.twin.driver.TwinParams`) puts it below the minimal flow unit
+instead (the choice of `$\lambda^{*+}$` and its values per flow: the
+:mod:`dnsjax.twin.driver` Design notes, "The smoothness default").  Neither
+default is fitted to the `$(y, k)$` shape a turbulent difference field settles
+into (Design notes: "Shape is not growth").
 
 **The wall window is scale-dependent** (``random_wall_confinement``,
 the `$a$` of :func:`_scaled_wall_window`): a mode's window peaks where

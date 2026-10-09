@@ -127,50 +127,11 @@ Four evaluation classes, the first three FFT-free:
   `$\hat{\mathbf{a}}$` -- fully alias-controlled, never a third
   physical field.  Pairs are grouped by `$\mathbf{c}$` (one gradient
   set each) with the three advector fields' physical forms cached:
-  69 single-field transforms per sample.  **A sample costs
-  `$\sim\!0.9$` of a twin step** (both states), measured on CPU at
-  plane-Couette `$48^3$` and `$64^3$` -- the same ratio at both, and
-  the whole of it transform time.  So ``it_budget`` reads directly as
-  a throughput tax: `$1$` nearly doubles the run, `$10$` costs
-  `$\sim\!9\,\%$`.
-
-  **69 is the floor for this pairing**, and the grouping is the
-  right way round.  The nine rows use 3 distinct `$\mathbf{b}$`,
-  4 distinct `$\mathbf{c}$` and **8** distinct
-  `$(\mathbf{b},\mathbf{c})$` pairs -- 8, not 9, because
-  ``(du2, ru2)`` serves two production rows that differ only in
-  `$\mathbf{a}$`, and one `$\mathbf{q}$` covers both.  So
-  `$3\times3 = 9$` advector, `$4\times9 = 36$` gradient and
-  `$8\times3 = 24$` back-transforms, each of which some row needs.
-  Caching the *advectors* and re-deriving the gradients is what
-  makes it minimal: there are fewer distinct `$\mathbf{b}$` than
-  `$\mathbf{c}$`, so the other grouping would hold 36 gradient
-  fields to save nothing.  Writing `$(\mathbf{b}\cdot\nabla)
-  \mathbf{c} = \nabla\cdot(\mathbf{b}\mathbf{c})$` (legal, both are
-  solenoidal) trades the 36 gradient transforms for `$8\times9$`
-  tensor back-transforms: 93, worse.
-
-  The pass holds ~21 padded physical fields at once -- the 9 cached
-  advectors, the 9 gradients of the current `$\mathbf{c}$` and
-  `$\mathbf{q}$` -- one gradient set at a time, which an optimization
-  barrier per `$\mathbf{c}$` enforces (without it XLA formed the four
-  sets together).  That is a count of live fields; the program's
-  measured peak is about twice it ("Memory" below).  Two knobs trade
-  against footprint if it ever binds, and they act on **different**
-  transients -- neither is applied by default (both cost throughput,
-  and the budget is a cadenced diagnostic):
-
-  - ``solver.rhs_transform_chunks`` bounds the *transform-stage*
-    transient inside one :func:`dnsjax.fft.chunked_transform` call
-    (the padded intermediates of a 9-field batch), for the same
-    69 single-field transforms in more, smaller dispatches.  It
-    leaves the ~21 live fields alone; measured, it takes the peak
-    from 43 to 37.
-  - Moving the advector transform *inside* the pair loop is what
-    cuts those: the 9 cached `$\mathbf{b}$` fields become 3 live
-    ones, 21 `$\to$` 15 live fields, for 84 transforms instead of
-    69 (+22 %) since each of the 8 pairs then re-transforms its own
-    advector.  A count off the shapes; not measured.
+  69 single-field transforms per sample, the floor for this pairing
+  (Design notes: "Why 69 transforms").  A sample costs about one twin
+  step, so ``it_budget`` reads directly as a throughput tax: `$1$`
+  nearly doubles the run, `$10$` costs `$\sim\!9\,\%$` (Design notes:
+  "Cost of a budget sample").
 
 `$U^{(1)}$` and `$\Delta U$` are needed only as `$(3, N_y)$`
 profiles in the a/b/c mean slots (no advecting-`$U^{(1)}$` term
@@ -183,21 +144,18 @@ Dissipation form
 `$\epsilon_{\Delta X}$` is evaluated in the discrete-Laplacian
 (operator) form `$-\langle \Delta X \cdot (\nabla_h^2 + D_2) \Delta
 X\rangle / Re$` -- the operator the solver's implicit viscous update
-actually applies -- rather than the positive-definite quadratic form
+applies -- rather than the positive-definite quadratic form
 `$\langle |\nabla \Delta X|^2 \rangle / Re$` of
 :func:`~dnsjax.geometries.wall_bounded._base.get_pert_enstrophy`
 (which ``get_stats`` keeps).  Continuously the two coincide; the
 discrete pair is not summation-by-parts in the quadrature inner
 product, so they differ by
 `$\Delta X^{T}(D_1^{T} W D_1 + W D_2)\,\Delta X$`.  That defect is a
-truncation error *of the resolved part only*: at ``fd_order = 8`` it
-is `$<10^{-4}$` for a decaying wall-normal spectrum but `$\sim 40\,\%$`
-for content at half the grid scale -- and a difference field is the
-adverse case, since it re-populates the grid scale as the grid
-refines (measured flat at `$\sim 3\,\%$` from `$N_y = 17$` to
-`$257$`, against `$6\times10^{-3} \to 5\times10^{-10}$` for a fixed
-smooth field).  Only the operator form -- the one the implicit
-viscous update actually applies -- therefore closes the discrete
+truncation error *of the resolved part only*, and a difference field
+is the adverse case: it re-populates the grid scale as the grid
+refines, so the defect does not converge away (Design notes: "The
+dissipation defect, measured").  Only the operator form -- the one
+the implicit viscous update applies -- therefore closes the discrete
 budget `$\partial_t E_X = P_X + T_X - \epsilon_X$` against the
 stepped states.  The price is positivity: unlike the quadratic form
 this one is not positive-definite (the symmetric part of `$-W D_2$`
@@ -252,7 +210,7 @@ the three-bin split comes back resolved in `$k_z$`:
 Only `$E^{xz00}$` is stored unconditionally.  The plane it comes from
 is **opt-in** (``twin.x0_planes``, default off): it is a third of
 every record and a third of the sample's collective, and the two
-marginals are what a `$(y, k)$` reading actually wants.  With it off
+marginals are what a `$(y, k)$` reading wants.  With it off
 the three numbers still come back, because the first column of the
 `$k_x$` marginal is the whole plane summed over `$k_z$`:
 
@@ -333,24 +291,10 @@ one term the volume-averaged budget omits for free and a localized
 one cannot; :mod:`dnsjax.twin.pressure` has the whole argument, and
 its "Cost" section the footprint.
 
-Its *transient*, unlike its transform count, is not automatically the
-smaller of the two.  Held together the three padded physical sets
-`$\mathbf{b}$`, `$\nabla\mathbf{c}^{(1)}$` and
-`$\nabla\Delta\mathbf{c}$`, with the product being formed, are
-6 + 9 + 9 + 3 = 27 live fields, *more* than the three-bin pass's ~21
-(counted the same way) despite half the transforms.  So
-:func:`_convective_sources` forms the two gradient sets one at a time,
-the reference's consumer `$q_p$` between them: 6 + 9 + 3.  Statement
-order does not get that on its own -- XLA formed both sets together
--- so an optimization barrier holds it there.  What the program then
-peaks at is measured rather than counted in "Memory" below: about
-twice the live-field count, the rest being transform-pipeline
-transient and spectral operands.
-
 Two budget forms
 ----------------
 ``twin.rotational_ybudget`` swaps the nonlinear term for the
-**rotational** one the solver actually integrates
+**rotational** one the solver integrates
 (:mod:`dnsjax.rhs`).  Off by default.  The two forms differ by
 `$\nabla\phi$` with `$\phi = \mathbf{u}^{(1)}\!\cdot\Delta\mathbf{u}
 + |\Delta\mathbf{u}|^2/2$`; contracted with
@@ -391,10 +335,10 @@ V, eps, Wp, P_lift``:
 What the form buys: those two exact identities, and
 `$\hat{\mathcal{N}}$` becoming the solver's own RHS difference -- so
 the recovered pressure is the Bernoulli pressure the influence matrix
-actually closes on, and the whole term is *checkable* against the
+closes on, and the whole term is *checkable* against the
 solver instead of argued (``tests/test_twin_unit.py``).  It is also
 cheaper: 21 field transforms against 33, and a measured peak of 29
-padded components against 33 ("Memory" below).  What it costs:
+padded components against 33 (Design notes: "Memory").  What it costs:
 ``P_r``, ``T_vort`` and ``T_self`` no longer map onto the paper's
 terms at all, so `$\sum_k\int(P_U + P_r)$` is
 ``P_tot + T_tot`` up to truncation rather than ``P_tot`` exactly, and
@@ -523,24 +467,24 @@ Sharding
 The masks derive from ``fourier.kx`` (spec ``P(None, None, a1)``) and
 ``fourier.mean_mask`` (``P(None, a0, a1)``) through *binary* ops
 only, which infer the combined partition spec -- the
-``jnp.broadcast_to``-keeps-the-source-spec trap (see the precedent
-note in ``cylindrical.py``, ``_imm_iteration_vw``) cannot arise
+``jnp.broadcast_to``-keeps-the-source-spec trap (the precedent:
+``psv_b`` in ``_cylindrical_stepping._imm_iteration_vw``) cannot arise
 because no mask is ever materialized standalone at full shape.
 Reductions are plain ``get_norm2`` sums over the sharded axes;
 outputs are replicated scalars.
 
-Memory
-------
-Measured, not counted: each program's peak transient from XLA's own
-buffer assignment (``temp_size_in_bytes`` of
-``jax.jit(f).lower(...).compile().memory_analysis()``), in padded
-physical components -- one real field on the 3/2-rule grid,
-`$18\,n_x n_y n_z$` bytes at double precision.  CPU, plane-Poiseuille
-at `$64\times65\times64$` and `$96\times97\times96$` (the two agree
-to 1 %), at ``solver.rhs_transform_chunks`` 1 and 3, with the
-wall-normal derivatives as stencils (the CPU default; as dense GEMMs,
-``solver.wall_normal_matvec = "dense"``, every figure moves by under
-half a field):
+Design notes
+------------
+**Memory.**  Measured, not counted: each program's peak transient from XLA's
+own buffer assignment (``temp_size_in_bytes`` of
+``jax.jit(f).lower(...).compile().memory_analysis()``), in padded physical
+components -- one real field on the 3/2-rule grid, `$18\,n_x n_y n_z$` bytes at
+double precision.  CPU, plane-Poiseuille at `$64\times65\times64$` and
+`$96\times97\times96$` (the two agree to 1 %), at
+``solver.rhs_transform_chunks`` 1 and 3, with the wall-normal derivatives as
+stencils (the CPU default; as dense GEMMs,
+``solver.wall_normal_matvec = "dense"``, every figure moves by under half a
+field):
 
 - :func:`twin_budget` (three-bin): 44 / 37;
 - :func:`twin_ybudget`: 33 / 26 convective, 29 / 24 rotational;
@@ -555,29 +499,87 @@ half a field):
   them a peak.
 
 Every program is lowered as the run calls it, the singletons passed as
-arguments.  The figures are **CPU** ones.  Until 2026-10 the step's
-were 30 / 28 and 31 / 29 (and the ``y``-budget's and the pressure's
-some four fields above today's): some seven fields were the CPU banded
-sweep's per-solve permutations of the stored factors, which
-:func:`dnsjax.solvers._banded_solve_mode_inner` no longer makes (with
-the singletons baked in as constants XLA folds such work, so a ``jit``
-of the bound step measures 20 / 18 and 21 / 19 now).  A GPU schedule
-differs again, so on a GPU the other programs may sit further above the
-step.
+arguments.  The figures are **CPU** ones.  Until 2026-10 the step's were 30 /
+28 and 31 / 29 (and the ``y``-budget's and the pressure's some four fields
+above the present ones): some seven fields were the CPU banded sweep's
+per-solve permutations of the stored factors, which
+:func:`dnsjax.solvers._banded_solve_mode_inner` no longer makes (with the
+singletons baked in as constants XLA folds such work, so a ``jit`` of the bound
+step measures 20 / 18 and 21 / 19 now).  A GPU schedule differs again, so on a
+GPU the other programs may sit further above the step.
 
-So either budget, when enabled, is the run's high-water mark, since
-the device allocator's pool grows to the maximum over every program;
-without one, the difference pressure sits below the step.
-A count of live fields misses about half: every batched transform
-carries some two padded fields of pipeline transient per field in
-flight on top of its output (a 3-field :func:`spec_to_phys` alone
-peaks at 6, a 9-field one at 18), plus the spectral operands around
-it.  The two optimization barriers (:func:`_convective_sources`,
-:func:`_twin_budget_jit`) are worth 47 `$\to$` 37 and
-61 `$\to$` 43 of these, for the same numbers to rounding and no
-measurable CPU time.  A GPU schedule is its own: size a job against
-the driver's closing ``Peak device memory`` line (``Peak host memory``
-on CPU, which also counts the process's own runtime), not this list.
+So either budget, when enabled, is the run's high-water mark, since the device
+allocator's pool grows to the maximum over every program; without one, the
+difference pressure sits below the step.  A count of live fields misses about
+half: every batched transform carries some two padded fields of pipeline
+transient per field in flight on top of its output (a 3-field
+:func:`spec_to_phys` alone peaks at 6, a 9-field one at 18), plus the spectral
+operands around it.  The two optimization barriers
+(:func:`_convective_sources`, :func:`_twin_budget_jit`) are worth 47 `$\to$` 37
+and 61 `$\to$` 43 of these, for the same numbers to rounding and no measurable
+CPU time.  A GPU schedule is its own: size a job against the driver's closing
+``Peak device memory`` line (``Peak host memory`` on CPU, which also counts the
+process's own runtime), not this list.
+
+**Cost of a budget sample.**  A three-bin budget sample costs
+`$\sim\!0.9$` of a twin step (both states), measured on CPU at
+plane-Couette `$48^3$` and `$64^3$` -- the same ratio at both, and the
+whole of it transform time.
+
+**Why 69 transforms.**  69 is the floor for the three-bin pass's pairing, and
+the grouping is the right way round.  The nine rows use 3 distinct
+`$\mathbf{b}$`, 4 distinct `$\mathbf{c}$` and **8** distinct
+`$(\mathbf{b},\mathbf{c})$` pairs -- 8, not 9, because ``(du2, ru2)`` serves
+two production rows that differ only in `$\mathbf{a}$`, and one `$\mathbf{q}$`
+covers both.  So `$3\times3 = 9$` advector, `$4\times9 = 36$` gradient and
+`$8\times3 = 24$` back-transforms, each of which some row needs.  Caching the
+*advectors* and re-deriving the gradients is what makes it minimal: there are
+fewer distinct `$\mathbf{b}$` than `$\mathbf{c}$`, so the other grouping would
+hold 36 gradient fields to save nothing.  Writing
+`$(\mathbf{b}\cdot\nabla) \mathbf{c} = \nabla\cdot(\mathbf{b}\mathbf{c})$`
+(legal, both are solenoidal) trades the 36 gradient transforms for `$8\times9$`
+tensor back-transforms: 93, worse.
+
+**Footprint knobs.**  The three-bin pass holds ~21 padded physical fields at
+once -- the 9 cached advectors, the 9 gradients of the current `$\mathbf{c}$`
+and `$\mathbf{q}$` -- one gradient set at a time, which an optimization barrier
+per `$\mathbf{c}$` enforces (without it XLA formed the four sets together).
+That is a count of live fields; the program's measured peak is about twice it
+("Memory" above).  Two knobs trade against footprint if it ever binds, and they
+act on **different** transients -- neither is applied by default (both cost
+throughput, and the budget is a cadenced diagnostic):
+
+- ``solver.rhs_transform_chunks`` bounds the *transform-stage*
+  transient inside one :func:`dnsjax.fft.chunked_transform` call
+  (the padded intermediates of a 9-field batch), for the same
+  69 single-field transforms in more, smaller dispatches.  It
+  leaves the ~21 live fields alone; measured, it takes the peak
+  from 43 to 37.
+- Moving the advector transform *inside* the pair loop is what
+  cuts those: the 9 cached `$\mathbf{b}$` fields become 3 live
+  ones, 21 `$\to$` 15 live fields, for 84 transforms instead of
+  69 (+22 %) since each of the 8 pairs then re-transforms its own
+  advector.  A count off the shapes; not measured.
+
+**The y-budget's transient.**  Its *transient*, unlike its transform count, is
+not automatically the smaller of the two.  Held together the three padded
+physical sets `$\mathbf{b}$`, `$\nabla\mathbf{c}^{(1)}$` and
+`$\nabla\Delta\mathbf{c}$`, with the product being formed, are 6 + 9 + 9 + 3 =
+27 live fields, *more* than the three-bin pass's ~21 (counted the same way)
+despite half the transforms.  So :func:`_convective_sources` forms the two
+gradient sets one at a time, the reference's consumer `$q_p$` between them: 6 +
+9 + 3.  Statement order does not get that on its own -- XLA formed both sets
+together -- so an optimization barrier holds it there.  What the program then
+peaks at is measured rather than counted in "Memory" above: about twice the
+live-field count, the rest being transform-pipeline transient and spectral
+operands.
+
+**The dissipation defect, measured.**  At ``fd_order = 8`` the
+operator-form defect is `$<10^{-4}$` for a decaying wall-normal
+spectrum but `$\sim 40\,\%$` for content at half the grid scale.  A
+difference field stays flat at `$\sim 3\,\%$` from `$N_y = 17$` to
+`$257$`, against `$6\times10^{-3} \to 5\times10^{-10}$` for a fixed
+smooth field.
 """
 
 import importlib
@@ -810,10 +812,12 @@ def _twin_budget_jit(
         return jnp.einsum("ij,cj->ci", D1.dense, p)
 
     def xz_mean_cross(f: Array, g: Array) -> Array:
-        r"""``(C, Ny)`` profile of the `$xz$`-mean of the product of
-        the real fields with spectral coefficients *f* (``(C,...)``)
-        and *g* (``(1,...)``, broadcast) -- Parseval with the
-        real-FFT weight."""
+        r"""``(C, Ny)`` profile of the `$xz$`-mean of a field product.
+
+        The real fields have spectral coefficients *f* (``(C,...)``)
+        and *g* (``(1,...)``, broadcast); Parseval with the real-FFT
+        weight.
+        """
         return jnp.sum(k_metric * (f * jnp.conj(g)).real, axis=(2, 3))
 
     def grad_spec(c: Array) -> tuple[Array, Array, Array]:
@@ -1569,8 +1573,8 @@ def _convective_sources(
     formed **one at a time** -- the reference's only consumer is
     `$q_p$`, and an optimization barrier keeps XLA to that order -- so
     the live padded physical set is 6 + 9 + 3 with the product being
-    formed, not 6 + 9 + 9 + 3; the module docstring's "Memory" section
-    has what the program measures.
+    formed, not 6 + 9 + 9 + 3; the module's Design notes, "Memory",
+    have what the program measures.
 
     Three exact simplifications, all of them of the same mean-mode
     kind (`$U^{(1)}_y = \Delta U_y = 0$` by continuity plus no-slip,
@@ -1744,7 +1748,7 @@ def _rotational_sources(
     `$\Delta\mathbf{u}$` go before `$\mathbf{u}_f^{(1)}$` arrives.
     That is a count of live fields, not the program's peak, which its
     one nine-field transform sets: 29 padded components measured,
-    against the convective 33 (module docstring, "Memory").
+    against the convective 33 (Design notes: "Memory").
     """
     kx, kz = fourier_.kx, fourier_.kz
     d1 = flow_.D1
@@ -2013,7 +2017,8 @@ def _difference_pressure_jit(
     `$O(1)$` pressures.  The source is the summed single pass of
     :func:`~dnsjax.geometries.wall_bounded._cartesian_pressure.convective_nonlinear`
     with a reference, not the budget's six-piece split, which this
-    sample has no use for and which would set its peak ("Memory").
+    sample has no use for and which would set its peak (Design notes:
+    "Memory").
     """
     delta = state2 - state1
     n_hat, div_n = convective_nonlinear(

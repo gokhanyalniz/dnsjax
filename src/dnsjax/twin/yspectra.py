@@ -40,7 +40,7 @@ alone.  The mode is also the mean the reference fluctuation energy is
 measured against.
 
 File format
-===========
+-----------
 Both are flat sequences of fixed-size records, ``("t", "<f8")``
 followed by one entry per field, ``VAL = "<f8"``/``"<f4"`` per
 ``res.double_precision``.  The field table is the outer product of

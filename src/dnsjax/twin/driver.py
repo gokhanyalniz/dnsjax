@@ -19,7 +19,7 @@ sharing one program** -- 2 spectral states resident (4 under
 per step, so plan `$\sim\!2\times$` the memory and `$\sim\!2\times$`
 the wall time of the same flow at the same resolution.  The timing
 line says ``2x steps per t`` for that reason.  What the ``[twin]``
-cadences add on top is priced in :class:`TwinParams`.
+cadences add on top: Design notes, "What the [twin] cadences cost".
 
 Launch exactly like the production solver (``.venv/bin/dnsjax-twin
 ...`` from a scratch directory, under ``mpirun -np N`` only when it is
@@ -83,9 +83,9 @@ start mode is decided by two files -- the partner of
   still lying in the directory is an error here rather than something
   to append to -- every writer appends, so a half-cleaned directory
   would splice a new trajectory onto an old one's records.  The
-  parent clock is inherited
-  (``t0``/``it0`` from the snapshot -- offline analysis reads the
-  perturbation time from ``twin.json``); a trajectory-defining
+  parent clock is inherited (``t0``/``it0`` from the snapshot --
+  offline analysis reads the perturbation time from ``twin.json``);
+  a trajectory-defining
   override starts the reference at ``t = it = 0`` exactly as in
   ``dnsjax.__main__`` (``init.force_resume`` keeps the clock).
 
@@ -162,6 +162,106 @@ seed recorded in ``twin.json`` rather than drawing, which is what keeps
 ``scripts/ensemble_setup.py`` harvests parent snapshots and builds
 member trees (pinning each member's seed in its ``parameters.toml``);
 ``dnsjax.analysis.twin`` aggregates the ``twin.dat`` streams.
+
+Design notes
+------------
+**What the [twin] cadences cost.**  Neither optional budget stream
+is priced by its cadence alone:
+
+- ``it_budget`` sets the **run's** peak memory, not just its
+  per-sample cost.  ``_twin_budget_jit`` is a separate compiled
+  program whose transient is the driver's global high-water
+  mark, since the device allocator's pool grows to the maximum
+  over every program: ~44 padded physical components against
+  the iterative-CN step's 22, measured on CPU
+  (:mod:`dnsjax.twin.diagnostics`, Design notes, "Memory") -- some
+  `$50$` GB in all at a `$1024\times257\times256$` double-precision
+  plane-Poiseuille target, on that schedule.  If it ever binds, the
+  two ways to trade transforms for footprint are in that module's
+  Design notes, "Footprint knobs".  In *time* it is equally
+  unsubtle: one sample costs
+  `$\sim\!0.9$` of a twin step (measured, size-independent over
+  `$48^3$`-`$64^3$`), so ``it_budget = 1`` nearly doubles the
+  run and `$10$` costs `$\sim\!9\,\%$`.
+- ``it_ybudget`` costs memory in **two** places, and the
+  per-sample transient is the one that is easy to miss.
+  *Resident*: :class:`dnsjax.twin.pressure.DifferencePressure`
+  holds a second factored banded operator the size of
+  ``flow.Lk_op`` plus its two homogeneous columns, two real
+  `$(N_y, N_{k_z}, N_{k_x})$` fields (its "Cost" section has the
+  numbers).  *Transient*: the sample program peaks at ~33
+  padded physical components convectively and ~29 under
+  ``twin.rotational_ybudget`` (measured on CPU; the iterative-CN
+  step is 22, CN/AB2 24), so it, not the step, sets the run's
+  peak; ``solver.rhs_transform_chunks = 3`` brings those to
+  26 / 24.  The table, what a count of live fields misses, and
+  why a GPU run reads its own ``Peak device memory`` line
+  instead: :mod:`dnsjax.twin.diagnostics`, Design notes,
+  "Memory".
+- ``x0_planes`` gates the `$k_x = 0$` plane of **both**
+  `$y$`-resolved streams, and is a static flag on
+  :func:`~dnsjax.twin.diagnostics.twin_yspectra` and
+  :func:`~dnsjax.twin.diagnostics.twin_ybudget` for the same
+  reason ``spectra_ref`` is.  It is not a second field pass --
+  the plane is a slice of one already taken -- but it is a third
+  of the sample's ``psum`` payload and a third of every stored
+  record, on top of ``spectra_ref``'s doubling of the first.
+  Leaving it off costs only the `$k_z$` resolution of
+  `$E_{\Delta u_1}$` and `$E_{\Delta u_2}$` (the second stays
+  resolved in `$k_x$`):
+  :func:`~dnsjax.analysis.twin.bin_energies` recovers all three
+  bins from the `$k_x$` marginal and the `$(0, 0)$` mode.
+- ``spectra_ref`` gates the reference half of **both** spectra
+  streams, in compute as well as on disk: it is a static flag on
+  :func:`dnsjax.twin.diagnostics.twin_spectra_2d` and
+  :func:`~dnsjax.twin.diagnostics.twin_yspectra`, so with it off
+  the reference reduction is never traced.  On the `$(k_z, k_x)$`
+  stream that saves one field pass and a `$\sim$`1 MB ``psum``
+  per sample; on the `$y$`-resolved one it saves a full real
+  `$(3, N_y, N_{k_z}, N_{k_x})$` density and one of the sample's
+  two collectives -- about half of it.  What it costs is the
+  decorrelation ratio.
+
+``it_energy`` is the one per-*step* cost at its default of 1, and
+what it costs depends on ``bins``.  **Off** (the default): one
+extra jitted call per step forming ``delta`` and reducing it and
+``state1``, three full-state passes against the two steps' FFT and
+solve work.  **On**: ``delta`` and ``du1`` are each read four
+times, so both materialize (~2 full-state complex temporaries) --
+**a few percent of a twin step**, measured at 1.3 % for
+plane-Couette `$48^3$` and 5.0 % at `$64^3$` (the rise is the
+working set leaving cache; the step itself is pure FFT/solve work
+either way), and the ``E_d`` vs ``E_dU + E_du1 + E_du2``
+redundancy those percent buy is a deliberate consistency guard,
+not something to trade away.  Either way the default cadence
+needs no tuning, which is just as well: it is the intended
+Lyapunov sampling rate.
+
+**The smoothness default.**  ``twin.smoothness`` is set for plane
+Poiseuille at `$Re = 4200$` in the `$4\pi \times 2 \times 2\pi$` box
+(`$Re_\tau = 178.6$`).  The criterion: seed the turbulent reference
+*below* the smallest perturbation of the laminar state that triggers
+turbulence -- the minimal flow unit, `$\lambda_z^+ \sim 100$` and
+`$\lambda_x^+ \sim 250$`-`$350$` -- so the seed cannot hold a
+self-sustaining structure of its own and can grow only through the
+reference flow.  (Chaos makes every perturbation grow eventually, so
+"the scales that amplify" picks out no scale.)
+
+:mod:`dnsjax.ic.random_field` derives what `$s$` sets: the
+premultiplied spectra peak at `$\lambda^* = 4\pi|\ln(1 - s)|\,h$`.
+Placing that peak at `$\lambda^{*+} = 50$`, half the minimal-unit
+span, inverts exactly to
+`$s = 1 - \exp(-\lambda^{*+}/(4\pi Re_\tau))$` -- 0.022 here, 0.0079
+at `$Re_\tau = 500$` (plane Poiseuille).  No `$s$` can empty the large
+scales, the energy per mode peaking at `$k = 0$`, so "below" means
+mostly: at `$Re_\tau = 178.6$`, 59 % of ``e0`` sits at
+`$\lambda_z^+ < 100$`, 18 % above `$\lambda^+ = 100$` in both
+directions, and 5 % below `$\lambda^+ = 20$`, where viscosity removes
+it before the reference flow can act on it.  A minimal flow unit has
+no room below itself: the minimal box of Hamilton, Kim & Waleffe
+(1995; `$Re_\tau \approx 34$`) keeps 0.4, where this default would put
+the peak at `$\lambda^+ \sim 10$`.  A member recorded at the earlier
+default 0.4 resumes only with ``--twin.smoothness 0.4``.
 """
 
 import json
@@ -278,7 +378,7 @@ _TWIN_MATCH_KEYS: tuple[str, ...] = (
 #:
 #: A back-fill records the old behaviour; it cannot make that behaviour
 #: match a *different* current default.  ``mean_flow``'s old value is
-#: today's default, so those members resume as they are, but a member
+#: the current default, so those members resume as they are, but a member
 #: recorded before ``wall_confinement`` existed back-fills to ``0``
 #: against the ``0.14`` default -- a real difference in the partner --
 #: and resumes only with ``--twin.wall_confinement 0``.
@@ -304,8 +404,10 @@ _TWIN_LEGACY_DEFAULTS: dict[str, object] = {
 
 
 def _legacy_default(key: str, old: dict) -> object:
-    """The assumed value of a :data:`_TWIN_MATCH_KEYS` entry *key*
-    that *old* does not carry (:data:`_TWIN_LEGACY_DEFAULTS`)."""
+    """The assumed value of a :data:`_TWIN_MATCH_KEYS` entry *old* lacks.
+
+    *key* is the entry; the values are :data:`_TWIN_LEGACY_DEFAULTS`.
+    """
     fallback = _TWIN_LEGACY_DEFAULTS.get(key)
     return fallback(old) if callable(fallback) else fallback
 
@@ -323,76 +425,14 @@ class TwinParams(BaseModel):
     and the resume rules: the :mod:`dnsjax.twin.driver` module
     docstring.
 
-    Cost of the two optional streams -- neither is priced by its
-    cadence alone:
-
-    - ``it_budget`` sets the **run's** peak memory, not just its
-      per-sample cost.  ``_twin_budget_jit`` is a separate compiled
-      program whose transient is the driver's global high-water
-      mark, since the device allocator's pool grows to the maximum
-      over every program: ~44 padded physical components against
-      the iterative-CN step's 22, measured on CPU
-      (:mod:`dnsjax.twin.diagnostics`, "Memory") -- some `$50$` GB
-      in all at a `$1024\times257\times256$` double-precision
-      plane-Poiseuille target, on that schedule.  If it ever binds,
-      the two ways to trade transforms for footprint are in that
-      module's "Budget terms".
-      In *time* it is equally unsubtle: one sample costs
-      `$\sim\!0.9$` of a twin step (measured, size-independent over
-      `$48^3$`-`$64^3$`), so ``it_budget = 1`` nearly doubles the
-      run and `$10$` costs `$\sim\!9\,\%$`.
-    - ``it_ybudget`` costs memory in **two** places, and the
-      per-sample transient is the one that is easy to miss.
-      *Resident*: :class:`dnsjax.twin.pressure.DifferencePressure`
-      holds a second factored banded operator the size of
-      ``flow.Lk_op`` plus its two homogeneous columns, two real
-      `$(N_y, N_{k_z}, N_{k_x})$` fields (its "Cost" section has the
-      numbers).  *Transient*: the sample program peaks at ~33
-      padded physical components convectively and ~29 under
-      ``twin.rotational_ybudget`` (measured on CPU; the iterative-CN
-      step is 22, CN/AB2 24), so it, not the step, sets the run's
-      peak; ``solver.rhs_transform_chunks = 3`` brings those to
-      26 / 24.  The table, what a count of live fields misses, and
-      why a GPU run reads its own ``Peak device memory`` line
-      instead: :mod:`dnsjax.twin.diagnostics`, "Memory".
-    - ``x0_planes`` gates the `$k_x = 0$` plane of **both**
-      `$y$`-resolved streams, and is a static flag on
-      :func:`~dnsjax.twin.diagnostics.twin_yspectra` and
-      :func:`~dnsjax.twin.diagnostics.twin_ybudget` for the same
-      reason ``spectra_ref`` is.  It is not a second field pass --
-      the plane is a slice of one already taken -- but it is a third
-      of the sample's ``psum`` payload and a third of every stored
-      record, on top of ``spectra_ref``'s doubling of the first.
-      Leaving it off costs only the `$k_z$` resolution of
-      `$E_{\Delta u_1}$` and `$E_{\Delta u_2}$` (the second stays
-      resolved in `$k_x$`):
-      :func:`~dnsjax.analysis.twin.bin_energies` recovers all three
-      bins from the `$k_x$` marginal and the `$(0, 0)$` mode.
-    - ``spectra_ref`` gates the reference half of **both** spectra
-      streams, in compute as well as on disk: it is a static flag on
-      :func:`dnsjax.twin.diagnostics.twin_spectra_2d` and
-      :func:`~dnsjax.twin.diagnostics.twin_yspectra`, so with it off
-      the reference reduction is never traced.  On the `$(k_z, k_x)$`
-      stream that saves one field pass and a `$\sim$`1 MB ``psum``
-      per sample; on the `$y$`-resolved one it saves a full real
-      `$(3, N_y, N_{k_z}, N_{k_x})$` density and one of the sample's
-      two collectives -- about half of it.  What it costs is the
-      decorrelation ratio.
-
-    ``it_energy`` is the one per-*step* cost at its default of 1, and
-    what it costs depends on ``bins``.  **Off** (the default): one
-    extra jitted call per step forming ``delta`` and reducing it and
-    ``state1``, three full-state passes against the two steps' FFT and
-    solve work.  **On**: ``delta`` and ``du1`` are each read four
-    times, so both materialize (~2 full-state complex temporaries) --
-    **a few percent of a twin step**, measured at 1.3 % for
-    plane-Couette `$48^3$` and 5.0 % at `$64^3$` (the rise is the
-    working set leaving cache; the step itself is pure FFT/solve work
-    either way), and the ``E_d`` vs ``E_dU + E_du1 + E_du2``
-    redundancy those percent buy is a deliberate consistency guard,
-    not something to trade away.  Either way the default cadence
-    needs no tuning, which is just as well: it is the intended
-    Lyapunov sampling rate.
+    Cost: ``it_budget`` and ``it_ybudget`` set the **run's** peak
+    memory, not only their per-sample cost, and ``it_budget = 1``
+    nearly doubles the run's time; ``x0_planes`` and ``spectra_ref``
+    each enlarge every record and the sample's collective; and
+    ``it_energy``, the one per-step cost at its default of 1, is a few
+    percent of a twin step under ``bins``.  The figures and the
+    reasons: the module's Design notes, "What the [twin] cadences
+    cost".
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -421,30 +461,8 @@ class TwinParams(BaseModel):
             "resume."
         ),
     )
-    # The default is set for plane Poiseuille at Re = 4200 in the
-    # 4 pi x 2 x 2 pi box (Re_tau = 178.6).  The criterion: seed the
-    # turbulent reference *below* the smallest perturbation of the
-    # laminar state that triggers turbulence -- the minimal flow unit,
-    # lambda_z+ ~ 100 and lambda_x+ ~ 250-350 -- so the seed cannot
-    # hold a self-sustaining structure of its own and can grow only
-    # through the reference flow.  (Chaos makes every perturbation grow
-    # eventually, so "the scales that amplify" picks out no scale.)
-    #
-    # ``ic/random_field.py`` derives what s sets: the premultiplied
-    # spectra peak at lambda* = 4 pi |ln(1 - s)| h.  Placing that peak at
-    # lambda*+ = 50, half the minimal-unit span, inverts exactly to
-    #
-    #     s = 1 - exp(-lambda*+ / (4 pi Re_tau))
-    #
-    # -- 0.022 here, 0.0079 at Re_tau = 500 (plane Poiseuille).  No s
-    # can empty the large scales, the energy per mode peaking at k = 0,
-    # so "below" means mostly: at Re_tau = 178.6, 59 % of e0 sits at
-    # lambda_z+ < 100, 18 % above lambda+ = 100 in both directions, and
-    # 5 % below lambda+ = 20, where viscosity removes it before the
-    # reference flow can act on it.  A minimal flow unit has no room below
-    # itself: the HKW box (Re_tau ~ 34) keeps 0.4, where this default
-    # would put the peak at lambda+ ~ 10.  A member recorded at the
-    # earlier default 0.4 resumes only with ``--twin.smoothness 0.4``.
+    # The default seeds plane Poiseuille at Re_tau = 178.6 below its
+    # minimal flow unit (Design notes: "The smoothness default").
     smoothness: float = Field(
         default=0.022,
         gt=0,
@@ -540,7 +558,7 @@ class TwinParams(BaseModel):
             "Steps between twin_budget.dat rows (the production/"
             "transport/dissipation terms); unset or 0 disables the stream. "
             "Not a pure cadence knob: enabling it raises the run's "
-            "peak memory (see the field's docs)."
+            "peak memory (the dnsjax.twin.driver Design notes)."
         ),
     )
     it_spectra: int | None = Field(
@@ -568,7 +586,7 @@ class TwinParams(BaseModel):
             "production / transfer / viscous / pressure densities); "
             "unset or 0 disables the stream.  Like it_budget, not a pure "
             "cadence knob: it raises both the run's resident and its "
-            "peak memory (see the field's docs)."
+            "peak memory (the dnsjax.twin.driver Design notes)."
         ),
     )
     rotational_ybudget: bool = Field(
@@ -2170,7 +2188,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         )
         # The number the [twin] cost notes say to size a job against:
         # an enabled budget stream, not the step, sets it
-        # (:mod:`dnsjax.twin.diagnostics`, "Memory").
+        # (:mod:`dnsjax.twin.diagnostics`, Design notes, "Memory").
         peak = _peak_device_bytes(jax)
         if peak is not None:
             sharding.print(

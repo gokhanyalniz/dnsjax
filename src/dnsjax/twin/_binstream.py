@@ -11,14 +11,14 @@ append, and a post-write non-finite scan whose message the driver
 aborts on.  It lives here rather than being written three times.
 
 What a subclass supplies
-========================
+------------------------
 Its own :data:`FORMAT_VERSION`, ``_MATCH_KEYS`` and sidecar dict --
 these are per-stream on purpose, since a stream's stored *meaning*
 changes independently of its siblings' -- plus the field table
 ``((name, shape), ...)`` and the two paths.  Nothing else.
 
 Why the buffer is flat
-======================
+----------------------
 Fields of one stream need not share a shape: ``twin_yspectra`` mixes
 `$(3, N_y, n_{k_z})$` and `$(3, N_y, n_{k_x})$` blocks.  The device
 buffer is therefore ``(nbuffer, total_flat)`` with per-field offsets,
