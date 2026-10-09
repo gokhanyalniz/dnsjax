@@ -44,7 +44,10 @@ not. `python -m dnsjax.twin` is the equivalent module form.
 
 The parameter surface is the flow's own plus the `[twin]` section,
 which `dnsjax-twin` registers and the solver does not;
-`dnsjax-twin --help` lists it.
+`dnsjax-twin --help` lists it. A member keeps the solver's run status
+files and stops the same way (`rm RUNNING`, or SIGUSR1), ending on a
+final snapshot pair; see
+[Stopping a run](../../../docs/running.md#stopping-a-run).
 
 | Knob | Default | Meaning |
 |---|---|---|

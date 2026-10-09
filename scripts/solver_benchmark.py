@@ -1532,15 +1532,20 @@ def _run_mpi(
         f"$ {' '.join(cmd)}\n\n{stdout}\n--- stderr ---\n{stderr}",
     )
 
+    from dnsjax.run_status import EXIT_CORRECTOR
+
+    # A corrector that failed to converge exits EXIT_CORRECTOR after a
+    # complete closing summary: a failed row (below), not a crash.
+    completed = rc in (0, EXIT_CORRECTOR)
     rec = {
         "kind": "mpi",
         "name": run["name"],
         "run": {k: v for k, v in run.items() if k not in ("extra", "env")},
         "wall_s": round(time.perf_counter() - t0, 1),
-        "status": "ok" if rc == 0 else "crash",
+        "status": "ok" if completed else "crash",
         "rundir": str(rundir),
     }
-    if rc != 0:
+    if not completed:
         rec["error"] = (
             f"timeout after {timeout:.0f}s" if timed_out else f"exit {rc}"
         )

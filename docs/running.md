@@ -171,12 +171,49 @@ timing summary is printed at the end. Statistics stream to `stats.dat`
 (with `steps.dat` and `corrector.dat` for the CFL and corrector
 diagnostics), and snapshots appear as `state00000.tar` (the initial
 condition), `state00001.tar`, and so on. Runs end gracefully — at
-`max_sim_time`, at an ISO 8601 `stop.max_wall_time` budget (writing a
-final snapshot first), on relaminarization, or on SIGTERM/SIGINT (flushing
-the diagnostic buffers) — so interrupted runs stay consistent with their
-outputs; a NaN or inf in any diagnostic instead aborts the run at once
-with a line naming the quantity, rather than spending the budget on a
-broken state.
+`max_sim_time`, at an ISO 8601 `stop.max_wall_time` budget, on
+relaminarization, or on request (below), each writing a final snapshot
+first; on SIGTERM/SIGINT they flush the diagnostic buffers and exit at
+once — so interrupted runs stay consistent with their outputs; a NaN or
+inf in any diagnostic instead aborts the run at once with a line naming
+the quantity, rather than spending the budget on a broken state.
+
+### Stopping a run
+
+While a run lives, its directory holds a file named `RUNNING` (its
+start time, host, process id and, under SLURM, job id). To stop the
+run gracefully, delete it:
+
+```bash
+rm RUNNING
+```
+
+Within `outs.it_error_check` steps (10 by default) every process
+leaves the stepping loop together. The run writes its final snapshot
+and flushes every stream, exactly as at the end of a `max_sim_time`
+horizon. `kill -USR1` sent to any of its processes, or to `mpirun`
+(which forwards it to every rank), does the same. A SLURM job
+launched with `srun` can have the scheduler send that signal to every
+task ahead of its time limit: `#SBATCH --signal=USR1@300` sends it five
+minutes before. Setting `stop.max_wall_time` below the limit does the
+same without a signal.
+
+When the run ends, `RUNNING` is replaced by one file saying how:
+
+| File | The run | Exit code |
+|---|---|---|
+| `FINISHED` | reached `max_sim_time` or `max_wall_time`, or relaminarized | 0 |
+| `STOPPED` | stopped on request | 0 |
+| `TERMINATED` | failed: the corrector did not converge (4); a NaN or inf (3); SIGTERM or SIGINT (128 + the signal number); anything else (1) | as listed |
+
+Each file gives the start and end times, the reason and the newest
+snapshot the run wrote, which a resume continues from. A `RUNNING`
+left with no live process belongs to a run that was killed outright
+(SIGKILL, out of memory, a lost node). The next launch in that
+directory reports it and replaces it. A launch refuses to start next
+to a `RUNNING` whose process is still alive on the same machine. The
+details are in the
+[`run_status`](../src/dnsjax/run_status.py) module docstring.
 
 ### The diagnostic streams
 

@@ -67,6 +67,8 @@ Stepping:
   and legacy pass.
 - `test_wall_time_stop.py` (`mpirun`): both drivers stop on
   `stop.max_wall_time` together when the ranks' clocks disagree.
+- `test_run_status.py` (`--unit-only`, `--no-mpi`, `--mpi-only`): the
+  status files and the stop request, in both drivers.
 
 Parameters, bootstrap, mesh, seeds:
 - `test_param_surface.py` (registry, surfaces and their `--help`, the

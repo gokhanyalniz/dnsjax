@@ -1851,7 +1851,13 @@ class TimeStepping(BaseModel):
 
 
 class Termination(BaseModel):
-    """Stopping criteria for the simulation."""
+    """Stopping criteria for the simulation.
+
+    A run also stops on request, with no parameter involved: deleting
+    the ``RUNNING`` file in its directory, or a ``SIGUSR1``
+    (:mod:`dnsjax.run_status`, which also names the file each way of
+    ending leaves behind).
+    """
 
     # *Relative* to the run's initial condition: the loop stops at
     # ``init.t0 + max_sim_time``, where ``init.t0`` is the resumed
