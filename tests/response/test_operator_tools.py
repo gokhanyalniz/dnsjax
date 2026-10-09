@@ -55,8 +55,10 @@ NX, NY, NZ = 8, 33, 8
 
 
 def test_gramian_closed_forms() -> None:
-    r"""`$A = -aI \Rightarrow X = I/(2a)$` on both solver paths; an
-    unstable `$A$` is rejected."""
+    r"""`$A = -aI \Rightarrow X = I/(2a)$` on both solver paths.
+
+    An unstable `$A$` is rejected.
+    """
     r, a = 5, 0.7
     a_mat = -a * np.eye(r, dtype=complex)
     for x in (
@@ -85,8 +87,10 @@ def test_gramian_closed_forms() -> None:
 
 
 def test_controllability_modes_ordering() -> None:
-    r"""Normal `$A = \mathrm{diag}(-1, -4)$`: `$X = \mathrm{diag}(1/2,
-    1/8)$`, so the leading mode is `$e_1$`."""
+    r"""Normal `$A = \mathrm{diag}(-1, -4)$` has leading mode `$e_1$`.
+
+    `$X = \mathrm{diag}(1/2, 1/8)$`.
+    """
     vals, p = ot.controllability_modes(np.diag([-1.0, -4.0]), 2)
     assert_allclose(vals, [0.5, 0.125], atol=1e-14)
     assert_allclose(np.abs(p), np.eye(2), atol=1e-12)
@@ -135,8 +139,7 @@ def test_growth_curves() -> None:
 
 
 def test_restrict() -> None:
-    """Full-rank restriction is exact; non-orthonormal columns are
-    rejected."""
+    """Full-rank restriction is exact; non-orthonormal columns are refused."""
     rng = np.random.default_rng(1)
     a_mat = rng.standard_normal((4, 4)) + 1j * rng.standard_normal((4, 4))
     p_full, _ = np.linalg.qr(

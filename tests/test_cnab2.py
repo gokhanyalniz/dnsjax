@@ -221,7 +221,9 @@ def _sub_jaxprs(eqn) -> list:
 
 
 def _count_ffts(jaxpr, in_cond: bool = False) -> tuple[int, int, list]:
-    """Walk *jaxpr*; return ``(ffts_outside_cond, ffts_inside_cond,
+    """Count the FFT ops of *jaxpr* by where they run.
+
+    Returns ``(ffts_outside_cond, ffts_inside_cond,
     loop_body_fft_counts)``.
 
     ``ffts_outside_cond`` counts once-per-call FFT ops (not inside a

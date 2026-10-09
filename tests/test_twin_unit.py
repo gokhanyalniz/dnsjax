@@ -259,9 +259,11 @@ def test_energies_vs_numpy() -> None:
 
 
 def test_e0_convention() -> None:
-    r"""``amplitude = sqrt(2 e0)`` gives solver-measure `$E' = e_0$`,
-    and the driver's additive construction reproduces it through
-    ``twin_energies`` to the float cancellation floor."""
+    r"""``amplitude = sqrt(2 e0)`` gives the solver-measure `$E' = e_0$`.
+
+    The driver's additive construction reproduces it through
+    ``twin_energies`` to the float cancellation floor.
+    """
     from dnsjax.ic.random_field import generate_random_state
 
     e0 = 1e-6
@@ -779,8 +781,10 @@ def test_yspectra_fold_is_two_sided() -> None:
 
 
 def test_yspectra_partition() -> None:
-    """The stored marginals recover the three-bin energies exactly,
-    through the ``k_x = 0`` plane and without it."""
+    """The stored marginals recover the three-bin energies exactly.
+
+    Through the ``k_x = 0`` plane and without it.
+    """
     state1, state2 = _make_state(salt=0.0), _make_state(salt=1.0)
     out = {
         k: np.asarray(v)
@@ -818,9 +822,11 @@ def test_yspectra_partition() -> None:
 
 
 def _solenoidal_pair(amp: float = 0.01):
-    """A divergence-free, no-slip state pair (a real solver state's
-    two structural properties, which the index-layout states above
-    deliberately lack)."""
+    """A divergence-free, no-slip state pair.
+
+    A real solver state's two structural properties, which the
+    index-layout states above deliberately lack.
+    """
     from dnsjax.ic.random_field import generate_random_state
 
     s1 = generate_random_state(0.05, 0.4, 0.4, 0.14, 11, False)

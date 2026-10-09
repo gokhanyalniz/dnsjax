@@ -173,9 +173,11 @@ PEAK_TOL = 0.12  # |peak/amp - 1| and cross-box agreement bound
 
 
 def _configure(system: str, np0: int, np1: int) -> None:
-    """Configure JAX and the dnsjax parameter singletons for *np0*x*np1*
-    forced CPU devices.  Must run before importing ``sharding`` / the
-    geometry modules."""
+    """Configure JAX and the parameter singletons on forced CPU devices.
+
+    *np0* x *np1* devices.  Must run before importing ``sharding`` / the
+    geometry modules.
+    """
     os.environ["XLA_FLAGS"] = (
         f"--xla_force_host_platform_device_count={np0 * np1}"
     )

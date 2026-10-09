@@ -143,8 +143,10 @@ def _make_state(scale: float = 1.0, nan_mode: tuple | None = None):
 
 
 def test_extractor_multi_device() -> None:
-    """The gather returns the exact owned columns for every mesh
-    position (bit-exact vs. the construction formula)."""
+    """The gather returns the exact owned columns for every mesh position.
+
+    Bit-exact against the construction formula.
+    """
     state = _make_state()
     out = np.asarray(build_mode_extractor(MODES)(state))
     assert out.shape == (len(MODES), 3, NY)
@@ -155,8 +157,10 @@ def test_extractor_multi_device() -> None:
 
 
 def test_extractor_solver_basis() -> None:
-    r"""On a cylindrical/annular system the gather converts each
-    column out of the solver's decoupled `$u_\pm$` basis.
+    r"""On a cylindrical/annular system the gather leaves the solver basis.
+
+    Each column is converted out of the solver's decoupled `$u_\pm$`
+    basis.
 
     The state layout is geometry-independent, so the conversion branch
     is selected purely by ``params.phys.system`` (read at build time)
@@ -194,8 +198,11 @@ def test_extractor_solver_basis() -> None:
 
 
 def test_probe_stream_roundtrip() -> None:
-    """Record/flush byte layout, auto-flush at ``nbuffer``, append on a
-    matching sidecar, and reader agreement."""
+    """The probe stream's record layout, flushing, appending and reading.
+
+    Record/flush byte layout, auto-flush at ``nbuffer``, append on a
+    matching sidecar, and reader agreement.
+    """
     state = _make_state()
     scaled = _make_state(scale=2.0)
     with tempfile.TemporaryDirectory() as tmp:
@@ -332,8 +339,11 @@ def test_parse_mode_pairs() -> None:
 
 
 def test_validate_probe_params() -> None:
-    """Pairing and range checks (the ``probes`` extension validate,
-    dispatched through ``validate_parameters``)."""
+    """Pairing and range checks of the ``probes`` section.
+
+    The extension's validate hook, dispatched through
+    ``validate_parameters``.
+    """
     saved = (probes_params.modes, probes_params.it_probes)
     try:
         validate_parameters()  # the module configuration is valid
@@ -411,9 +421,12 @@ def _run_solver(workdir: Path, np_count: int, np1: int, args: list[str]):
 
 
 def test_mpi_laminar_probes() -> None:
-    """Laminar plane-Poiseuille: uniform sample times incl. the final
-    cadence-aligned sample; probe values at the roundoff floor; the
-    reader's total mean profile and ``Re_tau`` are laminar."""
+    """A laminar plane-Poiseuille probe stream, end to end.
+
+    Uniform sample times including the final cadence-aligned sample;
+    probe values at the round-off floor; the reader's total mean profile
+    and ``Re_tau`` are laminar.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         _run_solver(
             Path(tmp),
@@ -458,8 +471,9 @@ def test_mpi_laminar_probes() -> None:
 
 
 def test_mpi_pipe_probes_vs_snapshot() -> None:
-    r"""Pipe (cylindrical): the ``t = 0`` probe sample equals the IC
-    snapshot's stored spectral columns, component for component.
+    r"""The pipe's ``t = 0`` probe sample equals the IC snapshot's columns.
+
+    Component for component, against the stored spectral columns.
 
     The offline conversion tests pin the extractor in isolation; only
     a real run pins that ``__main__`` hands it a state in the solver's
@@ -524,8 +538,11 @@ def test_mpi_pipe_probes_vs_snapshot() -> None:
 
 
 def test_mpi_random_probes_np2() -> None:
-    """Random-IC run on 2 MPI processes (``np1 = 2``), probing a mode
-    owned by the second ``np1`` shard: finite, nonzero values."""
+    """A random-IC run on 2 MPI processes probes the second shard's mode.
+
+    ``np1 = 2``, probing a mode owned by the second ``np1`` shard:
+    finite, nonzero values.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         _run_solver(
             Path(tmp),

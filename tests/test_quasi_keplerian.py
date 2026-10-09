@@ -369,10 +369,11 @@ def _wedge_common(m0: int, nz: int) -> None:
 
 
 def _azimuthal_index_map(m0: int, nz_wedge: int, nz_full: int):
-    """Wedge azimuthal index -> full-circle index at the same physical
-    ``m``.  Both axes store ``complex_harmonics`` order (Nyquist
-    omitted), so the map is looked up by wavenumber value rather than
-    assumed."""
+    """Map a wedge azimuthal index to the full-circle one at the same ``m``.
+
+    Both axes store ``complex_harmonics`` order (Nyquist omitted), so
+    the map is looked up by wavenumber value rather than assumed.
+    """
     import numpy as np
 
     from dnsjax.harmonics import complex_harmonics

@@ -380,8 +380,10 @@ def test_lk_matvec_matches_reference() -> None:
 
 
 def test_pallas_vs_dense_on_cylindrical_operators() -> None:
-    r"""``PerModeBandedPallasOperator`` matches ``DenseJAXSolver`` on
-    cylindrical Lk/Hk_plus/Hk_minus/Hk_z.
+    r"""The banded Pallas operator matches the dense solver (cylindrical).
+
+    ``PerModeBandedPallasOperator`` against ``DenseJAXSolver`` on
+    Lk/Hk_plus/Hk_minus/Hk_z.
 
     Guards the parity-reduced Pallas band assembly
     (``_build_{Lk,Hk}_band_gpu``, refactored onto the shared
@@ -548,8 +550,9 @@ def test_pallas_vs_dense_on_cylindrical_operators() -> None:
 
 
 def test_vw_spin_pair_diagonalises_the_vector_laplacian() -> None:
-    r"""`$(\Delta\mathbf{u})_\pm = L_{s\pm} u_\pm$` on the *existing*
-    `$H_{k,\pm}$` base operators.
+    r"""The spin identity `$(\Delta\mathbf{u})_\pm = L_{s\pm} u_\pm$`.
+
+    On the *existing* `$H_{k,\pm}$` base operators.
 
     The load-bearing identity of the pipe's ``res.consistent_imm``
     scheme (``_cylindrical_stepping._imm_iteration_vw``): the `$-2im/r^2$` spin
@@ -587,8 +590,7 @@ def test_vw_spin_pair_diagonalises_the_vector_laplacian() -> None:
 
 
 def test_vw_parity_classes() -> None:
-    r"""Every vw quantity lands in the parity class its operator
-    assumes.
+    r"""Every vw quantity lands in the parity class its operator assumes.
 
     The pipe's parity reduction is not a convenience: the wrong class
     silently uses the wrong ghost sign near the axis.  Reconstructing
@@ -634,8 +636,10 @@ def test_vw_parity_classes() -> None:
 
 
 def test_vw_mean_plane_packing_reuses_the_primitive_operators() -> None:
-    r"""The packed `$k^2 = 0$` plane carries the primitive scheme's own
-    mean-mode Helmholtz operators, **bit-exactly**.
+    r"""The packed `$k^2 = 0$` plane holds the primitive mean-mode operators.
+
+    The primitive scheme's own mean-mode Helmholtz operators,
+    **bit-exactly**.
 
     Flag-on, the four evolved slots are structurally zero at the mean
     mode, so two of them carry `$u_{z,00}$` and `$u_{\theta,00}$`
@@ -691,8 +695,7 @@ def test_vw_mean_plane_packing_reuses_the_primitive_operators() -> None:
 
 
 def test_analysis_radial_d1_matches_the_solver() -> None:
-    r"""``dnsjax.analysis`` rebuilds the *same* radial `$D_1$` pair the
-    solver uses.
+    r"""``dnsjax.analysis`` rebuilds the solver's own radial `$D_1$` pair.
 
     The analysis package reconstructs the pipe's parity-reduced radial
     derivative from a snapshot's recorded parameters
@@ -998,8 +1001,11 @@ def test_cylindrical_integration_weights() -> None:
 
 
 def test_interpolate_to_axis_polynomials() -> None:
-    """Axis (r = 0) evaluation: polynomial exactness (one-sided
-    Fornberg; spectral parity-constrained even path)."""
+    """Axis (r = 0) evaluation is exact for polynomials.
+
+    Both the one-sided Fornberg path and the spectral
+    parity-constrained even path.
+    """
     Nr = 16
     rs = np.asarray(build_radial_cgl_grid(Nr))
     order = params.res.fd_order
@@ -1077,10 +1083,12 @@ def test_interpolate_to_axis_multidim() -> None:
 
 
 def test_axis_extrapolation_weights_shared_leaf() -> None:
-    """``interpolate_to_axis`` and the JAX-free
-    ``fd.axis_extrapolation_weights`` leaf (the same spectral even
-    weights behind the rigged completion) agree on the even-parity
-    axis value; the spectral path is gated to detected CGL grids."""
+    """``interpolate_to_axis`` and its JAX-free leaf agree on the axis.
+
+    ``fd.axis_extrapolation_weights`` (the same spectral even weights
+    behind the rigged completion) gives the same even-parity axis
+    value; the spectral path is gated to detected CGL grids.
+    """
     from dnsjax.fd import axis_extrapolation_weights, tanh_one_sided_grid
 
     Nr = 16
@@ -1103,12 +1111,14 @@ def test_axis_extrapolation_weights_shared_leaf() -> None:
 
 
 def test_parity_dispatch_interpolation() -> None:
-    """The ``__main__`` spectral parity-tuple resume dispatch: applying
-    ``T_even``/``T_odd`` per azimuthal mode (u_z parity ``(-1)^m``,
-    u_r/u_theta parity ``(-1)^{m+1}``) to a parity-consistent state
-    recovers the field on the new radial grid to machine precision.
-    Mirrors ``_interpolate_if_needed``'s tuple branch and layout
-    (3, r, m, kz)."""
+    """The ``__main__`` spectral parity-tuple resume dispatch is exact.
+
+    Applying ``T_even``/``T_odd`` per azimuthal mode (u_z parity
+    ``(-1)^m``, u_r/u_theta parity ``(-1)^{m+1}``) to a
+    parity-consistent state recovers the field on the new radial grid
+    to machine precision.  Mirrors ``_interpolate_if_needed``'s tuple
+    branch and layout (3, r, m, kz).
+    """
     from dnsjax.fd import cgl_parity_interpolation_matrices
     from dnsjax.operators import complex_harmonics
 

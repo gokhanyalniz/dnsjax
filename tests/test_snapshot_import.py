@@ -105,9 +105,12 @@ def _wall_normal_grid(family: str, ny: int) -> np.ndarray | None:
 
 
 def _make_input_spectral(p0, periodic, input_norm):
-    """numpy native spectral input: full ``fft`` along every Fourier axis
-    (real axis is always axis 3), truncated to ``nx // 2`` on the real
-    axis (the rest is implied by Hermitian / joint symmetry)."""
+    """NumPy native spectral input for the importer.
+
+    A full ``fft`` along every Fourier axis (the real axis is always
+    axis 3), truncated to ``nx // 2`` on the real axis (the rest is
+    implied by Hermitian / joint symmetry).
+    """
     out = np.fft.fft(p0, axis=3, norm=input_norm)  # real axis (nx)
     out = np.fft.fft(out, axis=2, norm=input_norm)  # complex axis (nz)
     if periodic:

@@ -185,8 +185,10 @@ def test_conditioning_rejection() -> None:
 
 
 def test_ou_recovery() -> None:
-    """LIM on an exactly-stationary OU process: L to a few %, and the
-    sample covariance matches the controllability Gramian."""
+    """LIM on an exactly-stationary OU process recovers L to a few %.
+
+    And the sample covariance matches the controllability Gramian.
+    """
     m = 4
     l_true = _stable_generator(m, seed=4)
     b = _ou_series(l_true, nt=100_000, seed=5)
@@ -266,9 +268,12 @@ def _lifted_stream(
 
 
 def test_identify_lim_files_and_cli() -> None:
-    """identify_lim on lifted synthetic streams recovers the restricted
-    reference generator (exactly for noiseless data; statistically
-    through the demeaning CLI on OU data), with G_id tracking G_ref."""
+    """``identify_lim`` recovers the restricted reference generator.
+
+    On lifted synthetic streams: exactly for noiseless data,
+    statistically through the demeaning CLI on OU data, with G_id
+    tracking G_ref.
+    """
     with tempfile.TemporaryDirectory() as tmpname:
         tmp = Path(tmpname)
         op_npz, cont_npz = _operator_artifacts(tmp)

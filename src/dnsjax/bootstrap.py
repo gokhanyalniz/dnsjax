@@ -27,7 +27,7 @@ actually draw with into a concrete one (:mod:`dnsjax.seeding`) and
 agrees it across processes.  It sits *after* step 2 because the
 agreement is a JAX collective, and *before* step 3 because that is
 where the seed's consumers are built; a script that does no random
-draws simply never calls it.  ``dnsjax-twin`` resolves its one seed,
+draws never calls it.  ``dnsjax-twin`` resolves its one seed,
 ``twin.seed``, with :func:`resolve_seed` instead, after its
 paired-resume decision.
 
