@@ -219,8 +219,9 @@ def zeropad_fft(
 def truncate_fft(
     a: Array, n: int, axis: int, pad: int = 0, out_shard=None
 ) -> Array:
-    r"""Truncate a full-complex FFT output along *axis*, dropping
-    aliased modes.
+    r"""Truncate a full-complex FFT output along *axis* to its kept modes.
+
+    The aliased modes are dropped.
 
     Keeps the lowest `$n/2$` positive and `$n/2 - 1$` negative
     modes, discarding all higher modes including the Nyquist mode.
@@ -278,7 +279,7 @@ def zeropad_rfft(a: Array, n: int, out_shard, strip: int = 0) -> Array:
     """Zero-pad a real-FFT spectral array along axis 2 (kx) to *n* modes.
 
     Unlike ``zeropad_fft``, only positive frequencies exist in a real FFT,
-    so padding simply appends a zeros block at the high-frequency end
+    so padding appends a zeros block at the high-frequency end
     (single ``concatenate``, one output write pass -- see
     :func:`zeropad_fft`; the kx axis is locally stored in this pipeline
     stage).  ``strip`` trailing divisibility-padding modes

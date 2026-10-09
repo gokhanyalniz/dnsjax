@@ -924,17 +924,15 @@ def build_poisson_operator(
     backend dispatch ``CartesianFlow.__post_init__`` uses for its own
     operators.
 
-    ``__post_init__`` builds this operator into ``flow.Lk_op`` only
-    under ``res.consistent_imm = False``; the default `$v$`-`$\omega_y$`
-    scheme puts a **Dirichlet** Laplacian there instead and never forms
-    a pressure.  This entry point exists for the consumers that want
-    the pressure under either flag -- currently
-    :mod:`dnsjax.twin.pressure`, which recovers the difference-field
-    pressure for the wall-normal-resolved budget.  The two Neumann
-    builders stay in the legacy module: all three geometries name
-    theirs identically there, and splitting one of the three would
-    cost that symmetry for nothing (the import is the same deferred
-    one the flag-off branches take).
+    ``__post_init__`` builds this operator into ``flow.Lk_op`` only under
+    ``res.consistent_imm = False``; the default `$v$`-`$\omega_y$` scheme puts
+    a **Dirichlet** Laplacian there instead and never forms a pressure.  This
+    entry point exists for the consumers that want the pressure under either
+    flag -- :mod:`dnsjax.twin.pressure`, which recovers the difference-field
+    pressure for the wall-normal-resolved budget.  The two Neumann builders
+    stay in the legacy module: all three geometries name theirs identically
+    there, and splitting one of the three would cost that symmetry for nothing
+    (the import is the same deferred one the flag-off branches take).
 
     The operator is `$\Delta t$`-independent, so nothing rebuilds it
     when an adaptive step changes ``dt`` -- but it is **not free**:

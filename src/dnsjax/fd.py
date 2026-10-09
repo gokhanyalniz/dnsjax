@@ -144,8 +144,7 @@ def build_diff_matrices(
     y: ndarray,
     p: int,
 ) -> tuple[ndarray, ndarray]:
-    r"""Build first- and second-derivative matrices on a
-    non-uniform grid.
+    r"""Build first- and second-derivative matrices on a non-uniform grid.
 
     D1 uses ``(p+1)``-point stencils, D2 uses ``(p+2)``-point
     stencils, both achieving accuracy order ``p``.  Interior rows
@@ -337,8 +336,7 @@ def stencil_decomposition(A: ndarray) -> tuple[ndarray, ndarray, ndarray]:
 
 
 def build_integration_weights(y: ndarray, p: int) -> ndarray:
-    r"""Composite polynomial quadrature weights on a non-uniform
-    grid.
+    r"""Composite polynomial quadrature weights on a non-uniform grid.
 
     For each sub-interval `$[y_i, y_{i+1}]$` a local stencil of
     `$p + 1$` points (same width as the D1 stencil in

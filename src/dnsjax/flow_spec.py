@@ -72,7 +72,7 @@ class FieldSpec:
 
 @dataclass(frozen=True)
 class DeferredSpec:
-    """A field this flow will support later but rejects for now.
+    """A field this flow knows but refuses: a deferred feature.
 
     Setting the field (any configuration layer, or a direct
     assignment caught by ``validate_parameters``) raises with
@@ -211,8 +211,7 @@ class FlowSpec:
         return UNSET if fs is None else fs.default
 
     def choices_for(self, section: str, name: str) -> tuple[str, ...] | None:
-        """The flow's narrowed choice set for a field (``None`` if not
-        narrowed)."""
+        """The flow's narrowed choice set for a field, or ``None``."""
         fs = self.field_map.get((section, name))
         return None if fs is None else fs.choices
 

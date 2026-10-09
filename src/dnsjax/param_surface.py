@@ -128,8 +128,10 @@ def surface_entries(spec: FlowSpec | None) -> list[SurfaceEntry]:
 
 
 class _SurfaceBase(BaseSettings):
-    """Config carrier for the CLI surface models (dotted
-    ``--section.field`` flags, no JSON blobs, strictness)."""
+    """Config carrier for the CLI surface models.
+
+    Dotted ``--section.field`` flags, no JSON blobs, strictness.
+    """
 
     model_config = SettingsConfigDict(
         cli_parse_args=True,

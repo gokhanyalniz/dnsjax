@@ -213,7 +213,7 @@ from ._cylindrical_stepping import (
 #: The solver -> physical half of the basis boundary, which the
 #: flow modules re-export so :mod:`dnsjax.__main__` can take the
 #: physical view of a state without knowing which geometry it drives
-#: (Cartesian and triply-periodic simply have none).  It reads the
+#: (Cartesian and triply-periodic have none).  It reads the
 #: three velocity slots only, so it also drops the pass's carried
 #: slots.  It runs in the hot loop, so it is exported jitted:
 #: ``__main__`` never jits a flow function itself, because an outer

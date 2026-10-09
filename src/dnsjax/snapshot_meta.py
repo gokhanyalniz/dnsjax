@@ -106,7 +106,7 @@ PRESSURE_PREFIX = "pressure/c/"
 #: The ``kind`` of a tar that holds a solver state.  Every snapshot
 #: ever written is one and carries no ``kind`` key at all, so its
 #: absence means this; the writer records the key only for the other
-#: kinds -- today the twin's 3-D spectra and budget cubes
+#: kinds -- the twin's 3-D spectra and budget cubes
 #: (:mod:`dnsjax.twin.cubes`), which share the container and not its
 #: meaning.
 STATE_KIND = "state"
@@ -287,7 +287,7 @@ def _check_chunks_match_meta(
     consults the member it lands in, so if the two ever disagree a
     reader walks off the end of one chunk and into the next
     component's bytes -- and returns them as state.  Both come from
-    one call in the writer today, which is exactly the sort of
+    one call in the writer, which is exactly the sort of
     invariant that holds until someone refactors around it, and
     nothing downstream could tell afterwards: the wrong bytes are
     well-formed complex numbers.

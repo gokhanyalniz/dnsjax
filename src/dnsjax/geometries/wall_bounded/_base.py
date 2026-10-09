@@ -861,9 +861,10 @@ def build_wall_bounded_stepper(
     def step_cnab2(
         state: Array, carry: Array
     ) -> tuple[Array, Array, Array, Array, dict[str, Array]]:
-        """One CN/AB2 step with bound singletons.  Returns
-        ``(state_next, carry, error, num_c, aux)``; feed ``carry`` back
-        unchanged.  ``error``/``num_c`` are the FFT-free base-flow
+        """One CN/AB2 step with bound singletons.
+
+        Returns ``(state_next, carry, error, num_c, aux)``; feed ``carry``
+        back unchanged.  ``error``/``num_c`` are the FFT-free base-flow
         coupling corrector's, and ``aux`` its converged diagnostics
         (see ``step_cnab2`` in ``timestep.py``)."""
         return _step_cnab2_jit(state, carry, fourier, flow)

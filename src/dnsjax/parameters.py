@@ -2151,7 +2151,7 @@ def read_snapshot_params(
     :func:`dnsjax.extensions.apply_extension_layer`.
 
     Returns ``None`` when *snapshot_path* is not a dnsjax snapshot file
-    (a laminar start, or a missing path), so the caller simply skips
+    (a laminar start, or a missing path), so the caller skips
     the snapshot layer.  Stored metadata
     records the flow-relevant **public** names; they are mapped back
     to internal names via
