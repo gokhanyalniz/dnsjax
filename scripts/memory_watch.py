@@ -20,11 +20,20 @@ per sample, so the record survives the kill it explains:
   ``--pss-every`` samples since it costs more).
 
 ``summary`` reads the files back: per node, the peak and when it
-happened, relative to the idle baseline before the solver started; with
-``--rows`` (the CSV ``node_benchmark.py --csv`` writes, which records
-each run's start and end time) also the peak within each run, so an
-out-of-memory failure is placed against its layout and, through the
-solver's own start-up timestamps, its phase.
+happened, the idle baseline before the solver started, and the typical
+use -- the median over the samples taken while the node ran its usual
+(most common) count of solver processes, the plateau a long run holds,
+which start-up and shutdown barely move; with more than one node, the
+largest of each column over the nodes.  With ``--rows`` (the CSV
+``node_benchmark.py --csv`` writes, which records each run's start and
+end time) it adds the peak within each run, so an out-of-memory failure
+is placed against its layout and, through the solver's own start-up
+timestamps, its phase.
+
+``sample`` ignores ``SIGUSR1``: that is the solver's stop request, and
+a scheduler that signals every step of a job (SLURM's ``--signal``)
+sends it to the sampler as well.  ``examples/slurm/cpu.slurm`` runs the
+sampler beside every production job.
 
 Usage, inside a Slurm job (``--overlap`` lets the sampler share the
 allocation with the runs it watches; ``--ntasks`` is needed, as a batch
@@ -53,6 +62,7 @@ import csv
 import os
 import signal
 import socket
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -190,6 +200,8 @@ def sample(args: argparse.Namespace) -> int:
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
+    # The solver's stop request, which a job-wide signal sends here too.
+    signal.signal(signal.SIGUSR1, signal.SIG_IGN)
     t_end = time.time() + args.duration if args.duration else None
     k = 0
     try:
@@ -251,6 +263,67 @@ def _gib(x: float | None) -> str:
     return f"{x / GIB:7.2f}" if x is not None else f"{'-':>7}"
 
 
+#: The GiB columns of the per-node table, in order; ``~`` marks typical.
+NODE_COLUMNS = (
+    "total",
+    "base",
+    "used",
+    "used~",
+    "cgroup",
+    "pss",
+    "pss~",
+    "rss",
+    "rss1",
+    "rss1~",
+)
+
+
+def _node_summary(data: list[dict]) -> dict:
+    """One node's columns (bytes), its process count and peak time.
+
+    A column is the peak over the samples; a ``~`` column the median
+    over the samples taken while the node ran its most common nonzero
+    count of solver processes (``None`` where no solver ever ran).
+    """
+    used = [r["mem_total"] - r["mem_available"] for r in data]
+    idle = [u for u, r in zip(used, data, strict=True) if not r["n_proc"]]
+    counts = [r["n_proc"] for r in data if r["n_proc"]]
+    usual = statistics.mode(counts) if counts else None
+    plateau = [i for i, r in enumerate(data) if r["n_proc"] == usual]
+
+    def median(values: list[float]) -> float | None:
+        return statistics.median(values) if values else None
+
+    i_peak = max(range(len(data)), key=lambda i: used[i])
+    cg = [
+        v
+        for r in data
+        for v in (r["cgroup_peak"], r["cgroup_current"])
+        if v is not None
+    ]
+    pss = [r["pss_sum"] for r in data if r["pss_sum"] is not None]
+    return {
+        "total": data[0]["mem_total"],
+        "base": min(idle) if idle else None,
+        "used": used[i_peak],
+        "used~": median([used[i] for i in plateau]),
+        "cgroup": max(cg) if cg else None,
+        "pss": max(pss) if pss else None,
+        "pss~": median(
+            [
+                data[i]["pss_sum"]
+                for i in plateau
+                if data[i]["pss_sum"] is not None
+            ]
+        ),
+        "rss": max(r["rss_sum"] for r in data),
+        "rss1": max(r["rss_max"] for r in data),
+        "rss1~": median([data[i]["rss_max"] for i in plateau]),
+        "procs": int(max(r["n_proc"] for r in data)),
+        "peak_unix": data[i_peak]["unix"],
+    }
+
+
 def summary(args: argparse.Namespace) -> int:
     files = sorted(Path(args.dir).glob("memwatch_*.csv"))
     if not files:
@@ -265,36 +338,32 @@ def summary(args: argparse.Namespace) -> int:
         "Per node (GiB): used = MemTotal - MemAvailable; base = the "
         "least used\nwhile no solver ran; cgroup = the job's usage "
         "peak; pss/rss = summed\nover the solver processes; rss1 = the "
-        "largest single process.\n"
+        "largest single process.\nEach is the peak; a column marked ~ "
+        "is typical instead: the median\nover the samples taken while "
+        "the node ran its usual count of solver\nprocesses.  max = the "
+        "largest of each column over the nodes.\n"
     )
     print(
-        f"{'node':<16} {'total':>7} {'base':>7} {'used':>7} {'cgroup':>7} "
-        f"{'pss':>7} {'rss':>7} {'rss1':>7} {'procs':>5}  peak at"
+        f"{'node':<16} "
+        + " ".join(f"{c:>7}" for c in NODE_COLUMNS)
+        + f" {'procs':>5}  peak at"
     )
-    for host, data in nodes.items():
-        idle = [
-            r["mem_total"] - r["mem_available"]
-            for r in data
-            if not r["n_proc"]
-        ]
-        used = [r["mem_total"] - r["mem_available"] for r in data]
-        i_peak = max(range(len(data)), key=lambda i: used[i])
-        cg = [
-            v
-            for r in data
-            for v in (r["cgroup_peak"], r["cgroup_current"])
-            if v is not None
-        ]
-        pss = [r["pss_sum"] for r in data if r["pss_sum"] is not None]
-        when = time.strftime("%H:%M:%S", time.localtime(data[i_peak]["unix"]))
+    rows = {host: _node_summary(data) for host, data in nodes.items()}
+    if len(rows) > 1:
+        fullest = max(rows.values(), key=lambda r: r["used"])
+        rows["max"] = {
+            c: max(
+                (r[c] for r in rows.values() if r[c] is not None),
+                default=None,
+            )
+            for c in (*NODE_COLUMNS, "procs")
+        } | {"peak_unix": fullest["peak_unix"]}
+    for host, row in rows.items():
+        when = time.strftime("%H:%M:%S", time.localtime(row["peak_unix"]))
         print(
-            f"{host:<16} {_gib(data[0]['mem_total'])} "
-            f"{_gib(min(idle) if idle else None)} {_gib(used[i_peak])} "
-            f"{_gib(max(cg) if cg else None)} "
-            f"{_gib(max(pss) if pss else None)} "
-            f"{_gib(max(r['rss_sum'] for r in data))} "
-            f"{_gib(max(r['rss_max'] for r in data))} "
-            f"{int(max(r['n_proc'] for r in data)):5d}  {when}"
+            f"{host:<16} "
+            + " ".join(_gib(row[c]) for c in NODE_COLUMNS)
+            + f" {row['procs']:5d}  {when}"
         )
     if not args.rows:
         return 0

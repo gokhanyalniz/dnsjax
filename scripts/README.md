@@ -37,7 +37,7 @@ run; their docstrings say which.
 | `wall_normal_resolution.py` | how many wall-normal modes a finite-difference grid resolves: sizes `res.ny`, `fd_order` and `geo.grid_type` against a Chebyshev order (Cartesian) |
 | `node_benchmark.py` | a layout and strong-scaling sweep of one production problem under `mpirun` or `srun`, each row's `stats.dat` checked against a reference; JAX-free driver |
 | `memory_budget.py` | per-rank memory of the step as run, on any layout, from XLA's buffer assignment, offline |
-| `memory_watch.py` | per-node memory sampler for multi-process runs, JAX-free |
+| `memory_watch.py` | per-node memory sampler for multi-process runs, with a summary of each node's peak and typical use, JAX-free |
 | `solver_benchmark.py` | the Pallas banded backend against the dense reference solver: validation and timing |
 | `pallas_solve_profile.py` | GPU profile of the banded solve and its share of a step |
 

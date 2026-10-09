@@ -339,7 +339,10 @@ inherit the job's value) rather than switching to a cyclic
 distribution: both spread the ranks over every memory channel, but a
 cyclic one also scatters each `np1` group across the node. A rank still
 runs one XLA thread; the cores left over are what an underpopulated
-node pays for more memory and memory bandwidth per rank.
+node pays for more memory and memory bandwidth per rank. A complete job
+script with this launch, the MPI wrapper, Spindle (below), a stop ahead
+of the time limit and a per-node memory record is
+[`examples/slurm/cpu.slurm`](../examples/slurm/cpu.slurm).
 
 **Choose the grid against the padding.** A one-dimensional grid of 128
 needs 128 to divide, or at least not badly overshoot, both axes it

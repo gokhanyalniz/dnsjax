@@ -196,7 +196,9 @@ horizon. `kill -USR1` sent to any of its processes, or to `mpirun`
 launched with `srun` can have the scheduler send that signal to every
 task ahead of its time limit: `#SBATCH --signal=USR1@300` sends it five
 minutes before. Setting `stop.max_wall_time` below the limit does the
-same without a signal.
+same without a signal. The example job script
+[`examples/slurm/cpu.slurm`](../examples/slurm/cpu.slurm) sets both,
+with the signal as the backstop.
 
 When the run ends, `RUNNING` is replaced by one file saying how:
 

@@ -76,3 +76,18 @@ snapshot with NumPy and nothing else. It is not a fifth flow
 example: it runs the solver as a *subprocess* and post-processes what
 that wrote, so the notebook kernel never imports JAX or the solver at
 all — which is the claim it exists to check, and its last cell does.
+
+## On a SLURM cluster
+
+[`slurm/cpu.slurm`](slurm/cpu.slurm) is a job script for a production
+run on CPU nodes, self-contained and commented throughout. Copy it
+into the run folder (the one holding `parameters.toml`), fill in the
+fields marked `<...>`, and submit it there with `sbatch cpu.slurm`.
+Its sections say what changes for each run (the nodes, tasks, memory
+and time, the device grid `(np0, np1)` and the solver's wall-clock
+budget), what is set once per machine (the dnsjax checkout, its
+Python, the MPI wrapper of [CPU collectives](../docs/cpu-collectives.md),
+Spindle), and which defaults it applies. Every simulation parameter
+stays in `parameters.toml`. By default the job also samples each node's
+memory into `memwatch/<job id>/` and prints the peak and typical use per
+node at the end. It was tested on ARCHER2, an HPE Cray EX system.
