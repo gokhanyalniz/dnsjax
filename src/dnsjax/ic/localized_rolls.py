@@ -39,7 +39,8 @@ localized in both `$x$` and `$z$`.  The spanwise derivative `$\Psi'$` is built
 **spectrally** as `$\mathrm{i}k_z\,\hat\Psi$` so the discrete divergence is
 truncation-level (projected out by the first corrector step).  Pipe and annular
 use the analogous per-geometry streamfunction (see the per-generator
-docstrings).
+docstrings), and the curved pipe the pipe's in its toroidal metric, which
+divides the pipe's pair by `$h$` (:func:`generate_curved_pipe_rolls`).
 
 **Triply-periodic.** `$y$` is Fourier rather than a wall-normal grid, so
 the only wall-specific ingredient -- `$G$`, whose shape exists to satisfy
@@ -87,7 +88,12 @@ is identically zero -- but its DC bins are round-off rather than zero,
 so they are zeroed too.  Removing a roll factor's mean cannot disturb the
 discrete divergence: on the affected `$k = 0$` plane the component's own
 divergence contribution is `$\mathrm{i}\,0\,u = 0$` and its partner is
-already identically zero there.  Guard:
+already identically zero there.  The curved pipe is the one exception,
+because continuity is not straight there: it keeps the mean-free roll factors,
+so `$u_s$`, `$h u_r$` and `$h u_\theta$` stay mean-free, but the division by
+`$h$` gives `$u_\theta$` an `$O(\kappa)$` mean that continuity on the
+`$m = \pm 1$` modes needs (:func:`generate_curved_pipe_rolls`); `$u_s$` alone
+carries the flux and the wall shear, so neither moves.  Guard:
 ``tests/test_localized_rolls.py``.
 
 **Separable, sharded construction (no replication).** Each component is
@@ -275,6 +281,7 @@ def _complex_axis_spectrum(signal: np.ndarray) -> np.ndarray:
 
 def _peak_velocity(
     components: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+    weight: np.ndarray | None = None,
 ) -> float:
     r"""Max `$|\mathbf{u}'|$` of a separable lab-basis field, host-side.
 
@@ -282,7 +289,9 @@ def _peak_velocity(
     ``(wall-normal profile, complex-axis signal, real-axis signal)`` of
     one **lab-frame** velocity component (`$u_x, u_y, u_z$` Cartesian;
     `$u_z, u_r, u_\theta$` cyl/annular).  The component physical field is
-    their outer product, so
+    their outer product, times *weight* when given: a
+    ``(Ny, n_c)`` factor shared by every component (the curved pipe's
+    `$1/h$`).  So
     `$\max|\mathbf{u}'| = \sqrt{\max_{\mathbf{x}} \sum_c u_c^2}$` is a
     tiny host-numpy reduction over the ``(Ny, n_c, n_r)`` grid (no JAX,
     no replication).  The wall-normal padding rows are absent from these
@@ -292,6 +301,8 @@ def _peak_velocity(
     for prof, csig, rsig in components:
         field = prof[:, None, None] * csig[None, :, None] * rsig[None, None, :]
         sq = field**2 if sq is None else sq + field**2
+    if weight is not None:
+        sq = sq * weight[:, :, None] ** 2
     return float(np.sqrt(sq.max()))
 
 
@@ -453,6 +464,18 @@ def generate_cylindrical_rolls(
     `$\max|\mathbf{u}'| = A$`.  ``wavelength`` is ignored (the
     azimuthal structure is fixed by the domain).
     """
+    state, components, _ = _pipe_rolls(width)
+    return state * (amplitude / _peak_velocity(components))
+
+
+def _pipe_rolls(
+    width: float,
+) -> tuple[Array, list[tuple[np.ndarray, np.ndarray, np.ndarray]], np.ndarray]:
+    r"""The pipe puff before its peak normalization.
+
+    Returns the :func:`generate_cylindrical_rolls` state at unit scale,
+    its :func:`_peak_velocity` components and the radial grid.
+    """
     from jax import numpy as jnp
 
     from ..geometries.wall_bounded.cylindrical import build_cylindrical_grid
@@ -493,9 +516,43 @@ def generate_cylindrical_rolls(
     )
     u_z = jnp.zeros_like(u_r)
     state = jnp.stack([u_z, u_r, u_theta]).astype(sharding.complex_type)
+    return state, [(p_r, sin_m, x_sig), (p_theta, cos_m, x_sig)], rs_np
 
-    peak = _peak_velocity([(p_r, sin_m, x_sig), (p_theta, cos_m, x_sig)])
-    return state * (amplitude / peak)
+
+def generate_curved_pipe_rolls(
+    amplitude: float, width: float, wavelength: float
+) -> Array:
+    r"""The pipe's puff in the toroidal metric (`$\lambda$` unused).
+
+    Components `$(u_s, u_r, u_\theta)$`, axes `$[r, \theta, k_s]$`.
+    With `$u_s = 0$`, toroidal continuity
+    `$\partial_r(r h u_r) + \partial_\theta(h u_\theta) = 0$` makes
+    `$(r h u_r,\, h u_\theta) = (\partial_\theta\psi,\,
+    -\partial_r\psi)$`, so :func:`generate_cylindrical_rolls`'s
+    streamfunction gives that generator's pair divided by
+    `$h = 1 + \kappa r\cos\theta$`, taken exactly on the stored modes
+    (:func:`~dnsjax.flows.wall_bounded.curved_pipe.toroidal_map`).  Its
+    residual on the solver's continuity row is the pipe pair's on the
+    straight one, plus roundoff; the no-slip wall and `$u_s = 0$`
+    survive the map.  Peak-normalized like every spot, on
+    `$1/h$` sampled at the points the factors are.
+
+    The one spot with mean content: `$u_s$`, which carries the mass
+    flux and the wall shear, keeps an identically zero `$(0, 0)$`
+    mode, and so do `$h u_r$` and `$h u_\theta$` (to roundoff), but
+    the metric gives `$u_\theta$` an `$O(\kappa)$` mean
+    (`$u_r$`'s vanishes with the `$\theta \to -\theta$` oddness of
+    its pre-image) -- the means the random field keeps too.  Zeroing
+    it would break continuity on the `$m = \pm 1$` modes.
+    """
+    from ..flows.wall_bounded.curved_pipe import toroidal_map
+
+    state, components, rs = _pipe_rolls(width)
+    nz = params.res.nz
+    theta = (params.geo.lz / nz) * np.arange(nz)
+    inv_h = 1.0 / (1.0 + params.geo.curvature * np.outer(rs, np.cos(theta)))
+    peak = _peak_velocity(components, inv_h)
+    return toroidal_map(state) * (amplitude / peak)
 
 
 # ── Annular (Taylor-Couette / Dean) rolls ────────────────────────
@@ -683,7 +740,8 @@ def generate_localized_rolls(
     the random field's helpers: Dean
     (:func:`~dnsjax.ic.random_field.add_dean_laminar`), the curved pipe
     (:func:`~dnsjax.ic.random_field.add_curved_pipe_laminar`, the
-    `$\kappa = 0$` profile its docstring explains) and both
+    `$\kappa = 0$` profile its docstring explains, on the toroidal
+    rolls of :func:`generate_curved_pipe_rolls`) and both
     viscoelastic flows, which also get the laminar conformation.  Every
     other system returns the perturbation directly.  The triply-periodic
     family has no wall-normal direction and takes
@@ -715,13 +773,14 @@ def generate_localized_rolls(
         return add_viscoelastic_pipe_laminar(
             generate_cylindrical_rolls(amplitude, width, wavelength)
         )
-    if system in cylindrical_systems:
-        state = generate_cylindrical_rolls(amplitude, width, wavelength)
-        if system == "curved-pipe":
-            from .random_field import add_curved_pipe_laminar
+    if system == "curved-pipe":
+        from .random_field import add_curved_pipe_laminar
 
-            state = add_curved_pipe_laminar(state)
-        return state
+        return add_curved_pipe_laminar(
+            generate_curved_pipe_rolls(amplitude, width, wavelength)
+        )
+    if system in cylindrical_systems:
+        return generate_cylindrical_rolls(amplitude, width, wavelength)
     if system in annular_systems:
         state = generate_annular_rolls(amplitude, width, wavelength)
         if system == "dean":

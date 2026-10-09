@@ -28,19 +28,26 @@ carries the checks the rolls state carries elsewhere:
   spot leaves the field's bulk velocity and wall shear untouched (the
   "Mean-free by construction" note in :mod:`dnsjax.ic.localized_rolls`);
   checked at a box whose ``L / wavelength`` is not an integer, the only
-  regime in which the roll factors have a DC bin to leak;
+  regime in which the roll factors have a DC bin to leak.  The curved
+  pipe's toroidal map gives `$u_\theta$` the `$O(\kappa)$` mean its
+  continuity needs, so there the mode is exactly zero on `$u_s$` and
+  zero to roundoff on `$(h u_r, h u_\theta)$` (``MEAN_TOL_CURVED``);
 - a **loose truncation-level discrete-divergence bound** (the analytic
   profiles are continuously divergence-free; the discrete divergence is
   only FD-truncation-sized and is projected out by the first corrector
-  step at run start): Cartesian is ~machine-zero (the FD order
-  differentiates the quartic profile exactly), the rational-profile
-  annular/pipe are `$O(10^{-5})$`.  **Kolmogorov is held to a
+  step at run start): Cartesian and the ``m0 = 1`` pipe are
+  ~machine-zero (the FD order differentiates the quartic profile
+  exactly), the rational-profile annular and the `$r^{m_0 - 1}$`-raised
+  pipe wedge `$O(10^{-5})$`.  **Kolmogorov is held to a
   machine-precision bound instead** (``DIV_TOL_SPECTRAL``, relative):
   with no wall-normal direction there is no FD operator to truncate
   against, `$G'$` is the exact `$\mathrm{i}k_y\hat G$`, and the two
   divergence terms are the same product of the same factors with
   opposite sign -- so a truncation-level bound there would pass on a
-  construction that had stopped cancelling;
+  construction that had stopped cancelling.  **The curved pipe is held
+  to roundoff on its toroidal continuity row** (``DIV_TOL_CURVED``),
+  for the same reason: the straight rolls miss that row by `$O(\kappa)$`,
+  well inside the truncation bound;
 - **reality**, Kolmogorov only: the periodic family's joint
   `$f(k_y,k_z,0) = \overline{f(-k_y,-k_z,0)}$` condition on the
   `$k_x = 0$` plane, which the rolls get free from separability while
@@ -52,6 +59,10 @@ carries the checks the rolls state carries elsewhere:
   single-mode rolls whose amplitude grew in proportion to the box
   length.
 
+The curved pipe's divergence, rolls and random field alike, is its
+solver's continuity row: the straight divergence of
+`$(u_s, h u_r, h u_\theta)$` (``_metric_weighted``).
+
 Each ``(system, np0, np1)`` configuration runs in its own subprocess with
 forced CPU devices
 (``XLA_FLAGS=--xla_force_host_platform_device_count``), mirroring
@@ -59,10 +70,11 @@ forced CPU devices
 directly::
 
     uv run python tests/test_localized_rolls.py            # all systems
-    uv run python tests/test_localized_rolls.py --system pipe   # one cfg
+    uv run python tests/test_localized_rolls.py --system pipe --out p.npy
 
-Each subprocess writes its true-mode array to a ``.npy`` so the driver can
-compare across device counts.
+The second form is one worker, one configuration (``--np0`` / ``--np1``,
+default 1).  Each worker writes its true-mode array to its ``--out``
+``.npy`` so the driver can compare across device counts.
 """
 
 from __future__ import annotations
@@ -133,6 +145,18 @@ DIV_TOL = 5e-2  # loose truncation-level discrete-divergence bound
 # cancels analytically rather than to FD truncation order -- bound it
 # *relative to the field scale* at machine precision (measured ~8e-17).
 DIV_TOL_SPECTRAL = 1e-13
+# Curved pipe: its rolls are the pipe's mapped exactly onto toroidal
+# continuity, and ``fd_order = 4`` differentiates the ``m0 = 1`` quartic
+# profile exactly, so they meet the continuity row to roundoff -- bound
+# it relative to the transverse pair (measured 9.9e-15 here, flat in
+# kappa to 0.9, growing with the radial operator to 1.3e-13 at
+# nr = 41).  The truncation bound above would pass the straight rolls,
+# which miss the row by 1.9e-2 of the pair.
+DIV_TOL_CURVED = 1e-12
+# ... and the (0, 0) mode of its (h u_r, h u_theta), relative to the
+# same pair: measured <= 1.9e-16 up to kappa = 0.9 (4e-18 at the
+# default).
+MEAN_TOL_CURVED = 2e-15
 
 # Random-field IC guard: amplitude / smoothness / seed, and the
 # *relative* divergence bound over the whole field, k_z = 0 included
@@ -233,6 +257,33 @@ def _configure(system: str, np0: int, np1: int) -> None:
 # ── per-geometry discrete divergence (host numpy) ────────────────
 
 
+def _metric_weighted(true: np.ndarray) -> np.ndarray:
+    r"""Curved pipe: `$(u_s, h u_r, h u_\theta)$` of a true-mode state.
+
+    The variables whose *straight* divergence is the solver's toroidal
+    continuity row (``CurvedCylindricalFlow.divergence_defect``), with
+    the exact truncating `$h$` product the solver applies.
+    """
+    from dnsjax.analysis._core import geometry_info, metric_product
+    from dnsjax.geometries.wall_bounded.cylindrical import (
+        build_cylindrical_grid,
+    )
+    from dnsjax.parameters import params
+
+    rs, *_ = build_cylindrical_grid(
+        params.res.ny,
+        params.res.fd_order,
+        params.geo.wall_grid,
+        params.geo.grid_type,
+        params.geo.grid_stretch,
+    )
+    info = geometry_info(params)
+    out = true.copy()
+    for c in (1, 2):
+        out[c] = metric_product(true[c], np.asarray(rs), info, 1)
+    return out
+
+
 def _max_divergence(true: np.ndarray, system: str) -> float:
     r"""Max |discrete divergence| of the true-mode state (host numpy).
 
@@ -243,6 +294,12 @@ def _max_divergence(true: np.ndarray, system: str) -> float:
     the wrong operator.  The whole field is measured, including the
     `$k_z = 0$` plane: the random-field builders now solve continuity
     on every mode (see :mod:`dnsjax.ic.random_field`).
+
+    The curved pipe is measured on its own continuity row, the
+    straight divergence of `$(u_s, h u_r, h u_\theta)$` that its
+    corrector drives to zero, with the exact truncating product of
+    :func:`dnsjax.analysis._core.metric_product`: the straight
+    divergence of a toroidally solenoidal field is `$O(\kappa)$`.
     """
     from dnsjax.flows.registry import cylindrical_systems
     from dnsjax.operators import complex_harmonics, real_harmonics
@@ -310,6 +367,8 @@ def _max_divergence(true: np.ndarray, system: str) -> float:
         )
         d1, inv_r = np.asarray(d1), np.asarray(inv_r)
 
+    if system == "curved-pipe":
+        true = _metric_weighted(true)
     div = np.zeros_like(true[0])
     for im, mv in enumerate(m):
         if system in cylindrical_systems:
@@ -393,6 +452,13 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
                 div < DIV_TOL_SPECTRAL * tscale,
                 f"max|div|={div:.2e} scale={tscale:.2e}",
             )
+        elif system == "curved-pipe":
+            pscale = float(np.max(np.abs(true[1:3])))
+            check(
+                "toroidal divergence at roundoff",
+                div < DIV_TOL_CURVED * pscale,
+                f"max|div|={div:.2e} scale={pscale:.2e}",
+            )
         else:
             check(
                 "divergence truncation-level",
@@ -431,15 +497,34 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
         # analytical laminar profile).  Bit-exact, not a tolerance --
         # the roll factors' DC bins are hard zeros (``_zero_dc``).
         zero_amp = np.asarray(generate_localized_rolls(0.0, WIDTH, WAVELENGTH))
-        same_mean = np.array_equal(state1[:, :, 0, 0], zero_amp[:, :, 0, 0])
-        moved = float(
-            np.max(np.abs(state1[:, :, 0, 0] - zero_amp[:, :, 0, 0]))
-        )
-        check(
-            "spot adds nothing to the (0, 0) mean mode",
-            same_mean,
-            f"max|delta u(0,0)|={moved:.2e}",
-        )
+        if system == "curved-pipe":
+            # The map onto toroidal continuity gives u_theta the
+            # O(kappa) mean its m = +-1 modes need
+            # (``generate_curved_pipe_rolls``).  u_s, which alone
+            # carries the flux and the wall shear, is held bit-exactly;
+            # the pair continuity is straight in, to roundoff.
+            same_s = np.array_equal(state1[0, :, 0, 0], zero_amp[0, :, 0, 0])
+            spot = _true(state1 - zero_amp)
+            hmean = float(np.max(np.abs(_metric_weighted(spot)[1:3, :, 0, 0])))
+            pscale = float(np.max(np.abs(spot[1:3])))
+            check("spot adds nothing to the (0, 0) mode of u_s", same_s)
+            check(
+                "spot's (h u_r, h u_theta) (0, 0) mode at roundoff",
+                hmean < MEAN_TOL_CURVED * pscale,
+                f"max|h u(0,0)|={hmean:.2e} scale={pscale:.2e}",
+            )
+        else:
+            same_mean = np.array_equal(
+                state1[:, :, 0, 0], zero_amp[:, :, 0, 0]
+            )
+            moved = float(
+                np.max(np.abs(state1[:, :, 0, 0] - zero_amp[:, :, 0, 0]))
+            )
+            check(
+                "spot adds nothing to the (0, 0) mean mode",
+                same_mean,
+                f"max|delta u(0,0)|={moved:.2e}",
+            )
 
     # ── random-field IC: exact discrete continuity on the *whole*
     # field, k_z = 0 plane included.  Unlike the analytic rolls
