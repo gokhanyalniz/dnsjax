@@ -10,19 +10,19 @@ C(0)$` and
 .. math::
     M(\tau) = C(\tau)\,C(0)^{-1} \approx e^{\tau L},
 
-fed to the same multi-horizon ``logm`` fit as the ensemble
-identification (:func:`~dnsjax.analysis.response.ensemble.
-identify_generator`).  Unlike the injected-basis routes (ensemble
-impulse responses, SSI forcing), LIM needs **no extra runs**: the
-input is the probe stream of the production run itself
-(``probes.modes``; :mod:`dnsjax.extensions.probes`).  Its price is the
-whiteness hypothesis -- when the turbulent forcing of the mode is
-correlated in time, `$M(\tau)$` is no longer a semigroup and the
-identified `$L$` drifts with the lag; the per-lag reconstruction
-residuals expose exactly that drift.
+fed to the same multi-horizon ``logm`` fit as the ensemble identification
+(:func:`.ensemble.identify_generator`).  This is the linear inverse model of
+Penland, *Mon. Weather Rev.* **117**, 2165 (1989), and Penland & Sardeshmukh,
+*J. Climate* **8**, 1999 (1995).  Unlike the injected-basis routes (ensemble
+impulse responses, SSI forcing), LIM needs **no extra runs**: the input is the
+probe stream of the production run itself (``probes.modes``;
+:mod:`dnsjax.extensions.probes`).  Its price is the whiteness hypothesis --
+when the turbulent forcing of the mode is correlated in time, `$M(\tau)$` is no
+longer a semigroup and the identified `$L$` drifts with the lag; the per-lag
+reconstruction residuals expose exactly that drift.
 
 Estimator
-=========
+---------
 Per lag `$\ell$` (in probe samples, `$\tau = \ell\,\Delta$` with
 `$\Delta = \mathtt{it\_probes}\cdot dt$`), both covariances are
 accumulated over the *same* overlap window and pooled over all
@@ -40,7 +40,7 @@ exported operator's energy coordinates
 segment's own sample mean subtracted (``demean``).
 
 Knobs (when to tweak)
-=====================
+---------------------
 - ``--modes-npz`` (+ ``--n-modes``): restrict to the leading
   controllability modes before estimating.  Recommended: the full
   resolved subspace contains weakly excited directions that make
@@ -62,7 +62,7 @@ Knobs (when to tweak)
   pool independent segments.
 
 CLI
-===
+---
 ::
 
     python -m dnsjax.analysis.response.lim \

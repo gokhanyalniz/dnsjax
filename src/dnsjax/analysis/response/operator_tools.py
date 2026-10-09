@@ -10,7 +10,7 @@ full-state lift used to inject basis vectors with
 ``scripts/snapshot_perturb.py``.
 
 Coordinates
-===========
+-----------
 Every operator here lives in the export's **energy-orthonormal**
 coordinates: a state ``a`` (length ``r_res``) satisfies
 `$\lVert a\rVert_2^2 = q^H \mathrm{diag}(w)\, q$` for the full state
@@ -20,23 +20,22 @@ matrix 2-norm *is* the energy norm: `$G(t) = \lVert e^{tA}
 \rVert_2^2$` (:func:`growth_curve`), a Galerkin restriction onto
 orthonormal columns preserves the norm (:func:`restrict`), and the
 controllability Gramian with unit-covariance forcing in the energy
-inner product is simply the Lyapunov solution of `$(A, I)$`
+inner product is the Lyapunov solution of `$(A, I)$`
 (:func:`controllability_gramian`).
 
 JAX and SciPy
-=============
-The dense time sweeps (:func:`growth_curve`,
-:func:`input_response_curve`) run batched ``expm`` + SVD on the JAX
-default device -- GPU-capable; enable float64 first, through
-``bootstrap.configure_jax_platform(..., double_precision=True)``; both
-raise otherwise.
-JAX is imported inside those functions only, so importing this module
-(and the Gramian path, which is NumPy/SciPy) stays JAX-free.  SciPy is
-a core dependency but is likewise imported lazily; the Lyapunov solve
-keeps an eigendecomposition closed form as a fallback.
+-------------
+The dense time sweeps (:func:`growth_curve`, :func:`input_response_curve`) run
+batched ``expm`` + SVD on the JAX default device -- GPU-capable; enable float64
+first, through
+``bootstrap.configure_jax_platform(..., double_precision=True)``; both raise
+otherwise.  JAX is imported inside those functions only, so importing this
+module (and the Gramian path, which is NumPy/SciPy) stays JAX-free.  SciPy is a
+core dependency but is likewise imported lazily; the Lyapunov solve keeps an
+eigendecomposition closed form as a fallback.
 
 CLI
-===
+---
 Compute and save leading controllability modes (the injection basis
 for ensemble response experiments)::
 
@@ -196,12 +195,14 @@ def _gramian_eig_closed_form(a: np.ndarray) -> np.ndarray:
 def controllability_gramian(a: np.ndarray) -> np.ndarray:
     r"""Controllability Gramian `$X$`: `$AX + XA^H + I = 0$`.
 
-    In energy-orthonormal coordinates, with white forcing of unit
-    covariance in the energy inner product, `$X$` is both the
-    (infinite-horizon) controllability Gramian and the steady forced
-    covariance.  Requires a stable `$A$`.  Uses SciPy's
-    Bartels-Stewart solver when available, else the eigendecomposition
-    closed form; the result is Hermitian-symmetrized.
+    In energy-orthonormal coordinates, with white forcing of unit covariance in
+    the energy inner product, `$X$` is both the (infinite-horizon)
+    controllability Gramian and the steady forced covariance -- the
+    stochastic-forcing analysis of shear flows in Farrell & Ioannou, *Phys.
+    Fluids A* **5**, 2600 (1993), and *J. Atmos. Sci.* **53**, 2025 (1996).
+    Requires a stable `$A$`.  Uses SciPy's Bartels-Stewart solver when
+    available, else the eigendecomposition closed form; the result is
+    Hermitian-symmetrized.
     """
     a = np.asarray(a)
     abscissa = float(np.max(np.linalg.eigvals(a).real))
@@ -405,13 +406,12 @@ def growth_curve(
 def input_response_curve(
     a: np.ndarray, a0: np.ndarray, ts: np.ndarray, t_chunk: int = 16
 ) -> np.ndarray:
-    r"""Energy growth of one input: `$\lVert e^{tA}a_0\rVert_2^2 /
-    \lVert a_0\rVert_2^2$`.
+    r"""Energy growth of one input *a0* over the times *ts*.
 
-    The *actual* predicted growth of a specific injected input --
-    :func:`growth_curve` is only its envelope, and the two agree at
-    the optimal input/horizon pair alone.  Same ``t_chunk`` batching
-    knob as :func:`growth_curve`.
+    `$\lVert e^{tA}a_0\rVert_2^2 / \lVert a_0\rVert_2^2$`: the predicted growth
+    of a specific injected input -- :func:`growth_curve` is only its envelope,
+    and the two agree at the optimal input/horizon pair alone.  Same
+    ``t_chunk`` batching knob as :func:`growth_curve`.
     """
     import jax
     import jax.numpy as jnp

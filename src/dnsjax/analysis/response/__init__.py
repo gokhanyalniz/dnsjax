@@ -27,7 +27,7 @@ Submodules (import them explicitly; this ``__init__`` stays empty so
   lazily.
 
 Pipeline
-========
+--------
 The full workflow from a turbulent run to a data-driven linear
 operator, in order (per-step detail and knob guidance: the named
 docstrings):
@@ -36,8 +36,8 @@ docstrings):
    --probes.it_probes 10`` to a DNS run; the listed modes'
    wall-normal profiles `$\hat{u}(y, t)$` stream to ``probes.bin``
    (:mod:`dnsjax.extensions.probes`).
-2. **Turbulent mean.**  :func:`~dnsjax.analysis.response.probes.
-   mean_profile` + ``write_profile_file`` turn the ``(0,0)`` probe
+2. **Turbulent mean.**  :func:`.probes.mean_profile` +
+   ``write_profile_file`` turn the ``(0,0)`` probe
    into a total mean-profile file (cut the transient with ``t_min``;
    sanity-check ``re_tau``).
 3. **Linear operator about the mean.**  ``python -m

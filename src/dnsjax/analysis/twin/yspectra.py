@@ -223,9 +223,12 @@ def mean_mode_name(meta: dict, prefix: str) -> str:
 
 
 def mean_mode_profile(values: np.ndarray, name: str) -> np.ndarray:
-    r"""`$(..., n_y)$` from whichever field :func:`mean_mode_name`
-    chose: a ``*_xz00`` array is already the profile, a ``*_x0``
-    plane needs its `$k_z = 0$` column."""
+    r"""The `$(0, 0)$`-mode profile `$(..., n_y)$` of a stored field.
+
+    *name* is whichever field :func:`mean_mode_name` chose: a
+    ``*_xz00`` array is already the profile, a ``*_x0`` plane needs its
+    `$k_z = 0$` column.
+    """
     return values if name.endswith("_xz00") else values[..., 0]
 
 
@@ -302,8 +305,9 @@ def _read(path: str | Path, stem: str, floor: int) -> YResolvedData:
 
 
 def read_twin_yspectra(path: str | Path = ".") -> YResolvedData:
-    """Read ``twin_yspectra`` (a run directory, the ``.bin``, or the
-    ``.json``).  Fields ``e_<suffix>`` for each of
+    """Read ``twin_yspectra`` (a run directory, the ``.bin`` or ``.json``).
+
+    Fields ``e_<suffix>`` for each of
     :func:`stored_suffixes`, ``(n_t, 3, n_y, n_k)`` or
     ``(n_t, 3, n_y)``, plus the matching ``r_*`` set when the run set
     ``twin.spectra_ref``: from the same records in the pre-split
@@ -353,9 +357,12 @@ def read_twin_yspectra_ref(path: str | Path = ".") -> YResolvedData:
 
 
 def read_twin_ybudget(path: str | Path = ".") -> YResolvedData:
-    """Read ``twin_ybudget``.  Fields ``<term>_<suffix>`` for each
-    name in the sidecar's ``terms`` and each of
-    :func:`stored_suffixes`, ``(n_t, n_y, n_k)`` or ``(n_t, n_y)``."""
+    """Read ``twin_ybudget`` (a run directory, the ``.bin`` or ``.json``).
+
+    Fields ``<term>_<suffix>`` for each name in the sidecar's ``terms``
+    and each of :func:`stored_suffixes`, ``(n_t, n_y, n_k)`` or
+    ``(n_t, n_y)``.
+    """
     return _read(path, "twin_ybudget", MIN_YBUDGET_VERSION)
 
 

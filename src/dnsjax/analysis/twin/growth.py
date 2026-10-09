@@ -103,7 +103,7 @@ def bound_free(r: np.ndarray) -> np.ndarray:
 
     `$R$` reaches and crosses 1 at saturation only through sampling
     noise, and there `$f$` has no value to give; a caller cuts it off
-    some way below (a figure here uses 0.95).
+    some way below (``scripts/twin_spectral_maps.py`` at 0.95).
     """
     r = np.asarray(r, dtype=np.float64)
     with np.errstate(divide="ignore", invalid="ignore"):

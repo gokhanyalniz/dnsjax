@@ -70,7 +70,8 @@ from dnsjax.analysis.response.probes import (
 
 data = read_probes("run/")
 print(re_tau(data, t_min=200.0))
-write_profile_file("U_mean.txt", data, t_min=200.0)
+y, u_mean = mean_profile(data, t_min=200.0)
+write_profile_file("U_mean.txt", y, u_mean)
 ```
 
 ### 3. The linear operator about that mean

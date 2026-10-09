@@ -1,15 +1,13 @@
 r"""Readers for the twin driver's scalar streams (JAX-free).
 
 The ``.dat`` streams are the whitespace-aligned text format of
-``dnsjax.__main__`` (``#``-commented header row of column names, one
-row per sample, column order = the writer dict's *sorted* keys):
-parse by **name**, never by position.  Because the header is a
-comment, the rows load under a default-flag :func:`numpy.loadtxt`.
-A resumed member's stream duplicates one sample
-per resume seam (the parent segment's final row and the child's
-``t0`` row hold the same state at the same ``t``); :func:`read_twin`
-drops the duplicates, keeping the first occurrence -- the probe
-reader's convention.
+``dnsjax.__main__`` (``#``-commented header row of column names, one row per
+sample, column order = the writer dict's *sorted* keys): parse by **name**,
+never by position.  Because the header is a comment, the rows load under a
+default-flag :func:`numpy.loadtxt`.  A resumed member's stream duplicates one
+sample per resume seam (the parent segment's final row and the child's ``t0``
+row hold the same state at the same ``t``); :func:`read_twin` drops the
+duplicates, keeping the first occurrence.
 
 **Off-grid rows.**  Two kinds of row do *not* sit on the
 ``twin.it_energy`` sampling grid, and at ``it_energy > 1`` both are
@@ -159,10 +157,12 @@ class TwinSeries:
 
     @property
     def t(self) -> np.ndarray:
+        """The ``twin.dat`` sample times, absolute."""
         return self.energies["t"]
 
     @property
     def t_rel(self) -> np.ndarray:
+        """:attr:`t` as time since the perturbation (:meth:`relative`)."""
         return self.relative(self.t)
 
     def relative(self, t: np.ndarray) -> np.ndarray:
@@ -315,7 +315,7 @@ def closure_residuals(series: TwinSeries) -> ClosureResiduals:
     the interior divergence residual, the FD integration-by-parts
     defect of the wall-normal transport) plus the `$O(\Delta t^2)$`
     stepping error; the dissipation is evaluated in the operator form
-    the implicit viscous update actually applies, so the viscous part
+    the implicit viscous update applies, so the viscous part
     closes exactly (:mod:`dnsjax.twin.diagnostics`, "Dissipation
     form").  The residuals therefore **converge under refinement**,
     which is the property worth asserting of them -- a missing or

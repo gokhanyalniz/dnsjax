@@ -5,14 +5,13 @@ Layout (one module per concern; none is imported by the top-level
 
 - :mod:`.series` -- readers for the ``.dat`` scalar streams
   (``twin.dat`` / ``twin_budget.dat``) and the ``twin.json`` member
-  record, plus the column-generic :func:`~.series.read_dat` that loads
-  any of them and the per-state ``stats.dat`` / ``stats_twin.dat``
-  pair as well; per-component budget sums, the
-  budget-closure residuals, :func:`~.series.relative_time`, which
-  reads a member's sample times as whole steps since its
-  perturbation, and :func:`~.series.uniform_grid`, which selects a
-  stream's own cadence grid out of the off-grid rows a resume and the
-  final row add.
+  record; the column-generic :func:`~.series.read_dat`, which also
+  loads the per-state ``stats.dat`` / ``stats_twin.dat`` pair;
+  per-component budget sums and the budget-closure residuals;
+  :func:`~.series.relative_time`, which reads a member's sample times
+  as whole steps since its perturbation; and
+  :func:`~.series.uniform_grid`, which keeps a stream's own cadence
+  grid and drops the off-grid rows a resume and the final row add.
 - :mod:`.ensemble` -- member-tree aggregation of the twin streams on
   aligned relative time, and the growth-rate fits (`$\lambda$` from
   the exponential phase, the algebraic-phase linear rate).
@@ -20,16 +19,15 @@ Layout (one module per concern; none is imported by the top-level
   and its reference counterpart (either layout), and the
   decorrelation ratio.
 - :mod:`.yspectra` -- readers for the wall-normal-resolved
-  ``twin_yspectra.bin`` / ``twin_ybudget.bin`` streams, the
+  ``twin_yspectra.bin`` / ``twin_ybudget.bin`` streams and the
   sidecar-driven record layout they share with the memory-mapped
-  reader in ``scripts/twin_spectral_maps.py``, the quadrature
-  contraction, the three-bin energies recovered from them, and the
-  total-in-`$(y, k)$` fluctuation energy (the total with the
-  `$(0, 0)$` mode removed) that a difference spectrum is normalized
-  by, the shape overlap of two such spectra that
-  ``scripts/random_ic_calibrate.py`` scores an initial condition
-  with, and the budget regrouped into the terms of the
-  difference-energy balance (:func:`~.yspectra.balance_term`).
+  reader in ``scripts/twin_spectral_maps.py``; the quadrature
+  contraction; the three-bin energies recovered from them; the
+  fluctuation energy in `$(y, k)$` (the total with the `$(0, 0)$` mode
+  removed) that normalizes a difference spectrum; the shape overlap of
+  two such spectra, which ``scripts/random_ic_calibrate.py`` scores an
+  initial condition with; and the budget regrouped into the terms of
+  the difference-energy balance (:func:`~.yspectra.balance_term`).
 - :mod:`.cubes` -- readers for the 3-D ``(y, k_z, k_x)`` energy and
   budget cubes (``twin_spectra3d/``, ``twin_spectra3d_ref/``,
   ``twin_budget3d/``), one dnsjax tar per sample.

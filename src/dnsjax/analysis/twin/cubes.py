@@ -73,9 +73,12 @@ class Cube:
 
 @dataclass(frozen=True)
 class CubeSeries:
-    r"""A directory's samples, stacked: each field ``(n_t, n_y, n_kz,
-    n_kx)``, ``t`` / ``it`` ``(n_t,)``; the points and ``meta`` are the
-    first file's (every file is checked to share them)."""
+    r"""A directory's samples, stacked.
+
+    Each field is ``(n_t, n_y, n_kz, n_kx)`` and ``t`` / ``it`` are
+    ``(n_t,)``; the points and ``meta`` are the first file's (every
+    file is checked to share them).
+    """
 
     t: np.ndarray
     it: np.ndarray
@@ -93,8 +96,11 @@ class CubeSeries:
 def read_cube(
     path: str | Path, *, y_rows: Iterable[int] | None = None
 ) -> Cube:
-    """Read one cube file; *y_rows* (indices into its kept rows) reads
-    only those wall distances off disk."""
+    """Read one cube file.
+
+    *y_rows* (indices into its kept rows) reads only those wall
+    distances off disk.
+    """
     path = Path(path)
     meta = read_snapshot_meta(path)
     kind = snapshot_kind(meta)
