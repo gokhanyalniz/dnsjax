@@ -188,8 +188,10 @@ def test_composite_weight_sum():
 
 
 def test_composite_polynomial_exactness():
-    """Composite with stencil order p must be exact for
-    degree <= p on non-uniform grids."""
+    """Order-p composite weights integrate degree <= p exactly.
+
+    On non-uniform grids.
+    """
     for p in [2, 4, 6]:
         ny = 20
         ys = _perturbed_grid(ny)
@@ -222,8 +224,7 @@ def test_composite_convergence_rate():
 
 
 def test_composite_vs_cc_on_cgl():
-    """On a CGL grid, both methods must agree for low-degree
-    polynomials."""
+    """On a CGL grid both methods agree for low-degree polynomials."""
     ny = 17
     p = 4
     ys = _cgl_grid(ny)
@@ -284,16 +285,22 @@ def test_chebyshev_interp_truncation():
 
 
 def _radial_cgl_grid(nr, gap):
-    """Cylindrical radial grid: outer ``nr`` positive points of a
-    ``2*nr + gap``-point CGL grid (gap 0 = half-CGL, 1 = rigged-CGL)."""
+    """Cylindrical radial grid: the outer ``nr`` points of a CGL grid.
+
+    The positive points of a ``2*nr + gap``-point grid (gap 0 =
+    half-CGL, 1 = rigged-CGL).
+    """
     n_full = 2 * nr + gap
     s = -np.cos(np.arange(n_full) * np.pi / (n_full - 1))
     return s[nr + gap :]
 
 
 def _augmented_radial_weights(rs, p):
-    """The solver's parity-free full-disc rule: integrate g = f*r on
-    the axis-augmented grid [0, *rs], then drop the axis node."""
+    """The solver's parity-free full-disc quadrature rule.
+
+    Integrates g = f*r on the axis-augmented grid [0, *rs], then drops
+    the axis node.
+    """
     r_aug = np.concatenate([[0.0], rs])
     return build_integration_weights(r_aug, p)[1:] * rs
 
@@ -378,11 +385,13 @@ def test_cgl_axis_gap_detector():
 
 
 def test_cgl_parity_interpolation_spectral():
-    """Spectral parity interpolation between radial CGL grids (half,
-    rigged, and mixed): machine precision for both parities -- the
-    rigged axis node is reconstructed by the exact parity-constrained
-    fit, so no fd_order-limited ingredient remains -- and orders of
-    magnitude better than the local fd_order fallback."""
+    """Spectral parity interpolation between radial CGL grids is exact.
+
+    Between half, rigged and mixed grids: machine precision for both
+    parities -- the rigged axis node is reconstructed by the exact
+    parity-constrained fit, so no fd_order-limited ingredient remains --
+    and orders of magnitude better than the local fd_order fallback.
+    """
 
     def even(r):  # sigma = +1
         return np.cos(0.6 * np.pi * r) + 0.3 * r**2
@@ -414,11 +423,13 @@ def test_cgl_parity_interpolation_spectral():
 
 
 def test_grid_nodes_match_builders():
-    """``grid_nodes`` reproduces each geometry builder's nodes -- a
-    reduced snapshot is regridded onto them and records them, so a
+    """``grid_nodes`` reproduces each geometry builder's nodes.
+
+    A reduced snapshot is regridded onto them and records them, so a
     drift between the two formulas would label a field with the wrong
-    grid -- and its float64 CGL nodes pass the CGL detectors that pick
-    the spectral regrid."""
+    grid; and its float64 CGL nodes pass the CGL detectors that pick
+    the spectral regrid.
+    """
     from dnsjax.geometries.wall_bounded.annular import build_annular_grid
     from dnsjax.geometries.wall_bounded.cartesian import (
         build_cartesian_grid,
@@ -467,13 +478,15 @@ def test_grid_nodes_match_builders():
 
 
 def test_regrid_downsampling():
-    """The reduced snapshots' wall-normal regrid, fine -> coarse, as
-    ``lowres.LowResWriter`` builds it (``build_interpolation_matrix``
+    """The reduced snapshots' fine-to-coarse wall-normal regrid.
+
+    As ``lowres.LowResWriter`` builds it (``build_interpolation_matrix``
     on ``grid_nodes``): the CGL paths reach a resolved profile's
     coarse-node values to machine precision -- Chebyshev truncation
     (Cartesian, annular) and the parity pair (pipe, every gap
     combination, both parities) -- while a tanh grid takes the local
-    stencil, ``order``-accurate."""
+    stencil, ``order``-accurate.
+    """
 
     def smooth(y):
         return np.cos(0.6 * np.pi * y) + 0.3 * y**3
@@ -516,8 +529,10 @@ def test_regrid_downsampling():
 
 
 def test_local_interp_polynomial_exactness():
-    """Local ``order``-stencil interpolation is exact up to degree
-    ``order`` (each stencil is an ``order``-degree Lagrange fit)."""
+    """Local ``order``-stencil interpolation is exact to degree ``order``.
+
+    Each stencil is an ``order``-degree Lagrange fit.
+    """
     order = 4
     y_old = np.asarray(_perturbed_grid(19))
     y_new = np.asarray(_perturbed_grid(27, seed=7))
@@ -529,11 +544,13 @@ def test_local_interp_polynomial_exactness():
 
 
 def test_local_interp_bounded_on_radial_grids():
-    """The local Fornberg fallback stays well-conditioned (Lebesgue
-    ``O(10)``) on the lopsided radial CGL grids, in contrast to a
-    *global* Lagrange fit whose Lebesgue constant blows up ``>=1e6``
+    """The local Fornberg fallback stays well-conditioned on radial grids.
+
+    Lebesgue ``O(10)`` on the lopsided radial CGL grids, in contrast to
+    a *global* Lagrange fit whose Lebesgue constant blows up ``>=1e6``
     there (the reason the fallback is local, not global; detected CGL
-    grids take the spectral parity path instead)."""
+    grids take the spectral parity path instead).
+    """
 
     def global_lagrange_lebesgue(old, new):
         # Barycentric (global degree-N) interpolation Lebesgue const.
@@ -568,9 +585,11 @@ def test_local_interp_bounded_on_radial_grids():
 
 
 def test_local_interp_radial_convergence():
-    """Local radial interpolation of a smooth field converges under
-    grid refinement (both interpolation and axis-ward extrapolation
-    directions stay bounded and small)."""
+    """Local radial interpolation of a smooth field converges on refinement.
+
+    Both interpolation and axis-ward extrapolation directions stay
+    bounded and small.
+    """
 
     def smooth(r):  # even near r = 0, u_z-like
         return np.cos(0.5 * np.pi * r) + 0.3 * r**2

@@ -251,8 +251,10 @@ def test_lk_matvec_matches_reference() -> None:
 
 
 def test_pallas_vs_dense_on_annular_operators() -> None:
-    r"""``PerModeBandedPallasOperator`` matches ``DenseJAXSolver`` on
-    annular Lk/Hk_plus/Hk_minus/Hk_z.
+    r"""The banded Pallas operator matches the dense solver (annular).
+
+    ``PerModeBandedPallasOperator`` against ``DenseJAXSolver`` on
+    Lk/Hk_plus/Hk_minus/Hk_z.
 
     Validates the Pallas band assembly (``_build_{Lk,Hk}_band_gpu``):
     the banded operator equals ``banded(dense)`` exactly, and the
@@ -352,8 +354,10 @@ def test_pallas_vs_dense_on_annular_operators() -> None:
 
 
 def test_vw_mean_plane_packing_reuses_the_primitive_operators() -> None:
-    r"""The packed `$k^2 = 0$` plane carries the primitive scheme's own
-    mean-mode Helmholtz operators, **bit-exactly**.
+    r"""The packed `$k^2 = 0$` plane holds the primitive mean-mode operators.
+
+    The primitive scheme's own mean-mode Helmholtz operators,
+    **bit-exactly**.
 
     Flag-on, the two evolved slots are structurally zero at the mean
     mode, so they carry `$u_{z,00}$` and `$u_{\theta,00}$` instead
@@ -457,8 +461,9 @@ def test_vw_reconstruction_is_exactly_solenoidal() -> None:
 
 
 def test_vw_source_projections_kill_gradients() -> None:
-    r"""`$S_\Phi$` and `$S_\omega$` annihilate a discrete gradient --
-    and only with the **conservative** axial curl.
+    r"""`$S_\Phi$` and `$S_\omega$` annihilate a discrete gradient.
+
+    They do so only with the **conservative** axial curl.
 
     This is the discrete pressure elimination of the
     `$u_r$`-`$\omega_r$` scheme.  Both sources are built from the
@@ -680,10 +685,13 @@ def test_annular_integration_weights() -> None:
 
 
 def test_annular_custom_grid() -> None:
-    r"""A ``geo.wall_grid`` file builds (its branch once chose no
-    quadrature and raised ``UnboundLocalError``), keeps the file's
-    nodes, and takes the ``fd_order`` composite rule times the
-    Jacobian: exact for `$\int r^{d+1} dr$` up to `$d + 1 = p$`."""
+    r"""A ``geo.wall_grid`` file builds an annular grid.
+
+    It keeps the file's nodes and takes the ``fd_order`` composite rule
+    times the Jacobian: exact for `$\int r^{d+1} dr$` up to
+    `$d + 1 = p$`.  (The branch once chose no quadrature and raised
+    ``UnboundLocalError``.)
+    """
     import tempfile
     from pathlib import Path
 

@@ -128,8 +128,10 @@ def _tiled_rhs(vec: np.ndarray) -> jnp.ndarray:
 
 
 def test_per_shard_padded_factor_plane() -> None:
-    """On the kernel path the stored factor plane is the sum of
-    per-shard tile roundups; on the CPU one it is the true plane.
+    """The stored factor plane: per-shard tile roundups, or the true one.
+
+    On the kernel path it is the sum of per-shard tile roundups; on the
+    CPU one it is the true plane.
 
     The roundup is per *shard*, not global -- each device's kernel grid
     covers its own local block.  A CPU run never launches that grid, so
@@ -165,8 +167,10 @@ def test_per_shard_padded_factor_plane() -> None:
 
 
 def test_sharded_solve_matches_dense() -> None:
-    """Sharded ``.solve`` matches ``np.linalg.solve``; result keeps the
-    RHS sharding.  Real + complex RHS, single operator."""
+    """Sharded ``.solve`` matches ``np.linalg.solve`` and keeps the sharding.
+
+    Real and complex RHS, single operator.
+    """
     A = _make_random_banded(NY, FD_P, seed=1)
     op = _sharded_pallas_op(A, FD_P)
     rng = np.random.default_rng(2)
@@ -195,8 +199,10 @@ def test_sharded_solve_matches_dense() -> None:
 
 
 def test_sharded_stacked_component_axes() -> None:
-    """Stacked operators on the sharded plane solve each component with
-    its own factors, for both ``component_axis`` layouts."""
+    """Stacked sharded operators solve each component with its factors.
+
+    For both ``component_axis`` layouts.
+    """
     A0 = _make_random_banded(NY, FD_P, seed=3)
     A1 = _make_random_banded(NY, FD_P, seed=4)
     op = _stack_pallas_operators(
@@ -223,8 +229,10 @@ def test_sharded_stacked_component_axes() -> None:
 
 
 def test_sharded_stencil_matches_gemm() -> None:
-    """The wall-normal stencil on a sharded spectral field equals the
-    GEMM and keeps the field's sharding, in every layout."""
+    """The sharded wall-normal stencil equals the GEMM, keeping sharding.
+
+    On a sharded spectral field, in every layout.
+    """
     y = -np.cos(np.pi * np.arange(NY) / (NY - 1))
     _, D2 = build_diff_matrices(y, 8)
     Y = YMatrix.from_dense(D2)

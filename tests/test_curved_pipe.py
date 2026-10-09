@@ -266,9 +266,12 @@ def _configure(kappa: float, **over) -> None:
 
 
 def _check_metric(kappa: float) -> str:
-    r"""`$h\,e^{im\theta}$` is exactly `$m, m\pm1$` with weight
+    r"""The metric products `$h$` and `$1/h$` act on modes exactly.
+
+    `$h\,e^{im\theta}$` is exactly `$m, m\pm1$` with weight
     `$\kappa r/2$`, truncating at the top mode; and the `$1/h$`
-    harmonics match the closed form."""
+    harmonics match the closed form.
+    """
     _configure(kappa)
     import numpy as np
     from jax import numpy as jnp
@@ -339,8 +342,10 @@ def _check_metric(kappa: float) -> str:
 
 
 def _check_defect(kappa: float) -> str:
-    r"""The closed form of `$\nabla_0\cdot w$` against the toroidal
-    divergence, on the code's grid and operators."""
+    r"""The closed form of `$\nabla_0\cdot w$` against the toroidal one.
+
+    On the code's grid and operators.
+    """
     _configure(kappa)
     from jax import numpy as jnp
 
@@ -434,8 +439,10 @@ def _check_straight(_kappa: float, out: str = "", system: str = "") -> str:
 
 
 def _check_continuity(kappa: float, tol: float = 1e-9) -> str:
-    r"""The toroidal discrete divergence of a stepped state, against
-    ``step.corrector_tolerance``."""
+    r"""A stepped state's toroidal divergence against the tolerance.
+
+    The tolerance is ``step.corrector_tolerance``.
+    """
     _configure(kappa, step={"corrector_tolerance": tol})
     from jax import numpy as jnp
 

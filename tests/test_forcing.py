@@ -164,10 +164,13 @@ def _write_profiles(
 def _expected_kick_cols(
     arrs: np.ndarray, draw: np.ndarray, shape: tuple[int, ...]
 ) -> np.ndarray:
-    """Dense reference of one kick on the (divisibility-padded)
-    sharded *shape*, with host arithmetic identical to the forcer's.
-    The conjugate partner mirrors about the **true** mode count
-    (``nz - 1``), untouched by the padding slots appended after it."""
+    """Dense reference of one kick on the sharded *shape*.
+
+    The shape is divisibility-padded, and the host arithmetic is
+    identical to the forcer's.  The conjugate partner mirrors about the
+    **true** mode count (``nz - 1``), untouched by the padding slots
+    appended after it.
+    """
     dense = np.zeros(shape, dtype=complex)
     coeff = (draw[..., 0] + 1j * draw[..., 1]) / np.sqrt(2.0)
     for k, (i2, i3) in enumerate(FORCE_MODES):
@@ -189,8 +192,11 @@ def _expected_kick_cols(
 
 
 def test_injector_scatter() -> None:
-    """The scatter-add places exactly the given columns (owners on
-    every mesh position) and adds on top of existing content."""
+    """The scatter-add places exactly the given columns, additively.
+
+    Owners sit on every mesh position, and the columns add on top of
+    existing content.
+    """
     pairs = [(5, 0), (2, 0), (3, 1), (0, 2)]
     rng = np.random.default_rng(1)
     cols = rng.standard_normal((len(pairs), 3, NY)) + 1j * (
@@ -216,9 +222,11 @@ def test_injector_scatter() -> None:
 
 
 def test_kick_solver_basis() -> None:
-    r"""Cylindrical/annular: the injected columns are converted into
-    the solver's decoupled `$u_\pm$` basis, and the real-FFT
-    conjugate partner lands there as the reality condition demands.
+    r"""Cylindrical/annular kicks enter the solver basis correctly.
+
+    The injected columns are converted into the solver's decoupled
+    `$u_\pm$` basis, and the real-FFT conjugate partner lands there as
+    the reality condition demands.
 
     Only ``params.phys.system`` selects the conversion (the state
     layout is geometry-independent), so scoping that field exercises
@@ -282,8 +290,11 @@ def test_kick_solver_basis() -> None:
 
 
 def test_kick_bit_exact_and_stream() -> None:
-    """One kick lands bit-exactly (incl. the conjugate partner), and
-    the coefficient records round-trip through read_forcing."""
+    """One kick lands bit-exactly, and its record round-trips.
+
+    The conjugate partner included; the coefficient records round-trip
+    through ``read_forcing``.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         arrs = _write_profiles(Path(tmp) / "prof.npz")
         force_params.profiles = str(Path(tmp) / "prof.npz")
@@ -319,8 +330,10 @@ def test_kick_bit_exact_and_stream() -> None:
 
 
 def test_resume_skip_and_mismatch() -> None:
-    """An appending forcer continues the uninterrupted coefficient
-    sequence; a tampered sidecar / sidecar-less binary is rejected."""
+    """An appending forcer continues the uninterrupted coefficient stream.
+
+    A tampered sidecar or a sidecar-less binary is rejected.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         _write_profiles(Path(tmp) / "prof.npz")
         force_params.profiles = str(Path(tmp) / "prof.npz")
@@ -713,8 +726,11 @@ def _predict_trajectory(
 
 
 def test_mpi_forced_laminar_prediction() -> None:
-    """The forced-laminar DNS response equals the exported-propagator
-    superposition of the recorded kicks (deterministic end-to-end)."""
+    """The forced-laminar DNS response equals the propagator prediction.
+
+    The exported propagator's superposition of the recorded kicks
+    (deterministic end-to-end).
+    """
     with tempfile.TemporaryDirectory() as tmpname:
         tmp = Path(tmpname)
         op_npz, cont_npz = _mpi_artifacts(tmp)
@@ -755,8 +771,11 @@ def test_mpi_forced_laminar_prediction() -> None:
 
 
 def test_mpi_resume_continuation() -> None:
-    """A snapshot-split forced run reproduces the single-shot run's
-    kick and probe streams (PRNG skip; no lost/doubled kick)."""
+    """A snapshot-split forced run reproduces the single-shot streams.
+
+    The kick and probe streams match (PRNG skip; no lost or doubled
+    kick).
+    """
     with tempfile.TemporaryDirectory() as tmpname:
         tmp = Path(tmpname)
         _, cont_npz = _mpi_artifacts(tmp)
