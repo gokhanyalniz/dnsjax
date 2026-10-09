@@ -158,7 +158,7 @@ def aggregate_members(
     relative instant; raising it accepts an ensemble whose members
     were recorded on phase-displaced grids -- ``twin.dat`` rows up to
     that far apart on their own clocks then average together, and
-    ``align_spread`` reports the widest displacement actually used.
+    ``align_spread`` reports the widest displacement used.
 
     ``std_*`` is NumPy's default **population** standard deviation
     (``ddof = 0``) -- the spread of the members themselves, which is

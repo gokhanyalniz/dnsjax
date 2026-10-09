@@ -339,7 +339,7 @@ def main() -> None:
 
     print(
         "snapshot_import native-contract tests: offline, "
-        "device-independent (native layout/normalisation checks; no "
+        "device-independent (native layout/normalization checks; no "
         "GPU path).",
         flush=True,
     )

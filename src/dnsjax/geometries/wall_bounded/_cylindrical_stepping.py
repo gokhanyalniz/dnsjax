@@ -95,14 +95,12 @@ transverse modes, `$l_z = 5$`, `$\Delta t = 0.01$`, random IC of amplitude
 - `$\mathrm{Re} = 10$` / `$n_r = 32$`: lagged non-finite at
   `$t = 2.06$`; iterated clean, 3.0e-4 at `$t = 3$`.
 - `$\mathrm{Re} = 100$` / `$n_r = 64$`: lagged tracked the legacy
-  path to
-  **six significant figures for 600 steps** and then departed
+  path to **six significant figures for 600 steps** and then departed
   exponentially (0.65 against 1.5e-2 at `$t = 9$`); iterated tracks
   it throughout (1.733550e-2 against 1.733529e-2 at step 800).
 - `$\mathrm{Re} = 100$` / `$n_r = 128$`: lagged non-finite at
   `$t = 5.1$`; iterated 9.351495e-3 against the legacy path's
-  9.351498e-3
-  at step 999 -- seven significant figures.
+  9.351498e-3 at step 999 -- seven significant figures.
 - `$\mathrm{Re} = 1800$` / `$n_r = 128$`, the shipped
   ``pipe-consistent-imm`` regime at a production wall-normal
   resolution: both forms clean and identical to seven significant

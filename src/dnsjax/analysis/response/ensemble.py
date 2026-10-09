@@ -8,29 +8,27 @@ ensemble-averaged perturbation dynamics directly from the responses
 to an injected basis (``identify``).
 
 Aggregation
-===========
-Member probe streams are aligned on **relative** time (each member
-continues its parent snapshot's clock, so the grids are compared
-after subtracting each member's first sample; they must then agree)
-and pair-combined
-per the tree's pairing: antithetic `$(\hat{u}_+ - \hat{u}_-)/2$`
-(cancels the common turbulent evolution and all even-order nonlinear
-contributions), baseline `$\hat{u}_p - \hat{u}_b$`, or the plain
-mean.  The ensemble mean over parents then gives
-`$\langle\hat{u}\rangle(t)$` for every probed mode; at `$t = 0$` the
-injected mode's entry **is** the injected profile, which is why no
-separate input specification is needed downstream.
+-----------
+Member probe streams are aligned on **relative** time (each member continues
+its parent snapshot's clock, so the grids are compared after subtracting each
+member's first sample; they must then agree) and pair-combined per the tree's
+pairing: antithetic `$(\hat{u}_+ - \hat{u}_-)/2$` (cancels the common turbulent
+evolution and all even-order nonlinear contributions), baseline
+`$\hat{u}_p - \hat{u}_b$`, or the plain mean.  The ensemble mean over parents
+then gives `$\langle\hat{u}\rangle(t)$` for every probed mode; at `$t = 0$` the
+injected mode's entry **is** the injected profile, which is why no separate
+input specification is needed downstream.
 
 With a transient-growth operator bundle (``--operator``, the
 ``--tg.save_operator`` output) the aggregate also reports the measured
 energy amplification `$E(t)/E(0)$` of the response against the
 linear prediction for *this* input
-(:func:`~dnsjax.analysis.response.operator_tools.
-input_response_curve` seeded with the measured `$t=0$` projection)
+(:func:`.operator_tools.input_response_curve` seeded with the measured
+`$t=0$` projection)
 and the optimal-growth envelope `$G(t)$`.
 
 Direct identification
-=====================
+---------------------
 Inject each of the `$m$` leading controllability modes (one member
 tree per basis index ``j``, built with ``--modes-npz ... --index j``),
 aggregate each -- the flow's ensemble-averaged impulse responses to
@@ -48,8 +46,8 @@ T_\mathrm{proj}\,\mathrm{lifted}$`), normalized by their own
 
 with per-horizon branch-cut validity checks and reconstruction
 residuals `$\lVert e^{\tau_i L} - M(\tau_i)\rVert_F$`.  The same
-:func:`identify_generator` is the shared core for covariance-based
-identification variants built on the probe stream.  Outputs include
+:func:`identify_generator` is the shared core of the covariance-based
+routes, :mod:`.lim` and :mod:`.ssi`.  Outputs include
 the identified spectrum (:func:`stability_report`) and the growth
 curve of `$L$` in the same energy convention as the exported
 operators, comparable against
@@ -103,8 +101,7 @@ def project_series(
 def identify_generator(
     pairs: list[tuple[float, np.ndarray]],
 ) -> tuple[np.ndarray, dict]:
-    r"""Fit the generator from propagator samples
-    `$M(\tau_i) \approx e^{\tau_i L}$`.
+    r"""Fit the generator `$L$` to samples `$M(\tau_i) \approx e^{\tau_i L}$`.
 
     ``L = mean_i logm(M_i)/tau_i`` (principal matrix logarithm).  A
     horizon whose `$M_i$` has an eigenvalue on (or hugging) the
@@ -223,11 +220,11 @@ def _member_response(
             # members on one relative grid: ``dnsjax`` gates the probe
             # stream on ``it % it_probes``, the absolute step counter,
             # so a member whose parent snapshot sits at a different
-            # ``it`` residue samples at a displaced phase -- the same
-            # trap ``dnsjax.analysis.twin.ensemble`` names, where the
-            # driver now anchors the cadence on the member's own start
-            # instead.  Harvest parents at ``it`` multiples of
-            # ``it_probes`` until it does here too.
+            # ``it`` residue samples at a displaced phase.  (The twin
+            # driver counts its cadences from the member's own start
+            # instead; ``dnsjax.analysis.twin.ensemble`` names the
+            # trap.)  Harvest parents at ``it`` multiples of
+            # ``it_probes``.
             raise SystemExit(
                 f"{d}: relative sample times differ from {ref_dir}'s "
                 "-- either the cadence (it_probes * dt) differs across "

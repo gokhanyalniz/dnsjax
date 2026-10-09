@@ -1,21 +1,17 @@
 r"""Pipe flow: pressure-driven flow through a circular pipe.
 
-This module defines the ``PipeFlow`` dataclass that holds the
-pipe-flow-specific base flow.  Geometry-general infrastructure
-(radial CGL grid -- half-CGL under the default ``iterative-cn``
-scheme, rigged-CGL under ``cnab2``, selected by
-``geo.grid_type``, parity-reduced FD
-matrices, IMM operators, cylindrical IMM iteration, predict /
-correct / norm, Pallas / dense LU solvers) is inherited from
-``geometries.wall_bounded.cylindrical.CylindricalFlow``.
-
-It also exports the flow interface consumed by ``__main__``:
-
-- ``predict_and_fully_correct`` -- fused predictor + corrector
-- ``predict_and_fully_correct_measured`` -- fused step + CFL
-  measurements (``steps.dat``)
-- ``init_state`` -- the ``start_from_laminar`` initial state
-- ``get_stats`` -- diagnostic statistics
+This module defines the ``PipeFlow`` dataclass, which holds the pipe
+base flow; the geometry (the radial grid, half-CGL under the default
+``iterative-cn`` scheme and rigged-CGL under ``cnab2``; parity-reduced
+FD matrices; influence-matrix operators and iteration; solvers) is
+inherited from
+:class:`~dnsjax.geometries.wall_bounded.cylindrical.CylindricalFlow`.
+The module exports the flow-module surface that
+:class:`~dnsjax.flow_spec.FlowSpec` lists under ``flow_module``, the
+optional ``get_driving``, the transient-growth hook
+``frozen_profile_flow``, the basis pair ``to_solver_basis`` /
+``from_solver_basis``, and ``CARRIED_FIELDS`` (the snapshot ``carry/``
+member).
 
 Base flow
 ---------
@@ -88,13 +84,12 @@ class PipeFlow(CylindricalFlow):
     U_bulk_lam: float = 0.5
 
     def __post_init__(self) -> None:
-        r"""Build radial grid, base flow, and IMM operators.
+        r"""Add the pipe base flow to the geometry's setup.
 
-        Delegates the radial CGL grid, parity-reduced FD
-        matrices, and per-mode IMM operator setup to
-        :meth:`CylindricalFlow.__post_init__`, then defines the
-        pipe base flow `$U_z = 1 - r^2$` and its derived
-        quantities.
+        :meth:`CylindricalFlow.__post_init__` builds the radial grid,
+        the parity-reduced FD matrices and the factorized per-mode
+        operators; this method adds the base flow `$U_z = 1 - r^2$` and
+        its curl.
         """
         super().__post_init__()
         self.I_lam = 2.0 / params.phys.re
@@ -311,7 +306,7 @@ def _get_stats_jit(
 
 
 def get_stats(state: Array) -> dict[str, Array]:
-    """Wrapper around ``_get_stats_jit`` (physical-basis *state*)."""
+    """The ``stats.dat`` columns of the physical-basis *state*."""
     return _get_stats_jit(state, fourier, flow)
 
 
@@ -343,7 +338,7 @@ def get_driving(state: Array) -> dict[str, Array]:
 
     The optional flow-module export ``__main__`` uses for the one
     ``stats.dat`` row with no step behind it (``t = t0``); every other
-    row carries the value the corrector actually applied, threaded out
+    row carries the value the corrector applied, threaded out
     of the step.  Same keys and sign as that column
     (`$-\partial p'/\partial s$`, the applied forcing), ``{}`` when no
     driving knob is on.  Takes the **physical** view of *state*, like

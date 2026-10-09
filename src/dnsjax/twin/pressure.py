@@ -113,8 +113,7 @@ class DifferencePressure(PoissonPressure):
 
         stored as :func:`~dnsjax.twin.diagnostics.ybudget_terms`'
         ``Wp`` -- **not** the mean-mode driving, although at
-        `$(0,0)$` the two coincide (:func:`dnsjax.twin.diagnostics.
-        _driving_density`).
+        `$(0,0)$` the two coincide (``diagnostics._driving_density``).
 
         Evaluated **componentwise and summed**, not through the
         equivalent flux form `$-\sigma\,\partial_y
@@ -146,11 +145,11 @@ class DifferencePressure(PoissonPressure):
         n_y: Array,
         flow_: CartesianFlow,
     ) -> Array:
-        r"""`$(D_1\Delta\hat p - \hat{\mathcal N}_y
-        - Re^{-1}D_2\Delta\hat v)|_w$`.
+        r"""The wall residual of the analytic Neumann condition.
 
-        The analytic Neumann condition the IMM closure does *not*
-        impose, as a wall-normal truncation diagnostic: it must shrink
+        `$(D_1\Delta\hat p - \hat{\mathcal N}_y - Re^{-1}D_2\Delta\hat
+        v)|_w$`, the condition the IMM closure does *not* impose, as a
+        wall-normal truncation diagnostic: it must shrink
         with ``res.ny``.  Shape ``(2, Nkz, Nkx)`` complex, walls
         ``[bottom, top]``.
 

@@ -3,7 +3,7 @@ r"""Render a snapshot as a publication-style field figure.
 
 The presentation counterpart of ``scripts/twin_spectral_maps.py``: it
 turns one snapshot into a single PNG of a velocity plane, for a
-README, a talk, or a quick look at what a run is actually doing.  It
+README, a talk, or a quick look at what a run is doing.  It
 reads the snapshot through :func:`dnsjax.analysis.read_state` alone --
 NumPy and the standard library, **no JAX and no solver runtime** -- so
 it runs anywhere the snapshot does, at any resolution, without a
@@ -101,7 +101,7 @@ Reynolds number rather than carrying `$-0.9167$` over.  The caption's
 ``dnsjax.analysis.read_meta``.
 
 Why animated WebP
-=================
+-----------------
 It is the only common format that is both small enough and sharp
 enough here.  Turbulence changes everywhere between frames, so
 inter-frame prediction saves little and the codec is doing near-still

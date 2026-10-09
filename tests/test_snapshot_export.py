@@ -33,7 +33,7 @@ which carries O(1) divergence -- and computed in the solver's
 decoupled ``u_pm`` basis (``_solver_divergence``, transcribed from
 ``_imm_iteration``).  A physical-component reference would only
 restate the analysis formula; going through the solver basis pins the
-discretization the pressure solve actually inverts.
+discretization the solver's influence-matrix pass constrains.
 
 Run directly::
 
@@ -101,7 +101,7 @@ def _solver_divergence(state, system: str, flow, fourier):
     Transcribed from stage 1 of each family's ``_imm_iteration`` (the
     only place the solver forms `$\nabla\cdot\mathbf{u}$`), so the
     check downstream compares the analysis operator against the
-    discretization the pressure solve actually inverts -- including
+    discretization the influence-matrix pass constrains -- including
     the pipe's parity-reduced radial ``D1`` and the decoupled
     `$(u_z, u_\pm)$` assembly, which no physical-component reference
     could pin without restating the analysis formula itself.

@@ -105,7 +105,7 @@ PIPE_STEPS = 10
 # (label, system, consistent_imm, max relative divergence allowed).
 # Both formulations are named explicitly, so the pair stays a contrast
 # whatever the model default is.  The legacy bounds are loose
-# regression pins on today's behaviour (measured ~4e-2 / ~6e-2 at NY);
+# regression pins on the current behaviour (measured ~4e-2 / ~6e-2 at NY);
 # the default bounds are the claim.  Every default bound is round-off,
 # by algebra rather than by a solve, and pinned tight enough that an
 # operator-identity mechanism (floors 4.2e-14 Cartesian, 8.0e-06

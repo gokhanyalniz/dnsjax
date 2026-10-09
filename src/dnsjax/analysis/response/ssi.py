@@ -13,7 +13,7 @@ production run with ``[force]`` + probes) instead of reusing an
 unforced stream.
 
 Estimator
-=========
+---------
 Kicks add `$\varepsilon\,P\,\mathbf{w}_k$` at times `$t_k$`
 (`$\mathbf{w}_k \sim \mathcal{CN}(0, I_m)$` recorded in
 ``forcing.bin``; `$P$` the channel basis, the leading
@@ -43,7 +43,7 @@ identifications share the fit, the coordinates, and the output
 convention, so their operators are directly comparable.
 
 Knobs (when to tweak)
-=====================
+---------------------
 - ``--lags``: as for the other routes -- several, inside the window
   where the kick response is still detectable; short lags weight the
   noise floor (see the causality number), long ones the response
@@ -61,7 +61,7 @@ Knobs (when to tweak)
   the stationary forced level for planning the amplitude.
 
 CLI
-===
+---
 ::
 
     python -m dnsjax.analysis.response.ssi \
@@ -100,16 +100,15 @@ from .probes import (
 )
 
 #: Oldest ``forcing.json`` schema this reader accepts (the writer's
-#: current version is ``dnsjax.extensions.forcing.FORMAT_VERSION``).  Version-1
-#: streams were injected in the solver's decoupled
+#: current version is ``dnsjax.extensions.forcing.FORMAT_VERSION``).
+#: Version-1 streams were injected in the solver's decoupled
 #: `$(u_z, u_+, u_-)$` basis, under the conjugate-partner rule that
-#: basis needed, so replaying their coefficients against today's
-#: physical profile bundle would be silently wrong.  Version-2
-#: streams additionally record the axis-2 ``wavenumbers`` of an
-#: azimuthal wedge as the harmonic index rather than the physical
-#: `$m = m_0 j$`, so anything deriving a wavelength or a spectrum
-#: from them is wrong by `$m_0$` (correct only at ``geo.m0 = 1``,
-#: which is why it went unnoticed).
+#: basis needed, so replaying their coefficients against a physical
+#: profile bundle would be silently wrong.  Version-2 streams
+#: additionally record the axis-2 ``wavenumbers`` of an azimuthal wedge
+#: as the harmonic index rather than the physical `$m = m_0 j$`, so
+#: anything deriving a wavelength or a spectrum from them is wrong by
+#: `$m_0$` (correct only at ``geo.m0 = 1``).
 MIN_FORMAT_VERSION: int = 3
 
 __all__ = [
@@ -246,15 +245,13 @@ def cross_propagators(
 ) -> tuple[list[tuple[float, np.ndarray]], dict]:
     r"""Propagator samples from kick/response windows (module formula).
 
-    *windows* are per-run ``(w, resp)`` pairs
-    (:func:`kick_response_windows`; pooled with per-run sample means
-    subtracted when *demean* -- keep it on for turbulence, off only
-    for deterministic synthetic data).  Returns the ``(tau, M)``
-    pairs for :func:`~dnsjax.analysis.response.ensemble.
-    identify_generator` plus diagnostics: total kick count, the
-    empirical channel-covariance condition number, and the
-    ``causality`` level `$\lVert M(0)\rVert_2$` (the estimator's
-    noise floor; should be small against 1).
+    *windows* are per-run ``(w, resp)`` pairs (:func:`kick_response_windows`;
+    pooled with per-run sample means subtracted when *demean* -- keep it on for
+    turbulence, off only for deterministic synthetic data).  Returns the
+    ``(tau, M)`` pairs for :func:`.ensemble.identify_generator` plus
+    diagnostics: total kick count, the empirical channel-covariance condition
+    number, and the ``causality`` level `$\lVert M(0)\rVert_2$` (the
+    estimator's noise floor; should be small against 1).
     """
     if not windows:
         raise ValueError("no kick/response windows given")
@@ -306,17 +303,17 @@ def predicted_forced_variance(
     r"""Stationary forced variance `$\mathrm{tr}(P^H X P)$` on the basis.
 
     Samples are **pre-kick** (the :mod:`dnsjax.extensions.forcing` convention),
-    so the sampled state obeys `$x_{n+1} = E\,(x_n + \varepsilon P
-    \mathbf{w}_n)$` with `$E = e^{\Delta_f A}$`, and `$X$` solves the
-    discrete Lyapunov equation `$X = E\,(X + Q)\,E^H$` with the
-    per-kick injection `$Q = \varepsilon^2 P P^H$` -- the kick-forced
-    analogue of the continuous controllability Gramian (as
-    `$\Delta_f \to 0$` at fixed `$\varepsilon^2/\Delta_f$` the two
-    coincide).  Use it to plan ``force.amplitude``: the returned
-    level is the expected stationary `$\sum\lvert b_j\rvert^2$` of
-    the forced part, to be kept inside the linear window and above
-    the natural background you want to beat.  Requires a stable
-    `$A$`.
+    so the sampled state obeys
+    `$x_{n+1} = E\,(x_n + \varepsilon P \mathbf{w}_n)$` with
+    `$E = e^{\Delta_f A}$`, and `$X$` solves the discrete Lyapunov equation
+    `$X = E\,(X + Q)\,E^H$` with the per-kick injection
+    `$Q = \varepsilon^2 P P^H$` -- the kick-forced analogue of the continuous
+    controllability Gramian (:func:`.operator_tools.controllability_gramian`;
+    as `$\Delta_f \to 0$` at fixed `$\varepsilon^2/\Delta_f$` the two
+    coincide).  Use it to plan ``force.amplitude``: the returned level is the
+    expected stationary `$\sum\lvert b_j\rvert^2$` of the forced part, to be
+    kept inside the linear window and above the natural background you want to
+    beat.  Requires a stable `$A$`.
     """
     from scipy.linalg import expm
 

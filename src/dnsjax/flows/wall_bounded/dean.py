@@ -11,19 +11,19 @@ azimuthal pressure gradient `$\Pi_\theta$`, whose force is
     \hat{\boldsymbol{\theta}}, \qquad \eta = r_1/r_2,
 
 with no-slip walls (all velocity components vanish at `$r_1$` and
-`$r_2$`).  Geometry-general infrastructure (radial grid on
-`$[r_1, r_2]$`, FD matrices, IMM operators, the `$2 \times 2$` annular
-IMM iteration, predict / correct / norm, Pallas / dense solvers) is
+`$r_2$`).  The geometry (radial grid on `$[r_1, r_2]$`, FD matrices,
+the `$2 \times 2$` influence-matrix operators and iteration, solvers) is
 inherited from :class:`~dnsjax.geometries.wall_bounded.annular.AnnularFlow`.
 
 Total-field formulation
 -----------------------
-Unlike every other flow in the solver, Dean flow time-integrates the
-**total** velocity field, not a perturbation around a base flow.  This is
-realized with **no special stepper**: the flow sets
-``base_flow = curl_base_flow = 0`` so the rotational-form nonlinear term
-(:func:`dnsjax.rhs.get_nonlin`) evaluates the full
-`$(\nabla\times\mathbf{u})\times\mathbf{u}$` of the total field, and the
+Like the curved pipe and the two viscoelastic flows, and unlike the
+base-flow systems, Dean flow time-integrates the **total** velocity
+field, not a perturbation around a base flow.  This is realized with **no
+special stepper**: the flow sets ``base_flow = curl_base_flow = 0`` so
+the rotational-form nonlinear term (:func:`dnsjax.rhs.get_nonlin`)
+evaluates the full `$\mathbf{u}\times\boldsymbol{\omega}$` of the
+total field, and the
 azimuthal body force is supplied through ``AnnularFlow.force_theta``
 (applied at the mean mode inside ``annular._get_rhs_core``).  Because
 there is no base flow, the reported perturbation kinetic energy `$E'$`
@@ -46,13 +46,10 @@ It is the steady solution of the *continuous* equations; on the FD grid
 it is preserved up to truncation (the mean-mode centripetal term is
 balanced by pressure and `$u_\theta$` by the viscous + forcing balance).
 
-Exports the flow interface consumed by ``__main__``:
-
-- ``predict_and_fully_correct`` -- fused predictor + corrector
-- ``predict_and_fully_correct_measured`` -- fused step + CFL
-  measurements (``steps.dat``)
-- ``init_state`` -- the ``start_from_laminar`` initial state
-- ``get_stats`` -- diagnostic statistics
+The module exports the flow-module surface that
+:class:`~dnsjax.flow_spec.FlowSpec` lists under ``flow_module``, the
+optional ``get_driving``, and the basis pair ``to_solver_basis`` /
+``from_solver_basis``.
 """
 
 from dataclasses import dataclass
@@ -98,7 +95,7 @@ class DeanFlow(AnnularFlow):
         eta = params.geo.eta
         Re = params.phys.re
 
-        # Azimuthal body force Pi_theta = (2 eta + 2) / (r Re (1 - eta)),
+        # Azimuthal body force -Pi_theta = (2 eta + 2) / (r Re (1 - eta)),
         # applied at the mean mode by ``annular._get_rhs_core``.
         C = 2.0 * (eta + 1.0) / (1.0 - eta)
         self.force_theta = C / (self.rs * Re)
@@ -152,8 +149,10 @@ _laminar_profile: Array = _build_laminar_profile()
 
 
 def _laminar_field(profile: Array, fourier_: Fourier) -> Array:
-    """The spectral field carrying *profile* ``(C, N_r)`` on the mean
-    mode alone (zero on every other mode, padding included)."""
+    """The spectral field that is *profile* ``(C, N_r)`` on the mean mode.
+
+    Zero on every other mode, padding included.
+    """
     return jnp.where(fourier_.mean_mask[None], profile[:, :, None, None], 0.0)
 
 
@@ -163,10 +162,11 @@ def _perturbation_energy(
     fourier_: Fourier,
     flow_: DeanFlow,
 ) -> Array:
-    r"""Perturbation kinetic energy of the deviation from laminar,
-    `$E' = \|\mathbf{u} - \mathbf{U}_{\mathrm{lam}}\|^2 / 2$` (Dean
+    r"""Kinetic energy of the deviation from the laminar Dean profile.
+
+    `$E' = \|\mathbf{u} - \mathbf{U}_{\mathrm{lam}}\|^2 / 2$`: Dean
     integrates the total field, so the perturbation is the deviation
-    from the analytical laminar Dean profile).
+    from the analytical laminar profile.
 
     The single definition, shared by :func:`get_stats` (which reports
     it as ``E'``) and the laminarization read
@@ -248,7 +248,7 @@ def _get_stats_jit(
     U_bulk_theta = integrate_scalar(mean_utheta, flow_.y_weights) / volfac
     U_bulk_z = integrate_scalar(mean_uz, flow_.y_weights) / volfac
 
-    # ── Energy input rate I = <u_theta Pi_theta> ─────────────
+    # ── Energy input rate I = -<u_theta Pi_theta> ────────────
     energy_input = (
         integrate_scalar(mean_utheta * flow_.force_theta, flow_.y_weights)
         / volfac
@@ -281,7 +281,7 @@ def _get_stats_jit(
 
 
 def get_stats(state: Array) -> dict[str, Array]:
-    """Wrapper around ``_get_stats_jit`` (physical-basis *state*)."""
+    """The ``stats.dat`` columns of the physical-basis *state*."""
     return _get_stats_jit(state, _laminar_profile, fourier, flow)
 
 
@@ -316,7 +316,7 @@ def get_driving(state: Array) -> dict[str, Array]:
 
     The optional flow-module export ``__main__`` uses for the one
     ``stats.dat`` row with no step behind it (``t = t0``); every other
-    row carries the value the corrector actually applied, threaded out
+    row carries the value the corrector applied, threaded out
     of the step.  Same keys and sign as that column
     (`$-\partial p'/\partial s$`, the applied forcing), ``{}`` when no
     driving knob is on.  Takes the **physical** view of *state*, like

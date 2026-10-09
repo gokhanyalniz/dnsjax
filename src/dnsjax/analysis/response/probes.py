@@ -1,27 +1,26 @@
 r"""JAX-free reader for the runtime spectral-mode probe stream.
 
 Reads the ``probes.bin``/``probes.json`` pair written by
-:mod:`dnsjax.extensions.probes` (see that docstring for the record
-layout and the writer's append-on-resume rules) and provides the
-small host-side
-post-processing steps that need no device: time-averaged mean
-profiles, the friction Reynolds number, and profile files consumable
-by the transient-growth CLI (``--tg.profile``).
+:mod:`dnsjax.extensions.probes` (see that docstring for the record layout and
+the writer's append-on-resume rules) and provides the small host-side
+post-processing steps that need no device: time-averaged mean profiles, the
+friction Reynolds number, and profile files consumable by the transient-growth
+CLI (``--tg.profile``).
 
 Depends only on NumPy, the standard library, and the JAX-free
 :mod:`dnsjax.fd` leaf, so it is safe anywhere the
 ``import dnsjax.analysis`` guarantee applies.
 
 Conventions
-===========
+-----------
 - ``u`` is the stored **perturbation** state's mode profiles (the
   total field for the force-driven systems,
   :data:`~dnsjax.analysis._core.TOTAL_FIELD_SYSTEMS`); the mean mode
   ``(0,0)`` therefore records the perturbation's instantaneous mean
   profile, and :func:`mean_profile` adds the closed-form laminar
   profile back to return the **total** streamwise mean.
-- Sample times are uniform by construction (``t0 + k
-  \cdot it_probes \cdot dt``); a resumed stream that re-ran a
+- Sample times are uniform by construction
+  (``t0 + k * it_probes * dt``); a resumed stream that re-ran a
   trajectory segment shows up as non-monotonic ``t`` and is flagged
   with a warning (filter with ``t`` yourself in that case).
 """
@@ -46,7 +45,7 @@ from ...fd import build_diff_matrices
 #: of an azimuthal wedge as the harmonic index rather than the
 #: physical `$m = m_0 j$`, so anything deriving a wavelength or a
 #: spectrum from them is wrong by `$m_0$` (correct only at
-#: ``geo.m0 = 1``, which is why it went unnoticed).
+#: ``geo.m0 = 1``).
 MIN_FORMAT_VERSION: int = 3
 
 #: Laminar streamwise total profiles `$U_s(y)$` of the Cartesian

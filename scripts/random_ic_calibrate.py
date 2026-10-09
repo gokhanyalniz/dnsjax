@@ -50,29 +50,27 @@ passing its value as ``--init.random_smoothness``.
 ``--calib.sweep_smoothness`` and its two siblings take
 comma-separated lists and report their outer product, one line each,
 rebuilding the field per entry (a per-mode host loop: seconds at a
-production resolution, so a dozen entries is a coffee, not a job).
+production resolution, so a dozen entries take minutes).
 The seed is ``init.random_seed`` as usual (unset: drawn, and printed
 with its source), and `$A$` is essentially seed-independent -- it
 averages over every resolved mode, and moves by under 0.005 across
 seeds at a production box -- so a sweep needs one seed, not an
 ensemble.
 
-**A(0) is a shape score, not a growth predictor.**  This is the
-caveat that decides how the output should be used, and it is measured
-rather than hedged.  At an HKW minimal plane-Couette box
-(`$Re = 400$`, `$Re_\tau \approx 34$`) the score peaks at
-``random_smoothness`` `$\approx 0.15$` and calls it worth thirteen
-time units -- while the difference energy actually measured over 60
-advective units goes 2.07 decades at `$s = 0.4$`, 1.15 at `$0.15$` and
-0.09 at `$0.04$`, decaying outright for the first five units at the
-last (two seeds, both).  The reason is physical: an attractor's
-small-scale content is sustained by transfer from larger scales, so
-seeding it directly feeds `$k^2/Re$` rather than the instability.
-Read `$A(0)$` as "how much of this field is in the wrong part of
-`$(y, k)$`", and confirm any change of ``random_smoothness`` with a
-growth run before adopting it.  ``random_wall_confinement``, whose
-optimum this tool also reports, was adopted on the strength of being
-*neutral* in that same growth measurement.
+**A(0) is a shape score, not a growth predictor.**  This is the caveat that
+decides how the output should be used, and it is measured rather than hedged.
+At the Hamilton-Kim-Waleffe minimal plane-Couette box (`$Re = 400$`,
+`$Re_\tau \approx 34$`) the score peaks at ``random_smoothness``
+`$\approx 0.15$` and calls it worth thirteen time units -- while the difference
+energy measured over 60 advective units goes 2.07 decades at `$s = 0.4$`, 1.15
+at `$0.15$` and 0.09 at `$0.04$`, decaying outright for the first five units at
+the last (two seeds, both).  The reason is physical: an attractor's small-scale
+content is sustained by transfer from larger scales, so seeding it directly
+feeds `$k^2/Re$` rather than the instability.  Read `$A(0)$` as "how much of
+this field is in the wrong part of `$(y, k)$`", and confirm any change of
+``random_smoothness`` with a growth run before adopting it.
+``random_wall_confinement``, whose optimum this tool also reports, was adopted
+on the strength of being *neutral* in that same growth measurement.
 
 **Scope.**  Cartesian wall-bounded flows, like ``dnsjax-twin`` itself:
 the target has to come from a recorded twin stream, and those exist
@@ -87,7 +85,7 @@ Usage::
         --geo.lx 12.566370614 --geo.lz 6.283185307 \
         --res.nx 192 --res.ny 215 --res.nz 160 \
         --init.random_seed 1 --init.random_mean_flow True \
-        --calib.target /data/twin/KMM4200/twins-redo \
+        --calib.target ensemble/ \
         --calib.window "15,30" \
         --calib.sweep_smoothness "0.4,0.06,0.04,0.03" \
         --calib.sweep_wall_confinement "0,0.11,0.14,0.20"
@@ -253,8 +251,11 @@ def _parse_floats(raw: str, label: str) -> list[float]:
 
 
 def member_dirs(target: Path, glob: str) -> list[Path]:
-    """The member directories *target* names: itself if it holds a
-    stream, else its *glob* children that do."""
+    """The member directories *target* names.
+
+    *target* itself if it holds a stream, else its *glob* children that
+    do.
+    """
     if (target / "twin_yspectra.json").is_file():
         return [target]
     found = sorted(
@@ -400,8 +401,7 @@ def fit_mu(
 
 
 def ic_shape(marginal: str) -> tuple[np.ndarray, np.ndarray]:
-    r"""``(y_weights, shape)`` of the perturbation the resolved
-    ``init.random_*`` knobs build.
+    r"""``(y_weights, shape)`` of the perturbation the ``init`` knobs build.
 
     Marginalized by :func:`dnsjax.twin.diagnostics.twin_yspectra`
     against a zero reference, so the map is the stream's own `$t = 0$`

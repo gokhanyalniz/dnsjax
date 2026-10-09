@@ -124,8 +124,10 @@ def _sig(x: float, digits: int = 3) -> str:
 
 
 def scaling_table(fams: dict, t1: float) -> str:
-    """The strong-scaling table: the first family in full, the second's
-    ``s/t`` beside it."""
+    """The strong-scaling table as markdown.
+
+    The first family in full, the second's ``s/t`` beside it.
+    """
     keys = list(fams)
     first, rest = fams[keys[0]], keys[1:]
     head = (
@@ -152,8 +154,11 @@ def scaling_table(fams: dict, t1: float) -> str:
 
 
 def per_rank_table(runs: list[dict], fams: dict, t1: float) -> str:
-    """The one-node runs at a reduced ``nx`` against the ``N``-node
-    runs whose per-rank block they hold, for the first family."""
+    """The reduced one-node runs against their ``N``-node counterparts.
+
+    One-node runs at a reduced ``nx``, each against the ``N``-node runs
+    whose per-rank block it holds, for the first family.
+    """
     nx_full = max(r["nx"] for r in runs)
     key = next(iter(fams))
     np0, k = key

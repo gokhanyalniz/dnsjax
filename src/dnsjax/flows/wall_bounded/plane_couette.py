@@ -1,30 +1,22 @@
 r"""Plane Couette flow: wall-bounded shear between two moving plates.
 
-This module defines the ``PlaneCouetteFlow`` dataclass that holds the
-plane-Couette-specific base flow.  Geometry-general infrastructure
-(CGL grid, FD matrices, IMM operators, Kleiser-Schumann IMM
-iteration, predict / correct / norm, Pallas / dense LU solvers) is
-inherited from ``geometries.wall_bounded.cartesian.CartesianFlow``.
-
-It also exports the flow interface consumed by ``__main__``:
-
-- ``predict_and_fully_correct`` -- fused predictor + corrector
-- ``predict_and_fully_correct_measured`` -- fused step + CFL
-  measurements (``steps.dat``)
-- ``set_dt`` / ``reset_ab2_kappa`` -- adaptive-dt hooks
-  (``step.adaptive``; on-device operator rebuild, no recompile)
-- ``init_state`` -- the ``start_from_laminar`` initial state
-- ``get_stats`` -- diagnostic statistics
+This module defines the ``PlaneCouetteFlow`` dataclass, which holds the
+plane-Couette base flow; the geometry (wall-normal grid, FD matrices,
+influence-matrix operators and iteration, solvers) is inherited from
+:class:`~dnsjax.geometries.wall_bounded.cartesian.CartesianFlow`.  The
+module exports the flow-module surface that
+:class:`~dnsjax.flow_spec.FlowSpec` lists under ``flow_module``, the
+optional ``get_driving``, and the transient-growth hook
+``frozen_profile_flow``.
 
 The influence-matrix method enforces the no-slip wall BCs and the
 *wall-row* divergence exactly at every time step; under the default
 ``res.consistent_imm`` the interior discrete divergence vanishes
 algebraically too, and only on the legacy primitive path is it left as
-a truncation-level residual.  No post-step projection is fused
-into the stepper (the triply-periodic geometry fuses one via
-``make_stepper``'s *finalize_fn*; a wall-bounded state-side
-projection is unstable -- see the ``cartesian._imm_iteration``
-docs).
+a truncation-level residual.  No post-step projection is fused into the
+stepper, as the triply-periodic geometry fuses one: a wall-bounded
+state-side projection is unstable (the ``cartesian`` Design notes,
+"Routes tried and retired").
 
 Base flow
 ---------
@@ -88,15 +80,12 @@ class PlaneCouetteFlow(CartesianFlow):
     U_bulk_lam: float = 0.0
 
     def __post_init__(self) -> None:
-        r"""Build CGL grid, base flow, and IMM operators.
+        r"""Add the plane-Couette base flow to the geometry's setup.
 
-        Delegates the CGL grid, FD matrices, and per-mode IMM
-        operator setup to :meth:`CartesianFlow.__post_init__`,
-        which assembles and factorizes `$L_k$`, `$H_k$` directly
-        on the device.  This method then defines the
-        plane-Couette base flow
-        `$\mathbf{U} = y(\cos\theta, 0, \sin\theta)$`
-        and its derived quantities.
+        :meth:`CartesianFlow.__post_init__` builds the wall-normal grid,
+        the FD matrices and the factorized per-mode operators; this
+        method adds the base flow
+        `$\mathbf{U} = y(\cos\theta, 0, \sin\theta)$` and its curl.
         """
         super().__post_init__()
         self.I_lam = 1.0 / params.phys.re
@@ -243,7 +232,7 @@ def _get_stats_jit(
 
 
 def get_stats(state: Array) -> dict[str, Array]:
-    """Wrapper around ``_get_stats_jit``."""
+    """The ``stats.dat`` columns of *state* (``_get_stats_jit``)."""
     return _get_stats_jit(state, fourier, flow)
 
 
@@ -273,7 +262,7 @@ def get_driving(state: Array) -> dict[str, Array]:
 
     The optional flow-module export ``__main__`` uses for the one
     ``stats.dat`` row with no step behind it (``t = t0``); every other
-    row carries the value the corrector actually applied, threaded out
+    row carries the value the corrector applied, threaded out
     of the step.  Same keys and sign as that column
     (`$-\partial p'/\partial s$`, the applied forcing), ``{}`` when no
     driving knob is on.  Takes the **physical** view of *state*, like

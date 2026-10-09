@@ -19,7 +19,7 @@ Cartesian perturbation must respect -- at three levels:
    the drawn one the kernel floor holds it slightly apart from (both
    in closed form, no sampling) -- including at an extreme
    ``random_wall_smoothness``, where the smoothed case-B rows go
-   near-degenerate and only ``_KERNEL_FLOOR`` keeps the solve honest.
+   near-degenerate and only ``_KERNEL_FLOOR`` keeps the solve well posed.
 3. **The generated IC satisfies them.**  A real random Cartesian IC
    with ``init.random_mean_flow`` on, across both flows, both driving
    knobs, tilt, both grid types and two ``fd_order``s: a real, wall-

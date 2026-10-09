@@ -113,15 +113,13 @@ class ForceParams(BaseModel):
 
     Wall-bounded, non-viscoelastic systems only: the injector's
     cylindrical/annular branch hard-codes the 3-component velocity map
-    ``to_pm_basis`` and has no ``to_spin_basis`` counterpart (unlike
-    the probe extractor, which does).  The conjugate partner itself is
-    basis-agnostic -- a plain conjugate of a physical profile, valid
-    for any component count.  On ``curved-pipe`` a kick's component-0
-    profile lands on the carried `$w_s = h\,u_s$` -- the column a
-    probe records there -- not on `$u_s$`.  The whole section is
-    **trajectory-defining**: resuming
-    with changed forcing starts a new trajectory (like a ``phys``
-    change).
+    ``to_pm_basis`` and has no ``to_spin_basis`` counterpart (unlike the probe
+    extractor, which does).  The conjugate partner itself is basis-agnostic --
+    a plain conjugate of a physical profile, valid for any component count.  On
+    ``curved-pipe`` a kick's component-0 profile lands on the carried
+    `$w_s = h\,u_s$` -- the column a probe records there -- not on `$u_s$`.
+    The whole section is **trajectory-defining**: resuming with changed forcing
+    starts a new trajectory (like a ``phys`` change).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -327,10 +325,11 @@ def validate_extensions(params) -> None:
 
 
 def extension_metadata(system: str) -> dict[str, dict]:
-    """The recordable extension sections for *system* (resolved,
-    JSON-safe) -- merged into the ``params`` dump of snapshot
-    metadata and sidecar JSON
-    (:func:`dnsjax.param_surface.recorded_params_dump`)."""
+    """The recordable extension sections for *system*, resolved, as JSON.
+
+    Merged into the ``params`` dump of snapshot metadata and sidecar
+    JSON (:func:`dnsjax.param_surface.recorded_params_dump`).
+    """
     return {
         name: ext.values.model_dump(mode="json")
         for name, ext in relevant_extensions(system).items()

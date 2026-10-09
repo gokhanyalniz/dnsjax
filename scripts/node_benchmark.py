@@ -34,14 +34,12 @@ EPYC 7742 per node): one rank per core, each pinned to one XLA thread
     (``--workdir``): a rank on another node cannot enter the driver
     node's ``/tmp``.
 
-At each rank count every ``(np0, np1)`` factorization runs, or only
-those whose ``np0`` is listed in ``--np0`` and whose ``np1`` in
-``--np1`` (``--np0 128 64`` keeps one ``(128, n/128)`` and one
-``(64, n/64)`` grid at every rank count ``n``: a strong-scaling
-family).  Export
-``MPITRAMPOLINE_LIB`` first (``docs/cpu-collectives.md``): without it
-the collectives run over ``gloo``, which is not what a production run
-should measure.
+At each rank count every ``(np0, np1)`` factorization runs, or only those whose
+``np0`` is listed in ``--np0`` and whose ``np1`` in ``--np1`` (``--np0 128 64``
+keeps one ``(128, n/128)`` and one ``(64, n/64)`` grid at every rank count
+``n``: a strong-scaling family).  Export ``MPITRAMPOLINE_LIB`` first
+(``docs/cpu-collectives.md``): without it the collectives run over ``gloo``,
+which is not what a production run should measure.
 
 ``--launch-prefix`` runs the launcher under another command.  The use
 it is for: every rank imports some 800 Python modules from the shared
