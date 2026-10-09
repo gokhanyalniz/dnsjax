@@ -187,7 +187,7 @@ _PC_BOUNDS = {"dU": 5e-3, "du1": 1e-3, "du2": 5e-4, "T_tot": 1e-3}
 #: (``T_bins`` / ``pi_flux`` in the default convective form,
 #: ``N_tot`` / ``pi_flux`` under ``twin.rotational_ybudget``) are
 #: **measured and printed for every configuration but asserted only
-#: where they have been swept** -- today ``pp-cbv``, which carries
+#: where they have been swept** -- ``pp-cbv`` alone, which carries
 #: them in its own ``bounds`` / ``converge`` entries
 #: (:data:`_YRES_BOUNDS`).  This file's discipline is that a bound
 #: comes from a measured sweep over *that* configuration and its

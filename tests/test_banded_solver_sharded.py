@@ -33,7 +33,7 @@ kernel numerics are pinned single-device by the interpret tests.  The
 ``mpirun``-based guards for the same class are the ``*-mpi-pad``
 entries of ``test_random_smoke.py`` and ``test_laminar_smoke.py``
 ``--np`` variants.  A cuda-lowering guard of the *sharded kernel*
-path cannot be built on a CPU box: the body's backend dispatch
+path cannot be built on a CPU-only machine: the body's backend dispatch
 (``jax.default_backend()``) correctly traces the CPU sweep here even
 when lowering for ``cuda`` (verified -- the AOT lowering itself
 succeeds on the mesh), so real multi-GPU kernel execution is the

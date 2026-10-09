@@ -313,7 +313,7 @@ def _check_kernel_path() -> None:
     import dnsjax.solvers as solvers_mod
     from dnsjax.parameters import params
 
-    assert jax.default_backend() != "gpu", "this row assumes a CPU box"
+    assert jax.default_backend() != "gpu", "this row assumes a CPU backend"
     try:
         assert not solvers_mod._kernel_path(), "unset should follow the CPU"
         params.solver.pallas_kernel = True

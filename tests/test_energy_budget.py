@@ -346,7 +346,7 @@ _APPLIED_NY = (33, 49, 65, 97)
 #: test anything.
 _APPLIED_T = 60.0
 _APPLIED_FROM = 40.0
-#: Below this the wall-normal grid is simply too coarse for the
+#: Below this the wall-normal grid is too coarse for the
 #: budget to close at all (see the table): those rungs are
 #: measured and printed, not asserted on.
 _APPLIED_RESOLVED = 49

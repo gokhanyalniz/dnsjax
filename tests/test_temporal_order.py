@@ -632,7 +632,7 @@ def main() -> None:
             # proxy works only while the shared IMM projection error
             # dominates *both* schemes and cancels in the difference,
             # and ``res.consistent_imm`` is precisely what removes it.
-            # The honest measurement is each configuration's own
+            # The fair measurement is each configuration's own
             # self-convergence against a fine-dt run of the same
             # configuration.
             # The legacy path's absolute order is ~0.5-0.8 (its
@@ -764,7 +764,7 @@ def main() -> None:
             # The vardt study above is the cnab2-icn difference proxy,
             # which cancels the shared projection error -- so, exactly
             # as for the fixed-dt pair, it cannot judge the flag that
-            # removes that error.  With the flag on the honest
+            # removes that error.  With the flag on the fair
             # measurement is again self-convergence, here of the
             # *variable-step* sequence.  What it pins is the mid-run
             # ``set_dt`` rebuild in the gated configuration: flag-on

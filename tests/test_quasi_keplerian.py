@@ -205,7 +205,7 @@ def case_override_re2() -> None:
 
     ``re2`` is not a quasi-Keplerian parameter (the CLI/TOML surfaces
     reject it outright); a directly-assigned or layered value is
-    simply replaced by the (re1, r_omega, eta) derivation.
+    replaced by the (re1, r_omega, eta) derivation.
     """
     from dnsjax.parameters import (
         Parameters,

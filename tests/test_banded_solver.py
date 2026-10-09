@@ -562,7 +562,7 @@ def test_pallas_cuda_lowering_sharded_solve() -> None:
     (compile-only, no GPU).
 
     Forces the Pallas-kernel branch (``solvers._force_kernel_path``) so
-    tracing on a CPU box reaches ``pallas_call`` *inside* the ``.solve``
+    tracing on CPU reaches ``pallas_call`` *inside* the ``.solve``
     ``shard_map`` -- the composition ``test_pallas_cuda_lowering`` above
     cannot cover (it calls the kernel standalone), and where trace-time
     rules differ: under shard_map's default ``check_vma=True`` the
@@ -621,7 +621,7 @@ def test_pallas_adjoint_composes_in_solve() -> None:
     """The adjoint works *through* ``.solve``, not just standalone.
 
     ``test_pallas_adjoint_matches_portable_sweep`` checks the rule's
-    numbers, but it calls the kernel directly -- and on a CPU box every
+    numbers, but it calls the kernel directly -- and on CPU every
     end-to-end gradient takes the portable sweep, so nothing else
     exercises the ``custom_vjp`` in the shape production uses it:
     inside ``.solve``'s ``shard_map``, with the backward pass adding a
