@@ -30,8 +30,8 @@ docstrings. The human overview: `README.md` here.
   `_STREAM_FILES` names their directories so a fresh start refuses
   stale ones.
 - Change a `[twin]` default only after reading its field description
-  in `driver.py`: the defaults decide what a run costs and what its
-  streams can answer.
+  and the Design notes in `driver.py`: the defaults decide what a run
+  costs and what its streams can answer.
 - Offline tools: `scripts/twin_postprocess.py`,
   `scripts/twin_spectral_maps.py` and `scripts/ensemble_setup.py
   build-twin` (`scripts/CLAUDE.md`).
