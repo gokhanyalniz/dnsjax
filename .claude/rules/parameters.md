@@ -4,6 +4,8 @@ paths:
   - "src/dnsjax/flows/registry.py"
   - "src/dnsjax/flows/**/specs/*.py"
   - "src/dnsjax/extensions/__init__.py"
+  - "src/dnsjax/twin/driver.py"
+  - "src/dnsjax/analysis/transient_growth.py"
   - "tests/**/*.py"
   - "scripts/*.py"
 ---
@@ -12,9 +14,19 @@ paths:
 
 - The layer order, the per-flow surfaces and strict relevance: the
   `bootstrap.resolve_parameters` docstring. Another entry point passes
-  its own `toml_path` / `extensions` / `prog`; the transient-growth CLI
-  is the template. Field documentation: the `parameters.py` models,
-  printed per flow by `--help <system>` / `--sample-toml <system>`.
+  its own `toml_path` / `extensions` / `own_extensions` / `prog`; the
+  transient-growth CLI is the template. Field documentation: the
+  `parameters.py` models, printed per flow by `--help <system>` /
+  `--sample-toml <system>`.
+- A core field reaches the CLI, TOML and `--help` only through a
+  surface. One every flow takes unchanged goes in
+  `flows.registry.GLOBAL_FIELDS`, the only fields the bare `--help`
+  lists; any other gets a `FieldSpec` in each spec that takes it, and a
+  `DeferredSpec` where it is planned but missing. A field added to an
+  extension model needs nothing more, but a new entry point's own
+  section goes in `own_extensions`, or its bare `--help` omits it.
+  Guards: `tests/test_param_surface.py` (`case_coherence`,
+  `case_help_completeness`).
 - The CLI, TOML files and snapshot metadata use public names:
   cylindrical/annular `geo.lz`, `res.nz` (axial), `res.nr`,
   `res.ntheta` are internally `geo.lx`, `res.nx`, `res.ny`, `res.nz`.

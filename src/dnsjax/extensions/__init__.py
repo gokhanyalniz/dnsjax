@@ -200,7 +200,9 @@ class ParamExtension:
     ``name`` is the TOML section, the CLI prefix (``--name.field``),
     and the metadata key; ``relevant(system)`` decides whether the
     section appears on a flow's surface (an irrelevant section is a
-    strict error, like any other irrelevant parameter);
+    strict error, like any other irrelevant parameter), except for the
+    entry point that owns it, whose surfaces carry it on every flow
+    (``own_extensions`` of :func:`dnsjax.bootstrap.resolve_parameters`);
     ``validate(values, params)`` runs with the global checks after
     the final configuration layer -- unconditionally, so it must
     itself reject a *configured* section on an unsupported system
