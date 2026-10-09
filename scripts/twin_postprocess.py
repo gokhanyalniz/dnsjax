@@ -38,7 +38,7 @@ dealiased transforms, the geometry's ``D1``/``D2``/``D1_bnd``/base
 profile, and a factored Neumann Poisson operator.
 
 What a reconstruction cannot give back
-======================================
+--------------------------------------
 **The sampling grid is the snapshot grid.**  A live stream samples
 every ``twin.it_yspectra`` steps; this one samples wherever
 ``outs.it_snapshot`` left a pair.  That is why the rebuilt streams go
@@ -54,11 +54,11 @@ they would a live one.
 
 **The ``stats*.dat`` driving columns are inferred, not applied.**
 Under an active mean-mode driving constraint the live streams' last
-columns carry the force the corrector actually applied -- a *step*
+columns carry the force the corrector applied -- a *step*
 quantity, and no row here has a step behind it.  What a state alone
 supports is the wall-shear inference ``get_driving``, which is exactly
 what the live stream itself writes for its one stepless row
-(``t = t0``); the rebuilt file simply uses that convention for
+(``t = t0``); the rebuilt file uses that convention for
 **every** row, under the same column names.  The two agree only at a
 converged wall-normal resolution, and their gap is the usable
 under-resolution diagnostic documented at the ``__main__`` read site.
@@ -67,7 +67,7 @@ other stored value, in every stream, is bit for bit what the run
 would have written.
 
 Parameters, and why the grid is pinned
-======================================
+--------------------------------------
 Parameters come from a snapshot in the folder (the first complete
 pair, or ``--init.snapshot`` to choose another) through the ordinary
 layering, with the ``parameters.toml`` layer switched off -- a member's
@@ -91,7 +91,7 @@ other one.  Refusing names both grids and leaves the split to the
 caller.
 
 Cost
-====
+----
 Per pair: two snapshot loads, one ``twin_ybudget`` sample (33 field
 transforms; 21 under ``--recon.rotational_ybudget``) and the cheap,
 transform-free rest (``twin_energies``, ``twin_yspectra``, each
@@ -136,7 +136,7 @@ _PROG = "python scripts/twin_postprocess.py"
 #: back, so it carries no reader floor (unlike the stream sidecars);
 #: the number is here so a record describes which fields to expect.
 #: 2 added ``stats_driving`` alongside the two ``stats*.dat`` streams;
-#: 3 added ``x0_planes``; 4 lists the streams actually written, the
+#: 3 added ``x0_planes``; 4 lists the streams written, the
 #: reference spectra now being one of their own.
 PROVENANCE_VERSION: int = 4
 
@@ -489,9 +489,9 @@ def twin_values(
     takes the driver's own legacy back-fill
     (``_TWIN_LEGACY_DEFAULTS``); with no record at all each of them is
     unknown and written ``null``, as ``seed`` and ``e0`` always were --
-    never a default of today, which a member recorded under another one
+    never the current default, which a member recorded under another one
     did not run with.  Hence ``model_construct``: ``None`` is no valid
-    shape *setting*, only an honest record of an unknown one.
+    shape *setting*, only a faithful record of an unknown one.
     """
     from dnsjax.twin.driver import TwinParams, _legacy_default
 

@@ -53,7 +53,7 @@ Part C  ``--end-to-end``: the real ``save_snapshot`` /
         is the expensive part and does not change between meshes.
 
 Run on a GPU node, from a directory on the **scratch / parallel
-filesystem** the runs actually write to (``--outdir``)::
+filesystem** the runs write to (``--outdir``)::
 
     .venv/bin/python scripts/gds_probe.py --outdir /scratch/$USER/gdsprobe
 
@@ -68,7 +68,7 @@ the driver::
     .venv/bin/python scripts/gds_probe.py --env-only
 
 ``--cpu-smoke`` runs Part B's POSIX engines only, so the harness can
-be validated on a box with no GPU, no cupy and no kvikIO.  Paste the
+be validated on a machine with no GPU, no cupy and no kvikIO.  Paste the
 full stdout back.
 """
 
@@ -686,7 +686,7 @@ def _reshard_bench(state, reps: int = 3) -> None:
       piece instead of emitting a collective, and measured 230 ms
       where the jitted form took 0.68 ms;
     - a **raw device->device copy** of one shard, i.e. what the fabric
-      can actually do.  If the shipped path is near it, there is
+      can do.  If the shipped path is near it, there is
       nothing left to win here.
     """
     import jax
@@ -800,7 +800,7 @@ def _part_c(args, outdir: Path) -> None:
     # collective program and the runtime brings up its communicators.
     # Both are once per process, and a real run pays the second at its
     # first time step -- long before any snapshot -- so keeping it out
-    # of the cold-save number below is the honest split.
+    # of the cold-save number below is the fair split.
     t0 = time.perf_counter()
     jax.block_until_ready(snap._to_io_layout(state))
     t_first_reshard = time.perf_counter() - t0

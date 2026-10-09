@@ -13,7 +13,7 @@ logarithmic ordinate (next section).  ``--yscale linear`` swaps the
 ordinate instead.
 
 What is drawn
-=============
+-------------
 A tag for each series (:class:`SeriesSpec`), in one of several figure
 families.  A `$(\lambda, y)$` **map** is one figure per recorded
 sample; every other family is one figure (or a few) for the whole run:
@@ -90,7 +90,7 @@ abscissa to put it on -- and reaches the figures only through the
 reference quantities it is subtracted from.
 
 Premultiplication
-=================
+-----------------
 A stored entry is the energy (or rate) held by one **discrete** mode
 band, not a spectral density: summing the entries over the stored
 one-sided axis and contracting with ``y_weights`` returns the volume
@@ -133,7 +133,7 @@ shape, its axes and its contour spacing are the paper's; read an
 
 The scale and the premultiplier are independent: pairing a linear
 ordinate with ``ky``, or a logarithmic one with ``none``, is legal
-and simply not area-true in `$y$`.
+and not area-true in `$y$`.
 
 The `$m = 0$` column is dropped whatever the premultiplier, because
 `$\lambda = L/m$` has no position on a wavelength axis.  That is also
@@ -160,7 +160,7 @@ peaks at `$k_z E^{x+}_{uu} \approx 3.8$`, at `$y^+ \approx 14$`,
 the factor every map is a factor of two low.
 
 Inner units
-===========
+-----------
 With `$h = U_\mathrm{cl} = 1$` in the code's non-dimensionalization,
 `$\nu = 1/Re$` and `$u_\tau = Re_\tau/Re$`, so
 
@@ -186,7 +186,7 @@ map -- has no units to convert.  ``--outer-units`` draws everything
 in `$h$` and `$U_\mathrm{cl}$` instead.
 
 Ensemble averaging
-==================
+------------------
 Members are averaged sample by sample on **relative** time
 `$t - t_\mathrm{parent}$`, the clock since the perturbation, as
 :func:`dnsjax.analysis.twin.ensemble.aggregate_members` does: members
@@ -209,13 +209,12 @@ time by different arithmetic -- accumulating from different parents
 -- so their stored times differ in the last bits, and a pair
 straddling a bin's edge rounds apart however fine the bin.  On this
 grid that silently *drops* a frame, which is indistinguishable from
-a member simply being short.  Any number of members works; ``--tree``
-takes an
+a member being short.  Any number of members works; ``--tree`` takes an
 ``ensemble_setup.py build-twin`` tree and uses every member its
 ``members.json`` lists.
 
 Members out of phase
-====================
+--------------------
 Members meet on the relative clock because ``dnsjax-twin`` counts
 every cadence from the member's own perturbation step, so its samples
 sit at `$t_\mathrm{parent} + n\,c\,\Delta t$` whatever iteration
@@ -236,12 +235,12 @@ recorded ensemble that cannot be run again: the frames come back, and
 each averages fields recorded up to that far apart on their own
 clocks.  Half the cadence is the cap -- a nearest neighbour is never
 further than that from a uniform grid -- and the run report prints
-the widest spread any frame actually pairs across
+the widest spread any frame pairs across
 (:meth:`YSeries.alignment_spread`), so the size of the approximation
 is on the page rather than in the flag.
 
 The reference average
-=====================
+---------------------
 Three things here are measured against the reference field's own
 fluctuation energy: the two decorrelations (next section), the
 decorrelation front, and the growth laws, whose saturation level is
@@ -308,14 +307,14 @@ and the two counts side by side say which one was taken.
 That key is exactly right for **one** reference trajectory and wrong
 without it -- members subsampled from two *different* turbulent runs
 would be merged wherever their absolute times met.  Nothing recorded
-today separates them: ``twin.json`` carries ``parent`` and
+separates them: ``twin.json`` carries ``parent`` and
 ``parent_t`` (the member's own start) and the harvest manifest the
 source ``run_dir``, but neither is a signature of the trajectory, and
-neither travels into the stream.  Until one does, the report prints
-how many distinct parent snapshots are in play beside the instant
-count, so a member set that is not one trajectory is at least visible.
+neither travels into the stream.  The report therefore prints how
+many distinct parent snapshots are in play beside the instant count,
+so a member set that is not one trajectory is at least visible.
 
-What that pass actually accumulates is the **mean reference record**
+What that pass accumulates is the **mean reference record**
 -- both complete ``r_*`` marginals, with the `$(0, 0)$` mode
 subtracted once, on arrival (:meth:`YSeries.reference_spectrum`).
 Never a `$k_x = 0$` plane the stream may also carry: nothing divides
@@ -328,7 +327,7 @@ stored entry to `$E^{\mathrm{ref}}$` is linear, so the mean of the
 reductions is the reduction of the mean.
 
 Decorrelation
-=============
+-------------
 Dividing by a `$y$`- and `$k$`-independent scalar would be a
 rescaling: it would move no contour.  Dividing by a **resolved**
 reference is a decorrelation, and there are two of them, differing
@@ -392,7 +391,7 @@ energy *of that frame* rather than of the run, is
 :func:`dnsjax.analysis.twin.decorrelation_ratio`.)
 
 Shape maps
-==========
+----------
 The difference spectra and the budget once more, as ``spectra_s_x`` /
 ``spectra_s_z`` and ``budget_s_x`` / ``budget_s_z``, drawn for
 *where* their energy (or its rate) sits rather than for how much of it
@@ -444,7 +443,7 @@ panel carries a track wherever its absolute panel does ("Peak
 tracking"), and no constant moves one.
 
 Spacetime maps
-==============
+--------------
 Sum a `$(y, k)$` stream over `$k$` and what is left is a `$(y, t)$`
 field, which is one figure for a whole run rather than one per frame:
 wall distance across, on the same scale and floor as the maps'
@@ -490,7 +489,7 @@ and the stream metadata the figures were labelled from.  Enough to
 redraw a panel, or to undo its division or its units, without them.
 
 History maps
-============
+------------
 The tracked quantities against time, each reduced over one coordinate
 and premultiplied by the other only **after** the reduction: the
 `$k$`-sum against wall distance, times `$y$` in the plotted units
@@ -526,7 +525,7 @@ choose the time window, which matters: a run saturated for most of its
 length draws its migration in the bottom fifth of the box.
 
 Moment budget
-=============
+-------------
 How each term of the balance moves the moments of the difference
 energy (:func:`moment_budget`).  The density is the energy itself --
 each folded off-wall cell weighted by :func:`half_weights`, so a cell's
@@ -561,7 +560,7 @@ large terms of opposite sign, so read the closure against the largest
 term, not against the drift.  The two streams must share their frames.
 
 Decorrelation front
-===================
+-------------------
 The time each `$(\lambda, y)$` cell decorrelates (``front_x``,
 ``front_z``): the last upward crossing of ``--front-level`` (one half
 by default) by the mode-by-mode ratio `$\mathcal{R} =
@@ -574,7 +573,7 @@ sum, on one colour range of every time the boxes show, the iso-time
 lines drawn: the front's position at those times.
 
 Growth laws
-===========
+-----------
 Which law the difference energy grows by, and when
 (:mod:`dnsjax.analysis.twin.growth`).  With `$R = E/E_\mathrm{sat}$`,
 `$E_\mathrm{sat}$` twice the reference's fluctuation energy, each law
@@ -614,7 +613,7 @@ its streak bin by component) -- with the `$k_x = 0$` plane's budget per
 unit energy: the lift-up that builds it and the transfer out of it.
 
 Folding the channel
-===================
+-------------------
 ``--half mean`` (the default) averages the two channel halves at
 matching wall distance, which is legitimate and free statistics
 because the flow is statistically symmetric about its mid-plane:
@@ -640,7 +639,7 @@ does.
 run's own asymmetry is inspected.
 
 Colour scales
-=============
+-------------
 Non-negativity is **declared**, not inferred: the energies are sums
 of squares, which either decorrelation's division by a positive
 reference, and a shape map's by a positive peak, leaves them
@@ -719,7 +718,7 @@ the series and every other panel takes its own frame, whatever
 ``--clim`` says ("Shape maps").
 
 Peak tracking
-=============
+-------------
 The panels whose spectra keep one continuous bulk -- every panel of
 the difference spectra, and `$\mathcal{P}_\Delta$` and
 `$\mathcal{P}_\Delta^{\mathbf{U}}$` among the budget terms, each on
@@ -762,7 +761,7 @@ series' frames still matches frames alone.  The size and tilt of the
 same panels go beside it ("Size and tilt").
 
 Size and tilt
-=============
+-------------
 Where the track says where a panel's peak is, its **moments** say how
 large and how tilted the whole field is: the plotted quantity read as
 a density on the plotted plane -- value times the trapezoidal widths
@@ -800,7 +799,7 @@ drawing only: it swings freely when the ellipse is nearly round, where
 `$\rho$` and `$b$` do not.
 
 Figure geometry
-===============
+---------------
 The abscissa is sized by its decade count: the axes box is
 `$\text{decade} \times D_\lambda$` wide for the `$D_\lambda$` decades
 of the plotted limits, leaving only the scale free.  ``--width`` sets
@@ -847,7 +846,7 @@ panel carries, so a figure never has to choose between the peak it
 reports and its neighbour's tick labels.
 
 Usage
-=====
+-----
 matplotlib is not a solver dependency; it lives in the ``plots``
 dependency group::
 
@@ -1721,7 +1720,7 @@ class YSeries:
         contributes the same relative instant.  Under
         ``--align-atol`` it is how far apart on their own clocks the
         two extreme members of the worst frame were recorded --
-        what the widened tolerance actually bought and cost.
+        what the widened tolerance bought and cost.
         """
         return float(
             np.max(self.t_members.max(axis=0) - self.t_members.min(axis=0))
@@ -2752,8 +2751,10 @@ def declared_non_negative(name: str) -> bool:
 
 
 def declared_non_positive(name: str) -> bool:
-    """Whether :data:`NON_POSITIVE` covers a name, looked up as
-    :func:`declared_non_negative` looks one up."""
+    """Whether :data:`NON_POSITIVE` covers a name.
+
+    Looked up as :func:`declared_non_negative` looks one up.
+    """
     name = shape_source(name) or name
     base, _, suffix = name.rpartition("_")
     return (base if suffix in MARGINALS else name) in NON_POSITIVE
@@ -3230,8 +3231,9 @@ def band_colors(
 
     ``contourf`` colours a band by its **midpoint** and ``pcolormesh``
     by the interval a value falls in, so the two agree only if they
-    are handed the same table: a :class:`~matplotlib.colors.
-    ListedColormap` holding one colour per band, indexed by a
+    are handed the same table: a
+    :class:`~matplotlib.colors.ListedColormap` holding one colour per
+    band, indexed by a
     :class:`~matplotlib.colors.BoundaryNorm` on *levels*.  Then
     ``--fill contour`` and ``--fill pcolormesh`` differ in geometry
     and in nothing else.
@@ -3450,7 +3452,7 @@ def draw_map(
         )
         if fill == "pcolormesh":
             # The same bands, drawn per cell instead of interpolated
-            # between samples -- the honest rendering of a grid that
+            # between samples -- the faithful rendering of a grid that
             # is coarse wherever it is (:func:`cell_edges`).
             filled = ax.pcolormesh(
                 cell_edges(map_.lam, log=True),
@@ -3818,9 +3820,11 @@ def spectra_panels(prefix: str, marginal: str) -> list[tuple[str, int | None]]:
 def budget_panels(
     series: YSeries, marginal: str, *, shape: bool = False
 ) -> list[tuple[str, int | None]]:
-    """Every map panel of one marginal (:data:`MAP_PANELS`), plus their
-    sum, once the stream is known to support them -- each a shape
-    panel under *shape* (:func:`shape_source`)."""
+    """Every map panel of one marginal (:data:`MAP_PANELS`), plus their sum.
+
+    Only once the stream is known to support them; each a shape panel
+    under *shape* (:func:`shape_source`).
+    """
     balance_terms(series.meta)
     prefix = f"{SHAPE}_" if shape else ""
     return [(f"{prefix}{t}_{marginal}", None) for t in (*MAP_PANELS, "sum")]
@@ -6362,12 +6366,12 @@ GROWTH_Y_PLUS: tuple[float, ...] = (2.0, 5.0, 10.0, 20.0, 40.0, 80.0, 160.0)
 
 @dataclass(frozen=True)
 class GrowthCurves:
-    r"""A family of growth curves on one clock (module docstring,
-    "Growth laws").
+    r"""A family of growth curves on one clock.
 
-    ``energy`` is ``(n_curves, n_t)`` and ``saturation`` ``(n_curves,)``
-    -- twice the reference's, the energy two independent fields
-    differ by -- so `$R$` = ``energy / saturation[:, None]``.
+    The module docstring's "Growth laws" has the reading.  ``energy`` is
+    ``(n_curves, n_t)`` and ``saturation`` ``(n_curves,)`` -- twice the
+    reference's, the energy two independent fields differ by -- so `$R$` =
+    ``energy / saturation[:, None]``.
     ``coords`` places each curve on a scale (a wavelength or a wall
     distance, plotted units) where one exists, ``members`` holds each
     member's own energy for a single curve, and ``rates`` the budget
@@ -6644,8 +6648,9 @@ def growth_ssp(
     there; the **waves**, every component at `$k_x \neq 0$` -- the
     `$(0, 0)$` mode taken off the first two, each against twice its
     reference share (module docstring, "Growth laws").  These are the
-    three-bin quantities of :func:`~dnsjax.analysis.twin.yspectra.
-    bin_energies` with the streak bin split by component.  The budget
+    three-bin quantities of
+    :func:`~dnsjax.analysis.twin.yspectra.bin_energies` with the streak
+    bin split by component.  The budget
     stream is component-summed, so where *budget* is given the rates
     are those of the whole `$k_x = 0$` plane (streaks and rolls
     together) and of the waves, both per unit of their own energy:
@@ -6699,8 +6704,9 @@ def growth_global(series: YSeries, options: MapOptions) -> GrowthCurves:
 
     Each member's ``twin.dat`` where every member has one -- the
     ``twin.it_energy`` cadence, finer than the spectra's -- aligned on
-    whole steps since the perturbation (:func:`~dnsjax.analysis.twin.
-    series.relative_time`) and restricted to the frames' window; the
+    whole steps since the perturbation
+    (:func:`~dnsjax.analysis.twin.series.relative_time`) and restricted
+    to the frames' window; the
     spectra stream's own per-member totals otherwise.  The curve is the
     **geometric** member mean, `$\exp\langle\ln E\rangle$`: a rate is a
     logarithmic derivative, and the arithmetic mean would let the
@@ -8293,7 +8299,7 @@ def main(argv: list[str] | None = None) -> int:
         # Never silent: a shared grid shorter than the first member's
         # own says which member shortened it
         # (:meth:`YSeries.grid_report`), and a widened tolerance says
-        # how far apart the frames it recovered actually pair.
+        # how far apart the frames it recovered pair.
         for stem, series in opened.items():
             if series is None:
                 continue

@@ -19,24 +19,23 @@ eigenvalues are `$\lambda_m = -(m\pi/2)^2$`; the reported
 **resolving power** is the length of the leading run of numerical
 eigenvalues within a relative tolerance of those, i.e. the number of
 wall-normal modes the discretization represents faithfully.  It is
-the honest currency for "N Chebyshev polynomials" -- a spectral
+the like-for-like currency for "N Chebyshev polynomials" -- a spectral
 method's own resolving power is likewise well below its point count
 (`$\approx 2N/\pi$` for Chebyshev).
 
 Both operators are each method's *natural* choice: dnsjax's `$D_2$`
-is a direct Fornberg fit (never `$D_1 D_1$` -- see the
-``Resolution.consistent_imm`` docs for why that route was retired),
+is a direct Fornberg fit (never `$D_1 D_1$`; why that route was
+retired: the ``cartesian`` Design notes),
 while the Chebyshev reference squares its differentiation matrix, as
 a Chebyshev code would.
 
 What it measured
 ----------------
-At the time of writing, for the default ``fd_order = 8`` on the CGL
-grid, **FD needs 1.5--1.9x the point count of a Chebyshev
-expansion**: ``ny = 49`` matches 33 Chebyshev polynomials at the 1 %
-criterion, ``ny = 63`` matches it at the stricter 0.1 % criterion and
-exceeds it at 1 % (23 modes vs 18).  Two corollaries worth knowing
-before turning knobs:
+For the default ``fd_order = 8`` on the CGL grid, **FD needs 1.5--1.9x the
+point count of a Chebyshev expansion**: ``ny = 49`` matches 33 Chebyshev
+polynomials at the 1 % criterion, ``ny = 63`` matches it at the stricter 0.1 %
+criterion and exceeds it at 1 % (23 modes vs 18).  Two corollaries worth
+knowing before turning knobs:
 
 - ``fd_order`` is a weak lever, ``ny`` a strong one.  At ``ny = 63``,
   order 8 -> 12 buys 4 modes (+17 %) and widens every banded
@@ -235,8 +234,10 @@ def eigenvalue_error(d2: ndarray, modes: tuple[int, ...]) -> list[float]:
 
 
 def cn_amplification(x: float) -> float:
-    r"""CN amplification factor `$(1 - x/2)/(1 + x/2)$`, `$x = \nu k^2
-    \Delta t$` (exact: `$e^{-x}$`)."""
+    r"""CN amplification factor `$(1 - x/2)/(1 + x/2)$`.
+
+    `$x = \nu k^2 \Delta t$`; the exact factor is `$e^{-x}$`.
+    """
     return (1.0 - x / 2.0) / (1.0 + x / 2.0)
 
 
