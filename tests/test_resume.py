@@ -164,11 +164,13 @@ CARRY_REDERIVED_MIN = 1e-9
 
 
 def run_unit_checks() -> str | None:
-    """Offline units of ``trajectory_defining_changes`` and the
-    ``read_snapshot_params`` solver-section skip (no JAX/mpirun).
+    """Offline units of the resume comparison and the solver-section skip.
+
+    ``trajectory_defining_changes`` and ``read_snapshot_params``'s
+    solver-section skip (no JAX/mpirun).
 
     Stored dumps are built with ``recorded_params_dump`` -- the
-    public-named representation snapshots actually embed -- so
+    public-named representation snapshots embed -- so
     these units exercise the internalize-on-compare path.
     """
     from dnsjax.param_surface import recorded_params_dump
@@ -369,8 +371,10 @@ def run_grid_validation_checks() -> str | None:
 
 
 def _restore_params(saved_dump: dict, saved_user_set: set) -> None:
-    """Restore the sections the grid units mutate (plus the
-    ``_user_set_fields`` layer bookkeeping)."""
+    """Restore the sections the grid units mutate.
+
+    Plus the ``_user_set_fields`` layer bookkeeping.
+    """
     import dnsjax.parameters as P
 
     for section in ("phys", "geo", "res", "step"):

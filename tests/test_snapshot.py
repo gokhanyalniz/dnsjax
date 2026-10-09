@@ -1014,8 +1014,11 @@ def run_case(
     nx: int | None = None,
     ny: int | None = None,
 ) -> str | None:
-    """Save then load a snapshot (one process when the np config is
-    unchanged, separate save/load processes across np configs)."""
+    """Save then load a snapshot, across np configurations.
+
+    One process when the np configuration is unchanged, separate
+    save/load processes across configurations.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         snap_path = os.path.join(tmp, "snap.tar")
         if (save_np, save_np0) == (load_np, load_np0):
@@ -1585,9 +1588,12 @@ def run_write_mode_identity_case() -> str | None:
 
 
 def run_stats_isnap_case() -> str | None:
-    """``save_snapshot`` embeds ``_dnsjax_stats.json`` + ``isnap``, and
-    omits the stats member (with ``isnap`` defaulting to 0) when no stats
-    are supplied.  Verified with the standard library alone (no dnsjax)."""
+    """``save_snapshot`` embeds ``_dnsjax_stats.json`` and ``isnap``.
+
+    It omits the stats member (with ``isnap`` defaulting to 0) when no
+    stats are supplied.  Verified with the standard library alone (no
+    dnsjax).
+    """
     import json
     import tarfile
 
@@ -1738,8 +1744,11 @@ def run_ve_pipe_regrid_case() -> str | None:
 
 
 def run_ve_ny_mismatch_case() -> str | None:
-    """Viscoelastic nr-mismatch load: the assembled state must carry 9
-    components at the snapshot's radial count."""
+    """A viscoelastic nr-mismatch load keeps the 9-component layout.
+
+    The assembled state carries 9 components at the snapshot's radial
+    count.
+    """
     name = "viscoelastic nr 8->16 load shape"
     with tempfile.TemporaryDirectory() as tmp:
         snap_path = os.path.join(tmp, "snap.tar")

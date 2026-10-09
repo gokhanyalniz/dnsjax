@@ -251,11 +251,13 @@ def _worker(
     consistent_imm: bool = False,
     default_implicitness: bool = False,
 ) -> None:
-    """Integrate to ``T_END`` with (*system*, *scheme*, *dt*); save the
-    final spectral state to *out* (.npy).  With *vardt*, step the
-    dyadic ``(dt, dt/2, dt/2)`` pattern via ``set_dt`` (docstring).
-    The Crank-Nicolson weight is ``IMPLICITNESS`` unless
-    *default_implicitness* leaves the model default."""
+    """Integrate to ``T_END`` and save the final spectral state.
+
+    With (*system*, *scheme*, *dt*), to *out* (.npy).  With *vardt*,
+    step the dyadic ``(dt, dt/2, dt/2)`` pattern via ``set_dt``
+    (docstring).  The Crank-Nicolson weight is ``IMPLICITNESS`` unless
+    *default_implicitness* leaves the model default.
+    """
     os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1"
 
     from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
@@ -499,8 +501,9 @@ def _consistent_imm_contrast(
     min_error_gain: float,
     min_slope_gain: float,
 ) -> None:
-    """Assert the default ``res.consistent_imm`` formulation is second
-    order (every measured slope at least ``DEFAULT_ORDER_MIN``) and
+    """Assert the default ``res.consistent_imm`` formulation is second order.
+
+    Every measured slope is at least ``DEFAULT_ORDER_MIN``, and it
     improves both the size of the temporal error and its decay rate over
     the legacy primitive one.
 

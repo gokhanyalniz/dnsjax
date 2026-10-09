@@ -253,8 +253,9 @@ def test_spin_physical_round_trip() -> None:
 
 
 def test_probe_stream_component_basis() -> None:
-    r"""The probe gather crosses the 9-component boundary, and the
-    labels it advertises name the components it returns.
+    r"""The probe gather crosses the 9-component boundary, labels intact.
+
+    The labels it advertises name the components it returns.
 
     The probe stream is the only consumer that converts *columns*
     rather than whole states, and it is written once and read by

@@ -1,5 +1,7 @@
-r"""Unit tests for the JAX-free twin analysis package
-(``dnsjax.analysis.twin``) and the ``build-twin`` orchestration.
+r"""Unit tests for the JAX-free twin analysis and the twin tree builder.
+
+The package is ``dnsjax.analysis.twin``, the orchestration
+``ensemble_setup.py build-twin``.
 
 Everything runs on hand-written synthetic files (no solver, no JAX --
 asserted): the ``.dat``/``twin.json`` readers with resume-seam
@@ -1464,8 +1466,11 @@ def test_fluctuation_energy() -> None:
 
 
 def test_shape_alignment() -> None:
-    """The `(y, k)` shape overlap: normalized, symmetric, and blind to
-    amplitude -- the three properties a calibration reads off it."""
+    """The `(y, k)` shape overlap is normalized, symmetric and scale-blind.
+
+    Blind to amplitude -- the three properties a calibration reads off
+    it.
+    """
     from dnsjax.analysis.twin import shape_alignment
 
     rng = np.random.default_rng(5)

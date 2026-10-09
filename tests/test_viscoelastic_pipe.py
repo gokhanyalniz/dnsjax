@@ -244,8 +244,10 @@ def test_parity_signs_match_the_reduced_matrices() -> None:
 
 
 def test_spin_combos_carry_the_parity_their_operator_assumes() -> None:
-    r"""The spin combos of a correctly-mirrored physical tensor field
-    carry the parity `$(-1)^{m+s}$` that :data:`TENSOR_SPIN` claims.
+    r"""The spin combos of a mirrored tensor carry the claimed parity.
+
+    A correctly-mirrored physical tensor field's combos carry the
+    parity `$(-1)^{m+s}$` that :data:`TENSOR_SPIN` claims.
 
     A rank-2 component picks up one sign flip per index in
     `$\{r, \theta\}$` when the axis is crossed (`$\hat e_r,
@@ -418,10 +420,12 @@ def test_laminar_profiles_solve_the_ptt_equilibrium() -> None:
 
 
 def test_laminar_conformation_rhs_vanishes() -> None:
-    r"""At `$\kappa = 0$` the conformation RHS vanishes at the laminar
-    pair, for every `$\epsilon$` -- the flow is unidirectional, so the
+    r"""At `$\kappa = 0$` the conformation RHS vanishes at the laminar pair.
+
+    For every `$\epsilon$`: the flow is unidirectional, so the
     advection and all but one stretching term drop out algebraically
-    and the relaxation cancels the survivor."""
+    and the relaxation cancels the survivor.
+    """
     state = to_spin_basis(init_state())
     rhs = np.asarray(_get_rhs(state, fourier, flow))
     scale = float(np.abs(np.asarray(init_state()[3:])).max())
@@ -677,10 +681,12 @@ def test_no_cross_geometry_import() -> None:
 
 
 def test_probe_stream_component_basis() -> None:
-    r"""The pipe's probe gather crosses the 9-component boundary and
-    advertises the labels of the components it returns (checked against
-    the analysis package's stored-component schema, so the two
-    9-component surfaces cannot drift apart)."""
+    r"""The pipe's probe gather crosses the 9-component boundary, labelled.
+
+    It advertises the labels of the components it returns, checked
+    against the analysis package's stored-component schema so the two
+    9-component surfaces cannot drift apart.
+    """
     from dnsjax.analysis._core import geometry_info
     from dnsjax.extensions.probes import (
         _component_labels,
@@ -752,8 +758,9 @@ def test_tensor_spin_tables_agree() -> None:
 
 
 def test_consistent_imm_is_accepted() -> None:
-    r"""The flow accepts ``res.consistent_imm`` and keeps the pipe's
-    own grid/scheme check.
+    r"""The flow accepts ``res.consistent_imm`` and keeps its grid check.
+
+    The pipe's own grid/scheme check stays.
 
     The flag was rejected here for one commit, on a nonlinear blow-up
     measured at `$\mathrm{Re} \approx 1$`.  That blow-up was real but
@@ -798,8 +805,10 @@ def test_consistent_imm_is_accepted() -> None:
 
 
 def test_div_c_matches_a_direct_reference() -> None:
-    r"""`$\nabla\cdot c$` equals its component formulas evaluated with
-    explicitly assembled parity-reduced matrices."""
+    r"""`$\nabla\cdot c$` equals its component formulas.
+
+    Evaluated with explicitly assembled parity-reduced matrices.
+    """
     Nr = params.res.ny
     Nm, Nkz = sharding.nz_spec, sharding.nx_spec
     rng = np.random.default_rng(13)
