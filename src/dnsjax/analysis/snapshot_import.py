@@ -78,20 +78,18 @@ the physical component basis above.
 Parameter surface
 -----------------
 ``configure_target`` / ``convert_field_to_snapshot`` take the flow's
-**public-named** physics / geometry / resolution parameters as
-keyword arguments -- exactly the names the solver CLI documents
-(``dnsjax --help <system>``): ``nx``/``ny``/``nz``/``lx``/``lz``/
-``re`` for the Cartesian and periodic flows; ``nz`` (axial), ``nr``
-(radial), ``ntheta`` (azimuthal) and ``lz`` (axial length) for the
-cylindrical and annular flows, with ``re`` (pipe, Dean),
-``re``/``curvature`` (curved pipe), ``re1``/``re2``/``eta``
-(Taylor-Couette), ``re1``/``r_omega``/``eta`` (quasi-Keplerian) and
-``eta`` (Dean), plus an optional ``m0`` (azimuthal wedge) wherever the
-flow's surface has one.  The three
-resolutions are required (they fix the input shape); anything omitted
-falls to the flow's defaults, and a name not on the flow's surface is
-a hard error, as on the CLI.  Resolutions count the physical modes /
-grid points *before* 3/2 dealiasing (the solver's nominal
+**public-named** physics / geometry / resolution parameters as keyword
+arguments -- exactly the names the solver CLI documents
+(``dnsjax --help <system>``): ``nx``/``ny``/``nz``/``lx``/``lz``/ ``re`` for
+the Cartesian and periodic flows; ``nz`` (axial), ``nr`` (radial), ``ntheta``
+(azimuthal) and ``lz`` (axial length) for the cylindrical and annular flows,
+with ``re`` (pipe, Dean), ``re``/``curvature`` (curved pipe),
+``re1``/``re2``/``eta`` (Taylor-Couette), ``re1``/``r_omega``/``eta``
+(quasi-Keplerian) and ``eta`` (Dean), plus an optional ``m0`` (azimuthal wedge)
+wherever the flow's surface has one.  The three resolutions are required (they
+fix the input shape); anything omitted falls to the flow's defaults, and a name
+not on the flow's surface is a hard error, as on the CLI.  Resolutions count
+the physical modes / grid points *before* 3/2 dealiasing (the solver's nominal
 resolution); never include dealiasing padding.
 
 Algorithm
@@ -212,12 +210,11 @@ def _geo_family(system: str) -> str:
 
 
 def _full_axis_gather(n: int) -> np.ndarray:
-    r"""Indices selecting ``complex_harmonics(n)`` order from a length
-    ``n`` FFT output (numpy order).
+    r"""Indices taking a length-``n`` numpy FFT to native order.
 
-    Equivalent to deleting index ``n // 2`` (the Nyquist slot), but
-    built by matching integer wavenumbers against
-    ``operators.complex_harmonics`` so it cannot drift from the solver.
+    The native order is ``complex_harmonics(n)``.  Equivalent to deleting index
+    ``n // 2`` (the Nyquist slot), but built by matching integer wavenumbers
+    against ``operators.complex_harmonics`` so it cannot drift from the solver.
     """
     from ..operators import complex_harmonics
 
@@ -231,11 +228,11 @@ def _full_axis_gather(n: int) -> np.ndarray:
 
 
 def _to_native_full_axis(field: Any, axis: int, n: int) -> Any:
-    """Reorder a full-complex spectral axis to native
-    (``complex_harmonics``) order, dropping the Nyquist mode.
+    """Reorder a full-complex spectral axis to native order, dropping Nyquist.
 
-    Length ``n - 1`` is already native (pass through); length ``n`` is
-    numpy-FFT order (gather, which also drops the Nyquist mode).
+    The native order is ``complex_harmonics``.  Length ``n - 1`` is already
+    native (pass through); length ``n`` is numpy-FFT order (gather, which also
+    drops the Nyquist mode).
     """
     from jax import numpy as jnp
 
@@ -250,8 +247,10 @@ def _to_native_full_axis(field: Any, axis: int, n: int) -> Any:
 
 
 def _norm_factor(input_norm: InputNorm, axis_sizes: list[int]) -> float:
-    """Scalar mapping a forward transform in ``input_norm`` to dnsjax's
-    ``norm="forward"`` convention, over the transformed ``axis_sizes``."""
+    """The factor taking an ``input_norm`` transform to ``norm="forward"``.
+
+    A scalar, over the transformed ``axis_sizes``.
+    """
     if input_norm == "forward":
         return 1.0
     if input_norm == "backward":
@@ -395,7 +394,6 @@ def _validate_grid_domain(system: str, family: str, grid: list[float]) -> None:
         )
     if family == "pipe" and g[0] <= 0.0:
         raise ValueError("pipe: radial grid must exclude r = 0 (use (0, 1])")
-    wall_lo = lo if family != "pipe" else hi  # pipe: only the outer wall
     if family == "pipe":
         if abs(g[-1] - hi) > 1e-6:
             print(
@@ -407,20 +405,19 @@ def _validate_grid_domain(system: str, family: str, grid: list[float]) -> None:
                 f"  warning: walls not resolved at the domain endpoints "
                 f"[{lo:.6g}, {hi:.6g}] (grid ends [{g[0]:.6g}, {g[-1]:.6g}])"
             )
-    _ = wall_lo  # documented intent; only used for the message above
 
 
 # ── Public API ───────────────────────────────────────────────────
 
 
 def _public_field_map(system: str) -> dict[str, tuple[str, str]]:
-    """Public name -> ``(section, internal name)`` over the flow's
-    physics / geometry / resolution surface.
+    """Public name -> ``(section, internal name)`` over the flow's surface.
 
-    Built from the flow spec (plus the unaliased global fields), so
-    the accepted keyword names are exactly the solver's public surface
-    for *system* (``--help <system>``); the converter-owned fields
-    (``phys.system``, ``res.double_precision``) are excluded.
+    Covers the physics / geometry / resolution sections.  Built from the flow
+    spec (plus the unaliased global fields), so the accepted keyword names are
+    exactly the solver's public surface for *system* (``--help <system>``); the
+    converter-owned fields (``phys.system``, ``res.double_precision``) are
+    excluded.
     """
     from ..flows.registry import GLOBAL_FIELDS, spec_for
 

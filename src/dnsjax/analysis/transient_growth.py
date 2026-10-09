@@ -34,7 +34,7 @@ azimuthal `$u_\theta$` for Taylor-Couette).  A directory may be given
 instead of a file, in which case every file in it is processed.
 
 Why this reuses the solver exactly
-==================================
+----------------------------------
 The base profile enters the solver only through the pair of flow arrays
 ``base_flow`` / ``curl_base_flow`` that the FFT-free linear coupling
 `$L_{bf} = \mathbf{u}'\times\nabla\times\mathbf{U} +
@@ -46,15 +46,15 @@ a pure gradient absorbed by the pressure (see the :mod:`dnsjax.rhs`
 module docstring), so linearizing about a *non-solution* profile
 introduces **no extra terms** in the Jacobian -- the base residual is a
 constant forcing that does not enter the linear operator.  Every other
-operator (the viscous Helmholtz `$H_k$`, the pressure Poisson `$L_k$`,
-and the influence-matrix data enforcing `$\nabla\cdot\mathbf{u}'=0$` and
-the wall BCs) is profile-independent, so a per-profile flow is a shallow
+operator (the viscous Helmholtz solves and the influence-matrix data
+enforcing `$\nabla\cdot\mathbf{u}'=0$` and the wall BCs) is
+profile-independent, so a per-profile flow is a shallow
 copy with the two arrays swapped
 (:func:`dnsjax.geometries.wall_bounded._base.frozen_profile_flow`; each
 flow module's ``frozen_profile_flow(profile)`` builder).
 
 Mathematical formulation
-========================
+------------------------
 Per non-mean Fourier mode `$(k_2, k_3)$` the linearized dynamics are
 `$d\mathbf{q}/dt = \mathcal{A}\,\mathbf{q}$` on the complex state
 `$\mathbf{q}\in\mathbb{C}^{n}$`, `$n = 3 N_y$` (three velocity
@@ -69,6 +69,9 @@ eigenvalue of `$\mathcal{A}$` decays (a non-normal-operator effect):
     \qquad
     G_{\max} = \max_{t\ge 0} G(t)\ \text{at}\ t = t_{\mathrm{opt}}.
 
+This is the optimal energy growth of Reddy & Henningson, *J. Fluid
+Mech.* **252**, 209 (1993); Schmid & Henningson, *Stability and
+Transition in Shear Flows* (Springer, 2001), is the standard account.
 The energy norm `$\lVert\mathbf{q}\rVert_E^2 = \mathbf{q}^{H} W
 \mathbf{q}$` is the solver's own kinetic energy (``get_norm2*``): `$W$`
 is diagonal, `$W = \mathrm{diag}_c(m_c\,w_y)$` with the wall-normal
@@ -90,7 +93,7 @@ With CN weight `$\theta = 1$` (backward Euler,
 .. math::
     \Phi = (I - \Delta t\,\mathcal{A})^{-1}\quad\text{on } S,
 
-realized exactly by the influence-matrix pressure solve (see the
+realized exactly by the influence-matrix solve (see the
 ``_imm_iteration`` docstring in
 :mod:`dnsjax.geometries.wall_bounded.cartesian` and
 :func:`dnsjax.timestep.make_stepper`).  Backward Euler is an *exact
@@ -98,15 +101,14 @@ rational function* of `$\mathcal{A}$`, so inverting the relation
 recovers `$\mathcal{A}$` to rounding -- `$\Delta t$` is a probe, **not**
 an accuracy knob, and there is no time-discretization error.
 
-The propagator is the solver's, so it inherits ``res.consistent_imm``.
-By default that is the reconstruction scheme, in every wall-bounded
-geometry, and its solenoidal subspace `$S$` is *exactly* the discrete
-one:
-a non-solenoidal basis vector's tangential part maps to zero in a
-single step rather than decaying over several, so `$\Phi$` is singular
-on the complement by construction.  That is the intended behaviour on
-`$S$` and does not affect `$G(t)$`, which is computed there -- but it
-does mean the raw propagator is rank-deficient off it.
+The propagator is the solver's, so it inherits ``res.consistent_imm``.  By
+default that is the reconstruction scheme, in every wall-bounded geometry, and
+its solenoidal subspace `$S$` is *exactly* the discrete one: a non-solenoidal
+basis vector's tangential part maps to zero in a single step rather than
+decaying over several, so `$\Phi$` is singular on the complement by
+construction.  That is the intended behaviour on `$S$` and does not affect
+`$G(t)$`, which is computed there -- but it does mean the raw propagator is
+rank-deficient off it.
 
 The pipeline per mode is:
 
@@ -148,12 +150,14 @@ The pipeline per mode is:
 
 5. **Restriction to the resolved eigenspace.**  Growth is measured on
    the probe-*resolved* eigenspace only (`$|\mu| > \tfrac12$`, i.e.
-   `$|\lambda| \lesssim 2/\Delta t$`).  Its energy-coordinate
-   eigenvectors are factorized `$E_{\mathrm{res}} = QR$` (`$Q$`
-   orthonormal, so the 2-norm in `$Q$` coordinates *is* the energy
-   norm), giving the reduced generator `$\mathcal{A}_{\mathrm{res}} =
-   Q^{H}\mathcal{A}Q = R\,\mathrm{diag}(\lambda_{\mathrm{res}})
-   \,R^{-1}$` -- already in eigenform, so no ``expm`` is needed.
+   `$|1 - \Delta t\,\lambda| < 2$`, which reaches
+   `$|\lambda| = 1/\Delta t$` along the decaying real axis).  Its
+   energy-coordinate eigenvectors are factorized
+   `$E_{\mathrm{res}} = QR$` (`$Q$` orthonormal, so the 2-norm in `$Q$`
+   coordinates *is* the energy norm), giving the reduced generator
+   `$\mathcal{A}_{\mathrm{res}} = Q^{H}\mathcal{A}Q =
+   R\,\mathrm{diag}(\lambda_{\mathrm{res}})\,R^{-1}$` -- already in
+   eigenform, so no ``expm`` is needed.
    This restriction is **not** an optimization: carrying the
    unresolved modes would turn the propagator into a *non-orthogonal
    spectral projector* the instant their `$e^{t\lambda}$` dies, so
@@ -194,7 +198,7 @@ The pipeline per mode is:
    on the host (:func:`numpy.linalg.eig`; JAX's ``eig`` is CPU-only).
 
 Conventions and choices
-=======================
+-----------------------
 - **Mean mode** `$(0,0)$` is excluded: the influence-matrix mean branch
   (bulk-velocity / spanwise-blocking projections, mean-mode driving)
   makes it affine rather than a clean linear block, and it is not part
@@ -213,19 +217,19 @@ Conventions and choices
   I)(\Phi_S + I)^{-1}$` is an alternative, not implemented here.
 
 Choosing the knobs
-==================
+------------------
 The defaults suit the five systems at moderate `$Re$`; every failure
 mode below is guarded per mode with an explicit error.
 
 - ``--tg.dt`` (0.01): the probe step sets *conditioning* and the
   *resolved spectral window*, not accuracy.  Only eigenvalues with
-  `$|\lambda| \lesssim 2/\Delta t$` are resolved (beyond, the probe
+  `$|\lambda| \lesssim 1/\Delta t$` are resolved (beyond, the probe
   compresses `$\mu \to 0$`), and those are exactly the modes `$G$` is
   measured on (step 5).  It therefore cuts **both** ways and the
   default is a balance, not a floor:
 
   * *Reduce* it to resolve more of the spectrum (a slow mode you need
-    must satisfy `$|\lambda| \lesssim 2/\Delta t$`) or to fix a
+    must satisfy `$|\lambda| \lesssim 1/\Delta t$`) or to fix a
     diverging corrector (contraction `$\propto \Delta t$`).
   * *Raise* it to tighten the window.  A wider window admits the
     fast, wall-clustered FD eigenmodes, which are **discretization
@@ -252,16 +256,17 @@ mode below is guarded per mode with an explicit error.
   cutoff must land inside the singular-value cliff between the
   physical spectrum (whose floor is `$\sigma/\sigma_0 \sim
   1/(\Delta t\,|\lambda_{\mathrm{stiff}}|)$`) and the
-  constraint-violating null space (whose floor is set by
-  ``--tg.corrector_tolerance``, *not* by machine epsilon -- the columns
-  are only converged that far); the gap check verifies that it did.
-  On a "no clean rank gap" failure inspect the printed tail, then
-  move ``--tg.rank_tol`` into the observed gap; lower ``--tg.rank_gap_min``
+  constraint-violating null space, which sits at round-off
+  (`$\sigma/\sigma_0 \sim 10^{-15}$` under both ``res.consistent_imm``
+  formulations, measured on plane Poiseuille at `$N_y = 49$`); the gap
+  check verifies that the cutoff landed between them.  On a "no clean
+  rank gap" failure inspect the printed tail, then move
+  ``--tg.rank_tol`` into the observed gap; lower ``--tg.rank_gap_min``
   only if the true cliff is genuinely that shallow.  ``--tg.dt`` also
-  moves the gap, but *raising* it is what widens the cliff in
-  practice (measured under ``--tg.dt`` above) -- both floors respond,
-  so the naive "reduce it to lift the physical floor" is unreliable;
-  read the printed tail rather than assuming a direction.
+  moves the gap, and *raising* it widened the cliff in the case
+  measured under ``--tg.dt`` above, so the naive "reduce it to lift the
+  physical floor" is unreliable; read the printed tail rather than
+  assuming a direction.
 - ``--tg.t_max`` (default `$0.25\,Re$`): covers the classic optima,
   `$t_{\mathrm{opt}} \approx 0.05$`--`$0.15\,Re$`, of the five flows
   (Taylor-Couette / quasi-Keplerian use the derived reference ``re``:
@@ -307,7 +312,7 @@ mode below is guarded per mode with an explicit error.
   (nonlinear, transition-triggering) seeding.
 
 Converging `$N_y$` (do this before trusting `$G_{\max}$`)
-=========================================================
+---------------------------------------------------------
 The physical `$G(t)$` converges *fast* in `$N_y$`; the artefact of
 step 5 converges *slowly*, so **`$N_y$` is set by the artefact, not by
 the physics**.  Measured for quasi-Keplerian `$Re_i = 10^4$`,
@@ -346,7 +351,7 @@ sweeps split ``--tg.modes`` across separate processes (one device
 each) -- the pipeline is embarrassingly parallel over modes.
 
 Outputs
-=======
+-------
 Per profile ``<stem>``: a human-readable ``<stem>_tg_summary.txt`` (one
 row per mode) and a self-describing ``<stem>_tg.npz`` (grids, the
 interpolated profile, the resolved parameters, and per-mode `$G(t)$`,
@@ -360,20 +365,7 @@ spectral abscissa) `$G(t)$` grows without bound, so `$G_{\max}$` /
 outputs.  ``--tg.export_snapshot "i2,i3"`` writes the chosen
 mode's optimal perturbation as a standard dnsjax snapshot (with the
 `$k=0$`-plane conjugate partner filled in for a real physical field) to
-seed a DNS run.
-
-Future work: eigenvector output
-================================
-Only the eigen*values* are stored.  The eigen*vectors* of
-`$\mathcal{A}$` (the linear-stability modes) are already in hand:
-the columns `$\mathbf{y}_i^{(r)}$` of `$Y$` from the `$\Phi_S$`
-eigendecomposition in ``_analyze_mode`` (same eigenvectors as
-`$\mathcal{A}_S$`).  To expose them: energy-normalize so
-`$\lVert F\mathbf{y}_i^{(r)}\rVert_2 = 1$`, lift to the full state
-`$\mathbf{y}_i = V\mathbf{y}_i^{(r)}$`, sort by
-`$\mathrm{Re}\,\lambda_i$`, and store alongside ``eigvals`` (adding a
-`$k=0$`-plane conjugate partner for a snapshot export exactly as the
-optimal-perturbation export does).
+seed a DNS run.  The eigenvectors of `$\mathcal{A}$` are not stored.
 """
 
 from __future__ import annotations
@@ -924,7 +916,7 @@ def _linear_step(gmod: Any, fmod: Any = None):
     Feeds the geometry's FFT-free linear coupling ``_l_bf`` as the RHS
     and no ``l_bf_fn`` (unsplit corrector), so the converged
     predict-and-fully-correct is the exact `$\theta$`-implicit linear
-    step of viscous + coupling + influence-matrix pressure, with the
+    step of viscous + coupling + influence-matrix constraint, with the
     nonlinear self-advection never formed.
 
     On the cylindrical/annular flows every array crossing the raw
@@ -1061,12 +1053,13 @@ def _analyze_mode(
     n = phi_k.shape[0]
     # Subspace reduction.  The physical subspace S = range(Phi) is
     # separated from the constraint-violating null space by a wide
-    # singular-value gap: the physical spectrum spans many orders (the
-    # stiff wall-normal viscous modes reach sigma ~ 1/(dt*|lambda|) ~
-    # 1e-7..1e-9), then a sharp cliff drops to the ~machine-epsilon null
-    # floor (sigma/s0 ~ 1e-14).  ``rank_tol`` (relative, default 1e-11)
-    # sits in that gap; the gap and reduced-conditioning checks catch a
-    # threshold that lands mid-spectrum.
+    # singular-value gap: the physical spectrum falls to
+    # sigma/s0 ~ 1/(dt*|lambda_stiff|) (plane Poiseuille, ny = 49,
+    # dt = 0.01: 3e-3 under the default scheme, 3e-9 on the legacy path,
+    # whose rank is larger), then drops to the round-off null floor
+    # (sigma/s0 ~ 1e-15 on both).  ``rank_tol`` (relative, default
+    # 1e-11) sits in that gap; the gap and reduced-conditioning checks
+    # catch a threshold that lands mid-spectrum.
     u, s, _ = np.linalg.svd(phi_k)
     rank = int(np.sum(s > cfg.rank_tol * s[0]))
     rank = min(max(rank, 1), n)
@@ -1110,7 +1103,7 @@ def _analyze_mode(
     if not resolved.any():
         raise SystemExit(
             f"mode ({i2},{i3}): no probe-resolved eigenvalues (every "
-            f"|mu| <= 1/2 at --tg.dt {dt:g}); raise --tg.dt to widen "
+            f"|mu| <= 1/2 at --tg.dt {dt:g}); lower --tg.dt to widen "
             "the resolved window."
         )
     omega_res = float(np.max(lam.real[resolved]))

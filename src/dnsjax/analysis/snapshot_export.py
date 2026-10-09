@@ -98,7 +98,7 @@ def read_state(
         components).  Order is preserved and duplicates removed; each
         component reads exactly its own stored chunk (the stored
         components are the physical components).  The **viscoelastic**
-        system exposes 9 components (velocity ``0..2`` plus the
+        systems expose 9 components (velocity ``0..2`` plus the
         physical conformation tensor ``c_zz, c_rz, c_θz, c_rr, c_θθ,
         c_rθ`` = ``3..8``).
     wall_normal_points:
