@@ -94,11 +94,14 @@ What each case pins:
     budget figure is wider than ``--width`` rather than
     narrower-paneled; the nine panels sit row by row.
 15. **``--clim ramped``.** Each frame's range is the extremes of every
-    frame so far: it contains the frame's own, never shrinks, holds an
-    earlier extreme through a dip, ramps the two sides of a signed
-    panel separately, is the frozen range from the frame holding the
-    series extreme onward, and is what the figure's levels are read
-    from.
+    frame so far past the perturbation: it contains the frame's own,
+    never shrinks, holds an earlier extreme through a dip, ramps the
+    two sides of a signed panel separately, is the range of the frame
+    holding the extreme from there on, and is what the figure's levels
+    are read from.  The perturbation, the record at
+    `$t_\mathrm{rel} = 0$`, is drawn as under ``--clim frame`` and its
+    extremes reach no later frame; a selection without it ramps from
+    its own first frame.
 16. **Peak tracking.** The centroid of the frame's own top band --
     the cells at or above `$(1 - 1/n)$` of its peak, weighted by value
     and by trapezoidal widths in `$\ln\lambda$` and `$\ln y$`
@@ -121,10 +124,12 @@ What each case pins:
     the box shows, whatever ``--premultiply`` says, the same in wall
     and outer units and without ``volume_fac``, and the same in every
     frame of one shape grown by decades; only the anchor panel's
-    title reports that peak, a zero field keeps zeros, and under every
-    ``--clim`` and ``--quantile`` the anchor's levels are frozen on the
+    title reports that peak, a zero field keeps zeros; under ``--clim
+    series`` and ``frame`` the anchor's levels are frozen on the
     series -- `$[0, 1]$` for the spectra -- and every other panel's
-    are its own frame's.
+    are its own frame's, while ``--clim ramped`` ramps every panel on
+    the frames so far past the perturbation, whose frame it draws as
+    ``--clim frame`` does; and ``--quantile`` reaches none of them.
 19. **History maps.** The `$(y, t)$` map is the `$k$`-summed map times
     the plotted wall distance, the `$(\lambda, t)$` map the
     wall-normal average over the doubled half-channel weights times
@@ -1801,18 +1806,27 @@ def test_budget_grid() -> None:
 
 def test_ramped_clim() -> None:
     """``--clim ramped``: the extremes of every frame so far."""
+    # The perturbation is the record at t_rel = 0, to the tolerance.
+    assert tsm.ramp_start(np.array([0.0, 1.0])) == 1
+    assert tsm.ramp_start(np.array([0.1 * tsm._T_ATOL, 1.0])) == 1
+    assert tsm.ramp_start(np.array([1.0, 2.0])) == 0
+    assert tsm.ramp_start(np.array([])) == 0
+
     options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
     meta = _meta("twin_yspectra")
-    rec = _records(meta, "twin_yspectra", 6, seed=83)
-    # One shape, growing over three decades, dipping, then saturating.
-    amplitude = np.array([1e-3, 1e-2, 5e-3, 1e-1, 1.0, 0.8])
+    rec = _records(meta, "twin_yspectra", 7, seed=83)
+    # One shape: the perturbation above everything after it, then
+    # growing over three decades, dipping, and saturating.
+    amplitude = np.array([3.0, 1e-3, 1e-2, 5e-3, 1e-1, 1.0, 0.8])
     for suffix in tsm.stored_suffixes(meta):
         field = rec[f"e_{suffix}"]
         field[:] = field[0] * amplitude.reshape((-1,) + (1,) * field[0].ndim)
     series = _series("twin_yspectra", [_member(meta, rec)])
+    assert series.t_rel[0] == 0.0
     ylim = tsm.y_limits(series, options)
     panel = ("e_x", 0)
     scale = tsm.scan_panels(series, [panel], options, ylim=ylim)[0][panel]
+    assert scale.ramp_from == 1
     own = [
         tsm.make_map(series, "e_x", f, options=options, component=0).drawn(
             ylim
@@ -1822,48 +1836,71 @@ def test_ramped_clim() -> None:
     lows = [float(v.min()) for v in own]
     highs = [float(v.max()) for v in own]
     ramped = [scale.data_range("ramped", f) for f in range(amplitude.size)]
-    for f, (lo, hi) in enumerate(ramped):
-        # The running extremes, which hold the frame's own range.
-        assert (lo, hi) == (min(lows[: f + 1]), max(highs[: f + 1])), f
+    # The perturbation's frame takes its own range, as under --clim
+    # frame, and its extremes reach no later frame.
+    assert ramped[0] is None
+    for f, (lo, hi) in enumerate(ramped[1:], start=1):
+        # The running extremes past it, which hold the frame's own range.
+        assert (lo, hi) == (min(lows[1 : f + 1]), max(highs[1 : f + 1])), f
         assert lo <= lows[f] and hi >= highs[f], f
-    assert all(b[1] >= a[1] for a, b in zip(ramped, ramped[1:], strict=False))
+    assert all(
+        b[1] >= a[1] for a, b in zip(ramped[1:], ramped[2:], strict=False)
+    )
     # While the field grows it is the frame's own scale; through the dip
-    # it keeps the earlier extreme; from the frame holding the series
-    # extreme onward it is the frozen range.
-    assert ramped[1][1] == highs[1]
-    assert ramped[2][1] == highs[1] > highs[2]
-    assert ramped[4] == ramped[5] == scale.data_range("series", 5)
+    # it keeps the earlier extreme; from the frame holding the extreme
+    # past the perturbation onward it is that frame's, short of the
+    # frozen range, which the perturbation sets.
+    assert ramped[1] == (lows[1], highs[1])
+    assert ramped[2][1] == highs[2]
+    assert ramped[3][1] == highs[2] > highs[3]
+    assert ramped[5] == ramped[6] == (min(lows[1:]), max(highs[1:]))
+    assert ramped[6][1] < highs[0] == scale.data_range("series", 6)[1]
     assert scale.data_range("series", 0) == (scale.lo, scale.hi)
     assert scale.data_range("frame", 3) is None
     _raises(lambda: scale.data_range("fixed", 0), "series/frame/ramped")
 
-    # ... and it is what the figure's levels are read from.
-    figure = tsm.panel_figure(
-        series,
-        2,
-        [panel],
-        options,
-        tsm.PlotStyle(clim="ramped"),
-        {panel: scale},
-    )
-    filled = next(
-        c for c in figure.axes[0].collections if isinstance(c, ContourSet)
-    )
-    plt.close(figure)
-    want = tsm.contour_levels(
-        own[2], 10, non_negative=True, data_range=ramped[2]
-    )
-    assert np.allclose(filled.levels, want)
+    # ... and it is what the figure's levels are read from, the
+    # perturbation's frame drawn as --clim frame draws it.
+    for frame, data_range in ((3, ramped[3]), (0, None)):
+        figure = tsm.panel_figure(
+            series,
+            frame,
+            [panel],
+            options,
+            tsm.PlotStyle(clim="ramped"),
+            {panel: scale},
+        )
+        filled = next(
+            c for c in figure.axes[0].collections if isinstance(c, ContourSet)
+        )
+        plt.close(figure)
+        want = tsm.contour_levels(
+            own[frame], 10, non_negative=True, data_range=data_range
+        )
+        assert np.allclose(filled.levels, want), frame
 
-    # A signed panel ramps each side on its own: here the positive side
-    # peaks at frame 1 and the negative one at frame 2, on alternate
-    # rows (which the fold keeps apart, pairing j with n_y - 1 - j).
+    # A selection whose first frame is past the perturbation (as under
+    # --first) ramps from that frame: here the stream starts one time
+    # unit after it.
+    later = _series(
+        "twin_yspectra", [_member(meta, rec[1:], parent_t=rec["t"][0])]
+    )
+    assert later.t_rel[0] == 1.0
+    scale = tsm.scan_panels(later, [panel], options, ylim=ylim)[0][panel]
+    assert scale.ramp_from == 0
+    assert scale.data_range("ramped", 0) == (lows[1], highs[1])
+    assert scale.data_range("ramped", 5) == (min(lows[1:]), max(highs[1:]))
+
+    # A signed panel ramps each side on its own: here, past a
+    # perturbation beyond both, the positive side peaks at frame 2 and
+    # the negative one at frame 3, on alternate rows (which the fold
+    # keeps apart, pairing j with n_y - 1 - j).
     meta = _meta("twin_ybudget")
-    rec = np.zeros(4, dtype=tsm._record_dtype(meta, "twin_ybudget"))
-    rec["t"] = np.arange(4.0)
+    rec = np.zeros(5, dtype=tsm._record_dtype(meta, "twin_ybudget"))
+    rec["t"] = np.arange(5.0)
     pattern = np.random.default_rng(97).random((NY, NKZ))
     even = (np.arange(NY) % 2 == 0)[:, None]
-    for f, (up, down) in enumerate(((1, 1), (2, 1), (1, 3), (1, 1))):
+    for f, (up, down) in enumerate(((5, 5), (1, 1), (2, 1), (1, 3), (1, 1))):
         rec["P_U_x"][f] = up * np.where(even, pattern, 0.0)
         rec["P_r_x"][f] = -down * np.where(even, 0.0, pattern)
     budget = _series("twin_ybudget", [_member(meta, rec)])
@@ -1871,11 +1908,13 @@ def test_ramped_clim() -> None:
     scale = tsm.scan_panels(
         budget, [key], options, ylim=tsm.y_limits(budget, options)
     )[0][key]
+    assert scale.data_range("ramped", 0) is None
     lo, hi = zip(
-        *(scale.data_range("ramped", f) for f in range(4)), strict=True
+        *(scale.data_range("ramped", f) for f in range(1, 5)), strict=True
     )
     assert hi[2] == hi[1] > hi[0] and lo[2] < lo[1] == lo[0]
-    assert (lo[3], hi[3]) == (scale.lo, scale.hi)
+    assert (lo[3], hi[3]) == (lo[2], hi[2])
+    assert scale.lo < lo[3] and hi[3] < scale.hi
 
 
 def test_peak_track() -> None:
@@ -2147,8 +2186,9 @@ def test_shape_maps() -> None:
     spec = tsm.SeriesSpec("twin_yspectra", tsm.SHAPE, "x", tsm.MAP)
     assert not tsm.needs_reference(spec)
 
-    # The anchor's [0, 1] bands in every frame, every other panel's
-    # own frame's, under every --clim; --quantile reaches none of them.
+    # The anchor's [0, 1] bands in every frame under every --clim, and
+    # every other panel's own frame's -- ramped on the frames so far
+    # under --clim ramped; --quantile reaches none of them.
     panels = tsm.spectra_panels(tsm.SHAPE, "x")
     scales, notes = tsm.scan_panels(series, panels, options, ylim=ylim)
     assert not notes  # declared non-negative, and it is
@@ -2180,7 +2220,18 @@ def test_shape_maps() -> None:
                             options=options,
                             component=component,
                         ).drawn(ylim)[1]
-                        want = tsm.contour_levels(own, 10, non_negative=True)
+                        want = tsm.contour_levels(
+                            own,
+                            10,
+                            non_negative=True,
+                            data_range=(
+                                scales[(name, component)].data_range(
+                                    "ramped", frame
+                                )
+                                if clim == "ramped"
+                                else None
+                            ),
+                        )
                         assert want[-1] < 1.0
                     assert np.allclose(filled.levels, want), (clim, frame)
                     assert filled.extend == "neither", (clim, quantile)
@@ -2233,31 +2284,54 @@ def test_shape_maps() -> None:
     prod = tsm.make_map(budget, "s_prod_z", 0, options=options).title
     assert r"\max\,\nu/u_\tau^4 = " in prod, prod
 
-    # The production's levels are frozen on the series -- from its most
-    # negative value in any frame up to 1 -- whatever --clim says, and
-    # every other panel's are its own frame's.
+    # Under --clim series and frame the production's levels are frozen
+    # on the series -- from its most negative value in any frame up to
+    # 1 -- and every other panel's are its own frame's.  Under --clim
+    # ramped every panel's are the frames so far past the perturbation,
+    # which at frame 2 are not the panel's own, and the perturbation's
+    # frame is drawn as under --clim frame, the production's frozen
+    # range not being its own there either: the case would pass without
+    # the ramp, or with the perturbation ramped, otherwise.
     scales, _ = tsm.scan_panels(budget, panels, options, ylim=ylim)
     frozen = scales[("s_prod_z", None)]
     assert frozen.lo < 0.0 and frozen.hi == 1.0
+    assert frozen.ramp_from == 1
+    apart = {0: 0, 2: 0}
     for clim in ("series", "frame", "ramped"):
-        figure = tsm.panel_figure(
-            budget, 1, panels, options, tsm.PlotStyle(clim=clim), scales
-        )
-        for ax, (name, _) in zip(figure.axes[0::2], panels, strict=True):
-            filled = next(
-                c for c in ax.collections if isinstance(c, ContourSet)
+        for frame in (0, 2):
+            figure = tsm.panel_figure(
+                budget,
+                frame,
+                panels,
+                options,
+                tsm.PlotStyle(clim=clim),
+                scales,
             )
-            own = tsm.make_map(budget, name, 1, options=options).drawn(ylim)[1]
-            want = tsm.contour_levels(
-                own,
-                10,
-                non_negative=False,
-                data_range=(
-                    (frozen.lo, frozen.hi) if name == "s_prod_z" else None
-                ),
-            )
-            assert np.allclose(filled.levels, want), (clim, name)
-        plt.close(figure)
+            for ax, (name, _) in zip(figure.axes[0::2], panels, strict=True):
+                filled = next(
+                    c for c in ax.collections if isinstance(c, ContourSet)
+                )
+                own = tsm.make_map(budget, name, frame, options=options).drawn(
+                    ylim
+                )[1]
+                if clim == "ramped" and frame > 0:
+                    data_range = scales[(name, None)].data_range(
+                        "ramped", frame
+                    )
+                elif name == "s_prod_z":
+                    data_range = (frozen.lo, frozen.hi)
+                else:
+                    data_range = None
+                want = tsm.contour_levels(
+                    own, 10, non_negative=False, data_range=data_range
+                )
+                assert np.allclose(filled.levels, want), (clim, frame, name)
+                if clim == "ramped":
+                    apart[frame] += not np.array_equal(
+                        want, tsm.contour_levels(own, 10, non_negative=False)
+                    )
+            plt.close(figure)
+    assert all(apart.values()), apart
 
 
 def test_main_renders_the_selected_series() -> None:
