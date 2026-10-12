@@ -32,7 +32,7 @@ singletons are captured at import, and several CPU devices need
    mean `$y$`-momentum balance, to the wall-normal truncation.
 3. **cube** -- a replicated real array written by
    ``write_archive`` as a twin cube reads back exactly through
-   :func:`dnsjax.analysis.twin.read_cube` (whole, and as single
+   :func:`dnsjax_lab.analysis.twin.read_cube` (whole, and as single
    wall-distance slabs); the field readers and the resume path refuse
    it, and the resume path refuses a reduced snapshot too.
 
@@ -281,6 +281,8 @@ def _pressure_worker(system: str) -> None:
 
     import jax.numpy as jnp
     import numpy as np
+    from dnsjax_lab.twin import diagnostics as td
+    from dnsjax_lab.twin.pressure import DifferencePressure
 
     from dnsjax.geometries.wall_bounded._base import apply_y_matrix
     from dnsjax.geometries.wall_bounded._cartesian_pressure import (
@@ -289,8 +291,6 @@ def _pressure_worker(system: str) -> None:
         static_pressure,
     )
     from dnsjax.snapshot import assemble_local_shards
-    from dnsjax.twin import diagnostics as td
-    from dnsjax.twin.pressure import DifferencePressure
 
     flow, fourier = td.flow, td.fourier
     y = np.asarray(flow.ys)
@@ -375,11 +375,11 @@ def _cube_worker(out: Path) -> None:
 
     import jax
     import numpy as np
+    from dnsjax_lab.analysis.twin import read_cube
     from jax.sharding import NamedSharding
     from jax.sharding import PartitionSpec as P
 
     from dnsjax.analysis import read_state
-    from dnsjax.analysis.twin import read_cube
     from dnsjax.parameters import read_snapshot_params
     from dnsjax.sharding import sharding
     from dnsjax.snapshot import replicated_to_io_layout, write_archive

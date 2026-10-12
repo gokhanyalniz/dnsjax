@@ -303,7 +303,7 @@ def test_tg_npz_source() -> None:
             [
                 sys.executable,
                 "-m",
-                "dnsjax.analysis.response.operator_tools",
+                "dnsjax_lab.analysis.response.operator_tools",
                 "--operator",
                 str(tmp / "lam_tg_op.npz"),
                 "--n-modes",

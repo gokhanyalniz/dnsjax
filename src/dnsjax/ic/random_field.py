@@ -52,11 +52,11 @@ two are separate knobs: Design notes, "Two knobs, not one".
 **Two defaults for one law.**  ``init.random_smoothness`` defaults to 0.4: it
 seeds a *laminar* state, where large scales are what trigger transition.  The
 twin partner perturbs a *turbulent* one, and ``twin.smoothness``
-(:class:`dnsjax.twin.driver.TwinParams`) puts it below the minimal flow unit
-instead (the choice of `$\lambda^{*+}$` and its values per flow: the
-:mod:`dnsjax.twin.driver` Design notes, "The smoothness default").  Neither
-default is fitted to the `$(y, k)$` shape a turbulent difference field settles
-into (Design notes: "Shape is not growth").
+(:class:`dnsjax_lab.twin.driver.TwinParams`) puts it below the minimal flow
+unit instead (the choice of `$\lambda^{*+}$` and its values per flow: the
+:mod:`dnsjax_lab.twin.driver` Design notes, "The smoothness default").
+Neither default is fitted to the `$(y, k)$` shape a turbulent difference
+field settles into (Design notes: "Shape is not growth").
 
 **The wall window is scale-dependent** (``random_wall_confinement``,
 the `$a$` of :func:`scaled_wall_window`): a mode's window peaks where
@@ -162,7 +162,7 @@ and takes `$s$` alone.
 
 **Shape is not growth.**  Neither smoothness default is fitted to the
 `$(y, k)$` shape a turbulent difference field settles into
-(``scripts/random_ic_calibrate.py``), because that shape is not a
+(``lab/scripts/random_ic_calibrate.py``), because that shape is not a
 growth predictor: at the minimal plane-Couette box of Hamilton, Kim &
 Waleffe (*J. Fluid Mech.* **287**, 317, 1995; `$Re_\tau \approx 34$`)
 the score peaks at `$s \approx 0.15$`, while over 60 advective units

@@ -44,7 +44,6 @@ dependencies = [
 
 [project.scripts]
 dnsjax = "dnsjax.__main__:main"
-dnsjax-twin = "dnsjax.twin.driver:main"
 
 [project.urls]
 Repository = "https://github.com/gokhanyalniz/dnsjax"
@@ -79,14 +78,16 @@ requires = ["uv_build>=0.11.4,<0.13.0"]
 build-backend = "uv_build"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-# Only the subprocess bridge is collected: the standalone test_*.py
+# The core suite, then the lab's (lab/ is absent from a release).
+testpaths = ["tests", "lab/tests"]
+# Only the subprocess bridges are collected: the standalone test_*.py
 # scripts configure JAX / global singletons at module import, so
-# pytest must never import them (see tests/pytest_suite.py).
+# pytest must never import them (see tests/_bridge.py).
 python_files = ["pytest_suite.py"]
 # Stream the scripts' output live (tests/_live.py tees it); failure
-# reports stay compact via the bridge's own output-tail message.
-addopts = "-s"
+# reports stay compact via the bridge's own output-tail message.  The
+# two bridges share a file name, which importlib mode allows.
+addopts = "-s --import-mode=importlib"
 markers = [
     "mpi: launches solver runs via mpirun (skipped when mpirun is missing)",
     "slow: full solver integration runs / dt sweeps (minutes each)",

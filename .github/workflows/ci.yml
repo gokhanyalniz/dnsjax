@@ -37,7 +37,7 @@ jobs:
       # Named directories on purpose: a bare `ruff format` also rewrites
       # the Python blocks in the Markdown docs and the example notebook,
       # which are laid out to be read.
-      - run: uv run ruff format --check src tests scripts
+      - run: uv run ruff format --check src tests scripts lab/src lab/tests lab/scripts
 
   smoke:
     name: smoke (CPU, Python ${{ matrix.python }})
@@ -86,19 +86,19 @@ jobs:
           set -u
           failed=""
           for t in \
-            test_bootstrap \
-            test_param_surface \
-            test_padding \
-            test_mean_mask \
-            test_integration \
-            test_snapshot_export \
-            response/test_probes_reader \
-            response/test_operator_tools \
-            response/test_lim \
-            response/test_ssi
+            tests/test_bootstrap \
+            tests/test_param_surface \
+            tests/test_padding \
+            tests/test_mean_mask \
+            tests/test_integration \
+            tests/test_snapshot_export \
+            lab/tests/response/test_probes_reader \
+            lab/tests/response/test_operator_tools \
+            lab/tests/response/test_lim \
+            lab/tests/response/test_ssi
           do
-            echo "::group::tests/$t.py"
-            if ! uv run python "tests/$t.py"; then
+            echo "::group::$t.py"
+            if ! uv run python "$t.py"; then
               failed="$failed $t"
             fi
             echo "::endgroup::"

@@ -2,7 +2,7 @@
 paths:
   - "src/dnsjax/{__main__,measurements}.py"
   - "src/dnsjax/extensions/*.py"
-  - "src/dnsjax/twin/*.py"
+  - "lab/src/dnsjax_lab/twin/*.py"
   - "src/dnsjax/analysis/{response,twin}/*.py"
   - "src/dnsjax/flows/**/*.py"
   - "src/dnsjax/geometries/**/*.py"

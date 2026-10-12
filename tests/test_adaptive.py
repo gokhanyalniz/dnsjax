@@ -77,9 +77,9 @@ SYSTEMS = [
 FLOW_MODULES = {
     "plane-couette": "dnsjax.flows.wall_bounded.plane_couette",
     "pipe": "dnsjax.flows.wall_bounded.pipe",
-    "viscoelastic-pipe": "dnsjax.flows.wall_bounded.viscoelastic_pipe",
+    "viscoelastic-pipe": "dnsjax_lab.flows.wall_bounded.viscoelastic_pipe",
     "taylor-couette": "dnsjax.flows.wall_bounded.taylor_couette",
-    "viscoelastic-dean": "dnsjax.flows.wall_bounded.viscoelastic_dean",
+    "viscoelastic-dean": "dnsjax_lab.flows.wall_bounded.viscoelastic_dean",
     "kolmogorov": "dnsjax.flows.triply_periodic.monochromatic",
 }
 
@@ -87,11 +87,11 @@ GEO_MODULES = {
     "plane-couette": "dnsjax.geometries.wall_bounded.cartesian",
     "pipe": "dnsjax.geometries.wall_bounded.cylindrical",
     "viscoelastic-pipe": (
-        "dnsjax.geometries.wall_bounded.cylindrical_viscoelastic"
+        "dnsjax_lab.geometries.wall_bounded.cylindrical_viscoelastic"
     ),
     "taylor-couette": "dnsjax.geometries.wall_bounded.annular",
     "viscoelastic-dean": (
-        "dnsjax.geometries.wall_bounded.annular_viscoelastic"
+        "dnsjax_lab.geometries.wall_bounded.annular_viscoelastic"
     ),
     "kolmogorov": "dnsjax.geometries.triply_periodic.triply_periodic",
 }

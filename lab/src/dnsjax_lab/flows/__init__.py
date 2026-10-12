@@ -6,15 +6,15 @@ each geometry (:mod:`dnsjax.flows.registry`).  JAX-free, like every
 spec module.
 """
 
-from dnsjax.flows.wall_bounded.specs.curved_pipe import SPEC as CURVED_PIPE
-from dnsjax.flows.wall_bounded.specs.dean import SPEC as DEAN
-from dnsjax.flows.wall_bounded.specs.quasi_keplerian import (
+from dnsjax_lab.flows.wall_bounded.specs.curved_pipe import SPEC as CURVED_PIPE
+from dnsjax_lab.flows.wall_bounded.specs.dean import SPEC as DEAN
+from dnsjax_lab.flows.wall_bounded.specs.quasi_keplerian import (
     SPEC as QUASI_KEPLERIAN,
 )
-from dnsjax.flows.wall_bounded.specs.viscoelastic_dean import (
+from dnsjax_lab.flows.wall_bounded.specs.viscoelastic_dean import (
     SPEC as VISCOELASTIC_DEAN,
 )
-from dnsjax.flows.wall_bounded.specs.viscoelastic_pipe import (
+from dnsjax_lab.flows.wall_bounded.specs.viscoelastic_pipe import (
     SPEC as VISCOELASTIC_PIPE,
 )
 

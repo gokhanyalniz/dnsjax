@@ -106,7 +106,7 @@ def cartesian_fields() -> tuple[FieldSpec, ...]:
         # (:mod:`dnsjax.ic.mean_mode`).  Opt-in at the model default
         # (off), so every wall-bounded flow behaves the same out of the
         # box; ``dnsjax-twin`` defaults it on through its own
-        # ``twin.mean_flow`` (:class:`dnsjax.twin.driver.TwinParams`).
+        # ``twin.mean_flow`` (:class:`dnsjax_lab.twin.driver.TwinParams`).
         FieldSpec("init", "random_mean_flow"),
         FieldSpec("lowres", "nx"),
         FieldSpec("lowres", "ny"),

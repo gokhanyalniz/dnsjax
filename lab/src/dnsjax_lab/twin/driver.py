@@ -1,0 +1,2385 @@
+r"""Twin-run driver: lockstep perturbation-growth (predictability) DNS.
+
+The ``dnsjax-twin`` console script steps **two** states of the same
+flow in lockstep -- a reference trajectory `$\mathbf{u}^{(1)}$` loaded
+from a snapshot and a perturbed partner
+`$\mathbf{u}^{(2)} = \mathbf{u}^{(1)} + \delta$` -- and records online
+diagnostics of the difference field
+`$\Delta\mathbf{u} = \mathbf{u}^{(2)} - \mathbf{u}^{(1)}$`
+(:mod:`dnsjax_lab.twin.diagnostics`), following Egerique-de-la-Concha &
+Hwang, *J. Fluid Mech.* **1036**, A52 (2026),
+doi:10.1017/jfm.2026.11608.  Cartesian wall-bounded flows only
+(plane-Couette / plane-Poiseuille); both states share every
+singleton (grid, operators, jitted steppers, ``dt``), so their
+difference is purely dynamical.
+
+Baseline cost, before any diagnostic: a twin run is **two solver runs
+sharing one program** -- 2 spectral states resident (4 under
+``cnab2``, which carries an RHS history per state) and 2 stepper calls
+per step, so plan `$\sim\!2\times$` the memory and `$\sim\!2\times$`
+the wall time of the same flow at the same resolution.  The timing
+line says ``2x steps per t`` for that reason.  What the ``[twin]``
+cadences add on top: Design notes, "What the [twin] cadences cost".
+
+Launch exactly like the production solver (``.venv/bin/dnsjax-twin
+...`` from a scratch directory, under ``mpirun -np N`` only when it is
+multi-process); the parameter surface is the flow's own plus the
+``[twin]`` extension section below.
+``step.adaptive`` and the ``[force]`` section are rejected (uniform
+sampling; a kick would have to be applied identically to both states);
+``[probes]`` applies to the **reference** state only, while
+``stats.dat`` / ``steps.dat`` / ``corrector.dat`` are written for
+*both* states (the partner's under the ``_twin`` suffix).
+
+Initial perturbation
+--------------------
+`$\delta$` is the divergence-free random field of
+:func:`dnsjax.ic.random_field.generate_random_state` (device-count
+independent, per-global-mode seeded; the mean mode follows this
+driver's own ``twin.mean_flow``, **on** by default -- unlike the
+shared ``init.random_mean_flow``, which every flow defaults off and
+which this driver never reads -- and is then conditioned on the
+mean-mode conservation laws, so under a held mean the partner carries
+the reference's bulk velocity exactly and its mean profile differs
+only in ways the mean-mode dynamics admits), rescaled so
+the solver-measure perturbation energy is exactly ``twin.e0``:
+`$E'(\delta) = \|\delta\|^2/2 = e_0$` -- the convention of
+``snapshot_perturb --perturb.amplitude_energy``.  ``twin.e0 = 0``
+requests an exact zero perturbation (``state2 = copy(state1)``), the
+bit-identity determinism guard.  The perturbation is applied once, at
+the fresh start; a resume can never re-perturb (below).
+
+Trajectory home, fresh start vs paired resume
+---------------------------------------------
+A twin trajectory lives in its run directory: the streams below, a
+``twin.json`` member record (seed, ``e0``, parent snapshot and clock,
+git hash, the resolved parameter dump), and paired snapshots
+``state{isnap}.tar`` (reference; the standard name, so every existing
+tool works on the reference trajectory) + ``state{isnap}_twin.tar``
+(partner, written back-to-back with identical ``t``/``it``).  The
+start mode is decided by two files -- the partner of
+``init.snapshot`` and the run directory's ``twin.json``:
+
+- partner exists **and** ``twin.json`` matches -> **paired resume**:
+  both states load (reference clock inherited, wall-normal regrid as
+  usual), no re-perturbation, streams append.  A trajectory-defining
+  parameter change is a hard error here (a mid-twin trajectory switch
+  would disconnect the pair from its own streams) -- start a fresh
+  member instead.  ``stop.max_sim_time`` is a horizon counted from
+  the *resumed* clock rather than an end time
+  (:class:`dnsjax.parameters.Termination`), so a member restarted
+  mid-horizon asks for what is left of it, not for the original
+  value.
+- partner exists, no ``twin.json`` -> error (either a resume in a
+  directory missing its member record, or a fresh start pointed at a
+  twin run's own output; copy the reference tar out to seed a fresh
+  member from it).
+- no partner, ``twin.json`` exists -> error (this directory already
+  holds a twin trajectory; resume by pointing ``init.snapshot`` at
+  its latest ``state*.tar``, or clean the directory to restart).
+- neither -> **fresh start** from ``init.snapshot`` (any plain dnsjax
+  snapshot): perturb, write ``twin.json``, save the IC pair
+  (``outs.snapshot_save_initial``).  Any of :data:`_STREAM_FILES`
+  still lying in the directory is an error here rather than something
+  to append to -- every writer appends, so a half-cleaned directory
+  would splice a new trajectory onto an old one's records.  The
+  parent clock is inherited (``t0``/``it0`` from the snapshot --
+  offline analysis reads the perturbation time from ``twin.json``);
+  a trajectory-defining
+  override starts the reference at ``t = it = 0`` exactly as in
+  ``dnsjax.__main__`` (``init.force_resume`` keeps the clock).
+
+Diagnostic streams
+------------------
+``twin.dat`` -- the difference-field component energies
+(:func:`dnsjax_lab.twin.diagnostics.twin_energies`) every
+``twin.it_energy`` steps, in the buffered, ``fsync``-ed,
+non-finite-guarded ``.dat`` format of ``stats.dat`` (shared
+:func:`dnsjax.__main__._flush_stats`; a ``t0`` row at setup, a final
+row after the last step).
+
+Each of the other outputs has its own cadence in :class:`TwinParams`:
+
+- the spectral streams (:mod:`dnsjax_lab.twin.spectra`,
+  :mod:`dnsjax_lab.twin.yspectra`) and the 3-D cube directories
+  (:mod:`dnsjax_lab.twin.cubes`);
+- the reduced-resolution snapshots (:mod:`dnsjax.lowres`):
+  ``lowres/`` holds the reference state at ``[lowres]``'s cadence,
+  and ``lowres_delta/`` the difference field with its pressure at
+  ``twin.it_lowres_delta``.  Nothing is written for the partner.
+
+The reference halves of the energy spectra are streams of their own
+(``twin_spectra_ref``, ``twin_yspectra_ref``).  A member recorded
+before that split stored the reference inside the difference streams
+(``includes_ref: true`` in their sidecars).  On a paired resume it
+keeps writing that combined layout and gets no reference stream: the
+``twin.json`` back-fill already pins its reference cadences to the
+difference ones (:data:`_TWIN_LEGACY_DEFAULTS`).
+:data:`_STREAM_FILES` lists every file and directory that a fresh
+start refuses to find.
+
+Every cadence in this driver -- the ``[twin]`` streams, the
+per-state solver streams and ``outs.it_snapshot`` -- is counted from
+the member's own **perturbation step** (``twin.json``'s ``parent_it``,
+which a paired resume inherits), not from the absolute step counter.
+So a member's samples sit at `$t_\mathrm{parent} + n\,c\,\Delta t$`
+whatever ``it`` its parent snapshot was harvested at, which is what
+lets an ensemble be averaged on the relative clock
+`$t - t_\mathrm{parent}$` its readers use
+(:func:`dnsjax_lab.analysis.twin.ensemble.aggregate_members`,
+``lab/scripts/twin_spectral_maps.py``).
+
+The three *per-state* solver streams are written for **both** states
+at their usual cadences (``outs.it_stats`` / ``it_steps`` /
+``it_corrector``): the reference into ``stats.dat`` / ``steps.dat`` /
+``corrector.dat`` under the standard names, the partner into
+``stats_twin.dat`` / ``steps_twin.dat`` / ``corrector_twin.dat`` --
+the ``_twin`` suffix the snapshot pair already uses
+(:func:`_partner_path`).  Each pair shares one column set, since the
+two states are the same flow: ``get_stats``, the measurement hook and
+``get_driving`` return the same keys.  A partner stream costs almost
+nothing -- ``c``/``error`` already come back from its own step, and
+its ``get_stats`` is the one the partner snapshot embeds, computed
+once and shared.  Recording ``steps.dat`` for both is what makes the
+loop run the *identical* jitted program on the two states in every
+iteration: there is no measured/unmeasured split between them.
+
+The corrector convergence guard and the non-finite exit-3 guard watch
+**both** states' errors at the ``outs.it_error_check`` cadence.  Flush
+sites, snapshot consistency (one checked flush before each snapshot
+*pair*), SIGTERM/SIGINT flushing, the FATAL / exit-3 semantics and the
+run status files (a stop request ends the member with a final pair;
+its ``snapshot`` line names the reference tar) all mirror
+:mod:`dnsjax.__main__`.
+
+Ensembles
+---------
+One member = one run directory = one ``dnsjax-twin`` invocation; vary
+``twin.seed`` (and parent snapshot) across members.  An unset
+``twin.seed`` is drawn from the system entropy pool
+(:mod:`dnsjax.seeding`) on a fresh start, so members launched by hand
+are independent without being told to be; a paired resume adopts the
+seed recorded in ``twin.json`` rather than drawing, which is what keeps
+:data:`_TWIN_MATCH_KEYS` satisfiable without re-typing it.
+``lab/scripts/ensemble_setup.py`` harvests parent snapshots and builds
+member trees (pinning each member's seed in its ``parameters.toml``);
+``dnsjax_lab.analysis.twin`` aggregates the ``twin.dat`` streams.
+
+Design notes
+------------
+**What the [twin] cadences cost.**  Neither optional budget stream
+is priced by its cadence alone:
+
+- ``it_budget`` sets the **run's** peak memory, not just its
+  per-sample cost.  ``_twin_budget_jit`` is a separate compiled
+  program whose transient is the driver's global high-water
+  mark, since the device allocator's pool grows to the maximum
+  over every program: ~44 padded physical components against
+  the iterative-CN step's 22, measured on CPU
+  (:mod:`dnsjax_lab.twin.diagnostics`, Design notes, "Memory") -- some
+  `$50$` GB in all at a `$1024\times257\times256$` double-precision
+  plane-Poiseuille target, on that schedule.  If it ever binds, the
+  two ways to trade transforms for footprint are in that module's
+  Design notes, "Footprint knobs".  In *time* it is equally
+  unsubtle: one sample costs
+  `$\sim\!0.9$` of a twin step (measured, size-independent over
+  `$48^3$`-`$64^3$`), so ``it_budget = 1`` nearly doubles the
+  run and `$10$` costs `$\sim\!9\,\%$`.
+- ``it_ybudget`` costs memory in **two** places, and the
+  per-sample transient is the one that is easy to miss.
+  *Resident*: :class:`dnsjax_lab.twin.pressure.DifferencePressure`
+  holds a second factored banded operator the size of
+  ``flow.Lk_op`` plus its two homogeneous columns, two real
+  `$(N_y, N_{k_z}, N_{k_x})$` fields (its "Cost" section has the
+  numbers).  *Transient*: the sample program peaks at ~33
+  padded physical components convectively and ~29 under
+  ``twin.rotational_ybudget`` (measured on CPU; the iterative-CN
+  step is 22, CN/AB2 24), so it, not the step, sets the run's
+  peak; ``solver.rhs_transform_chunks = 3`` brings those to
+  26 / 24.  The table, what a count of live fields misses, and
+  why a GPU run reads its own ``Peak device memory`` line
+  instead: :mod:`dnsjax_lab.twin.diagnostics`, Design notes,
+  "Memory".
+- ``x0_planes`` gates the `$k_x = 0$` plane of **both**
+  `$y$`-resolved streams, and is a static flag on
+  :func:`~dnsjax_lab.twin.diagnostics.twin_yspectra` and
+  :func:`~dnsjax_lab.twin.diagnostics.twin_ybudget` for the same
+  reason ``spectra_ref`` is.  It is not a second field pass --
+  the plane is a slice of one already taken -- but it is a third
+  of the sample's ``psum`` payload and a third of every stored
+  record, on top of ``spectra_ref``'s doubling of the first.
+  Leaving it off costs only the `$k_z$` resolution of
+  `$E_{\Delta u_1}$` and `$E_{\Delta u_2}$` (the second stays
+  resolved in `$k_x$`):
+  :func:`~dnsjax_lab.analysis.twin.bin_energies` recovers all three
+  bins from the `$k_x$` marginal and the `$(0, 0)$` mode.
+- ``spectra_ref`` gates the reference half of **both** spectra
+  streams, in compute as well as on disk: it is a static flag on
+  :func:`dnsjax_lab.twin.diagnostics.twin_spectra_2d` and
+  :func:`~dnsjax_lab.twin.diagnostics.twin_yspectra`, so with it off
+  the reference reduction is never traced.  On the `$(k_z, k_x)$`
+  stream that saves one field pass and a `$\sim$`1 MB ``psum``
+  per sample; on the `$y$`-resolved one it saves a full real
+  `$(3, N_y, N_{k_z}, N_{k_x})$` density and one of the sample's
+  two collectives -- about half of it.  What it costs is the
+  decorrelation ratio.
+
+``it_energy`` is the one per-*step* cost at its default of 1, and
+what it costs depends on ``bins``.  **Off** (the default): one
+extra jitted call per step forming ``delta`` and reducing it and
+``state1``, three full-state passes against the two steps' FFT and
+solve work.  **On**: ``delta`` and ``du1`` are each read four
+times, so both materialize (~2 full-state complex temporaries) --
+**a few percent of a twin step**, measured at 1.3 % for
+plane-Couette `$48^3$` and 5.0 % at `$64^3$` (the rise is the
+working set leaving cache; the step itself is pure FFT/solve work
+either way), and the ``E_d`` vs ``E_dU + E_du1 + E_du2``
+redundancy those percent buy is a deliberate consistency guard,
+not something to trade away.  Either way the default cadence
+needs no tuning, which is just as well: it is the intended
+Lyapunov sampling rate.
+
+**The smoothness default.**  ``twin.smoothness`` is set for plane
+Poiseuille at `$Re = 4200$` in the `$4\pi \times 2 \times 2\pi$` box
+(`$Re_\tau = 178.6$`).  The criterion: seed the turbulent reference
+*below* the smallest perturbation of the laminar state that triggers
+turbulence -- the minimal flow unit, `$\lambda_z^+ \sim 100$` and
+`$\lambda_x^+ \sim 250$`-`$350$` -- so the seed cannot hold a
+self-sustaining structure of its own and can grow only through the
+reference flow.  (Chaos makes every perturbation grow eventually, so
+"the scales that amplify" picks out no scale.)
+
+:mod:`dnsjax.ic.random_field` derives what `$s$` sets: the
+premultiplied spectra peak at `$\lambda^* = 4\pi|\ln(1 - s)|\,h$`.
+Placing that peak at `$\lambda^{*+} = 50$`, half the minimal-unit
+span, inverts exactly to
+`$s = 1 - \exp(-\lambda^{*+}/(4\pi Re_\tau))$` -- 0.022 here, 0.0079
+at `$Re_\tau = 500$` (plane Poiseuille).  No `$s$` can empty the large
+scales, the energy per mode peaking at `$k = 0$`, so "below" means
+mostly: at `$Re_\tau = 178.6$`, 59 % of ``e0`` sits at
+`$\lambda_z^+ < 100$`, 18 % above `$\lambda^+ = 100$` in both
+directions, and 5 % below `$\lambda^+ = 20$`, where viscosity removes
+it before the reference flow can act on it.  A minimal flow unit has
+no room below itself: the minimal box of Hamilton, Kim & Waleffe
+(1995; `$Re_\tau \approx 34$`) keeps 0.4, where this default would put
+the peak at `$\lambda^+ \sim 10$`.  A member recorded at the earlier
+default 0.4 resumes only with ``--twin.smoothness 0.4``.
+"""
+
+import json
+import math
+import os
+import signal
+import sys
+from datetime import datetime
+from functools import partial
+from pathlib import Path
+from time import perf_counter_ns
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from dnsjax.__main__ import (
+    _flush_stats,
+    _interpolate_if_needed,
+    _peak_device_bytes,
+    _peak_host_memory_line,
+    _write_dat_header,
+)
+from dnsjax.__main__ import (
+    _stats_row as _row,
+)
+from dnsjax.bootstrap import (
+    ResolvedSetup,
+    configure_jax_runtime,
+    resolve_parameters,
+    resolve_seed,
+)
+from dnsjax.extensions import (
+    ParamExtension,
+    register_extension,
+    relevant_extensions,
+)
+from dnsjax.flows.registry import cartesian_systems
+from dnsjax.param_surface import (
+    print_resolved_parameters,
+    recorded_params_dump,
+)
+from dnsjax.parameters import (
+    derived_params,
+    ns_to_s,
+    padded_res,
+    params,
+    trajectory_defining_changes,
+)
+from dnsjax.run_status import (
+    EXIT_NON_FINITE,
+    Outcome,
+    RunStatus,
+    install_stop_signal,
+    loop_outcome,
+)
+from dnsjax.seeding import (
+    SOURCE_CLI,
+    SOURCE_DRAWN,
+    seed_note,
+)
+from dnsjax.snapshot_meta import (
+    git_hash,
+    is_snapshot_file,
+    read_snapshot_meta,
+    write_sidecar_json,
+)
+from dnsjax_lab.extensions import force_params, probes_params
+
+_PROG = "dnsjax-twin"
+
+#: ``twin.json`` schema version.  Bump when the stored *meaning*
+#: changes (the probes/forcing sidecar discipline).
+TWIN_FORMAT_VERSION: int = 1
+
+#: ``twin.json`` keys that must match for a paired resume to proceed.
+#: The cadences are included: a mid-stream cadence change would break
+#: the uniform sample grid the offline fits assume.  ``seed`` is
+#: matched, not re-read, so a resume with an unset ``twin.seed`` adopts
+#: the recorded one first (in :func:`run`); it is ``null`` exactly when
+#: ``e0 = 0``, which draws no perturbation and so has no seed.
+_TWIN_MATCH_KEYS: tuple[str, ...] = (
+    "format_version",
+    "system",
+    "e0",
+    "seed",
+    "smoothness",
+    "wall_smoothness",
+    "wall_confinement",
+    "mean_flow",
+    "bins",
+    "it_energy",
+    "it_budget",
+    "it_spectra",
+    "it_yspectra",
+    "it_ybudget",
+    "it_spectra_ref",
+    "it_yspectra_ref",
+    "it_spectra3d",
+    "it_spectra3d_ref",
+    "it_budget3d",
+    "dt",
+    "double_precision",
+)
+
+#: Value assumed for a :data:`_TWIN_MATCH_KEYS` entry that a
+#: ``twin.json`` written before the key existed does not carry -- so
+#: adding one does not strand recorded members.  A key absent from
+#: here still mismatches when absent from the file, which is the right
+#: default: only a key whose *old* behaviour was a fixed, known value
+#: can be back-filled.  ``mean_flow`` is one: the partner followed the
+#: Cartesian ``init.random_mean_flow``, whose default was on, so a
+#: member recorded then resumes unchanged (and one deliberately run
+#: mean-free re-states ``--twin.mean_flow False``, which is correct
+#: -- it is a real difference in what was perturbed).  No
+#: :data:`TWIN_FORMAT_VERSION` bump: no existing key changes meaning.
+#:
+#: A value may be a **callable** of the recorded sidecar, for a key
+#: whose old behaviour was derived rather than constant:
+#: ``wall_smoothness`` did not exist while one ``smoothness`` drove
+#: both the periodic envelope and the wall-normal filter, so a member
+#: recorded then had ``wall_smoothness == smoothness`` whatever that
+#: was.  ``wall_confinement`` is the constant case again -- every mode
+#: carried the same wall window, which is what zero means.
+#:
+#: A back-fill records the old behaviour; it cannot make that behaviour
+#: match a *different* current default.  ``mean_flow``'s old value is
+#: the current default, so those members resume as they are, but a member
+#: recorded before ``wall_confinement`` existed back-fills to ``0``
+#: against the ``0.14`` default -- a real difference in the partner --
+#: and resumes only with ``--twin.wall_confinement 0``.
+#:
+#: The two reference cadences are the callable case too: before the
+#: reference spectra had streams of their own they were recorded in
+#: the difference streams' records, at their cadence, whenever
+#: ``spectra_ref`` was on (its default) -- which is the value a
+#: member recorded then holds, and what its resume continues
+#: (combined, :func:`run`).  The 3-D cadences back-fill ``None``
+#: without an entry: those outputs did not exist.
+_TWIN_LEGACY_DEFAULTS: dict[str, object] = {
+    "mean_flow": True,
+    "wall_smoothness": lambda old: old.get("smoothness"),
+    "wall_confinement": 0.0,
+    "it_spectra_ref": lambda old: (
+        old.get("it_spectra") if old.get("spectra_ref", True) else None
+    ),
+    "it_yspectra_ref": lambda old: (
+        old.get("it_yspectra") if old.get("spectra_ref", True) else None
+    ),
+}
+
+
+def _legacy_default(key: str, old: dict) -> object:
+    """The assumed value of a :data:`_TWIN_MATCH_KEYS` entry *old* lacks.
+
+    *key* is the entry; the values are :data:`_TWIN_LEGACY_DEFAULTS`.
+    """
+    fallback = _TWIN_LEGACY_DEFAULTS.get(key)
+    return fallback(old) if callable(fallback) else fallback
+
+
+class TwinParams(BaseModel):
+    r"""Twin-run driver section (``dnsjax-twin`` only), optional.
+
+    Enabled when ``e0`` is set: the driver perturbs the loaded
+    reference state by a random divergence-free field of exactly that
+    perturbation energy (solver measure, `$\|\delta\|^2/2$`) and
+    steps both states in lockstep, streaming the difference-field
+    component energies to ``twin.dat`` every ``it_energy`` steps.
+    ``e0 = 0`` requests an exact zero perturbation (the determinism
+    guard).  Cartesian wall-bounded flows, fixed time step; details
+    and the resume rules: the :mod:`dnsjax_lab.twin.driver` module
+    docstring.
+
+    Cost: ``it_budget`` and ``it_ybudget`` set the **run's** peak
+    memory, not only their per-sample cost, and ``it_budget = 1``
+    nearly doubles the run's time; ``x0_planes`` and ``spectra_ref``
+    each enlarge every record and the sample's collective; and
+    ``it_energy``, the one per-step cost at its default of 1, is a few
+    percent of a twin step under ``bins``.  The figures and the
+    reasons: the module's Design notes, "What the [twin] cadences
+    cost".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    e0: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Initial perturbation energy E'(delta) in the solver "
+            "measure; 0 = exact zero perturbation; unset = section "
+            "unconfigured."
+        ),
+    )
+    # Unset means "draw one" (:mod:`dnsjax.seeding`), but resolved late
+    # -- in ``run`` below, once the fresh-start / paired-resume decision
+    # is known.  A resume adopts the seed recorded in ``twin.json``
+    # instead of drawing, which is what keeps the _TWIN_MATCH_KEYS check
+    # satisfiable without the user re-typing it; ``e0 = 0`` draws nothing
+    # at all and records ``null``.
+    seed: int | None = Field(
+        default=None,
+        description=(
+            "Perturbation RNG seed (device-count independent); vary "
+            "per ensemble member. Unset: drawn from the system entropy "
+            "pool on a fresh start, and taken from twin.json on a "
+            "resume."
+        ),
+    )
+    # The default seeds plane Poiseuille at Re_tau = 178.6 below its
+    # minimal flow unit (Design notes: "The smoothness default").
+    smoothness: float = Field(
+        default=0.022,
+        gt=0,
+        lt=1,
+        description=(
+            "Spectral envelope of the random perturbation over the "
+            "periodic directions (init.random_smoothness convention). "
+            "The default seeds below the minimal flow unit of plane "
+            "Poiseuille at Re_tau = 178.6; s = 1 - exp(-50 / (4 pi "
+            "Re_tau)) elsewhere (0.0079 at Re_tau = 500), and 0.4 in a "
+            "minimal box."
+        ),
+    )
+    # The wall-normal pair, mirroring ``init.random_wall_smoothness`` /
+    # ``random_wall_confinement``.  They are separate knobs from
+    # ``smoothness`` because they calibrate an order of magnitude apart
+    # and because only the window moves the difference field's
+    # wall-normal distribution (``ic/random_field.py``).
+    wall_smoothness: float = Field(
+        default=0.4,
+        gt=0,
+        lt=1,
+        description=(
+            "Wall-normal envelope of the random perturbation "
+            "(init.random_wall_smoothness convention)."
+        ),
+    )
+    wall_confinement: float = Field(
+        default=0.14,
+        ge=0,
+        description=(
+            "Scale-dependent narrowing of the perturbation's wall "
+            "window (init.random_wall_confinement convention); zero "
+            "gives every mode the same window."
+        ),
+    )
+    # The partner's own knob rather than the shared
+    # ``init.random_mean_flow`` (which the driver does not read at
+    # all: ``dnsjax-twin`` never builds a random *initial condition*,
+    # it perturbs a loaded one).  Two reasons it cannot be the shared
+    # field.  The defaults differ -- a twin pair wants the mean mode
+    # perturbed, a plain run defaults it off -- and ``init`` fields
+    # are inherited from the parent snapshot, so a twin started from
+    # any ordinary run's snapshot would silently pick that run's
+    # ``false`` up as an explicitly-set layer.  Conversely, forcing
+    # the shared field on here would write ``random_mean_flow: true``
+    # into the twin's own paired snapshots, and a later plain resume
+    # from the reference tar would inherit it.
+    mean_flow: bool = Field(
+        default=True,
+        description=(
+            "Perturb the mean (kx = kz = 0) profile too, conditioned "
+            "on its conservation laws (ic/mean_mode.py). On by "
+            "default -- unlike init.random_mean_flow, which this "
+            "driver does not read: the mean mode is a difference-field "
+            "component in its own right (the Delta-U bin). Off gives a "
+            "mean-free partner."
+        ),
+    )
+    bins: bool = Field(
+        default=False,
+        description=(
+            "Also record the Delta-U / Delta-u1 / Delta-u2 three-bin "
+            "decomposition in twin.dat (the reference paper's "
+            "binning); required by it_budget.  Off by default: the "
+            "wall-normal-resolved spectra (it_yspectra) supersede it "
+            "and it costs a few percent of every step."
+        ),
+    )
+    x0_planes: bool = Field(
+        default=False,
+        description=(
+            "Also store the k_x = 0 plane (the _x0 fields) in "
+            "twin_yspectra.bin / twin_ybudget.bin -- the k_z-resolved "
+            "spectrum of the streamwise-averaged field, i.e. Delta-u1 "
+            "per k_z, and with it Delta-u2 per k_z (the rest of the "
+            "k_z marginal).  The three-bin split does not need it "
+            "(analysis.twin.bin_energies reads it off the k_x marginal "
+            "and the always-stored _xz00 mean mode).  Off by default: "
+            "it is a third of every record and of the sample's psum.  "
+            "Off, it is never traced."
+        ),
+    )
+    it_energy: int = Field(
+        default=1,
+        ge=1,
+        description="Steps between twin.dat energy rows.",
+    )
+    it_budget: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Steps between twin_budget.dat rows (the production/"
+            "transport/dissipation terms); unset or 0 disables the stream. "
+            "Not a pure cadence knob: enabling it raises the run's "
+            "peak memory (the dnsjax_lab.twin.driver Design notes)."
+        ),
+    )
+    it_spectra: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Steps between (kz, kx) difference-energy spectra "
+            "records; unset or 0 disables the stream."
+        ),
+    )
+    it_yspectra: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Steps between twin_yspectra.bin records (componentwise "
+            "wall-normal-resolved (y, kz) and (y, kx) energy "
+            "spectra); unset or 0 disables the stream."
+        ),
+    )
+    it_ybudget: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Steps between twin_ybudget.bin records (the same bins' "
+            "production / transfer / viscous / pressure densities); "
+            "unset or 0 disables the stream.  Like it_budget, not a pure "
+            "cadence knob: it raises both the run's resident and its "
+            "peak memory (the dnsjax_lab.twin.driver Design notes)."
+        ),
+    )
+    rotational_ybudget: bool = Field(
+        default=False,
+        description=(
+            "Write twin_ybudget.bin in the rotational form of the "
+            "nonlinear term instead of the convective one.  Its two "
+            "transfer terms are then exactly redistributive at every "
+            "y and its nonlinear term is the solver's own, at the "
+            "cost of a split that does not map onto the reference "
+            "paper's production/transport terms (see the "
+            "twin.diagnostics docstring).  Off by default."
+        ),
+    )
+    spectra_ref: bool = Field(
+        default=True,
+        description=(
+            "Also record the reference state's spectra, in streams of "
+            "their own (twin_spectra_ref.bin, twin_yspectra_ref.bin, "
+            "twin_spectra3d_ref/) on cadences that default to the "
+            "difference streams' (for decorrelation ratios); turning it "
+            "off also skips computing them."
+        ),
+    )
+    it_spectra_ref: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Steps between twin_spectra_ref.bin records (the reference "
+            "state's (kz, kx) spectrum); unset = it_spectra, 0 = off."
+        ),
+    )
+    it_yspectra_ref: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Steps between twin_yspectra_ref.bin records (the reference "
+            "state's (y, k) spectra); unset = it_yspectra, 0 = off."
+        ),
+    )
+    it_spectra3d: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Steps between twin_spectra3d/ files: the difference "
+            "field's componentwise energy as a (y, kz, kx) cube, folded "
+            "in y and kz and subsampled log-uniformly (n_y3d, n_kz3d, "
+            "n_kx3d), one file per sample; unset or 0 disables them."
+        ),
+    )
+    it_spectra3d_ref: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Steps between twin_spectra3d_ref/ files (the reference "
+            "state's cube); unset = it_spectra3d, 0 = off."
+        ),
+    )
+    it_budget3d: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Steps between twin_budget3d/ files: the convective y-budget "
+            "terms as (y, kz, kx) cubes on the same points; unset "
+            "or 0 disables them.  Like it_ybudget, it holds the pressure "
+            "operator and sets the run's peak memory."
+        ),
+    )
+    n_y3d: int | None = Field(
+        default=None,
+        ge=2,
+        description=(
+            "Log-spaced wall distances the 3-D cubes keep over the "
+            "folded half channel (the wall row always kept); unset "
+            "keeps every row."
+        ),
+    )
+    n_kz3d: int | None = Field(
+        default=None,
+        ge=2,
+        description=(
+            "Log-spaced |kz| harmonics the 3-D cubes keep (kz = 0 "
+            "always kept); unset keeps every one."
+        ),
+    )
+    n_kx3d: int | None = Field(
+        default=None,
+        ge=2,
+        description=(
+            "Log-spaced kx harmonics the 3-D cubes keep (kx = 0 always "
+            "kept); unset keeps every one."
+        ),
+    )
+    it_lowres_delta: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Steps between lowres_delta/ reduced-resolution snapshots "
+            "of the difference field (its velocity and, under "
+            "lowres.pressure, its static pressure) at the [lowres] "
+            "resolution; unset or 0 disables them."
+        ),
+    )
+
+
+#: The ``[twin]`` cadences that ``0`` switches off on a layer, turned
+#: back into unset there (``ParamExtension.off_cadences``, the core's
+#: :data:`dnsjax.parameters.OFF_CADENCES`): a member's TOML value can
+#: be overridden off from the command line.
+_TWIN_OFF_CADENCES: tuple[str, ...] = (
+    "it_budget",
+    "it_spectra",
+    "it_yspectra",
+    "it_ybudget",
+    "it_spectra3d",
+    "it_budget3d",
+    "it_lowres_delta",
+)
+
+#: The reference cadences, which keep a ``0``: unset means "the
+#: difference cadence" (:func:`ref_cadence`), so ``0`` is the only way
+#: to say "off" for one reference output alone.
+_TWIN_REF_CADENCES: tuple[str, ...] = (
+    "it_spectra_ref",
+    "it_yspectra_ref",
+    "it_spectra3d_ref",
+)
+
+
+def _validate_twin(values: TwinParams, params) -> None:
+    # Unconfigured (no e0): reject stray secondary knobs rather than
+    # silently ignoring them (the [force] discipline), else return.
+    if values.e0 is None:
+        defaults = TwinParams()
+
+        def configured(name: str) -> bool:
+            value = getattr(values, name)
+            if name in _TWIN_REF_CADENCES:
+                # A reference cadence's 0 is "off", as inert as unset.
+                return bool(value)
+            return value != getattr(defaults, name)
+
+        stray = [
+            name
+            for name in (
+                "seed",
+                "smoothness",
+                "wall_smoothness",
+                "wall_confinement",
+                "mean_flow",
+                "bins",
+                "x0_planes",
+                "it_energy",
+                "it_budget",
+                "it_spectra",
+                "it_yspectra",
+                "it_ybudget",
+                "rotational_ybudget",
+                "spectra_ref",
+                "it_spectra_ref",
+                "it_yspectra_ref",
+                "it_spectra3d",
+                "it_spectra3d_ref",
+                "it_budget3d",
+                "n_y3d",
+                "n_kz3d",
+                "n_kx3d",
+                "it_lowres_delta",
+            )
+            if configured(name)
+        ]
+        if stray:
+            raise ValueError(
+                f"twin.{' / twin.'.join(stray)} set without twin.e0 "
+                "(no twin run is configured)."
+            )
+        return
+    # Configured: Cartesian wall-bounded only, fixed dt, sane ranges.
+    # The range checks repeat the Field constraints because direct
+    # assignment to the values singleton bypasses pydantic (the
+    # validate_extensions contract).
+    if params.phys.system not in cartesian_systems:
+        raise ValueError(
+            "twin.e0: the twin-run driver supports the Cartesian "
+            "wall-bounded flows only (system "
+            f"{params.phys.system!r})."
+        )
+    if params.step.adaptive:
+        raise ValueError(
+            "twin.e0: the twin driver requires a fixed time step "
+            "(step.adaptive = False); the two states share one dt "
+            "and the twin.dat readers assume a uniform sample "
+            "interval."
+        )
+    if values.e0 < 0:
+        raise ValueError("twin.e0 must be >= 0.")
+    if not (0 < values.smoothness < 1):
+        raise ValueError("twin.smoothness must lie in (0, 1).")
+    if not (0 < values.wall_smoothness < 1):
+        raise ValueError("twin.wall_smoothness must lie in (0, 1).")
+    if values.wall_confinement < 0:
+        raise ValueError("twin.wall_confinement must be >= 0.")
+    # A layer has already turned an off cadence's 0 into unset, so a 0
+    # left here was assigned directly; a reference cadence keeps its 0.
+    for name in ("it_energy", *_TWIN_OFF_CADENCES):
+        cadence = getattr(values, name)
+        if cadence is not None and cadence < 1:
+            raise ValueError(f"twin.{name} must be >= 1.")
+    for name in _TWIN_REF_CADENCES:
+        cadence = getattr(values, name)
+        if cadence is not None and cadence < 0:
+            raise ValueError(f"twin.{name} must be >= 0 (0 = off).")
+    for name in ("n_y3d", "n_kz3d", "n_kx3d"):
+        count = getattr(values, name)
+        if count is not None and count < 2:
+            raise ValueError(f"twin.{name} must be >= 2.")
+    if not values.spectra_ref:
+        stray = [name for name in _TWIN_REF_CADENCES if getattr(values, name)]
+        if stray:
+            raise ValueError(
+                f"twin.{' / twin.'.join(stray)} set with twin.spectra_ref "
+                "off (no reference spectra are recorded)."
+            )
+    if values.it_budget3d is not None and values.rotational_ybudget:
+        raise ValueError(
+            "twin.it_budget3d records the convective budget terms only; "
+            "it cannot run with twin.rotational_ybudget."
+        )
+    if values.it_budget is not None and not values.bins:
+        raise ValueError(
+            "twin.it_budget needs twin.bins: the three-bin budget is "
+            "checked against twin.dat's E_dU / E_du1 / E_du2 "
+            "(analysis.twin.series.closure_residuals), which "
+            "twin.bins writes.  For the scale-resolved budget set "
+            "twin.it_ybudget instead."
+        )
+
+
+TWIN_EXTENSION = register_extension(
+    ParamExtension(
+        name="twin",
+        model=TwinParams,
+        relevant=lambda system: system in cartesian_systems,
+        summary=(
+            "Twin-run perturbation-growth driver (dnsjax-twin only; "
+            "Cartesian flows)."
+        ),
+        validate=_validate_twin,
+        record_in_metadata=False,
+        off_cadences=_TWIN_OFF_CADENCES,
+        # Resolved by :func:`run` after the paired-resume decision; the
+        # startup layering only records where a given value came from.
+        seed_fields=("seed",),
+        seeds_at_start=False,
+    )
+)
+
+#: Live merged section (analogous to the global ``params``).
+twin_params: TwinParams = TWIN_EXTENSION.values
+
+#: Provenance label of a ``twin.seed`` inherited from ``twin.json``
+#: (the :mod:`dnsjax.seeding` labels cover the core's layers).
+SOURCE_SIDECAR = "inherited from twin.json"
+
+
+#: Every file a twin run appends to.  A fresh start refuses to touch
+#: a directory holding any of them (see :func:`run`), because all
+#: three writer families append rather than truncate: a ``.dat``
+#: stream because :class:`_ScalarStream` re-writes no header, and a
+#: ``.bin`` stream whenever its sidecar happens to match this run.
+#: A superset of ``lab/scripts/twin_postprocess.py``'s ``_OUTPUTS``: the
+#: streams that script rebuilds, plus the ones it cannot.
+#: ``probes.*`` is here too -- reference-only, and written by plain
+#: ``dnsjax`` as well, but a twin run appends to it like the rest.
+_STREAM_FILES: tuple[str, ...] = (
+    "twin.dat",
+    "twin_budget.dat",
+    "stats.dat",
+    "stats_twin.dat",
+    "steps.dat",
+    "steps_twin.dat",
+    "corrector.dat",
+    "corrector_twin.dat",
+    "twin_spectra.bin",
+    "twin_spectra.json",
+    "twin_yspectra.bin",
+    "twin_yspectra.json",
+    "twin_ybudget.bin",
+    "twin_ybudget.json",
+    "twin_spectra_ref.bin",
+    "twin_spectra_ref.json",
+    "twin_yspectra_ref.bin",
+    "twin_yspectra_ref.json",
+    "probes.bin",
+    "probes.json",
+    # The per-sample directories: their files are named by ``it`` and
+    # replaced rather than appended to, so a stale one would mix two
+    # trajectories' samples in one directory instead.
+    "twin_spectra3d",
+    "twin_spectra3d_ref",
+    "twin_budget3d",
+    "lowres",
+    "lowres_delta",
+)
+
+
+def _stored_with_ref(stem: str) -> bool:
+    """Whether this directory's *stem* stream holds the reference too.
+
+    The layout before the reference spectra had streams of their own
+    (``includes_ref: true`` in the ``.json`` sidecar).
+    """
+    sidecar = Path(f"{stem}.json")
+    if not sidecar.exists():
+        return False
+    with open(sidecar) as f:
+        return bool(json.load(f).get("includes_ref"))
+
+
+def ref_cadence(values: TwinParams, name: str) -> int | None:
+    """The effective cadence of a reference spectra output.
+
+    *name* is the difference output's cadence field (``it_spectra``,
+    ``it_yspectra``, ``it_spectra3d``): its ``<name>_ref`` when set,
+    else the difference cadence itself -- the samples land where they
+    did before the reference had outputs of its own -- and ``None``
+    under ``spectra_ref`` off or a ``<name>_ref`` of ``0``.
+    """
+    if not values.spectra_ref:
+        return None
+    own = getattr(values, f"{name}_ref")
+    if own == 0:
+        return None
+    return own if own is not None else getattr(values, name)
+
+
+def _partner_path(reference: Path) -> Path:
+    """The partner snapshot's path for a reference ``state*.tar``."""
+    return reference.with_name(f"{reference.stem}_twin{reference.suffix}")
+
+
+class _ScalarStream:
+    """Buffered ``.dat`` column stream (twin-driver instances).
+
+    The per-stream state machine of the :mod:`dnsjax.__main__` inline
+    buffers -- an on-device ``(nbuffer, n_cols)`` buffer, a host
+    timestamp list and fill index, disk I/O gated on the main device
+    with the index reset on **all** ranks (lockstep) -- factored as a
+    class because the twin driver runs several streams.  Rows are
+    written by the shared :func:`dnsjax.__main__._flush_stats`
+    (append + ``fsync`` + post-write non-finite scan) and the header
+    by :func:`dnsjax.__main__._write_dat_header`, once and only when
+    the file does not exist, so a resume appends.  :meth:`push`
+    fill-flushes when the buffer is full;
+    both methods return the non-finite diagnostic message (main
+    process only) and the caller aborts on it.
+    """
+
+    def __init__(self, path, names, *, jnp, sharding) -> None:
+        self._jnp = jnp
+        self._sharding = sharding
+        self.names = list(names)
+        self.path = Path(path)
+        self._p = params.outs.stats_precision - 1
+        val_width = params.outs.stats_precision + 7
+        self._col_width = max(
+            val_width, max(len(n) for n in ["t"] + self.names)
+        )
+        self._nbuffer = params.outs.nbuffer
+        self._buffer = jnp.zeros(
+            (self._nbuffer, len(self.names)), dtype=sharding.float_type
+        )
+        self._ts: list[float] = []
+        self._idx: int = 0
+        if sharding.main_device and not self.path.exists():
+            _write_dat_header(self.path, ["t"] + self.names, self._col_width)
+
+    def push(self, values, t: float) -> str | None:
+        """Buffer one row; flush (checked) when the buffer fills."""
+        self._buffer = self._buffer.at[self._idx].set(values)
+        self._ts.append(t)
+        self._idx += 1
+        if self._idx == self._nbuffer:
+            return self.flush()
+        return None
+
+    def flush(self, check: bool = True) -> str | None:
+        """Write the buffered rows durably; reset on all ranks."""
+        if self._idx == 0:
+            return None
+        bad = None
+        if self._sharding.main_device:
+            bad = _flush_stats(
+                self._buffer,
+                self._idx,
+                self._ts,
+                self.path,
+                self._p,
+                self._col_width,
+                self.names if check else None,
+            )
+        self._ts.clear()
+        self._idx = 0
+        return bad
+
+
+def run(
+    wall_time_start: int,
+    status: RunStatus,
+    seed_source: str | None = None,
+) -> Outcome:
+    """Run the twin time-stepping loop (parameters and JAX final).
+
+    Mirrors :func:`dnsjax.__main__.run` with two states, *status*
+    and the returned :class:`~dnsjax.run_status.Outcome` included; see
+    the module docstring for what differs.  *seed_source* is the
+    ``seeding.SOURCE_*`` label of the layer that supplied ``twin.seed``
+    (``None`` when none did, and the seed is resolved in here).
+    """
+    import importlib
+
+    import jax
+    import numpy as np
+    from jax import numpy as jnp
+
+    from dnsjax.flows.registry import spec_for
+    from dnsjax.sharding import sharding
+
+    # --- Flow dispatch (registry-driven, as in __main__) -----------------
+    _spec = spec_for(params.phys.system)
+    _flow_mod = importlib.import_module(_spec.flow_module)
+    get_perturbation_energy = _flow_mod.get_perturbation_energy
+    get_stats = _flow_mod.get_stats
+    get_driving = getattr(_flow_mod, "get_driving", None)
+    predict_and_fully_correct = _flow_mod.predict_and_fully_correct
+    predict_and_fully_correct_measured = (
+        _flow_mod.predict_and_fully_correct_measured
+    )
+    step_cnab2 = _flow_mod.step_cnab2
+    step_cnab2_measured = _flow_mod.step_cnab2_measured
+
+    # The [twin] validation restricts to the Cartesian flows, whose
+    # state is physical components throughout -- no solver-basis
+    # crossing anywhere in this driver.
+    from dnsjax_lab.twin import diagnostics
+
+    twin_energies = diagnostics.twin_energies
+
+    # --- Driver-level configuration guards -------------------------------
+    # These are dnsjax-twin requirements beyond the [twin] validate
+    # hook (which also runs under a hypothetical non-twin entry
+    # point and must not constrain unrelated sections).
+    if twin_params.e0 is None:
+        raise SystemExit(
+            f"{_PROG}: error: configure the [twin] section "
+            "(twin.e0 at minimum); see "
+            f"`{_PROG} --help {params.phys.system}`."
+        )
+    if force_params.modes is not None:
+        # A configured [force] can only come from the resumed
+        # snapshot's embedded params (the section rides the shared
+        # surface): stochastic kicks would have to be applied
+        # identically to both states to keep the difference purely
+        # dynamical, which the driver does not support.
+        raise SystemExit(
+            f"{_PROG}: error: the [force] section is not supported "
+            "by the twin driver (the resumed snapshot records "
+            "stochastic forcing); resume its trajectory with plain "
+            "dnsjax, or harvest an unforced snapshot."
+        )
+    if params.init.snapshot is None or not is_snapshot_file(
+        params.init.snapshot
+    ):
+        raise SystemExit(
+            f"{_PROG}: error: a twin run starts from a dnsjax "
+            "snapshot (--init.snapshot state*.tar); the in-process "
+            "start modes are not supported."
+        )
+
+    from dnsjax.snapshot import (
+        _barrier,
+        load_snapshot,
+        read_metadata,
+        save_snapshot,
+        validate_snapshot_params,
+    )
+
+    # --- Reference state -------------------------------------------------
+    ref_path = Path(params.init.snapshot)
+    validate_snapshot_params(ref_path)
+    state1, t_snap, it_snap = load_snapshot(ref_path)
+    meta1 = read_metadata(ref_path)
+    changes = trajectory_defining_changes(meta1["params"])
+
+    partner = _partner_path(ref_path)
+    json_path = Path("twin.json")
+    have_partner = partner.exists()
+    have_json = json_path.exists()
+    # Only a fresh start reads these (below), but every read of the
+    # directory happens here, ahead of the barrier.
+    stale = [name for name in _STREAM_FILES if Path(name).exists()]
+    old: dict = {}
+    if have_json:
+        with open(json_path) as f:
+            old = json.load(f)
+    # Every rank has now read the directory it decides on; only after
+    # this may rank 0 write into it.  Without the barrier a lagging rank
+    # can read the ``twin.json`` rank 0 has just written, take another
+    # branch than its peers, and hang the job -- and on the
+    # ``twin.e0 = 0`` fresh start no collective runs in between to
+    # order the two by accident.
+    _barrier("twin_start")
+
+    # --- The perturbation seed (before the branch: the two differ) -------
+    # A paired resume never re-perturbs, so it needs no draw -- it needs
+    # the seed its pair was *born* with, the one recorded in twin.json.
+    # Adopting it is also what makes the _TWIN_MATCH_KEYS check below
+    # satisfiable for a member whose seed was drawn rather than typed.
+    # A fresh start draws one; ``e0 = 0`` perturbs by exactly nothing and
+    # needs no seed at all, recording ``null``.
+    if twin_params.seed is None:
+        if have_partner and have_json:
+            twin_params.seed = old.get("seed")
+            seed_source = SOURCE_SIDECAR
+        elif not have_partner and not have_json and twin_params.e0 != 0.0:
+            # Every rank, outside any main-device gate: the draw is
+            # agreed by a collective so the partner is one field, not
+            # one per rank.
+            twin_params.seed = resolve_seed("twin.seed", "--twin.seed", None)
+            seed_source = SOURCE_DRAWN
+    if twin_params.seed is not None:
+        # ``or SOURCE_CLI``: a seed that reached here already set, with
+        # no layer recorded for it, was assigned directly (a test).
+        sharding.print(
+            seed_note("twin.seed", twin_params.seed, seed_source or SOURCE_CLI)
+        )
+
+    # --- Fresh start vs paired resume (see the module docstring) ---------
+    resumed_pair: bool = False
+    if have_partner and have_json:
+        current = _twin_sidecar_stub()
+        # Each mismatch is named with both values: a default that has
+        # moved since the member was recorded is the common cause, and
+        # the recorded value is then exactly what to configure.
+        mismatch = []
+        for k in _TWIN_MATCH_KEYS:
+            recorded = old.get(k, _legacy_default(k, old))
+            if recorded != current[k]:
+                mismatch.append(
+                    f"{k} (recorded {recorded!r}, configured {current[k]!r})"
+                )
+        if mismatch:
+            raise SystemExit(
+                f"{_PROG}: error: this directory's twin.json does "
+                "not match the configured run (differs in: "
+                f"{', '.join(mismatch)}); a twin trajectory cannot "
+                "change these on resume.  Resume with the recorded "
+                "values, or start a fresh member in a clean directory."
+            )
+        if changes:
+            raise SystemExit(
+                f"{_PROG}: error: trajectory-defining parameters "
+                f"changed on a twin pair resume ({'; '.join(changes)}"
+                "); the pair would disconnect from its recorded "
+                "streams.  Start a fresh member instead."
+            )
+        validate_snapshot_params(partner)
+        state2, t2_snap, it2_snap = load_snapshot(partner)
+        if (t2_snap, it2_snap) != (t_snap, it_snap):
+            raise SystemExit(
+                f"{_PROG}: error: partner snapshot {partner} is at "
+                f"(t={t2_snap}, it={it2_snap}) but the reference is "
+                f"at (t={t_snap}, it={it_snap}); the pair is "
+                "inconsistent (a crash between the two writes?  "
+                "resume from an earlier complete pair)."
+            )
+        params.init.t0 = t_snap
+        params.init.it0 = it_snap
+        isnap_start = meta1["isnap"] + 1
+        resumed_pair = True
+        state1 = _interpolate_if_needed(
+            state1, ref_path, read_metadata, sharding, jnp
+        )
+        state2 = _interpolate_if_needed(
+            state2, partner, read_metadata, sharding, jnp
+        )
+        sharding.print(
+            f"Resumed twin pair: t={t_snap:.6e}, it={it_snap} "
+            f"({ref_path.name} + {partner.name})"
+        )
+    elif have_partner:
+        raise SystemExit(
+            f"{_PROG}: error: {partner} exists but this directory "
+            "has no twin.json member record.  To resume that pair, "
+            "restore its twin.json; to seed a fresh member from a "
+            "twin run's reference snapshot, copy the reference tar "
+            "into the parent-snapshot store (without its partner) "
+            "and point --init.snapshot at the copy."
+        )
+    elif have_json:
+        raise SystemExit(
+            f"{_PROG}: error: this directory already holds a twin "
+            "trajectory (twin.json exists) but "
+            f"{ref_path.name} has no partner snapshot.  Resume by "
+            "pointing --init.snapshot at the latest state*.tar "
+            "written here, or clean the directory (twin.json + "
+            "streams) to restart the member from its parent."
+        )
+    else:
+        # Fresh start.  Stale streams without the member record mean
+        # a corrupt / half-cleaned directory; refuse to append.  All
+        # of them, not just ``twin.dat``: every writer here appends
+        # (:data:`_STREAM_FILES`), so a half-cleaned directory would
+        # otherwise splice a new trajectory onto an old one's records
+        # -- silently for the ``.dat`` streams, and for a ``.bin``
+        # stream whenever its sidecar matched.
+        if stale:
+            raise SystemExit(
+                f"{_PROG}: error: stale {', '.join(stale)} without "
+                "twin.json in this directory; move them away."
+            )
+        if changes and not params.init.force_resume:
+            sharding.print(
+                "Fresh twin start: trajectory-defining parameters "
+                "changed vs the parent snapshot; starting the "
+                "reference at t=it=0 (init.force_resume keeps the "
+                "parent clock).  Changes: " + "; ".join(changes)
+            )
+            params.init.t0 = 0.0
+            params.init.it0 = 0
+        else:
+            if changes:
+                sharding.print(
+                    "Fresh twin start: force_resume set; keeping the "
+                    "parent clock despite changes ("
+                    + "; ".join(changes)
+                    + ")."
+                )
+            params.init.t0 = t_snap
+            params.init.it0 = it_snap
+        isnap_start = params.init.isnap0
+        state1 = _interpolate_if_needed(
+            state1, ref_path, read_metadata, sharding, jnp
+        )
+
+        # --- The perturbation (once, here, never on resume) ---
+        if twin_params.e0 == 0.0:
+            # Exact zero perturbation: the determinism guard.  Copy,
+            # not alias -- the steppers donate their inputs.
+            state2 = jnp.copy(state1)
+            sharding.print(
+                "Twin partner: exact copy (twin.e0 = 0; bit-identity mode)."
+            )
+        else:
+            from dnsjax.ic.random_field import generate_random_state
+
+            grid_before = derived_params.wall_normal_grid
+            # ||delta|| = sqrt(2 e0) makes E'(delta) = e0 already;
+            # the explicit rescale below guards the convention
+            # against generator changes at zero cost.
+            delta = generate_random_state(
+                math.sqrt(2.0 * twin_params.e0),
+                twin_params.smoothness,
+                twin_params.wall_smoothness,
+                twin_params.wall_confinement,
+                twin_params.seed,
+                # ``twin.mean_flow`` (on by default), not the shared
+                # ``init.random_mean_flow`` -- see the field's docs.
+                # The partner's (0, 0) perturbation is conditioned on
+                # the mean-mode conservation laws
+                # (:mod:`dnsjax.ic.mean_mode`), so under a held mean it
+                # shares the reference's bulk velocity exactly and the
+                # difference field's mean profile is a genuine
+                # perturbation direction rather than a bookkeeping
+                # artefact.  ``--twin.mean_flow False`` gives the
+                # mean-free partner this used to hardcode.
+                twin_params.mean_flow,
+            )
+            if grid_before is not None and not np.allclose(
+                np.asarray(grid_before),
+                np.asarray(derived_params.wall_normal_grid),
+                atol=1e-12,
+            ):  # pragma: no cover - same params build the same grid
+                raise RuntimeError(
+                    "the random-field generator rebuilt a different "
+                    "wall-normal grid than the loaded snapshot's; "
+                    "refusing to perturb across grids."
+                )
+            e_delta = float(get_perturbation_energy(delta))
+            if not (math.isfinite(e_delta) and e_delta > 0):
+                raise SystemExit(
+                    f"{_PROG}: error: generated perturbation has "
+                    f"E' = {e_delta}; cannot rescale to twin.e0."
+                )
+            state2 = state1 + delta * math.sqrt(twin_params.e0 / e_delta)
+            sharding.print(
+                f"Twin partner: reference + random perturbation "
+                f"(E' = {twin_params.e0:.3e}, "
+                f"seed = {twin_params.seed})."
+            )
+
+        if sharding.main_device:
+            sidecar = _twin_sidecar_stub()
+            sidecar.update(
+                parent=str(ref_path),
+                parent_t=params.init.t0,
+                parent_it=params.init.it0,
+                git_hash=git_hash(),
+                params=recorded_params_dump(params),
+            )
+            write_sidecar_json(json_path, sidecar)
+
+    # --- Sample-cadence anchor -------------------------------------------
+    # Every cadence below is counted from the member's own
+    # perturbation step, ``(it - sample_it0) % cadence``, not from the
+    # absolute step counter.  The two agree only when the parent
+    # snapshot happens to sit at a multiple of the cadence, and the
+    # clock every consumer of these streams reads is the relative one
+    # `$t - t_\mathrm{parent}$` (``twin.json``'s ``parent_t``;
+    # :func:`dnsjax_lab.analysis.twin.ensemble.aggregate_members`,
+    # ``lab/scripts/twin_spectral_maps.py``).  Anchoring on ``it`` instead
+    # put a member's whole relative grid out of phase by
+    # ``(-parent_it mod cadence) * dt`` -- a number set by the
+    # bookkeeping index of the snapshot it was harvested from -- so an
+    # ensemble whose parents carried different residues shared only
+    # `$t = 0$` and could not be averaged at all.  ``parent_it``
+    # rather than ``init.it0``: it is the same number across a paired
+    # resume, so one member has one grid for its whole life, and a
+    # resume seam costs at most the unconditional ``t0`` row
+    # (:func:`dnsjax_lab.analysis.twin.series.uniform_grid` masks it).
+    # A member *recorded* before this changed keeps its old phase in
+    # the rows it already holds: resuming one appends on the new grid,
+    # leaving a phase seam that ``uniform_grid`` resolves in favour of
+    # whichever segment is longer.
+    sample_it0: int = int(
+        old["parent_it"] if resumed_pair else params.init.it0
+    )
+
+    # --- Stopping criteria -----------------------------------------------
+    wall_time_stop = (
+        jnp.inf
+        if params.stop.max_wall_time is None
+        else int(params.stop.max_wall_time.total_seconds() / ns_to_s)
+    )
+    # Relative to the initial condition, as in ``dnsjax.__main__``:
+    # the horizon is counted from ``init.t0`` -- the parent's clock on
+    # a fresh start, the resumed pair's on a paired resume (so a
+    # member restarted mid-horizon gets a fresh horizon from there).
+    t_stop = (
+        jnp.inf
+        if params.stop.max_sim_time is None
+        else params.init.t0 + params.stop.max_sim_time
+    )
+    if params.stop.max_sim_time is not None and params.init.t0 != 0.0:
+        sharding.print(
+            f"Stopping at t = {t_stop:.6e} (init.t0 + stop.max_sim_time)."
+        )
+
+    it: int = params.init.it0
+    it0: int = params.init.it0
+    t: float = params.init.t0
+    isnap: int = isnap_start
+    last_saved_it: int | None = None
+    dt_first: float = params.step.dt
+    last_error: float = 0.0
+    # A fixed corrector count (``step.corrector_iterations``) makes the
+    # reported error a diagnostic rather than a convergence verdict, so
+    # the run must not end on it -- see the ``TimeStepping`` docstring.
+    fixed_corrector: bool = params.step.corrector_iterations > 0
+
+    check_laminarization: bool = params.stop.check_laminarization
+    laminarization_threshold: float = params.stop.laminarization_threshold
+    laminarized: bool = False
+    e_prime_host: float = float("inf")
+
+    it_error_check: int = params.outs.it_error_check
+    c_sum = jnp.zeros((), dtype=jnp.int32)
+    # Running maxima of both states' corrector errors since the last
+    # host sync (:mod:`dnsjax.__main__`: a check judges every step in
+    # between, not only the one it lands on).
+    e1_max = jnp.zeros((), dtype=sharding.float_type)
+    e2_max = jnp.zeros((), dtype=sharding.float_type)
+    e1_dev = None
+    e2_dev = None
+    c1_dev = None
+    c2_dev = None
+
+    def _save_pair(s1, s2, t, it, snap_stats, snap_stats2, isnap):
+        """Write the state{isnap}.tar / state{isnap}_twin.tar pair.
+
+        Every rank calls ``save_snapshot`` twice in the same order
+        (its internal barriers are collective); the caller flushes
+        the streams once *before* the pair, never between.  Both
+        states' stats arrive as arguments, computed by the caller
+        under the same gate that feeds ``stats.dat`` /
+        ``stats_twin.dat``, so a snapshot step coinciding with a stats
+        step traverses each state once rather than twice.
+        """
+        width = params.outs.snapshot_pad_width
+        name = f"state{isnap:0{width}d}"
+        embed = params.outs.snapshot_embed_stats
+        save_snapshot(
+            s1,
+            t,
+            it,
+            f"{name}.tar",
+            stats=(snap_stats if embed else None),
+            isnap=isnap,
+        )
+        save_snapshot(
+            s2,
+            t,
+            it,
+            f"{name}_twin.tar",
+            stats=(snap_stats2 if embed else None),
+            isnap=isnap,
+        )
+        # The reference names the pair (its partner: ``_partner_path``).
+        status.snapshot_written(f"{name}.tar", t, it)
+        return isnap + 1
+
+    # --- Warm-ups (JIT outside the benchmark window) ----------------------
+    stats = get_stats(state1)
+    stats2 = get_stats(state2)
+    tvals = twin_energies(state1, state2, bins=twin_params.bins)
+    measure_budget: bool = twin_params.it_budget is not None
+    if measure_budget:
+        twin_budget = diagnostics.twin_budget
+        bvals = twin_budget(state1, state2)
+    # Both y-resolved outputs share it, and both take it statically.
+    _yx0 = twin_params.x0_planes
+
+    sharding.print(
+        f"t = {t:.2f}",
+        f"E_d={float(tvals['E_d']):.3e}",
+        f"E_ref={float(tvals['E_ref']):.3e}",
+        *[f"{x}={y:.3e}" for x, y in stats.items()],
+    )
+
+    bad_init = (
+        [k for k, v in stats.items() if not math.isfinite(float(v))]
+        + [
+            f"{k} (twin)"
+            for k, v in stats2.items()
+            if not math.isfinite(float(v))
+        ]
+        + [k for k, v in tvals.items() if not math.isfinite(float(v))]
+    )
+    if measure_budget:
+        bad_init += [
+            k for k, v in bvals.items() if not math.isfinite(float(v))
+        ]
+    if bad_init:
+        reason = (
+            f"non-finite initial statistic(s) {', '.join(bad_init)} "
+            f"at t = {t:.6e}"
+        )
+        status.note(reason)
+        sharding.print(f"FATAL: {reason}; aborting.")
+        sys.exit(EXIT_NON_FINITE)
+
+    if check_laminarization:
+        jax.block_until_ready(get_perturbation_energy(state1))
+
+    # --- IC snapshot pair (fresh start only) -----------------------------
+    if params.outs.snapshot_save_initial and not resumed_pair:
+        isnap = _save_pair(state1, state2, t, it, stats, stats2, isnap)
+        last_saved_it = it
+
+    # --- Streams ---------------------------------------------------------
+    # Each state's applied mean-mode driving (the last ``stats*.dat``
+    # columns): a *step* quantity threaded out of the corrector, so the
+    # ``t = t0`` row -- which has no step behind it -- carries the
+    # wall-shear inference instead (``get_driving``).  ``get_driving``
+    # takes the *physical* view of a state; this driver is
+    # Cartesian-only, whose solver basis **is** the physical one (no
+    # ``to_solver_basis`` anywhere here), so both states satisfy that
+    # as they stand.
+    last_drive1 = get_driving(state1) if get_driving is not None else {}
+    last_drive2 = get_driving(state2) if get_driving is not None else {}
+
+    stats_stream = None
+    stats2_stream = None
+    if params.outs.it_stats is not None:
+        # One column set for the pair: the same flow, hence the same
+        # ``get_stats`` and ``get_driving`` keys.
+        stats_names = list(stats.keys()) + list(last_drive1.keys())
+        stats_stream = _ScalarStream(
+            "stats.dat", stats_names, jnp=jnp, sharding=sharding
+        )
+        stats_stream.push(_row(stats, last_drive1), t)
+        stats2_stream = _ScalarStream(
+            "stats_twin.dat", stats_names, jnp=jnp, sharding=sharding
+        )
+        stats2_stream.push(_row(stats2, last_drive2), t)
+
+    twin_stream = _ScalarStream(
+        "twin.dat", tvals.keys(), jnp=jnp, sharding=sharding
+    )
+    twin_stream.push(jnp.stack(list(tvals.values())), t)
+
+    budget_stream = None
+    if measure_budget:
+        budget_stream = _ScalarStream(
+            "twin_budget.dat", bvals.keys(), jnp=jnp, sharding=sharding
+        )
+        budget_stream.push(jnp.stack(list(bvals.values())), t)
+
+    # --- Spectral outputs ------------------------------------------------
+    # The (k_z, k_x) and (y, k) streams, the 3-D cubes and the budget;
+    # each reference output runs on a cadence of its own
+    # (:func:`ref_cadence`, by default its difference output's).  A
+    # start sample here, in-loop samples before each step, a final one
+    # only on the grid -- all anchored on ``sample_it0`` (above).
+    ref_spectra_cad = ref_cadence(twin_params, "it_spectra")
+    ref_yspectra_cad = ref_cadence(twin_params, "it_yspectra")
+    ref_spectra3d_cad = ref_cadence(twin_params, "it_spectra3d")
+    # A member recorded before the reference spectra had streams of
+    # their own holds them inside the difference streams
+    # (``includes_ref``); its resume keeps that layout -- the twin.json
+    # check above has pinned its reference cadence to the difference
+    # one -- and opens no reference stream.
+    combined_spectra = resumed_pair and _stored_with_ref("twin_spectra")
+    combined_yspectra = resumed_pair and _stored_with_ref("twin_yspectra")
+    measure_spectra = twin_params.it_spectra is not None
+    measure_spectra_ref = ref_spectra_cad is not None and not combined_spectra
+    measure_yspectra = twin_params.it_yspectra is not None
+    measure_yspectra_ref = (
+        ref_yspectra_cad is not None and not combined_yspectra
+    )
+    measure_spectra3d = twin_params.it_spectra3d is not None
+    measure_spectra3d_ref = ref_spectra3d_cad is not None
+    measure_ybudget = twin_params.it_ybudget is not None
+    measure_budget3d = twin_params.it_budget3d is not None
+    rot = twin_params.rotational_ybudget
+    lowres_on = (
+        params.lowres.it_lowres is not None
+        or twin_params.it_lowres_delta is not None
+    )
+
+    # One factored Poisson operator, held for the run and shared by
+    # every consumer (the ``twin.it_ybudget`` field docs say what it
+    # costs).
+    pressure = None
+    if (
+        measure_ybudget
+        or measure_budget3d
+        or (lowres_on and params.lowres.pressure)
+    ):
+        from dnsjax_lab.twin.pressure import DifferencePressure
+
+        pressure = DifferencePressure(diagnostics.flow, diagnostics.fourier)
+
+    # Every buffered binary stream, for the flush sites.
+    bin_streams: list = []
+    if measure_spectra or measure_spectra_ref:
+        from dnsjax_lab.twin.spectra import (
+            TwinSpectraRefStream,
+            TwinSpectraStream,
+        )
+    if measure_spectra:
+        spectra_stream = TwinSpectraStream(
+            twin_params, includes_ref=combined_spectra
+        )
+        bin_streams.append(spectra_stream)
+    if measure_spectra_ref:
+        spectra_ref_stream = TwinSpectraRefStream(twin_params, ref_spectra_cad)
+        bin_streams.append(spectra_ref_stream)
+    if measure_yspectra or measure_yspectra_ref or measure_ybudget:
+        from dnsjax_lab.twin.yspectra import (
+            TwinYBudgetStream,
+            TwinYSpectraRefStream,
+            TwinYSpectraStream,
+        )
+
+        y_weights = np.asarray(diagnostics.flow.y_weights).tolist()
+    if measure_yspectra:
+        yspectra_stream = TwinYSpectraStream(
+            twin_params, y_weights, includes_ref=combined_yspectra
+        )
+        bin_streams.append(yspectra_stream)
+    if measure_yspectra_ref:
+        yspectra_ref_stream = TwinYSpectraRefStream(
+            twin_params, y_weights, ref_yspectra_cad
+        )
+        bin_streams.append(yspectra_ref_stream)
+    if measure_ybudget:
+        ybudget_stream = TwinYBudgetStream(twin_params, y_weights)
+        bin_streams.append(ybudget_stream)
+
+    sel = None
+    if measure_spectra3d or measure_spectra3d_ref or measure_budget3d:
+        from dnsjax_lab.twin.cubes import (
+            BUDGET3D,
+            SPECTRA3D,
+            SPECTRA3D_REF,
+            CubeStore,
+        )
+
+        try:
+            sel = diagnostics.cube_selection(
+                derived_params.wall_normal_grid,
+                twin_params.n_y3d,
+                twin_params.n_kz3d,
+                twin_params.n_kx3d,
+            )
+        except ValueError as exc:
+            raise SystemExit(f"{_PROG}: error: {exc}") from None
+        cube_store = partial(
+            CubeStore, sel=sel, twin_values=twin_params, parent_it=sample_it0
+        )
+        if measure_spectra3d:
+            spectra3d_store = cube_store(
+                SPECTRA3D,
+                ("e_u", "e_v", "e_w"),
+                cadence_key="it_spectra3d",
+                cadence=twin_params.it_spectra3d,
+            )
+        if measure_spectra3d_ref:
+            spectra3d_ref_store = cube_store(
+                SPECTRA3D_REF,
+                ("r_u", "r_v", "r_w"),
+                cadence_key="it_spectra3d_ref",
+                cadence=ref_spectra3d_cad,
+            )
+        if measure_budget3d:
+            budget3d_store = cube_store(
+                BUDGET3D,
+                diagnostics.CONVECTIVE_TERMS,
+                cadence_key="it_budget3d",
+                cadence=twin_params.it_budget3d,
+            )
+        sharding.print(
+            f"3-D cubes on {len(sel.iy)} x {len(sel.kz_pos)} x "
+            f"{len(sel.kx)} (wall distance, |k_z|, k_x) points."
+        )
+
+    def _due(cadence, it, phase, per_file):
+        """Whether an output on *cadence* samples step *it* in *phase*.
+
+        On the grid only, past the start -- except a ``.bin`` stream's
+        start sample, which is unconditional (a resume seam its
+        readers drop), where a per-file output, named by ``it``, keeps
+        to the grid.
+        """
+        if cadence is None:
+            return False
+        if phase == "start" and not per_file:
+            return True
+        on_grid = (it - sample_it0) % cadence == 0
+        return on_grid and (phase == "start" or it > it0)
+
+    def _record_spectral(s1, s2, t, it, phase) -> list[str]:
+        """Record every spectral output due; the non-finite messages.
+
+        Each difference/reference pair is one call computing the halves
+        that are due, and the two budget outputs share one density
+        pass.  Issued before the donating steps.
+        """
+        bad = []
+
+        def keep(msg):
+            if msg is not None:
+                bad.append(msg)
+
+        do_d = measure_spectra and _due(
+            twin_params.it_spectra, it, phase, False
+        )
+        do_r = measure_spectra_ref and _due(ref_spectra_cad, it, phase, False)
+        if do_d or do_r:
+            vals = diagnostics.twin_spectra_2d(
+                s1, s2, ref=do_r or (do_d and combined_spectra), delta=do_d
+            )
+            if do_d:
+                keep(spectra_stream.record(vals, t))
+            if do_r:
+                keep(spectra_ref_stream.record(vals, t))
+        do_d = measure_yspectra and _due(
+            twin_params.it_yspectra, it, phase, False
+        )
+        do_r = measure_yspectra_ref and _due(
+            ref_yspectra_cad, it, phase, False
+        )
+        if do_d or do_r:
+            vals = diagnostics.twin_yspectra(
+                s1,
+                s2,
+                ref=do_r or (do_d and combined_yspectra),
+                x0=_yx0,
+                delta=do_d,
+            )
+            if do_d:
+                keep(yspectra_stream.record(vals, t))
+            if do_r:
+                keep(yspectra_ref_stream.record(vals, t))
+        do_d = measure_spectra3d and _due(
+            twin_params.it_spectra3d, it, phase, True
+        )
+        do_r = measure_spectra3d_ref and _due(
+            ref_spectra3d_cad, it, phase, True
+        )
+        if do_d or do_r:
+            vals = diagnostics.twin_spectra3d(
+                s1, s2, sel, ref=do_r, delta=do_d
+            )
+            if do_d:
+                keep(spectra3d_store.write(vals["e"], t, it))
+            if do_r:
+                keep(spectra3d_ref_store.write(vals["r"], t, it))
+        do_m = measure_ybudget and _due(
+            twin_params.it_ybudget, it, phase, False
+        )
+        do_c = measure_budget3d and _due(
+            twin_params.it_budget3d, it, phase, True
+        )
+        if do_m or do_c:
+            vals = diagnostics.twin_ybudget(
+                s1,
+                s2,
+                pressure,
+                rotational=rot,
+                x0=_yx0,
+                marginals=do_m,
+                cube=sel if do_c else None,
+            )
+            if do_m:
+                keep(ybudget_stream.record(vals, t))
+            if do_c:
+                keep(budget3d_store.write(vals["cube"], t, it))
+        return bad
+
+    spectral_bad_t0 = _record_spectral(state1, state2, t, it, "start")
+
+    # --- Reduced-resolution snapshots ------------------------------------
+    # The reference state at the solver-wide ``lowres.it_lowres`` into
+    # ``lowres/``, the difference field at ``twin.it_lowres_delta`` into
+    # ``lowres_delta/`` -- separate files, nothing for the partner -- at
+    # the ``[lowres]`` resolution, with each one's static pressure under
+    # ``lowres.pressure``.  The difference pressure is the budget's own,
+    # to round-off (``diagnostics.difference_pressure``), formed from
+    # the difference field rather than as a difference of two
+    # pressures.
+    lowres_writer = None
+    if lowres_on:
+        from dnsjax.lowres import LOWRES_DIR, LowResWriter, lowres_path
+
+        lowres_writer = LowResWriter(pressure_op=pressure)
+        sharding.print(
+            "Reduced-resolution snapshots at "
+            f"{lowres_writer.target_public}: reference every "
+            f"{params.lowres.it_lowres} steps, difference every "
+            f"{twin_params.it_lowres_delta} steps"
+            + (", static pressure" if lowres_writer.pressure else "")
+            + "."
+        )
+    twin_meta = {
+        "twin": {
+            "seed": twin_params.seed,
+            "e0": twin_params.e0,
+            "parent_it": sample_it0,
+        }
+    }
+
+    def _record_lowres(s1, s2, t, it, phase) -> None:
+        """Write the reduced snapshots due at step *it*."""
+        if lowres_writer is None:
+            return
+        if _due(params.lowres.it_lowres, it, phase, True):
+            lowres_writer.write_state(
+                s1,
+                t,
+                it,
+                lowres_path(LOWRES_DIR, "lowres", it),
+                extra_meta=twin_meta,
+            )
+        if _due(twin_params.it_lowres_delta, it, phase, True):
+            if lowres_writer.pressure is not None:
+                delta, dp = diagnostics.difference_pressure(
+                    s1, s2, lowres_writer.pressure
+                )
+            else:
+                delta, dp = s2 - s1, None
+            lowres_writer.write(
+                delta,
+                dp,
+                t,
+                it,
+                lowres_path("lowres_delta", "lowres_delta", it),
+                field="difference",
+                pressure_note="difference",
+                extra_meta=twin_meta,
+            )
+
+    _record_lowres(state1, state2, t, it, "start")
+
+    # --- CN/AB2 history priming (both states; donated args copied) -------
+    scheme: str = params.step.scheme
+    is_cnab2: bool = scheme == "cnab2"
+    if is_cnab2:
+        _, rhs1, *_ = step_cnab2(jnp.copy(state1), jnp.zeros_like(state1))
+        _, rhs2, *_ = step_cnab2(jnp.copy(state2), jnp.zeros_like(state2))
+
+    # --- Steps (CFL) streams: both states --------------------------------
+    measure_steps: bool = params.outs.it_steps is not None
+    steps_stream = None
+    steps2_stream = None
+    if measure_steps:
+        if is_cnab2:
+            *_, meas = step_cnab2_measured(jnp.copy(state1), jnp.copy(rhs1))
+        else:
+            *_, meas = predict_and_fully_correct_measured(jnp.copy(state1))
+        # ``state2`` no longer forces the unmeasured program to compile
+        # in iteration 0: on a recording step both states take the
+        # measured variant.  Pre-compile it when the first iteration
+        # records but not every one does, exactly as
+        # :func:`dnsjax.__main__.run` does (``step.adaptive`` is
+        # rejected here, so ``outs.it_steps`` is the only consumer of
+        # the measured program).  Only iterative-CN needs this: under
+        # cnab2 both cnab2 programs are primed above, and iteration 0
+        # self-starts with iterative-CN, which is outside the benchmark
+        # window (``bench_start`` is set at ``it == it0 + 1``).
+        if (
+            not is_cnab2
+            and params.outs.it_steps != 1
+            and (it - sample_it0) % params.outs.it_steps == 0
+        ):
+            predict_and_fully_correct(jnp.copy(state1))
+        steps_stream = _ScalarStream(
+            "steps.dat", meas.keys(), jnp=jnp, sharding=sharding
+        )
+        steps2_stream = _ScalarStream(
+            "steps_twin.dat", meas.keys(), jnp=jnp, sharding=sharding
+        )
+
+    # --- Corrector streams (both states) ---------------------------------
+    measure_corrector: bool = params.outs.it_corrector is not None
+    corr_stream = None
+    corr2_stream = None
+    if measure_corrector:
+        corr_stream = _ScalarStream(
+            "corrector.dat", ["c", "error"], jnp=jnp, sharding=sharding
+        )
+        corr2_stream = _ScalarStream(
+            "corrector_twin.dat", ["c", "error"], jnp=jnp, sharding=sharding
+        )
+
+    # --- Probe stream (reference state) ----------------------------------
+    measure_probes: bool = probes_params.modes is not None
+    probe_bad_t0: str | None = None
+    if measure_probes:
+        from dnsjax_lab.extensions.probes import ProbeStream
+
+        probe_stream = ProbeStream(state1)
+        probe_bad_t0 = probe_stream.record(state1, t)
+
+    def flush_all_buffers(check: bool = True) -> None:
+        """Flush every stream (the ``__main__`` flush contract)."""
+        for stream in (
+            stats_stream,
+            stats2_stream,
+            twin_stream,
+            budget_stream,
+            steps_stream,
+            steps2_stream,
+            corr_stream,
+            corr2_stream,
+        ):
+            if stream is not None:
+                bad = stream.flush(check=check)
+                if bad is not None:
+                    _abort_non_finite(bad)
+        if measure_probes:
+            bad = probe_stream.flush(check=check)
+            if bad is not None:
+                _abort_non_finite(bad)
+        for stream in bin_streams:
+            bad = stream.flush(check=check)
+            if bad is not None:
+                _abort_non_finite(bad)
+
+    def _abort_non_finite(reason: str) -> None:
+        """FATAL / flush-unchecked / exit-3 (the ``__main__`` path)."""
+        status.note(reason)
+        sharding.print(f"FATAL: {reason}; aborting.")
+        flush_all_buffers(check=False)
+        sys.exit(EXIT_NON_FINITE)
+
+    _terminating: bool = False
+
+    def _flush_and_exit(signum: int, frame: object) -> None:
+        nonlocal _terminating
+        if _terminating:
+            return
+        _terminating = True
+        sharding.print(
+            f"Received signal {signum}; flushing buffers and exiting."
+        )
+        flush_all_buffers(check=False)
+        sys.exit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _flush_and_exit)
+    signal.signal(signal.SIGINT, _flush_and_exit)
+
+    if probe_bad_t0 is not None:
+        _abort_non_finite(probe_bad_t0)
+    for bad in spectral_bad_t0:
+        _abort_non_finite(bad)
+
+    # The stop poll (the wall-clock budget and a stop request), judged
+    # by all processes together, here and at the it_error_check cadence
+    # (as in ``dnsjax.__main__``, whose module docstring says why).
+    timed: bool = params.stop.max_wall_time is not None
+
+    def _poll_stop() -> tuple[bool, str | None]:
+        late = timed and perf_counter_ns() - wall_time_start >= wall_time_stop
+        return status.stop_flags(late, sharding.any_process_each)
+
+    out_of_time, request = _poll_stop()
+
+    sharding.print("Started twin timestepping at", datetime.now())
+
+    # --- Main twin loop --------------------------------------------------
+    while (
+        t < t_stop
+        and not out_of_time
+        and (fixed_corrector or last_error < params.step.corrector_tolerance)
+        and not laminarized
+        and request is None
+    ):
+        if it == it0 + 1:
+            jax.block_until_ready(state1)
+            jax.block_until_ready(state2)
+            flush_all_buffers()
+            bench_start = perf_counter_ns()
+            sharding.print("First iteration over at", datetime.now())
+
+        do_stats = (
+            params.outs.it_stats is not None
+            and (it - sample_it0) % params.outs.it_stats == 0
+            and it > it0
+        )
+        do_twin = (it - sample_it0) % twin_params.it_energy == 0 and it > it0
+        do_budget = (
+            measure_budget
+            and (it - sample_it0) % twin_params.it_budget == 0
+            and it > it0
+        )
+        do_snapshot = (
+            params.outs.it_snapshot is not None
+            and (it - sample_it0) % params.outs.it_snapshot == 0
+            and it > it0
+        )
+
+        # All cross-state and reference diagnostics are issued before
+        # the two step calls: the steppers donate their inputs, and
+        # async dispatch orders these reads before the donation.
+        if do_stats or do_snapshot:
+            stats = get_stats(state1)
+            stats2 = get_stats(state2)
+        if do_stats:
+            for stream, s, drive in (
+                (stats_stream, stats, last_drive1),
+                (stats2_stream, stats2, last_drive2),
+            ):
+                bad = stream.push(_row(s, drive), t)
+                if bad is not None:
+                    _abort_non_finite(bad)
+        if do_twin:
+            tvals = twin_energies(state1, state2, bins=twin_params.bins)
+            bad = twin_stream.push(jnp.stack(list(tvals.values())), t)
+            if bad is not None:
+                _abort_non_finite(bad)
+        if do_budget:
+            bvals = twin_budget(state1, state2)
+            bad = budget_stream.push(jnp.stack(list(bvals.values())), t)
+            if bad is not None:
+                _abort_non_finite(bad)
+        for bad in _record_spectral(state1, state2, t, it, "loop"):
+            _abort_non_finite(bad)
+        _record_lowres(state1, state2, t, it, "loop")
+        if (
+            measure_probes
+            and (it - sample_it0) % probes_params.it_probes == 0
+            and it > it0
+        ):
+            bad = probe_stream.record(state1, t)
+            if bad is not None:
+                _abort_non_finite(bad)
+        if do_snapshot:
+            flush_all_buffers()
+            isnap = _save_pair(state1, state2, t, it, stats, stats2, isnap)
+            last_saved_it = it
+
+        # The two steps: the same jitted stepper twice, each donating
+        # its own buffers.  CN/AB2 self-starts with one iterative-CN
+        # step (the __main__ convention).  Both states take the *same*
+        # variant in the same iteration -- measured on a recording step
+        # (``steps.dat`` / ``steps_twin.dat``), plain otherwise -- so
+        # the loop never runs different programs on the pair.
+        do_record = (
+            measure_steps and (it - sample_it0) % params.outs.it_steps == 0
+        )
+        if is_cnab2 and it > it0:
+            if do_record:
+                (
+                    state1,
+                    rhs1,
+                    e1_dev,
+                    c1_dev,
+                    drive1,
+                    meas,
+                ) = step_cnab2_measured(state1, rhs1)
+                (
+                    state2,
+                    rhs2,
+                    e2_dev,
+                    c2_dev,
+                    drive2,
+                    meas2,
+                ) = step_cnab2_measured(state2, rhs2)
+            else:
+                state1, rhs1, e1_dev, c1_dev, drive1 = step_cnab2(state1, rhs1)
+                state2, rhs2, e2_dev, c2_dev, drive2 = step_cnab2(state2, rhs2)
+        else:
+            if do_record:
+                (
+                    state1,
+                    e1_dev,
+                    c1_dev,
+                    drive1,
+                    meas,
+                ) = predict_and_fully_correct_measured(state1)
+                (
+                    state2,
+                    e2_dev,
+                    c2_dev,
+                    drive2,
+                    meas2,
+                ) = predict_and_fully_correct_measured(state2)
+            else:
+                state1, e1_dev, c1_dev, drive1 = predict_and_fully_correct(
+                    state1
+                )
+                state2, e2_dev, c2_dev, drive2 = predict_and_fully_correct(
+                    state2
+                )
+        # Each state's own applied driving belongs to the step just
+        # taken, so it is bound here and consumed by the *next*
+        # iteration's ``stats.dat`` / ``stats_twin.dat`` row.
+        last_drive1 = drive1
+        last_drive2 = drive2
+
+        if do_record:
+            for stream, m in ((steps_stream, meas), (steps2_stream, meas2)):
+                bad = stream.push(jnp.stack(list(m.values())), t)
+                if bad is not None:
+                    _abort_non_finite(bad)
+
+        if (
+            measure_corrector
+            and (it - sample_it0) % params.outs.it_corrector == 0
+        ):
+            for stream, c_dev, e_dev in (
+                (corr_stream, c1_dev, e1_dev),
+                (corr2_stream, c2_dev, e2_dev),
+            ):
+                bad = stream.push(
+                    jnp.stack(
+                        [
+                            c_dev.astype(sharding.float_type),
+                            e_dev.astype(sharding.float_type),
+                        ]
+                    ),
+                    t,
+                )
+                if bad is not None:
+                    _abort_non_finite(bad)
+
+        t += params.step.dt
+        it += 1
+
+        c_sum = c_sum + c1_dev + c2_dev
+        e1_max = jnp.maximum(e1_max, e1_dev)
+        e2_max = jnp.maximum(e2_max, e2_dev)
+
+        if (it - it0) % it_error_check == 0:
+            # Periodic host sync: both states' largest corrector errors
+            # since the previous sync feed the convergence stop and the
+            # non-finite guard.
+            err1 = float(e1_max)
+            err2 = float(e2_max)
+            e1_max = jnp.zeros_like(e1_max)
+            e2_max = jnp.zeros_like(e2_max)
+            for label, err in (("reference", err1), ("perturbed", err2)):
+                if not math.isfinite(err):
+                    _abort_non_finite(
+                        f"non-finite corrector error ({err}) in the "
+                        f"{label} state in the steps up to "
+                        f"t = {t:.6e}, it = {it}"
+                    )
+            last_error = max(err1, err2)
+
+            if check_laminarization:
+                e_prime_host = float(get_perturbation_energy(state1))
+                if not math.isfinite(e_prime_host):
+                    _abort_non_finite(
+                        f"non-finite perturbation energy E' "
+                        f"({e_prime_host}) at t = {t:.6e}, it = {it}"
+                    )
+                laminarized = e_prime_host < laminarization_threshold
+
+            out_of_time, request = _poll_stop()
+
+    # --- Post-processing -------------------------------------------------
+    n_steps: int = it - it0
+    if n_steps > 0:
+        # The unsynced tail, folded in like any other interval.
+        last_error = float(
+            jnp.maximum(jnp.maximum(e1_max, e2_max), last_error)
+        )
+        c_tot = int(c_sum)
+    else:
+        c_tot = 0
+
+    # A failed corrector ends the run as TERMINATED (exit 4), as in
+    # ``dnsjax.__main__``.
+    corrector_failed: bool = (
+        not fixed_corrector and last_error > params.step.corrector_tolerance
+    )
+    if last_error > params.step.corrector_tolerance:
+        if fixed_corrector:
+            sharding.print(
+                f"Corrector ran its fixed "
+                f"{params.step.corrector_iterations} iterations; the "
+                f"largest final correction norm in the steps up to "
+                f"t={t}, it={it} is {last_error:.3e}, above "
+                f"step.corrector_tolerance "
+                f"({params.step.corrector_tolerance:.3e})."
+            )
+        else:
+            sharding.print(
+                f"Corrector failed to converge in the steps up to "
+                f"t={t}, it={it}: max error {last_error:.3e}."
+            )
+    if laminarized:
+        sharding.print(
+            f"Laminarized: E' = {e_prime_host:.3e} < "
+            f"{laminarization_threshold:.3e} at t={t}, it={it}."
+        )
+    if request is not None:
+        sharding.print(f"Stop requested ({request}) at t={t}, it={it}.")
+
+    sharding.print("Stopped twin timestepping at", datetime.now())
+
+    # Final rows: stats (guarded) and the final twin energies of the
+    # post-step pair; both appended regardless of cadence alignment
+    # (the t column carries the timestamp), like the stats stream.
+    if it > it0:
+        stats = get_stats(state1)
+        stats2 = get_stats(state2)
+        tvals = twin_energies(state1, state2, bins=twin_params.bins)
+        if measure_budget:
+            bvals = twin_budget(state1, state2)
+        bad_final = (
+            [k for k, v in stats.items() if not math.isfinite(float(v))]
+            + [
+                f"{k} (twin)"
+                for k, v in stats2.items()
+                if not math.isfinite(float(v))
+            ]
+            + [k for k, v in tvals.items() if not math.isfinite(float(v))]
+        )
+        if measure_budget:
+            bad_final += [
+                k for k, v in bvals.items() if not math.isfinite(float(v))
+            ]
+        if bad_final:
+            _abort_non_finite(
+                f"non-finite final statistic(s) {', '.join(bad_final)} "
+                f"at t = {t:.6e}, it = {it}"
+            )
+        final_rows = []
+        if stats_stream is not None:
+            final_rows += [
+                (stats_stream, _row(stats, last_drive1)),
+                (stats2_stream, _row(stats2, last_drive2)),
+            ]
+        final_rows.append((twin_stream, jnp.stack(list(tvals.values()))))
+        if measure_budget:
+            final_rows.append((budget_stream, jnp.stack(list(bvals.values()))))
+        for stream, row in final_rows:
+            # A push that fills its buffer flushes it, checked; the
+            # verdict covers every row buffered since the last flush,
+            # not only this one, so it is acted on here as in the loop.
+            bad = stream.push(row, t)
+            if bad is not None:
+                _abort_non_finite(bad)
+
+    if (
+        measure_probes
+        and it > it0
+        and (it - sample_it0) % probes_params.it_probes == 0
+    ):
+        bad = probe_stream.record(state1, t)
+        if bad is not None:
+            _abort_non_finite(bad)
+
+    for bad in _record_spectral(state1, state2, t, it, "final"):
+        _abort_non_finite(bad)
+    _record_lowres(state1, state2, t, it, "final")
+
+    if params.outs.snapshot_save_final and it > it0 and it != last_saved_it:
+        flush_all_buffers()
+        isnap = _save_pair(state1, state2, t, it, stats, stats2, isnap)
+        last_saved_it = it
+
+    wall_time_now = perf_counter_ns()
+    alive_time = ns_to_s * (wall_time_now - wall_time_start)
+    sharding.print(f"Job has been alive for {alive_time:.2f}s.")
+    if it > it0 + 1:
+        wall_time = ns_to_s * (wall_time_now - bench_start)
+        wall_time_per_sim_time = wall_time / (t - dt_first - params.init.t0)
+        c_per_it = c_tot / (2 * n_steps)
+        sharding.print(
+            f"t = {t:.2f}",
+            f"E_d={float(tvals['E_d']):.3e}",
+            f"E_ref={float(tvals['E_ref']):.3e}",
+            f"c/it/state = {c_per_it:.2f}",
+            f"err = {last_error:.3e}",
+        )
+        sharding.print(
+            f"Ran for {wall_time:.2f}s with {sharding.n_devices} "
+            f"device(s): {wall_time_per_sim_time:.3e} s/t "
+            f"(twin pair, 2x steps per t).",
+        )
+        # The number the [twin] cost notes say to size a job against:
+        # an enabled budget stream, not the step, sets it
+        # (:mod:`dnsjax_lab.twin.diagnostics`, Design notes, "Memory").
+        peak = _peak_device_bytes(jax)
+        if peak is not None:
+            sharding.print(
+                f"Peak device memory: {peak / 2**30:.2f} GiB "
+                "(largest over this process's devices)."
+            )
+        # Every rank: the CPU line gathers across processes.
+        host = _peak_host_memory_line(jax)
+        if host is not None:
+            sharding.print(host)
+
+    flush_all_buffers()
+    return loop_outcome(
+        t,
+        it,
+        corrector_error=last_error if corrector_failed else None,
+        request=request,
+        out_of_time=out_of_time,
+        laminarized=laminarized,
+    )
+
+
+def _twin_sidecar_stub() -> dict:
+    r"""The configuration half of ``twin.json``.
+
+    A **superset** of :data:`_TWIN_MATCH_KEYS`: the resume check reads
+    only those, and the last three entries below are recorded for
+    provenance alone.  They shape a *stream* rather than the
+    trajectory, and each is already pinned where it matters -- the
+    budget form by ``terms`` in ``twin_ybudget.json``, the reference
+    half by ``includes_ref`` in the two spectra sidecars, and the
+    `$k_x = 0$` plane by ``suffixes`` in both -- so a mid-stream flip
+    is a hard error from
+    :class:`~dnsjax_lab.twin._binstream.BinStream` either way.  Matching
+    them here would additionally refuse the harmless case where the
+    stream is off, while *not* recording them leaves ``twin.json``
+    unable to say which budget form a member ran in (which
+    ``lab/scripts/twin_postprocess.py`` has to work around).  Additive
+    keys only, so no :data:`TWIN_FORMAT_VERSION` bump and no
+    :data:`_TWIN_LEGACY_DEFAULTS` entry: nothing reads them for
+    control flow, and ``analysis.twin.series`` reads ``twin.json``
+    with ``.get``.
+    """
+    return {
+        "format_version": TWIN_FORMAT_VERSION,
+        "system": params.phys.system,
+        "e0": twin_params.e0,
+        "seed": twin_params.seed,
+        "smoothness": twin_params.smoothness,
+        "wall_smoothness": twin_params.wall_smoothness,
+        "wall_confinement": twin_params.wall_confinement,
+        "mean_flow": twin_params.mean_flow,
+        "bins": twin_params.bins,
+        "it_energy": twin_params.it_energy,
+        "it_budget": twin_params.it_budget,
+        "it_spectra": twin_params.it_spectra,
+        "it_yspectra": twin_params.it_yspectra,
+        "it_ybudget": twin_params.it_ybudget,
+        # The effective reference cadences (:func:`ref_cadence`), so an
+        # unset one and one set to its default record alike.
+        "it_spectra_ref": ref_cadence(twin_params, "it_spectra"),
+        "it_yspectra_ref": ref_cadence(twin_params, "it_yspectra"),
+        "it_spectra3d": twin_params.it_spectra3d,
+        "it_spectra3d_ref": ref_cadence(twin_params, "it_spectra3d"),
+        "it_budget3d": twin_params.it_budget3d,
+        "dt": params.step.dt,
+        "double_precision": params.res.double_precision,
+        # Recorded, not matched -- see the docstring.
+        "rotational_ybudget": twin_params.rotational_ybudget,
+        "spectra_ref": twin_params.spectra_ref,
+        "x0_planes": twin_params.x0_planes,
+        "n_y3d": twin_params.n_y3d,
+        "n_kz3d": twin_params.n_kz3d,
+        "n_kx3d": twin_params.n_kx3d,
+        "it_lowres_delta": twin_params.it_lowres_delta,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``dnsjax-twin`` console-script entry point.
+
+    The :func:`dnsjax.__main__.main` phases with the twin surface:
+    resolve the parameter layers (the ``[twin]`` section, registered
+    at this module's import, is the entry point's own: it rides every
+    flow's surface and the bare ``--help``), configure the distributed
+    JAX runtime, print the banner on the main process, run the twin
+    loop inside the run directory's status file
+    (:class:`dnsjax.run_status.RunStatus`), and return the exit code
+    of its outcome.
+    """
+    wall_time_start = perf_counter_ns()
+    install_stop_signal()
+
+    setup = resolve_parameters(
+        argv, own_extensions=(TWIN_EXTENSION,), prog=_PROG
+    )
+    print("Alive at", datetime.now(), flush=True, file=sys.stderr)
+    main_device = configure_jax_runtime()
+
+    import jax
+
+    with RunStatus(jax.process_index(), jax.process_count()) as status:
+        if main_device:
+            _print_banner(setup)
+        status.outcome = run(
+            wall_time_start, status, setup.seed_layers.get("twin.seed")
+        )
+
+    print("Shutdown at", datetime.now(), flush=True, file=sys.stderr)
+    return status.outcome.exit_code
+
+
+def _print_banner(setup: ResolvedSetup) -> None:
+    """The main process's startup banner (:func:`dnsjax.__main__.main`'s)."""
+    print("Distribution initialized at", datetime.now(), flush=True)
+    print("Code version:", git_hash(), flush=True)
+    if setup.snapshot_params_used:
+        # The parent snapshot's own provenance (``_metadata_bytes``
+        # always records it; the format-6 floor rejects anything
+        # older), as in :func:`dnsjax.__main__.main`.
+        print(
+            "Snapshot was recorded by code version:",
+            read_snapshot_meta(setup.snapshot_path)["git_hash"],
+            flush=True,
+        )
+        print(
+            f"Inherited parameters embedded in snapshot "
+            f"'{setup.snapshot_path}' (except np0/np1/platform/"
+            "double_precision); parameters.toml and command-line "
+            "arguments override them.",
+            flush=True,
+        )
+    if os.environ.get("DNSJAX_QUIET_STARTUP") != "1":
+        print_resolved_parameters(
+            params,
+            setup.spec,
+            tuple(relevant_extensions(setup.system).values()),
+        )
+    print(
+        "Running with the physical-space (x, y, z) resolution:",
+        padded_res.nx_padded,
+        padded_res.ny_padded
+        if padded_res.ny_padded is not None
+        else params.res.ny,
+        padded_res.nz_padded,
+        flush=True,
+    )

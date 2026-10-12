@@ -39,14 +39,14 @@ def annular_forced_laminar_u_theta(
         \frac{(r_1 r_2)^2 (\ln r_2 - \ln r_1)}{r_1^2 - r_2^2}.
 
     Shared by the two force-driven annular flows: Newtonian Dean
-    (:func:`dnsjax.flows.wall_bounded.dean.dean_laminar_u_theta`,
+    (:func:`dnsjax_lab.flows.wall_bounded.dean.dean_laminar_u_theta`,
     `$C = 2(r_1 + r_2)$`) and the viscoelastic
     sPTT flow (`$C = r_1 + r_2$` in half-gap units, whose mid-gap force is the
     plane channel's `$2/\mathrm{Re}$`;
-    :mod:`~dnsjax.flows.wall_bounded.viscoelastic_dean`).  Pure function (no
-    flow construction), so it is importable both by the ``start_from_laminar``
-    state and by the flows' initial conditions (the total-field IC = laminar
-    profile + perturbation).
+    :mod:`~dnsjax_lab.flows.wall_bounded.viscoelastic_dean`).  Pure function
+    (no flow construction), so it is importable both by the
+    ``start_from_laminar`` state and by the flows' initial conditions (the
+    total-field IC = laminar profile + perturbation).
 
     Parameters
     ----------

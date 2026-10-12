@@ -19,7 +19,7 @@ def inverse_metric_harmonics(
     r"""Exact azimuthal harmonics of the curved pipe's `$h^{-p}$`.
 
     `$h = 1 + \kappa r\cos\theta$` is the toroidal metric
-    (:mod:`dnsjax.geometries.wall_bounded.cylindrical_curved`).  With
+    (:mod:`dnsjax_lab.geometries.wall_bounded.cylindrical_curved`).  With
     `$\epsilon = \kappa r$`,
 
     .. math::
@@ -35,7 +35,7 @@ def inverse_metric_harmonics(
     `$q^{|m|}\,(1 + |m|\sqrt{1-\epsilon^2})/(1-\epsilon^2)^{3/2}$`.
     Both are real, even in `$m$` and `$O(r^{|m|})$` at the axis, hence
     in the `$(-1)^m$` parity class like the fields they weight, and
-    exact to machine precision (``tests/test_curved_pipe.py`` checks
+    exact to machine precision (``lab/tests/test_curved_pipe.py`` checks
     them against an FFT).
 
     Parameters
@@ -70,7 +70,7 @@ def curvature_dealiasing_pad(kappa: float, tol: float) -> int:
 
     The curved pipe's nonlinear term carries quadratic products over
     `$h^2$` (the
-    :mod:`~dnsjax.geometries.wall_bounded.cylindrical_curved` module
+    :mod:`~dnsjax_lab.geometries.wall_bounded.cylindrical_curved` module
     docstring, "Dealiasing").  On a collocation grid of
     `$N = 3M + J$` azimuthal points, a product `$P$` with harmonics
     `$|n| \le 2M$` times `$1/h^2$` folds back onto the stored

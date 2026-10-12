@@ -432,7 +432,7 @@ def _check_applied_vs_inferred() -> str | None:
     that would make ``I`` a better estimate of the physical input rate
     and a worse partner for ``D`` in the discrete budget.  The applied
     column stays the right answer to "what force is being applied",
-    which is what ``tests/test_twin_budget.py`` uses it for.
+    which is what ``lab/tests/test_twin_budget.py`` uses it for.
 
     Asserts the two convergences, that the ``I`` column closes for
     ``ny >= _APPLIED_RESOLVED``, and that the cancellation above still

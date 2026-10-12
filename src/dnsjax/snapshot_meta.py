@@ -48,8 +48,8 @@ process's page tables nor runs the fork handlers of the MPI and RPC
 libraries it has loaded.
 
 **Atomic sidecars.**  Every ``.bin`` stream writer --
-:mod:`dnsjax.extensions.probes`, :mod:`dnsjax.extensions.forcing`,
-:mod:`dnsjax.twin._binstream` -- creates its JSON sidecar on the
+:mod:`dnsjax_lab.extensions.probes`, :mod:`dnsjax_lab.extensions.forcing`,
+:mod:`dnsjax_lab.twin._binstream` -- creates its JSON sidecar on the
 **main** process while **every** rank tests the same path's existence
 to choose between "create" and "validate and append".  A plain
 ``open(path, "w")`` makes the path exist before its content does, so a
@@ -107,7 +107,7 @@ PRESSURE_PREFIX = "pressure/c/"
 #: ever written is one and carries no ``kind`` key at all, so its
 #: absence means this; the writer records the key only for the other
 #: kinds -- the twin's 3-D spectra and budget cubes
-#: (:mod:`dnsjax.twin.cubes`), which share the container and not its
+#: (:mod:`dnsjax_lab.twin.cubes`), which share the container and not its
 #: meaning.
 STATE_KIND = "state"
 

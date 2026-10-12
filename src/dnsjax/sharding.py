@@ -181,7 +181,7 @@ def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
     process and fails at trace time in two, and an outer ``jit`` around
     a function that hands module globals to an inner ``jit`` bakes them
     in all the same.  Only a real multi-process run catches a slip:
-    ``test_np2_run`` in ``tests/test_twin_driver.py``, the
+    ``test_np2_run`` in ``lab/tests/test_twin_driver.py``, the
     ``*-mpi-pad`` rows of ``tests/test_random_smoke.py``.
 
     Used by the geometry base dataclasses
@@ -191,7 +191,7 @@ def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
     their flow subclasses, the geometry-specific ``Fourier``
     classes, the solver dataclasses (``DenseJAXSolver``,
     ``PerModeBandedPallasOperator``), and
-    :class:`~dnsjax.twin.pressure.DifferencePressure`.
+    :class:`~dnsjax_lab.twin.pressure.DifferencePressure`.
 
     Only ``dataclasses.fields`` are visited, so methods and
     ``ClassVar``s add nothing to the tree -- which is what lets the

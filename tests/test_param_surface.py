@@ -1045,7 +1045,7 @@ def case_entry_smoke() -> None:
         [
             sys.executable,
             "-c",
-            "from dnsjax.twin.driver import TwinParams as m; "
+            "from dnsjax_lab.twin.driver import TwinParams as m; "
             "print(' '.join(m.model_fields))",
         ],
         capture_output=True,
@@ -1053,7 +1053,7 @@ def case_entry_smoke() -> None:
         timeout=120,
     )
     twin_flags = {f"--twin.{name}" for name in r.stdout.split()}
-    r = run("--help", module="dnsjax.twin")
+    r = run("--help", module="dnsjax_lab.twin")
     missing = sorted(f for f in twin_flags if f not in r.stdout)
     check(
         r.returncode == 0 and twin_flags and not missing,

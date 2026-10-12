@@ -230,11 +230,11 @@ def _import_flow(system: str):
     elif system == "taylor-couette":
         from dnsjax.flows.wall_bounded import taylor_couette as m
     elif system == "dean":
-        from dnsjax.flows.wall_bounded import dean as m
+        from dnsjax_lab.flows.wall_bounded import dean as m
     elif system == "viscoelastic-dean":
-        from dnsjax.flows.wall_bounded import viscoelastic_dean as m
+        from dnsjax_lab.flows.wall_bounded import viscoelastic_dean as m
     elif system == "viscoelastic-pipe":
-        from dnsjax.flows.wall_bounded import viscoelastic_pipe as m
+        from dnsjax_lab.flows.wall_bounded import viscoelastic_pipe as m
     else:
         raise SystemExit(f"unsupported system: {system}")
     return m
@@ -256,15 +256,17 @@ def _rebuild_pfc(system: str, flow):
             build_cylindrical_stepper as build,
         )
     elif system == "viscoelastic-pipe":
-        from dnsjax.geometries.wall_bounded.cylindrical_viscoelastic import (
-            build_viscoelastic_stepper as build,
+        from dnsjax_lab.geometries.wall_bounded import (
+            cylindrical_viscoelastic as geometry,
         )
+
+        build = geometry.build_viscoelastic_stepper
     elif system in ("taylor-couette", "dean"):
         from dnsjax.geometries.wall_bounded.annular import (
             build_annular_stepper as build,
         )
     elif system == "viscoelastic-dean":
-        from dnsjax.geometries.wall_bounded.annular_viscoelastic import (
+        from dnsjax_lab.geometries.wall_bounded.annular_viscoelastic import (
             build_viscoelastic_stepper as build,
         )
     else:

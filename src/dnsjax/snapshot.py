@@ -281,7 +281,7 @@ class SnapshotMismatchError(Exception):
 #: interrupted save under the final name would load without complaint,
 #: blank wherever the writes did not reach.  A killed job therefore
 #: leaves a ``.partial`` beside the last good snapshot, outside every
-#: ``*.tar`` glob (``scripts/ensemble_setup.py`` relies on it when it
+#: ``*.tar`` glob (``lab/scripts/ensemble_setup.py`` relies on it when it
 #: harvests parents), for one metadata operation per save.
 _PARTIAL_SUFFIX = ".partial"
 
@@ -876,7 +876,7 @@ def replicated_to_io_layout(array: Array) -> Array:
     r"""Place a replicated ``(C, A, ...)`` array on the I/O layout.
 
     For an array every device already holds whole -- the twin's 3-D
-    cubes, which a ``psum`` leaves replicated (:mod:`dnsjax.twin.cubes`)
+    cubes, which a ``psum`` leaves replicated (:mod:`dnsjax_lab.twin.cubes`)
     -- the I/O layout is a local slice, not an exchange: each device
     keeps its slab of the leading axis, padded to a multiple of the
     device count exactly as for a state (:func:`_a_local`), and
@@ -1563,7 +1563,7 @@ def write_archive(
     r"""Write one dnsjax tar and commit it under *path*.
 
     The container every snapshot, reduced-resolution snapshot
-    (:mod:`dnsjax.lowres`) and twin cube (:mod:`dnsjax.twin.cubes`) is
+    (:mod:`dnsjax.lowres`) and twin cube (:mod:`dnsjax_lab.twin.cubes`) is
     written in, so all of them share one I/O path: process 0 lays out
     the archive under a ``.partial`` name, every device writes its
     disjoint byte ranges, and the rename commits it (module

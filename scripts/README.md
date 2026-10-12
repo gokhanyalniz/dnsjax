@@ -19,14 +19,14 @@ run; their docstrings say which.
 |---|---|
 | `snapshot_figure.py` | velocity-plane figures and animations from a snapshot, JAX-free (the figures in the README and the docs); `_figure_common.py` holds its per-flow helpers |
 | `scaling_figure.py` | the strong-scaling figure and tables of [`docs/scaling.md`](../docs/scaling.md), from the committed CSV of measured runs |
-| `twin_spectral_maps.py` | premultiplied $(\lambda, y)$ maps, histories, moment budgets, decorrelation fronts and growth laws of the [twin](../src/dnsjax/twin/README.md) $(y, k)$ streams over an ensemble |
+| `twin_spectral_maps.py` | premultiplied $(\lambda, y)$ maps, histories, moment budgets, decorrelation fronts and growth laws of the [twin](../lab/src/dnsjax_lab/twin/README.md) $(y, k)$ streams over an ensemble |
 
 ## Initial conditions and ensembles
 
 | Script | What it does |
 |---|---|
 | `snapshot_perturb.py` | injects a scaled single-mode perturbation into a snapshot (`[perturb]`) |
-| `ensemble_setup.py` | harvests statistically independent parents from a run and builds member trees for [response](../src/dnsjax/analysis/response/README.md) ensembles (`build`) or twin ensembles (`build-twin`), JAX-free |
+| `ensemble_setup.py` | harvests statistically independent parents from a run and builds member trees for [response](../lab/src/dnsjax_lab/analysis/response/README.md) ensembles (`build`) or twin ensembles (`build-twin`), JAX-free |
 | `random_ic_calibrate.py` | scores and sweeps the random initial condition's $(y, k)$ shape against a recorded twin ensemble (`[calib]`) |
 | `twin_postprocess.py` | rebuilds a twin member's difference-field streams from its snapshot pairs (`[recon]`) |
 

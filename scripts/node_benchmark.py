@@ -602,7 +602,7 @@ def _read_stats(path: Path) -> dict | None:
         return None
     import warnings
 
-    from dnsjax.analysis.twin.series import read_dat
+    from dnsjax_lab.analysis.twin.series import read_dat
 
     try:
         with warnings.catch_warnings():

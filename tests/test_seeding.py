@@ -41,7 +41,7 @@ driver's late adopt-or-draw):
    then adopts it from ``twin.json`` instead of drawing -- without
    which every un-pinned twin run would fail its first resume on the
    ``_TWIN_MATCH_KEYS`` seed check.  The mismatch guard itself is
-   still exercised by ``tests/test_twin_driver.py``.
+   still exercised by ``lab/tests/test_twin_driver.py``.
 
 Run as a script::
 

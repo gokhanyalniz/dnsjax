@@ -9,10 +9,10 @@ The parameter models and their live values live here, JAX-free, so
 are the sections' ``runtime`` factories, in modules that import JAX:
 
 - ``probes`` -- the runtime spectral-mode probe stream
-  (:mod:`dnsjax.extensions.probes` writes ``probes.bin``/
+  (:mod:`dnsjax_lab.extensions.probes` writes ``probes.bin``/
   ``probes.json`` during the run); wall-bounded flows.
 - ``force`` -- the white-in-time stochastic mode kicks
-  (:mod:`dnsjax.extensions.forcing` injects them into the stepping
+  (:mod:`dnsjax_lab.extensions.forcing` injects them into the stepping
   loop and logs ``forcing.bin``/``forcing.json``); wall-bounded
   non-viscoelastic flows, **trajectory-defining** (kicks alter the
   dynamics exactly like a ``phys`` change).
@@ -39,8 +39,8 @@ class ProbesParams(BaseModel):
     Wall-bounded systems only.  ``it_probes`` trades time resolution
     for disk (a record is ``8 + K*C*ny*2`` values); the buffered
     writer makes any cadence cheap at runtime.  Format, buffering,
-    and the reader: the :mod:`dnsjax.extensions.probes` and
-    :mod:`dnsjax.analysis.response.probes` docstrings.
+    and the reader: the :mod:`dnsjax_lab.extensions.probes` and
+    :mod:`dnsjax_lab.analysis.response.probes` docstrings.
 
     On ``curved-pipe`` component 0 is the solver's carried streamwise
     variable `$w_s = h\,u_s$` (`$h = 1 + \kappa r\cos\theta$`), not
@@ -82,7 +82,7 @@ class ForceParams(BaseModel):
     ``forcing.bin``/``forcing.json``, keeping the run's full forcing
     history available to offline analysis -- e.g. their
     cross-covariance with the probe stream identifies the mode's
-    linear operator (:mod:`dnsjax.analysis.response.ssi`).
+    linear operator (:mod:`dnsjax_lab.analysis.response.ssi`).
 
     Kicks rather than a body-force term: a forcing term inside the
     nonlinear RHS would be AB2-extrapolated under ``cnab2``
@@ -92,7 +92,7 @@ class ForceParams(BaseModel):
     per-kick response exactly the solver's own propagator.  Full
     conventions (timing relative to probes/snapshots, resume
     continuation, amplitude guidance): the
-    :mod:`dnsjax.extensions.forcing` module docstring.
+    :mod:`dnsjax_lab.extensions.forcing` module docstring.
 
     Wall-bounded, non-viscoelastic systems only: the injector's
     cylindrical/annular branch hard-codes the 3-component velocity map
@@ -139,7 +139,7 @@ class ForceParams(BaseModel):
     # ``w_j ~ CN(0,1)`` i.i.d.  Pick eps in the linear-response window
     # (halving it must leave the identified operator unchanged); the
     # predicted stationary forced energy for planning:
-    # ``dnsjax.analysis.response.ssi.predicted_forced_variance``.
+    # ``dnsjax_lab.analysis.response.ssi.predicted_forced_variance``.
     amplitude: float | None = Field(
         default=None,
         gt=0,
@@ -318,7 +318,7 @@ def _validate_force(values: ForceParams, params) -> None:
         print(
             "[force] note: no probe stream configured (probes.modes); "
             "the forced responses will not be recorded (response "
-            "identification, e.g. dnsjax.analysis.response.ssi, "
+            "identification, e.g. dnsjax_lab.analysis.response.ssi, "
             "needs them)."
         )
 
@@ -333,7 +333,7 @@ PROBES_EXTENSION = register_extension(
         off_cadences=("it_probes",),
         reset_when_off=True,
         configured=lambda values: values.modes is not None,
-        runtime="dnsjax.extensions.probes:ProbeHooks",
+        runtime="dnsjax_lab.extensions.probes:ProbeHooks",
     )
 )
 
@@ -352,7 +352,7 @@ FORCE_EXTENSION = register_extension(
         reset_when_off=True,
         configured=lambda values: values.modes is not None,
         seed_fields=("seed",),
-        runtime="dnsjax.extensions.forcing:ForceHooks",
+        runtime="dnsjax_lab.extensions.forcing:ForceHooks",
     )
 )
 

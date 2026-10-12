@@ -328,7 +328,10 @@ _CASES: list[tuple[str, str, list[str], str | None]] = [
 ]
 
 #: The module behind each entry point (``pyproject.toml``).
-_ENTRIES = {"dnsjax": "dnsjax.__main__", "dnsjax-twin": "dnsjax.twin.driver"}
+_ENTRIES = {
+    "dnsjax": "dnsjax.__main__",
+    "dnsjax-twin": "dnsjax_lab.twin.driver",
+}
 
 
 def _nbytes(leaf: object) -> int:

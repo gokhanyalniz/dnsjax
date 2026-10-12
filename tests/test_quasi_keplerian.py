@@ -395,7 +395,7 @@ def _wedge_step(state):
     into and out of the solver basis mirrors ``__main__``'s, so both
     arms of the comparison stay in physical components.
     """
-    from dnsjax.flows.wall_bounded.quasi_keplerian import (
+    from dnsjax_lab.flows.wall_bounded.quasi_keplerian import (
         from_solver_basis,
         predict_and_fully_correct,
         to_solver_basis,

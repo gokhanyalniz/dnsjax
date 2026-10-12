@@ -6,7 +6,7 @@ the conformation tensor of the viscoelastic flows -- at the reduced
 resolution ``[lowres]`` names, and, under ``lowres.pressure`` (plane
 Couette and plane Poiseuille), its static pressure as one more member.
 ``dnsjax-twin`` writes the same files for its reference state and, on a
-cadence of its own, for the difference field (:mod:`dnsjax.twin.driver`).
+cadence of its own, for the difference field (:mod:`dnsjax_lab.twin.driver`).
 The point is a cadence the full snapshots cannot afford on disk, which
 is also why this runs inside the solver rather than in a ``scripts/``
 tool: offline it would need full snapshots at that cadence, and the
@@ -163,7 +163,7 @@ class LowResWriter:
     regrid matrix and -- under ``lowres.pressure`` -- the pressure
     operator are field-independent.  *pressure_op* lets a caller that
     already holds one share it (``dnsjax-twin``'s
-    :class:`~dnsjax.twin.pressure.DifferencePressure` is one); left
+    :class:`~dnsjax_lab.twin.pressure.DifferencePressure` is one); left
     ``None`` it is built here when the pressure is on.
     """
 

@@ -1,0 +1,1895 @@
+r"""Unit tests for the JAX-free twin analysis and the twin tree builder.
+
+The package is ``dnsjax_lab.analysis.twin``, the orchestration
+``ensemble_setup.py build-twin``.
+
+Everything runs on hand-written synthetic files (no solver, no JAX --
+asserted): the ``.dat``/``twin.json`` readers with resume-seam
+duplicates, the per-component budget sums, member-tree aggregation
+(mean/std against direct NumPy; every alignment guard tripped on a
+real bad input, a phase-displaced member among them, with
+``align_atol`` stacking one as recorded; members whose ``t`` column
+carries the driver's own 9 significant digits, late in a long run,
+still stacking exactly), the growth-rate fits
+against planted laws, the
+``twin_spectra.bin`` reader (byte-exact round trip, truncated
+trailing record, duplicate-timestamp seams, version floor,
+decorrelation-ratio guards), the ``twin_yspectra.bin`` /
+``twin_ybudget.bin`` readers (round trip, seam drop, truncation,
+floor) across all three stored layouts -- the reader floor stays
+below the writer's version, so a member recorded before ``xz00``
+still opens -- the three-bin recovery agreeing across all three
+layouts, plane or not, ``fluctuation_energy`` agreeing between the two
+marginals, ``shape_alignment`` (normalized, symmetric,
+amplitude-blind), the reference spectra read alike from their own
+streams and from the pre-split combined layout (merged on the
+difference times, ``nan`` where the reference has no sample), the 3-D
+cube reader on a hand-built tar (whole, by wall-distance slab, a
+directory stacked and subset, mismatched points and a wrong ``kind``
+refused), the integral-length core against an independently
+evaluated two-mode reference, the log-coordinate moments (a planted
+Gaussian's centroid, covariance, correlation and ridge slope
+recovered; a constant factor cancels; raw-sum averaging is the moments
+of the mean) and their budget (the per-term rates add up to the
+finite-difference rate of a moving density, a pure growth term moves
+no centred moment, a translation moves the centroid at its speed), the
+growth-law diagnostics on planted laws (an exponential's flat
+`$\gamma$`-`$R$` diagram, an algebraic law's constant `$-1/\alpha$`
+and exponent, the logistic's `$-R/(1 - R)$` and equal early and late
+rates, exponential decorrelation's linear `$-\ln(1 - R)$`) and the
+window finder, and ``lab/scripts/ensemble_setup.py
+build-twin`` (dry run leaves no tree; an out-of-range shape knob is
+refused at build time; every member pins its seed and its whole
+perturbation shape, given or defaulted; the built tree's TOMLs /
+``members.json`` / ``run_commands.txt`` are consistent and feed
+``aggregate_members`` end to end via synthetic member streams).
+
+Usage::
+
+    uv run python lab/tests/test_twin_analysis.py
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+from numpy.testing import assert_allclose
+
+sys.stdout.reconfigure(line_buffering=True)
+
+import _repo  # noqa: E402 -- also puts the core suite's helpers on sys.path
+from _live import run_live  # noqa: E402
+from dnsjax_lab.analysis.twin import (  # noqa: E402
+    aggregate_members,
+    budget_sums,
+    closure_residuals,
+    fit_exponential_rate,
+    fit_linear_rate,
+    integral_lengths_from_modes,
+    read_dat,
+    read_twin,
+)
+from dnsjax_lab.analysis.twin.growth import (  # noqa: E402
+    algebraic_exponent,
+    bound_free,
+    decorrelation_rate,
+    log_rate,
+    log_slope,
+    logistic_rate,
+    longest_window,
+)
+from dnsjax_lab.analysis.twin.moments import (  # noqa: E402
+    log_moment_sums,
+    log_moments,
+    moment_rates,
+)
+from dnsjax_lab.analysis.twin.spectra import (  # noqa: E402
+    decorrelation_ratio,
+    read_twin_spectra,
+)
+
+from dnsjax.parameters import Outputs  # noqa: E402
+
+assert "jax" not in sys.modules, "the twin analysis package must be JAX-free"
+
+_REPO = _repo.REPO
+
+# ── Synthetic stream writers ─────────────────────────────────────────
+
+
+def _write_dat(
+    path: Path, columns: dict[str, np.ndarray], t_digits: int | None = None
+) -> None:
+    """Write a ``.dat`` stream in the driver's layout.
+
+    Values carry 17 significant digits, which is more than the driver
+    writes (``outs.stats_precision``, 9 by default) and harmless for
+    them.  Not for ``t``, the one column whose precision is structural
+    -- it is what members are aligned on -- so *t_digits* writes it the
+    way the driver does.
+    """
+    names = list(columns)
+    width = max(24, max(len(n) for n in names))
+    # ``#``-commented header, the ``#`` eating one space of the first
+    # column's padding (``dnsjax.__main__._write_dat_header``).
+    lines = [
+        "#"
+        + " ".join(
+            n.rjust(width - 1 if i == 0 else width)
+            for i, n in enumerate(names)
+        )
+    ]
+    n_rows = len(next(iter(columns.values())))
+    t_fmt = ".16e" if t_digits is None else f".{t_digits - 1}e"
+    for i in range(n_rows):
+        lines.append(
+            " ".join(
+                format(columns[n][i], t_fmt if n == "t" else ".16e").rjust(
+                    width
+                )
+                for n in names
+            )
+        )
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _energy_columns(
+    t: np.ndarray, scale: float = 1.0
+) -> dict[str, np.ndarray]:
+    cols = {"t": t}
+    for i, name in enumerate(
+        ("E_d", "E_dU", "E_du1", "E_du1_x", "E_du1_y", "E_du1_z", "E_du2")
+    ):
+        cols[name] = scale * (i + 1) * (1.0 + t - t[0])
+    cols["E_ref"] = np.full_like(t, 5e-3)
+    return cols
+
+
+#: The budget stream's ``(a, b, c)`` layout, mirroring ``_PRODUCTION``
+#: / ``_TRANSPORT`` in :mod:`dnsjax_lab.twin.diagnostics` (the column
+#: *names* are what the readers key on, so they must match exactly).
+_TRIPLES = {
+    "dU": [("dU", "rU"), ("du1", "ru1"), ("du2", "ru2")],
+    "du1": [("du1", "rU"), ("dU", "ru1"), ("du1", "ru1"), ("du2", "ru2")],
+    "du2": [
+        ("dU", "ru2"),
+        ("du1", "ru2"),
+        ("du2", "rU"),
+        ("du2", "ru1"),
+        ("du2", "ru2"),
+    ],
+}
+_TRANSPORTS = {
+    "dU": [("ru1", "du1"), ("du1", "du1"), ("ru2", "du2"), ("du2", "du2")],
+    "du1": [("ru1", "dU"), ("du1", "dU"), ("ru2", "du2"), ("du2", "du2")],
+    "du2": [("ru2", "dU"), ("du2", "dU"), ("ru2", "du1"), ("du2", "du1")],
+}
+
+
+def _budget_columns(t: np.ndarray, scale: float = 1.0) -> dict:
+    triples, transports = _TRIPLES, _TRANSPORTS
+    cols = {"t": t}
+    k = 0
+    for a, pairs in triples.items():
+        for b, c in pairs:
+            k += 1
+            cols[f"P_{a}({b},{c})"] = scale * k * np.ones_like(t)
+    for a, pairs in transports.items():
+        for b, c in pairs:
+            k += 1
+            cols[f"T_{a}({b},{c})"] = scale * k * np.ones_like(t)
+    for x in ("dU", "du1", "du2"):
+        k += 1
+        cols[f"eps_{x}"] = scale * k * np.ones_like(t)
+    p_names = [n for n in cols if n.startswith("P_")]
+    t_names = [n for n in cols if n.startswith("T_")]
+    cols["P_tot"] = sum(cols[n] for n in p_names)
+    cols["T_tot"] = sum(cols[n] for n in t_names)
+    cols["eps_tot"] = sum(cols[f"eps_{x}"] for x in ("dU", "du1", "du2"))
+    return cols
+
+
+def _write_member(
+    mdir: Path,
+    parent_t: float,
+    n: int = 11,
+    dt: float = 0.01,
+    scale: float = 1.0,
+    budget: bool = True,
+    seam: bool = False,
+    t_digits: int | None = None,
+) -> None:
+    mdir.mkdir(parents=True, exist_ok=True)
+    t = parent_t + dt * np.arange(n)
+    cols = _energy_columns(t, scale)
+    if seam:  # duplicate one interior sample (a resume seam)
+        cols = {k: np.insert(v, 5, v[5]) for k, v in cols.items()}
+    _write_dat(mdir / "twin.dat", cols, t_digits)
+    if budget:
+        tb = parent_t + 5 * dt * np.arange((n - 1) // 5 + 1)
+        _write_dat(
+            mdir / "twin_budget.dat", _budget_columns(tb, scale), t_digits
+        )
+    (mdir / "twin.json").write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "system": "plane-couette",
+                "e0": 1e-6,
+                "seed": 3,
+                "smoothness": 0.4,
+                "it_energy": 1,
+                "it_budget": 5 if budget else None,
+                "it_spectra": None,
+                "dt": dt,
+                "double_precision": True,
+                "parent": "parent.tar",
+                "parent_t": parent_t,
+                "parent_it": 100,
+            }
+        )
+    )
+
+
+# ── Readers ──────────────────────────────────────────────────────────
+
+
+def test_readers() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        mdir = Path(tmp) / "m0000"
+        _write_member(mdir, parent_t=2.0, seam=True)
+        series = read_twin(mdir)
+        # The seam duplicate is dropped; t_rel starts at 0.
+        assert series.t.shape[0] == 11
+        assert np.unique(series.t).shape[0] == 11
+        assert_allclose(series.t_rel[0], 0.0, atol=1e-12)
+        assert series.meta["seed"] == 3
+        assert series.budget is not None
+
+        sums = budget_sums(series.budget)
+        for x, n_p in (("dU", 3), ("du1", 4), ("du2", 5)):
+            p_cols = [n for n in series.budget if n.startswith(f"P_{x}(")]
+            assert len(p_cols) == n_p
+            assert_allclose(
+                sums[f"P_{x}"],
+                sum(series.budget[n] for n in p_cols),
+                rtol=1e-12,
+            )
+        raw = read_dat(mdir / "twin.dat")
+        assert raw["t"].shape[0] == 12  # duplicates kept by read_dat
+
+        # Version floor.
+        meta = json.loads((mdir / "twin.json").read_text())
+        meta["format_version"] = 0
+        (mdir / "twin.json").write_text(json.dumps(meta))
+        try:
+            read_twin(mdir)
+        except ValueError as exc:
+            assert "format_version" in str(exc)
+        else:
+            raise AssertionError("version floor did not trip")
+    print("series readers: OK")
+
+
+# ── Budget closure ───────────────────────────────────────────────────
+
+
+def _closing_budget_columns(
+    t: np.ndarray, slopes: dict[str, float]
+) -> dict[str, np.ndarray]:
+    r"""A budget stream that closes *exactly* against known slopes.
+
+    Per component, the production terms carry the whole balance
+    (all equal), the four transport terms cancel in two pairs (so
+    ``T_x`` and ``T_tot`` are identically zero while the individual
+    terms stay `$O(1)$` -- the normalizer must not be zero), and
+    ``eps_x`` is a fixed offset.  Solving
+    `$n_p a_x - e_x = \dot{E}_x$` with `$e_x = 1$` fixes `$a_x$`.
+    """
+    cols: dict[str, np.ndarray] = {"t": t}
+    ones = np.ones_like(t)
+    for x, pairs in _TRIPLES.items():
+        a = (slopes[x] + 1.0) / len(pairs)
+        for b, c in pairs:
+            cols[f"P_{x}({b},{c})"] = a * ones
+        for j, (b, c) in enumerate(_TRANSPORTS[x]):
+            # +v, -v, +2v, -2v: sums to zero, terms are O(1).
+            sign = 1.0 if j % 2 == 0 else -1.0
+            cols[f"T_{x}({b},{c})"] = sign * (1.0 + j // 2) * ones
+        cols[f"eps_{x}"] = ones.copy()
+    p_names = [n for n in cols if n.startswith("P_")]
+    t_names = [n for n in cols if n.startswith("T_")]
+    cols["P_tot"] = sum(cols[n] for n in p_names)
+    cols["T_tot"] = sum(cols[n] for n in t_names)
+    cols["eps_tot"] = sum(cols[f"eps_{x}"] for x in _TRIPLES)
+    return cols
+
+
+def _closing_member(
+    mdir: Path, n: int = 51, dt: float = 0.01, it_budget: int = 5
+) -> dict[str, np.ndarray]:
+    """Write a member whose budget closes; return the budget columns."""
+    mdir.mkdir(parents=True, exist_ok=True)
+    t = 1.0 + dt * np.arange(n)
+    _write_dat(mdir / "twin.dat", _energy_columns(t))
+    # ``_energy_columns`` is linear in t, so the centred difference is
+    # exact; the slopes are the (i + 1) factors of its E_* columns.
+    slopes = {"dU": 2.0, "du1": 3.0, "du2": 7.0}
+    tb = t[::it_budget]
+    cols = _closing_budget_columns(tb, slopes)
+    _write_dat(mdir / "twin_budget.dat", cols)
+    return cols
+
+
+def test_closure_residuals() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+
+        # 1. An exactly closing stream reads back as machine zero, on
+        #    the interior budget samples only (the first and last of
+        #    the 11 budget rows have no energy neighbour on one side).
+        mdir = root / "exact"
+        _closing_member(mdir)
+        res = closure_residuals(read_twin(mdir))
+        assert res.n_samples == 9, res.n_samples
+        assert_allclose(res.dt, 0.01, rtol=1e-12)
+        for name in ("dU", "du1", "du2", "T_tot"):
+            assert res[name] < 1e-12, (name, res[name])
+
+        # 2. Breaking one component's dissipation moves *only* that
+        #    component: eps_du1 1 -> 1.3 unbalances a budget whose
+        #    two sides are both 3.0, so the residual is 0.3 / 3.0.
+        cols = _closing_member(root / "broken")
+        cols["eps_du1"] = cols["eps_du1"] + 0.3
+        cols["eps_tot"] = sum(cols[f"eps_{x}"] for x in ("dU", "du1", "du2"))
+        _write_dat(root / "broken" / "twin_budget.dat", cols)
+        res = closure_residuals(read_twin(root / "broken"))
+        assert_allclose(res["du1"], 0.1, rtol=1e-9)
+        assert res["dU"] < 1e-12 and res["du2"] < 1e-12
+        assert res["T_tot"] < 1e-12
+
+        # 3. T_tot is normalized by the largest individual transport
+        #    term (2.0 here), not by the balance: breaking one pair by
+        #    0.5 must read 0.25.
+        cols = _closing_member(root / "transport")
+        key = "T_du1(ru1,dU)"
+        cols[key] = cols[key] + 0.5
+        t_names = [n for n in cols if n.startswith("T_") and n != "T_tot"]
+        cols["T_tot"] = sum(cols[n] for n in t_names)
+        _write_dat(root / "transport" / "twin_budget.dat", cols)
+        res = closure_residuals(read_twin(root / "transport"))
+        assert_allclose(res["T_tot"], 0.25, rtol=1e-9)
+
+        # 4. A budget row off the energy grid is skipped, not
+        #    mis-paired: the driver writes an unconditional final row
+        #    that need not be cadence-aligned.
+        cols = _closing_member(root / "offgrid")
+        cols = {
+            k: np.append(v, v[-1] + (0.003 if k == "t" else 0.0))
+            for k, v in cols.items()
+        }
+        _write_dat(root / "offgrid" / "twin_budget.dat", cols)
+        res = closure_residuals(read_twin(root / "offgrid"))
+        assert res.n_samples == 9, res.n_samples
+        assert res["du1"] < 1e-12
+
+        # 5. An energy row off the cadence grid is skipped, not
+        #    allowed to shift the pairing.  The driver writes an
+        #    unconditional final ``twin.dat`` row whatever the cadence,
+        #    and a resume seam adds an interior one when
+        #    ``outs.it_snapshot`` is not a multiple of
+        #    ``twin.it_energy``; at ``it_energy > 1`` both are routine.
+        #    Neither may change a single residual.
+        for name, extra in (
+            ("tail", [1.0 + 0.01 * 50 + 0.003]),  # trailing, off-lattice
+            ("seam", [1.0 + 0.01 * 20 + 0.004]),  # interior, off-lattice
+            ("both", [1.0 + 0.01 * 20 + 0.004, 1.0 + 0.01 * 50 + 0.003]),
+        ):
+            mdir = root / f"offgrid_{name}"
+            _closing_member(mdir)
+            t = np.sort(np.append(1.0 + 0.01 * np.arange(51), extra))
+            _write_dat(mdir / "twin.dat", _energy_columns(t))
+            res = closure_residuals(read_twin(mdir))
+            assert res.n_samples == 9, (name, res.n_samples)
+            assert_allclose(res.dt, 0.01, rtol=1e-12)
+            for term in ("dU", "du1", "du2", "T_tot"):
+                assert res[term] < 1e-12, (name, term, res[term])
+
+        # 6. Guards: no budget stream, an energy stream with no single
+        #    cadence at all, a missing term column, and cadences that
+        #    never overlap.
+        _closing_member(root / "nobudget")
+        (root / "nobudget" / "twin_budget.dat").unlink()
+        _expect_value_error(
+            "no twin_budget.dat",
+            lambda: closure_residuals(read_twin(root / "nobudget")),
+        )
+
+        mdir = root / "jitter"
+        _closing_member(mdir)
+        # Every gap different: no lattice fits more than two rows, so
+        # this is the case that must still refuse (a genuinely
+        # non-uniform stream, as opposed to a uniform one carrying a
+        # couple of off-grid rows).
+        t = 1.0 + np.cumsum(0.01 * (1.0 + 0.3 * np.arange(51)))
+        _write_dat(mdir / "twin.dat", _energy_columns(t))
+        _expect_value_error(
+            "cadence grid",
+            lambda: closure_residuals(read_twin(mdir)),
+        )
+
+        cols = _closing_member(root / "short")
+        del cols["P_du2(du2,ru2)"]
+        cols["P_tot"] = sum(
+            cols[n] for n in cols if n.startswith("P_") and n != "P_tot"
+        )
+        _write_dat(root / "short" / "twin_budget.dat", cols)
+        _expect_value_error(
+            "found 11 and 12",
+            lambda: closure_residuals(read_twin(root / "short")),
+        )
+
+        mdir = root / "disjoint"
+        cols = _closing_member(mdir)
+        cols["t"] = cols["t"] + 100.0
+        _write_dat(mdir / "twin_budget.dat", cols)
+        _expect_value_error(
+            "do not overlap",
+            lambda: closure_residuals(read_twin(mdir)),
+        )
+    print("budget-closure residuals: OK")
+
+
+# ── Aggregation ──────────────────────────────────────────────────────
+
+
+def _make_tree(tmp: Path, n_members: int = 3) -> Path:
+    tree = tmp / "tree"
+    members = []
+    for k in range(n_members):
+        _write_member(tree / f"m{k:04d}", parent_t=10.0 + k, scale=1.0 + k)
+        members.append(
+            {
+                "dir": f"m{k:04d}",
+                "seed": k + 1,
+                "parent": "parent.tar",
+                "parent_t": 10.0 + k,
+                "t_end": 10.0 + k + 0.1,
+            }
+        )
+    (tree / "members.json").write_text(
+        json.dumps(
+            {"kind": "twin", "e0": 1e-6, "horizon": 0.1, "members": members}
+        )
+    )
+    return tree
+
+
+def test_aggregation() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = _make_tree(Path(tmp))
+        out = Path(tmp) / "agg.npz"
+        bundle = aggregate_members(tree, out)
+        assert bundle["n_members"] == 3
+        # Direct NumPy reference: member k scales its columns by
+        # (1 + k), so the mean E_d row is mean(1+k) * base.
+        base = _energy_columns(10.0 + 0.01 * np.arange(11))["E_d"] / 1.0
+        assert_allclose(
+            bundle["mean_E_d"], base * np.mean([1.0, 2.0, 3.0]), rtol=1e-12
+        )
+        assert_allclose(
+            bundle["std_E_d"], base * np.std([1.0, 2.0, 3.0]), rtol=1e-12
+        )
+        assert "t_rel_budget" in bundle
+        assert bundle["stack_budget_P_tot"].shape[0] == 3
+        # allow_pickle=False on purpose: the bundle must round-trip
+        # without pickle, so no entry may be an object array.
+        loaded = np.load(out, allow_pickle=False)
+        assert_allclose(loaded["mean_E_d"], bundle["mean_E_d"], rtol=0)
+        assert list(loaded["columns"]) == list(bundle["columns"])
+
+        # Guards, each on a real bad input.
+        (tree / "m0001" / "twin_budget.dat").unlink()
+        _expect_value_error(
+            "some members carry", lambda: aggregate_members(tree)
+        )
+        _write_member(tree / "m0001", parent_t=11.0, n=7, scale=2.0)
+        _expect_value_error(
+            "time grid differs", lambda: aggregate_members(tree)
+        )
+        _write_member(tree / "m0001", parent_t=11.0, scale=2.0)
+        cols = _energy_columns(11.0 + 0.01 * np.arange(11), 2.0)
+        del cols["E_du2"]
+        _write_dat(tree / "m0001" / "twin.dat", cols)
+        _expect_value_error(
+            "column set differs", lambda: aggregate_members(tree)
+        )
+
+        # A grid the same length but displaced in phase -- what a
+        # parent snapshot off the cadence grid used to produce -- is
+        # told apart from a different horizon, and ``align_atol``
+        # stacks it as recorded, reporting how far apart.  As the
+        # driver wrote them, which is a whole number of steps: here a
+        # 0.001 step sampled every 10, parent 4 steps off the others'.
+        _write_member(tree / "m0001", parent_t=11.0, scale=2.0)
+        record = json.loads((tree / "m0001" / "twin.json").read_text())
+        record.update(parent_t=11.004, dt=0.001, it_energy=10)
+        (tree / "m0001" / "twin.json").write_text(json.dumps(record))
+        _expect_value_error("phase-displaced", lambda: aggregate_members(tree))
+        loose = aggregate_members(tree, align_atol=0.005)
+        assert_allclose(loose["align_spread"], 0.004, rtol=0, atol=1e-12)
+        assert loose["t_rel"].shape == bundle["t_rel"].shape
+        _write_member(tree / "m0001", parent_t=11.0, scale=2.0)
+
+        spec = json.loads((tree / "members.json").read_text())
+        spec["kind"] = "other"
+        (tree / "members.json").write_text(json.dumps(spec))
+        _expect_value_error("not a twin tree", lambda: aggregate_members(tree))
+    print("aggregation (+ guards): OK")
+
+
+def test_aggregation_at_driver_precision() -> None:
+    """Members late in a long run stack on the driver's own ``t`` column.
+
+    The driver writes ``t`` at ``outs.stats_precision`` significant
+    digits and ``twin.json`` holds ``parent_t`` as a full double, so
+    ``t - parent_t`` carries a per-member offset of up to half a unit
+    in the last written digit -- several times ``1e-7`` at these
+    parents, against a stack that must tell a real displacement from
+    none.  The rows are read as whole steps instead.
+    """
+    digits = Outputs().stats_precision
+    parents = (3200.000000123, 7700.000000456, 5100.00000078)
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = Path(tmp) / "tree"
+        members = []
+        for k, parent_t in enumerate(parents):
+            _write_member(
+                tree / f"m{k}",
+                parent_t=parent_t,
+                scale=1.0 + k,
+                t_digits=digits,
+            )
+            members.append(
+                {
+                    "dir": f"m{k}",
+                    "seed": k + 1,
+                    "parent": "parent.tar",
+                    "parent_t": parent_t,
+                    "t_end": parent_t + 0.1,
+                }
+            )
+        (tree / "members.json").write_text(
+            json.dumps(
+                {
+                    "kind": "twin",
+                    "e0": 1e-6,
+                    "horizon": 0.1,
+                    "members": members,
+                }
+            )
+        )
+        # The plain difference really is that far apart -- what the
+        # stack compared before, and refused -- so this case has teeth.
+        raw = [
+            read_dat(tree / f"m{k}" / "twin.dat")["t"] - p
+            for k, p in enumerate(parents)
+        ]
+        assert max(float(np.max(np.abs(r - raw[0]))) for r in raw) > 1e-7
+
+        bundle = aggregate_members(tree)
+        assert bundle["align_spread"] == 0.0
+        assert_allclose(bundle["t_rel"], 0.01 * np.arange(11), atol=1e-15)
+        assert_allclose(
+            bundle["t_rel_budget"], 0.05 * np.arange(3), atol=1e-15
+        )
+        base = _energy_columns(0.01 * np.arange(11))["E_d"]
+        assert_allclose(bundle["mean_E_d"], 2.0 * base, rtol=1e-12)
+        # The closure reader takes the same step counts.
+        assert_allclose(read_twin(tree / "m1").t_rel, bundle["t_rel"], atol=0)
+
+        # A member whose rows do not sit on its own step grid is not
+        # anything the driver writes, and is named rather than stacked.
+        record = json.loads((tree / "m1" / "twin.json").read_text())
+        record["dt"] = 0.02
+        (tree / "m1" / "twin.json").write_text(json.dumps(record))
+        _expect_value_error(
+            "off a whole number of steps", lambda: aggregate_members(tree)
+        )
+    print("aggregation at the driver's t precision: OK")
+
+
+def _expect_value_error(fragment: str, thunk) -> None:
+    try:
+        thunk()
+    except ValueError as exc:
+        assert fragment in str(exc), f"{fragment!r} not in {exc}"
+        return
+    raise AssertionError(f"expected ValueError({fragment!r})")
+
+
+# ── Fits ─────────────────────────────────────────────────────────────
+
+
+def test_fits() -> None:
+    t = np.linspace(0.0, 300.0, 601)
+    lam, e0 = 0.025, 1e-10
+    e_exp = e0 * np.exp(2.0 * lam * t)
+    lam_fit, e0_fit, rms = fit_exponential_rate(t, e_exp, 50.0, 250.0)
+    assert_allclose(lam_fit, lam, rtol=1e-12)
+    assert_allclose(e0_fit, e0, rtol=1e-9)
+    assert rms < 1e-12
+
+    rate, a = 1.3e-5, 0.4
+    e_lin = a + rate * t
+    rate_fit, a_fit, rms_lin = fit_linear_rate(t, e_lin, 20.0, 280.0)
+    assert_allclose(rate_fit, rate, rtol=1e-12)
+    assert_allclose(a_fit, a, rtol=1e-12)
+    assert rms_lin < 1e-12
+
+    _expect_value_error(
+        "fewer than 3", lambda: fit_linear_rate(t, e_lin, 500.0, 600.0)
+    )
+    print("growth-rate fits: OK")
+
+
+# ── Spectra reader ───────────────────────────────────────────────────
+
+
+def _write_spectra(
+    directory: Path,
+    t: np.ndarray,
+    e_delta: np.ndarray,
+    e_ref: np.ndarray | None,
+    truncate_bytes: int = 0,
+) -> None:
+    n2, n3 = e_delta.shape[1:]
+    fields = [("t", "<f8"), ("e_delta", "<f8", (n2, n3))]
+    if e_ref is not None:
+        fields.append(("e_ref", "<f8", (n2, n3)))
+    rec = np.zeros(t.shape[0], dtype=np.dtype(fields))
+    rec["t"] = t
+    rec["e_delta"] = e_delta
+    if e_ref is not None:
+        rec["e_ref"] = e_ref
+    raw = rec.tobytes()
+    if truncate_bytes:
+        raw = raw[:-truncate_bytes]
+    (directory / "twin_spectra.bin").write_bytes(raw)
+    (directory / "twin_spectra.json").write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "system": "plane-couette",
+                "n2": n2,
+                "n3": n3,
+                "kz_harmonics": [0, 1, 2, 3, -3, -2, -1][:n2],
+                "kx_harmonics": list(range(n3)),
+                "lx": 5.5,
+                "lz": 3.77,
+                "value_dtype": "<f8",
+                "includes_ref": e_ref is not None,
+                "it_spectra": 1,
+                "dt": 0.01,
+                "double_precision": True,
+            }
+        )
+    )
+
+
+def test_spectra_reader() -> None:
+    rng = np.random.default_rng(1)
+    t = np.array([0.0, 0.01, 0.01, 0.02])  # one seam duplicate
+    e_delta = rng.random((4, 7, 4))
+    e_ref = rng.random((4, 7, 4))
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        _write_spectra(tmp, t, e_delta, e_ref, truncate_bytes=13)
+        data = read_twin_spectra(tmp)
+        # The truncated 4th record is dropped, then the duplicate.
+        assert data.t.shape[0] == 2
+        assert_allclose(data.e_delta, e_delta[:2], rtol=0)
+        assert_allclose(data.e_ref, e_ref[:2], rtol=0)
+        assert_allclose(
+            data.kz, (2 * np.pi / 3.77) * np.array([0, 1, 2, 3, -3, -2, -1])
+        )
+
+        ratio = decorrelation_ratio(data)
+        assert_allclose(ratio, data.e_delta / (2 * data.e_ref), rtol=0)
+        zeroed = data.e_ref.copy()
+        zeroed[0, 0, 0] = 0.0
+        _write_spectra(tmp, t[:2], e_delta[:2], zeroed[:2])
+        with_zero = read_twin_spectra(tmp)
+        r0 = decorrelation_ratio(with_zero)
+        assert np.isnan(r0[0, 0, 0]) and np.isfinite(r0[1]).all()
+
+        _write_spectra(tmp, t[:2], e_delta[:2], None)
+        no_ref = read_twin_spectra(tmp)
+        assert no_ref.e_ref is None
+        _expect_value_error(
+            "no reference spectra", lambda: decorrelation_ratio(no_ref)
+        )
+
+        meta = json.loads((tmp / "twin_spectra.json").read_text())
+        meta["format_version"] = 0
+        (tmp / "twin_spectra.json").write_text(json.dumps(meta))
+        _expect_value_error("format_version", lambda: read_twin_spectra(tmp))
+    print("spectra reader: OK")
+
+
+def test_reference_layouts() -> None:
+    """The reference spectra read alike in both layouts.
+
+    Pre-split, ``e_ref`` / ``r_*`` ride the difference records
+    (``includes_ref``); split, they are streams of their own on their
+    own cadence.  The merged reads place them on the difference times
+    exactly where they have samples and ``nan`` elsewhere; the
+    ``*_ref`` readers return them on their own times either way.
+    """
+    from dnsjax_lab.analysis.twin import (
+        read_twin_spectra_ref,
+        read_twin_yspectra,
+        read_twin_yspectra_ref,
+    )
+
+    rng = np.random.default_rng(5)
+    t = np.array([0.0, 0.01, 0.02, 0.03])
+    e_delta, e_ref = rng.random((4, 7, 4)), rng.random((4, 7, 4))
+    fields, values, sidecar = _yspectra_fixture(
+        ("x", "z", "xz00"), version=2, n_t=4
+    )
+    e_fields = [(n, sh) for n, sh in fields if n.startswith("e_")]
+    r_fields = [(n, sh) for n, sh in fields if n.startswith("r_")]
+    with tempfile.TemporaryDirectory() as tmp:
+        legacy, split = Path(tmp) / "legacy", Path(tmp) / "split"
+        legacy.mkdir()
+        split.mkdir()
+        _write_spectra(legacy, t, e_delta, e_ref)
+        _write_y_stream(legacy, "twin_yspectra", t, fields, values, sidecar)
+        _write_spectra(split, t, e_delta, None)
+        ref_meta = json.loads((split / "twin_spectra.json").read_text())
+        ref_meta |= {"it_spectra_ref": 2}
+        del ref_meta["includes_ref"], ref_meta["it_spectra"]
+        rec = np.zeros(2, dtype=[("t", "<f8"), ("e_ref", "<f8", (7, 4))])
+        rec["t"], rec["e_ref"] = t[::2], e_ref[::2]
+        (split / "twin_spectra_ref.bin").write_bytes(rec.tobytes())
+        (split / "twin_spectra_ref.json").write_text(json.dumps(ref_meta))
+        _write_y_stream(
+            split,
+            "twin_yspectra",
+            t,
+            e_fields,
+            values,
+            sidecar | {"includes_ref": False},
+        )
+        _write_y_stream(
+            split,
+            "twin_yspectra_ref",
+            t[::2],
+            r_fields,
+            {n: v[::2] for n, v in values.items()},
+            {k: v for k, v in sidecar.items() if k != "includes_ref"}
+            | {"format_version": 1, "it_yspectra_ref": 2},
+        )
+
+        old, new = read_twin_spectra(legacy), read_twin_spectra(split)
+        assert np.array_equal(old.e_ref, e_ref)
+        assert np.array_equal(new.e_ref[::2], e_ref[::2])
+        assert np.isnan(new.e_ref[1::2]).all()
+        for directory in (legacy, split):
+            ref = read_twin_spectra_ref(directory)
+            step = 1 if directory is legacy else 2
+            assert np.array_equal(ref.t, t[::step])
+            assert np.array_equal(ref.e_ref, e_ref[::step])
+
+        old, new = read_twin_yspectra(legacy), read_twin_yspectra(split)
+        assert set(old.fields) == set(new.fields)
+        for name, _ in r_fields:
+            assert np.array_equal(new[name][::2], old[name][::2]), name
+            assert np.isnan(new[name][1::2]).all(), name
+        ref = read_twin_yspectra_ref(split)
+        assert set(ref.fields) == {n for n, _ in r_fields}
+        assert np.array_equal(ref.t, t[::2])
+        legacy_ref = read_twin_yspectra_ref(legacy)
+        assert set(legacy_ref.fields) == set(ref.fields)
+        none = Path(tmp) / "none"
+        none.mkdir()
+        _write_y_stream(
+            none,
+            "twin_yspectra",
+            t,
+            e_fields,
+            values,
+            sidecar | {"includes_ref": False},
+        )
+        _expect_value_error(
+            "no reference spectra", lambda: read_twin_yspectra_ref(none)
+        )
+    print("reference spectra, both layouts: OK")
+
+
+def _write_cube(path: Path, kind: str, cube: np.ndarray, meta: dict) -> None:
+    """A cube tar by hand: the snapshot container, stdlib only."""
+    import io
+    import tarfile
+
+    n_fields = cube.shape[0]
+    meta = {
+        "format_version": 6,
+        "kind": kind,
+        "cube_version": 1,
+        "native_shape": list(cube.shape),
+        "dtype": "float64",
+        **meta,
+    }
+    with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as tf:
+
+        def add(name: str, data: bytes) -> None:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        add("_dnsjax_meta.json", json.dumps(meta).encode())
+        for c in range(n_fields):
+            add(f"state/c/{c}/0/0/0", cube[c].astype("<f8").tobytes())
+
+
+def test_cube_reader() -> None:
+    """The 3-D cube readers on hand-built tars."""
+    from dnsjax_lab.analysis.twin import (
+        cube_files,
+        read_cube,
+        read_twin_spectra3d,
+    )
+
+    rng = np.random.default_rng(9)
+    base = {
+        "fields": ["e_u", "e_v", "e_w"],
+        "wall_distance": [0.0, 0.05, 0.4, 1.0],
+        "y": [-1.0, -0.95, -0.6, 0.0],
+        "iy": [0, 1, 3, 6],
+        "kz_harmonics": [0, 1, 3],
+        "kx_harmonics": [0, 2],
+        "lx": 2.0,
+        "lz": 1.0,
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp) / "twin_spectra3d"
+        directory.mkdir()
+        cubes = {}
+        for it in (104, 100, 102):
+            cubes[it] = rng.random((3, 4, 3, 2))
+            _write_cube(
+                directory / f"twin_spectra3d_{it:010d}.tar",
+                "twin_spectra3d",
+                cubes[it],
+                base | {"t": it / 100, "it": it},
+            )
+        assert [f.name[-14:-4] for f in cube_files(tmp, "twin_spectra3d")] == [
+            f"{it:010d}" for it in (100, 102, 104)
+        ]
+        one = read_cube(directory / "twin_spectra3d_0000000102.tar")
+        assert np.array_equal(one["e_v"], cubes[102][1])
+        assert_allclose(one.kz, 2 * np.pi * np.array([0, 1, 3]))
+        assert_allclose(one.kx, np.pi * np.array([0, 2]))
+        slab = read_cube(
+            directory / "twin_spectra3d_0000000102.tar", y_rows=[1, 3]
+        )
+        assert np.array_equal(slab["e_w"], cubes[102][2][[1, 3]])
+        assert np.array_equal(slab.wall_distance, [0.05, 1.0])
+        series = read_twin_spectra3d(tmp)
+        assert series.it.tolist() == [100, 102, 104]
+        assert np.array_equal(series["e_u"][2], cubes[104][0])
+        subset = read_twin_spectra3d(tmp, its=[102])
+        assert subset.it.tolist() == [102]
+
+        # One file on other points: refused, not stacked.
+        _write_cube(
+            directory / "twin_spectra3d_0000000106.tar",
+            "twin_spectra3d",
+            rng.random((3, 4, 3, 2)),
+            base | {"t": 1.06, "it": 106, "kx_harmonics": [0, 3]},
+        )
+        _expect_value_error("kx_harmonics", lambda: read_twin_spectra3d(tmp))
+        # A tar of another kind is no cube.
+        wrong = Path(tmp) / "other.tar"
+        _write_cube(wrong, "state", cubes[100], base | {"t": 1.0, "it": 100})
+        _expect_value_error("not a twin cube", lambda: read_cube(wrong))
+    print("3-D cube reader: OK")
+
+
+# ── Integral lengths (core) ──────────────────────────────────────────
+
+
+def test_integral_lengths_core() -> None:
+    """Two-mode spectrum against an independent dense evaluation."""
+    lz = 3.7699111843077517
+    ny = 33
+    y = np.cos(np.linspace(0.0, np.pi, ny))[::-1]  # CGL-like, [-1, 1]
+    kz = (2 * np.pi / lz) * np.array([1.0, 2.0, 3.0, -1.0, -2.0, -3.0])
+    du1 = np.zeros((3, ny, 6), dtype=complex)
+    # Component 0: two modes with a y envelope; conjugate pairs so the
+    # physical field is real.
+    g = (1.0 - y**2) * np.exp(0.3 * y)
+    for idx, amp in ((0, 0.8), (1, 0.4)):
+        du1[0, :, idx] = amp * g
+        du1[0, :, idx + 3] = amp * g  # the -m partner
+    out = integral_lengths_from_modes(du1, y, kz, lz, y0=0.0)
+
+    # Independent reference: dense correlation on fine grids with the
+    # same first-zero-crossing convention.
+    j0 = int(np.argmin(np.abs(y)))
+    power = np.abs(du1[0, j0]) ** 2
+    r = np.linspace(0.0, lz / 2, 200001)
+    f_z = (power[None, :] * np.cos(np.outer(r, kz))).sum(axis=1)
+    f_z /= f_z[0]
+    stop = np.nonzero(f_z <= 0)[0][0]
+    l_z_ref = np.trapezoid(f_z[: stop + 1], r[: stop + 1])
+    assert_allclose(out["l_z"][0], l_z_ref, rtol=2e-3)
+
+    # l_y: the correlation of a separable field g(y0)g(y) never
+    # crosses zero for this positive envelope, so the integral runs
+    # to the walls: mean of the two one-sided integrals of g(y)/g(y0).
+    f_y = g / g[j0]
+    sides = []
+    for sel in (slice(j0, None), slice(j0, None, -1)):
+        rr = np.abs(y[sel] - y[j0])
+        sides.append(np.trapezoid(f_y[sel], rr))
+    assert_allclose(out["l_y"][0], np.mean(sides), rtol=1e-12)
+    assert np.isnan(out["l_z"][1]) and np.isnan(out["l_y"][2])
+    assert out["variance"][0] > 0 and out["variance"][1] == 0
+    print("integral-length core: OK")
+
+
+# ── build-twin orchestration ─────────────────────────────────────────
+
+
+def test_build_twin() -> None:
+    """Real harvest -> build-twin -> synthetic runs -> aggregation.
+
+    The parent snapshot is built by the ``test_twin_driver.py
+    --build-parent`` worker in a subprocess (this process stays
+    JAX-free); ``harvest`` and ``build-twin`` run as real CLIs; the
+    built tree's TOMLs and index are checked, member streams are then
+    synthesized in place (as if the runs had completed), and
+    ``aggregate_members`` consumes the real ``members.json`` end to
+    end.
+    """
+    import tomllib
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        parent = tmp / "parent.tar"
+        result = run_live(
+            [
+                sys.executable,
+                str(_repo.LAB_TESTS / "test_twin_driver.py"),
+                "--build-parent",
+                "8",
+                "17",
+                "8",
+                str(parent),
+            ],
+            cwd=_REPO,
+        )
+        assert result.returncode == 0, "parent build worker failed"
+
+        manifest = tmp / "manifest.json"
+        setup = str(_repo.LAB / "scripts" / "ensemble_setup.py")
+        result = run_live(
+            [
+                sys.executable,
+                setup,
+                "harvest",
+                "--run-dir",
+                str(tmp),
+                "--spacing",
+                "0.5",
+                "--n",
+                "2",
+                "--out",
+                str(manifest),
+            ],
+            cwd=_REPO,
+        )
+        assert result.returncode == 0
+
+        tree = tmp / "tree"
+        build_args = [
+            sys.executable,
+            setup,
+            "build-twin",
+            "--manifest",
+            str(manifest),
+            "--tree",
+            str(tree),
+            "--e0",
+            "1e-6",
+            "--horizon",
+            "0.05",
+            "--members-per-snapshot",
+            "2",
+            "--it-budget",
+            "5",
+            # The per-state stream cadences: without these a member
+            # records no stats.dat / stats_twin.dat at all.  A
+            # sub-10 it_corrector must drag it_error_check down with
+            # it or validate_parameters refuses the member.
+            "--it-stats",
+            "2",
+            "--it-corrector",
+            "3",
+            # Pinned: an unset --seed-base is drawn from the OS entropy
+            # pool (:mod:`dnsjax.seeding`), and the fan-out below is
+            # asserted by value.
+            "--seed-base",
+            "1",
+            # One shape knob given, three left to the driver's default:
+            # all four must be pinned in every member either way.
+            "--smoothness",
+            "0.4",
+            # The 3-D cubes and the reduced snapshots pass straight
+            # through, the [lowres] block written only when given.
+            "--it-spectra3d",
+            "10",
+            "--n-y3d",
+            "8",
+            "--it-lowres-delta",
+            "20",
+            "--lowres-it",
+            "40",
+            "--lowres-ny",
+            "9",
+        ]
+        result = run_live([*build_args, "--dry-run"], cwd=_REPO)
+        assert result.returncode == 0 and not tree.exists()
+        assert "m0001" in result.stdout
+        # Range-checked by the driver's own model, at build time.
+        result = run_live(
+            [*build_args, "--wall-smoothness", "1.5", "--dry-run"], cwd=_REPO
+        )
+        assert result.returncode != 0 and not tree.exists()
+
+        result = run_live(build_args, cwd=_REPO)
+        assert result.returncode == 0
+
+        spec = json.loads((tree / "members.json").read_text())
+        assert spec["kind"] == "twin" and len(spec["members"]) == 2
+        # JAX-free at import (the ``[twin]`` model only).
+        from dnsjax_lab.twin.driver import TwinParams
+
+        defaults = TwinParams()
+        shape = {
+            "smoothness": 0.4,
+            "wall_smoothness": defaults.wall_smoothness,
+            "wall_confinement": defaults.wall_confinement,
+            "mean_flow": defaults.mean_flow,
+        }
+        assert {k: spec[k] for k in shape} == shape, spec
+        assert (spec["it_stats"], spec["it_corrector"], spec["it_steps"]) == (
+            2,
+            3,
+            None,
+        ), spec
+        assert [m["seed"] for m in spec["members"]] == [1, 2], (
+            "build-twin must fan --seed-base out as seed-base + k"
+        )
+        lines = (tree / "run_commands.txt").read_text().splitlines()
+        assert len(lines) == 2 and all("dnsjax-twin" in ln for ln in lines)
+        for record in spec["members"]:
+            with open(tree / record["dir"] / "parameters.toml", "rb") as fh:
+                toml = tomllib.load(fh)
+            assert toml["init"]["snapshot"] == str(parent.resolve())
+            assert toml["twin"]["seed"] == record["seed"]
+            assert {k: toml["twin"][k] for k in shape} == shape, toml
+            assert toml["twin"]["e0"] == 1e-6
+            assert toml["twin"]["it_budget"] == 5
+            assert toml["outs"]["it_stats"] == 2
+            assert toml["outs"]["it_corrector"] == 3
+            assert toml["outs"]["it_error_check"] == 3
+            assert "it_steps" not in toml["outs"], toml["outs"]
+            assert toml["stop"]["max_sim_time"] == spec["horizon"]
+            assert toml["stop"]["check_laminarization"] is False
+            assert toml["twin"]["it_spectra3d"] == 10
+            assert toml["twin"]["n_y3d"] == 8
+            assert toml["twin"]["it_lowres_delta"] == 20
+            assert "it_budget3d" not in toml["twin"], toml["twin"]
+            assert toml["lowres"] == {"it_lowres": 40, "ny": 9}
+
+        # Simulate the completed runs, then aggregate through the
+        # real members.json.
+        for record in spec["members"]:
+            _write_member(
+                tree / record["dir"],
+                parent_t=record["parent_t"],
+                n=6,
+                scale=record["seed"],
+            )
+        bundle = aggregate_members(tree)
+        assert bundle["n_members"] == 2
+        base = _energy_columns(1.0 + 0.01 * np.arange(6))["E_d"]
+        assert_allclose(bundle["mean_E_d"], base * 1.5, rtol=1e-12)
+    print("build-twin (harvest, dry run, tree, aggregation): OK")
+
+
+# ── Wall-normal-resolved streams ─────────────────────────────────────
+
+NY, N_KZ, N_KX = 5, 4, 3
+
+
+def _y_sidecar(extra: dict) -> dict:
+    """The keys both wall-normal-resolved sidecars share."""
+    return {
+        "system": "plane-couette",
+        "ny": NY,
+        "n_kz": N_KZ,
+        "n_kx": N_KX,
+        "kz_harmonics": list(range(N_KZ)),
+        "kx_harmonics": list(range(N_KX)),
+        "lx": 5.5,
+        "lz": 3.77,
+        "y": list(np.linspace(-1.0, 1.0, NY)),
+        "y_weights": [0.1, 0.4, 0.5, 0.4, 0.6],
+        "volume_fac": 2.0,
+        "value_dtype": "<f8",
+        "dt": 0.01,
+        "double_precision": True,
+        **extra,
+    }
+
+
+def _write_y_stream(
+    directory: Path,
+    stem: str,
+    t: np.ndarray,
+    fields: list[tuple[str, tuple[int, ...]]],
+    values: dict[str, np.ndarray],
+    sidecar: dict,
+    truncate_bytes: int = 0,
+) -> None:
+    dtype = np.dtype([("t", "<f8")] + [(n, "<f8", sh) for n, sh in fields])
+    rec = np.zeros(t.shape[0], dtype=dtype)
+    rec["t"] = t
+    for name, _ in fields:
+        rec[name] = values[name]
+    raw = rec.tobytes()
+    if truncate_bytes:
+        raw = raw[:-truncate_bytes]
+    (directory / f"{stem}.bin").write_bytes(raw)
+    (directory / f"{stem}.json").write_text(json.dumps(sidecar))
+
+
+#: Trailing shape per stored suffix, mirroring the writer.
+_SUFFIX_WIDTH: dict[str, tuple[int, ...]] = {
+    "x": (N_KZ,),
+    "z": (N_KX,),
+    "x0": (N_KZ,),
+    "xz00": (),
+}
+
+
+def _plane_blocks(plane: np.ndarray, suffixes) -> dict[str, np.ndarray]:
+    """The stored blocks of one ``(..., NY, nz - 1, N_KX)`` mode plane.
+
+    What the writer stores (``twin.diagnostics._marginals_replicated``):
+    ``x`` sums over ``k_x`` and folds the wrap-order ``k_z`` axis onto
+    ``|k_z|``, ``z`` sums over ``k_z``, ``x0`` is the folded ``k_x = 0``
+    plane and ``xz00`` its ``k_z = 0`` column.  Built this way rather
+    than drawn per block, the blocks are slices and sums of *one*
+    plane, as a real stream's are -- the relation every three-bin
+    identity reads, and one independent draws would break.
+    """
+
+    def fold(a: np.ndarray) -> np.ndarray:
+        folded = a[..., :N_KZ].copy()
+        folded[..., 1:] += a[..., N_KZ:][..., ::-1]
+        return folded
+
+    blocks = {
+        "x": fold(plane.sum(axis=-1)),
+        "z": plane.sum(axis=-2),
+        "x0": fold(plane[..., 0]),
+        "xz00": plane[..., 0, 0],
+    }
+    return {suf: blocks[suf] for suf in suffixes}
+
+
+def _yspectra_fixture(suffixes, *, version, seed=3, n_t=4):
+    """A ``twin_yspectra`` field table, values and sidecar.
+
+    *suffixes* is the layout: the legacy triple written with no
+    ``suffixes`` key (the pre-``xz00`` streams the reader must still
+    accept), or one of the current ones written with it.  Every block
+    comes from one non-negative mode plane per prefix
+    (:func:`_plane_blocks`), so a given *seed* describes the same field
+    in every layout.
+    """
+    rng = np.random.default_rng(seed)
+    fields = [
+        (f"{p}_{suf}", (3, NY, *_SUFFIX_WIDTH[suf]))
+        for p in ("e", "r")
+        for suf in suffixes
+    ]
+    values = {}
+    for prefix in ("e", "r"):
+        plane = rng.random((n_t, 3, NY, 2 * N_KZ - 1, N_KX))
+        for suf, block in _plane_blocks(plane, suffixes).items():
+            values[f"{prefix}_{suf}"] = block
+    extra = {"format_version": version, "includes_ref": True, "it_yspectra": 1}
+    if version > 1:
+        extra["suffixes"] = list(suffixes)
+    return fields, values, _y_sidecar(extra)
+
+
+def test_yspectra_reader() -> None:
+    """``twin_yspectra`` round trip, seam drop, truncation, floor."""
+    from dnsjax_lab.analysis.twin import (
+        bin_energies,
+        integrate_y,
+        read_twin_yspectra,
+    )
+
+    t = np.array([0.0, 0.01, 0.01, 0.02])  # one seam duplicate
+    # The pre-``xz00`` layout: no ``suffixes`` key at all.
+    fields, values, sidecar = _yspectra_fixture(("x", "z", "x0"), version=1)
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        _write_y_stream(d, "twin_yspectra", t, fields, values, sidecar)
+        data = read_twin_yspectra(d)
+        assert data.t.tolist() == [0.0, 0.01, 0.02]
+        for name, _ in fields:
+            assert_allclose(
+                data[name], values[name][[0, 1, 3]], rtol=0, atol=0
+            )
+        w = np.asarray(sidecar["y_weights"])
+        assert_allclose(
+            integrate_y(data, "e_x"),
+            np.einsum("j,tcjk->tck", w, values["e_x"][[0, 1, 3]]),
+            rtol=0,
+            atol=0,
+        )
+        got = bin_energies(data)
+        x0 = np.einsum("j,tcjk->tk", w, values["e_x0"][[0, 1, 3]])
+        x = np.einsum("j,tcjk->tk", w, values["e_x"][[0, 1, 3]])
+        # Summation order differs from the reference, so eps, not bits.
+        assert_allclose(got["E_dU"], x0[:, 0], rtol=1e-14)
+        assert_allclose(got["E_du1"], x0[:, 1:].sum(axis=1), rtol=1e-14)
+        assert_allclose(got["E_du2"], (x - x0).sum(axis=1), rtol=1e-14)
+
+        # A partial trailing record is dropped, not misread.
+        _write_y_stream(
+            d, "twin_yspectra", t, fields, values, sidecar, truncate_bytes=9
+        )
+        assert read_twin_yspectra(d).t.tolist() == [0.0, 0.01]
+
+        # Version floor.
+        _write_y_stream(
+            d,
+            "twin_yspectra",
+            t,
+            fields,
+            values,
+            sidecar | {"format_version": 0},
+        )
+        _expect_value_error("format_version", lambda: read_twin_yspectra(d))
+
+        # A .bin without its sidecar.
+        (d / "twin_yspectra.json").unlink()
+        try:
+            read_twin_yspectra(d)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError("a sidecar-less .bin was accepted")
+    print("twin_yspectra reader (round trip, seam, truncation, floor): OK")
+
+
+def test_stored_layouts() -> None:
+    """All three on-disk layouts read, and name their own fields.
+
+    The reader floor is deliberately *not* raised with the writer's
+    ``format_version``, so a member recorded before ``xz00`` existed
+    still opens: its sidecar has no ``suffixes`` key and the legacy
+    triple is what that means.  What the newer layouts add is the
+    key itself, which is then the only thing consulted.
+    """
+    from dnsjax_lab.analysis.twin import (
+        LEGACY_SUFFIXES,
+        mean_mode_name,
+        mean_mode_profile,
+        read_twin_yspectra,
+        record_dtype,
+        stored_suffixes,
+    )
+
+    t = np.array([0.0, 0.01])
+    cases = {
+        "legacy": (("x", "z", "x0"), 1),
+        "default": (("x", "z", "xz00"), 2),
+        "x0_planes": (("x", "z", "x0", "xz00"), 2),
+    }
+    sizes = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        for label, (suffixes, version) in cases.items():
+            d = Path(tmp) / label
+            d.mkdir()
+            fields, values, sidecar = _yspectra_fixture(
+                suffixes, version=version, n_t=2
+            )
+            _write_y_stream(d, "twin_yspectra", t, fields, values, sidecar)
+            data = read_twin_yspectra(d)
+            assert stored_suffixes(data.meta) == suffixes, label
+            assert set(data.fields) == {n for n, _ in fields}, label
+            for name, _ in fields:
+                assert_allclose(data[name], values[name], rtol=0, atol=0)
+            sizes[label] = record_dtype(sidecar, "twin_yspectra").itemsize
+
+            # The (0, 0) mode is reachable whatever the layout, and
+            # the two routes to it agree where both exist.
+            name = mean_mode_name(data.meta, "r")
+            want = "r_xz00" if "xz00" in suffixes else "r_x0"
+            assert name == want, (label, name)
+            profile = mean_mode_profile(data[name], name)
+            assert profile.shape == (2, 3, NY), label
+            if suffixes == ("x", "z", "x0", "xz00"):
+                assert_allclose(profile, data["r_x0"][..., 0], rtol=0, atol=0)
+
+    assert stored_suffixes({}) == LEGACY_SUFFIXES
+    # Dropping the plane is a third of the record; the mode is one
+    # column, so the default is smaller than the legacy layout it
+    # replaces even though it stores something the legacy one did not.
+    assert sizes["default"] < sizes["legacy"] < sizes["x0_planes"]
+    print(f"stored layouts (record bytes {sizes}): OK")
+
+
+def test_bin_energies_without_the_plane() -> None:
+    """The three bins come back from every layout, plane or not.
+
+    The ``k_x`` marginal's first column is the whole ``k_x = 0`` plane,
+    so ``E_du1`` (per component too) and ``E_du2`` need only it and
+    the ``(0, 0)`` mode.
+    One mode plane stored in all three layouts must give one answer --
+    the plane identity, evaluated on the plane itself.
+    """
+    from dnsjax_lab.analysis.twin import (
+        bin_energies,
+        integrate_y,
+        read_twin_yspectra,
+    )
+
+    t = np.array([0.0, 0.01])
+    layouts = {
+        "legacy": (("x", "z", "x0"), 1),
+        "default": (("x", "z", "xz00"), 2),
+        "x0_planes": (("x", "z", "x0", "xz00"), 2),
+    }
+    plane = np.random.default_rng(5).random((2, 3, NY, 2 * N_KZ - 1, N_KX))
+    w = np.asarray(_y_sidecar({})["y_weights"])
+    per_k = np.einsum("j,tcjzx->tczx", w, plane)
+    want = {
+        "E_dU": per_k[:, :, 0, 0].sum(axis=1),
+        "E_du1": per_k[:, :, 1:, 0].sum(axis=(1, 2)),
+        "E_du2": per_k[:, :, :, 1:].sum(axis=(1, 2, 3)),
+    } | {
+        f"E_du1_{c}": per_k[:, i, 1:, 0].sum(axis=1)
+        for i, c in enumerate("xyz")
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        for label, (suffixes, version) in layouts.items():
+            d = Path(tmp) / label
+            d.mkdir()
+            fields, _, sidecar = _yspectra_fixture(
+                suffixes, version=version, n_t=2
+            )
+            values = {}
+            for prefix in ("e", "r"):
+                for suf, block in _plane_blocks(plane, suffixes).items():
+                    values[f"{prefix}_{suf}"] = block
+            _write_y_stream(d, "twin_yspectra", t, fields, values, sidecar)
+            data = read_twin_yspectra(d)
+            got = bin_energies(data)
+            assert set(got) == set(want), (label, sorted(got))
+            for key, value in want.items():
+                # Summation order differs from the reference: eps.
+                assert_allclose(got[key], value, rtol=1e-14, err_msg=label)
+
+        # ``E_dU`` sits on a field with no wavenumber axis, so
+        # ``integrate_y`` must not try to keep one.
+        got = integrate_y(data, "e_xz00")
+        assert got.shape == (2, 3)
+        assert_allclose(
+            got, np.einsum("j,tcj->tc", w, plane[..., 0, 0]), rtol=1e-14
+        )
+    print("bin_energies from every layout, plane or not: OK")
+
+
+def test_fluctuation_energy() -> None:
+    """The `(0,0)`-free total, and that both marginals agree on it."""
+    from dnsjax_lab.analysis.twin import fluctuation_energy
+
+    rng = np.random.default_rng(11)
+    w = np.asarray(_y_sidecar({})["y_weights"])
+    # A consistent pair of marginals: one non-negative mode energy
+    # summed over the axis each of them contracts, and its k_x = 0
+    # plane.  This is the structure the writer produces, so the two
+    # marginals must report the same total.
+    modes = rng.random((3, NY, N_KZ, N_KX))
+    r_x = modes.sum(axis=-1)
+    r_z = modes.sum(axis=-2)
+    r_xz00 = modes[..., 0, 0]
+
+    total = np.einsum("j,cjzx->c", w, modes)
+    mean_mode = np.einsum("j,cj->c", w, r_xz00)
+    want = total - mean_mode
+    assert_allclose(fluctuation_energy(r_x, r_xz00, w), want, rtol=1e-14)
+    assert_allclose(fluctuation_energy(r_z, r_xz00, w), want, rtol=1e-14)
+
+    # The legacy route to the same profile is the k_x = 0 plane's
+    # k_z = 0 column, which is the same numbers.
+    assert_allclose(
+        fluctuation_energy(r_x, modes[..., 0][..., 0], w), want, rtol=1e-14
+    )
+
+    # The mean mode is a real subtraction, and it is the (0,0) mode
+    # alone -- not the whole k_z = 0 column, which r_x[..., 0] is,
+    # nor the whole k_x = 0 plane, which r_z[..., 0] is.
+    assert np.all(mean_mode > 0.0)
+    for wrong_mode in (r_x[..., 0], r_z[..., 0]):
+        wrong = total - np.einsum("j,cj->c", w, wrong_mode)
+        assert not np.allclose(wrong, want)
+
+    # Leading axes are free: one component alone gives a scalar.
+    one = fluctuation_energy(r_x[0], r_xz00[0], w)
+    assert one.shape == ()
+    assert_allclose(one, want[0], rtol=1e-14)
+
+    # The same idea at its two coarser resolutions, each the next
+    # one's input: the spectrum without its (0, 0) mode, that
+    # spectrum's k-sum, and the profile's wall-normal average.
+    from dnsjax_lab.analysis.twin import (
+        fluctuation_profile,
+        mean_free_spectrum,
+    )
+
+    spectrum = mean_free_spectrum(r_x, r_xz00)
+    assert spectrum.shape == r_x.shape
+    assert_allclose(spectrum[..., 1:], r_x[..., 1:], rtol=0.0)  # only m = 0
+    assert_allclose(spectrum[..., 0], r_x[..., 0] - r_xz00, rtol=1e-14)
+    assert np.shares_memory(spectrum, r_x) is False  # a copy, always
+
+    profile = fluctuation_profile(r_x, r_xz00)
+    assert profile.shape == (3, NY)
+    assert_allclose(profile, spectrum.sum(axis=-1), rtol=1e-14)
+    assert_allclose(fluctuation_profile(r_z, r_xz00), profile, rtol=1e-14)
+    assert_allclose(np.einsum("j,cj->c", w, profile), want, rtol=1e-14)
+    print("mean_free_spectrum / _profile / _energy (one idea): OK")
+
+
+def test_shape_alignment() -> None:
+    """The `(y, k)` shape overlap is normalized, symmetric and scale-blind.
+
+    Blind to amplitude -- the three properties a calibration reads off
+    it.
+    """
+    from dnsjax_lab.analysis.twin import shape_alignment
+
+    rng = np.random.default_rng(5)
+    w = np.asarray(_y_sidecar({})["y_weights"])
+    p = rng.random((NY, N_KZ))
+    q = rng.random((NY, N_KZ))
+
+    # A shape against itself is 1, and against a rescaling of itself
+    # still 1: the measure sees shape and not amplitude, which is why
+    # a candidate initial condition can be scored without matching the
+    # energy of the field it is compared with.
+    assert_allclose(shape_alignment(p, p, w), 1.0, atol=1e-14)
+    assert_allclose(shape_alignment(p, 1.0e-7 * p, w), 1.0, atol=1e-14)
+    assert_allclose(shape_alignment(p, q, w), shape_alignment(q, p, w))
+    assert 0.0 < shape_alignment(p, q, w) < 1.0
+
+    # Disjoint support is 0.  A uniform density against one spread
+    # over twice the support is 1/sqrt(2): the overlap integral runs
+    # over half the plane, where the integrand is sqrt(2/S . 1/S).
+    left, right = np.zeros((NY, N_KZ)), np.zeros((NY, N_KZ))
+    left[:, : N_KZ // 2] = 1.0
+    right[:, N_KZ // 2 :] = 1.0
+    assert_allclose(shape_alignment(left, right, w), 0.0, atol=1e-14)
+    assert_allclose(
+        shape_alignment(left, left + right, w), 2.0**-0.5, atol=1e-14
+    )
+    # Two uniforms of equal support overlapping in half of it is 1/2,
+    # which is the case worth pinning: it is the scale on which an
+    # initial condition's A(0) is read.
+    shifted = np.zeros((NY, N_KZ))
+    shifted[:, N_KZ // 4 : 3 * (N_KZ // 4)] = 1.0
+    assert_allclose(shape_alignment(left, shifted, w), 0.5, atol=1e-14)
+
+    # Refusals: mismatched axes, a negative entry (not a density), and
+    # an all-zero input (no shape to compare).
+    for bad in (
+        lambda: shape_alignment(p, q[:, :-1], w),
+        lambda: shape_alignment(p, -q, w),
+        lambda: shape_alignment(p, np.zeros_like(q), w),
+    ):
+        try:
+            bad()
+        except ValueError:
+            continue
+        raise AssertionError("shape_alignment accepted an invalid input")
+    print("shape_alignment (scale-free overlap + refusals): OK")
+
+
+def test_ybudget_reader() -> None:
+    """``twin_ybudget`` round trip against the sidecar's term list."""
+    from dnsjax_lab.analysis.twin import integrate_y, read_twin_ybudget
+
+    terms = ["P_U", "P_r", "T_ref", "T_self", "V", "eps", "Wp"]
+    rng = np.random.default_rng(5)
+    t = np.array([0.0, 0.02])
+    # The pre-``xz00`` layout, at the reader floor: no ``suffixes``.
+    fields = [
+        (f"{term}_{suf}", (NY, n))
+        for term in terms
+        for suf, n in (("x", N_KZ), ("z", N_KX), ("x0", N_KZ))
+    ]
+    values = {n: rng.random((2, *sh)) for n, sh in fields}
+    sidecar = _y_sidecar(
+        {"format_version": 2, "terms": terms, "it_ybudget": 5}
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        _write_y_stream(d, "twin_ybudget", t, fields, values, sidecar)
+        data = read_twin_ybudget(d)
+        assert len(data.fields) == 3 * len(terms)
+        for name, _ in fields:
+            assert_allclose(data[name], values[name], rtol=0, atol=0)
+        w = np.asarray(sidecar["y_weights"])
+        assert_allclose(
+            integrate_y(data, "Wp_z"),
+            np.einsum("j,tjk->tk", w, values["Wp_z"]),
+            rtol=0,
+            atol=0,
+        )
+        # A y grid of the wrong length is a hard error, not a reshape.
+        _write_y_stream(
+            d,
+            "twin_ybudget",
+            t,
+            fields,
+            values,
+            sidecar | {"y_weights": [1.0, 2.0]},
+        )
+        _expect_value_error("y_weights", lambda: read_twin_ybudget(d))
+
+        # The current layout: named by ``suffixes``, and its ``xz00``
+        # block has no wavenumber axis to integrate over.
+        new_fields = [
+            (f"{term}_{suf}", (NY, *width))
+            for term in terms
+            for suf, width in (("x", (N_KZ,)), ("z", (N_KX,)), ("xz00", ()))
+        ]
+        new_values = {n: rng.random((2, *sh)) for n, sh in new_fields}
+        _write_y_stream(
+            d,
+            "twin_ybudget",
+            t,
+            new_fields,
+            new_values,
+            sidecar
+            | {
+                "format_version": 3,
+                "suffixes": ["x", "z", "xz00"],
+            },
+        )
+        data = read_twin_ybudget(d)
+        assert set(data.fields) == {n for n, _ in new_fields}
+        assert data["Wp_xz00"].shape == (2, NY)
+        assert_allclose(
+            integrate_y(data, "Wp_xz00"),
+            np.einsum("j,tj->t", w, new_values["Wp_xz00"]),
+            rtol=0,
+            atol=0,
+        )
+    print("twin_ybudget reader (both layouts): OK")
+
+
+def test_balance_terms() -> None:
+    r"""The budget regrouped as the difference-energy balance.
+
+    One mode plane per stored term, stored through
+    :func:`_plane_blocks` in the legacy layout (``x0``, no ``xz00``)
+    and in the current one, so the two describe the same field and the
+    regrouping can be held to exact arithmetic on both:
+
+    - each term is its combination of stored densities, and those that
+      :data:`~dnsjax_lab.analysis.twin.yspectra.BALANCE_PARTS` leaves in
+      the sum add up to the stored sum, ``P_U + P_r + T_ref + T_self +
+      V + Wp``;
+    - ``input`` is ``Wp``'s `$(0, 0)$` mode and nothing else: zero off
+      column 0 of every marginal, that mode in column 0, the whole of
+      ``xz00``, and the same numbers whichever layout it is found in;
+    - ``tr_press`` is the rest of ``Wp``, exactly, and nothing at
+      `$(0, 0)$`;
+    - a rotational stream, and a name that is no balance term, are
+      refused.
+    """
+    from dnsjax_lab.analysis.twin import (
+        BALANCE_PARTS,
+        BALANCE_TERMS,
+        balance_term,
+        balance_terms,
+        read_twin_ybudget,
+    )
+
+    terms = ["P_U", "P_r", "T_ref", "T_self", "V", "eps", "Wp"]
+    rng = np.random.default_rng(11)
+    n_t = 3
+    t = np.arange(n_t) * 0.02
+    planes = {
+        term: rng.random((n_t, NY, 2 * N_KZ - 1, N_KX)) - 0.5 for term in terms
+    }
+    planes["eps"] += 0.5  # a sum of squares in a real stream
+    mode00 = planes["Wp"][..., 0, 0]  # (n_t, NY)
+
+    got: dict[tuple[str, ...], dict[str, np.ndarray]] = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        for suffixes, version in (
+            (("x", "z", "x0"), 2),
+            (("x", "z", "xz00"), 3),
+        ):
+            d = Path(tmp) / "_".join(suffixes)
+            d.mkdir()
+            fields = [
+                (f"{term}_{suf}", (NY, *_SUFFIX_WIDTH[suf]))
+                for term in terms
+                for suf in suffixes
+            ]
+            values = {
+                f"{term}_{suf}": block
+                for term in terms
+                for suf, block in _plane_blocks(planes[term], suffixes).items()
+            }
+            extra = {"format_version": version, "terms": terms}
+            if version > 2:
+                extra["suffixes"] = list(suffixes)
+            _write_y_stream(
+                d, "twin_ybudget", t, fields, values, _y_sidecar(extra)
+            )
+            data = read_twin_ybudget(d)
+            assert balance_terms(data.meta) == BALANCE_TERMS
+            out = got.setdefault(suffixes, {})
+            for suf in suffixes:
+                bal = {
+                    term: balance_term(data.__getitem__, data.meta, term, suf)
+                    for term in BALANCE_TERMS
+                }
+                for term, arr in bal.items():
+                    out[f"{term}_{suf}"] = arr
+
+                def s(name: str, suf=suf, values=values) -> np.ndarray:
+                    return values[f"{name}_{suf}"]
+
+                exact = {
+                    "prod": s("P_U") + s("P_r"),
+                    "prod_mean": s("P_U"),
+                    "prod_fluct": s("P_r"),
+                    "diss": -s("eps"),
+                    "tr_self": s("T_self"),
+                    "tr_ref": s("T_ref"),
+                    "tr_visc": s("V") + s("eps"),
+                }
+                for term, want in exact.items():
+                    assert_allclose(bal[term], want, rtol=0, atol=0)
+
+                if suf == "xz00":
+                    assert_allclose(bal["input"], mode00, rtol=0, atol=0)
+                    assert not bal["tr_press"].any()
+                else:
+                    assert not bal["input"][..., 1:].any()
+                    assert_allclose(
+                        bal["input"][..., 0], mode00, rtol=0, atol=0
+                    )
+                assert_allclose(
+                    bal["tr_press"] + bal["input"], s("Wp"), rtol=0, atol=0
+                )
+                in_sum = sum(
+                    bal[term]
+                    for term in BALANCE_TERMS
+                    if term not in BALANCE_PARTS
+                )
+                stored_sum = sum(s(name) for name in terms if name != "eps")
+                assert_allclose(in_sum, stored_sum, rtol=1e-12, atol=1e-15)
+
+    # The two layouts agree wherever they share a marginal: the (0, 0)
+    # mode came off ``x0`` in one and off ``xz00`` in the other.
+    legacy, current = got[("x", "z", "x0")], got[("x", "z", "xz00")]
+    for suf in ("x", "z"):
+        for term in BALANCE_TERMS:
+            name = f"{term}_{suf}"
+            assert_allclose(legacy[name], current[name], rtol=0, atol=0)
+
+    rotational = ["P_U", "P_r", "T_vort", "T_self", "V", "eps", "Wp"]
+    rotational += ["P_lift"]
+    _expect_value_error(
+        "rotational", lambda: balance_terms({"terms": rotational})
+    )
+    _expect_value_error(
+        "rotational",
+        lambda: balance_term(
+            lambda name: None, {"terms": rotational}, "prod", "x"
+        ),
+    )
+    try:
+        balance_term(lambda name: None, {"terms": terms}, "P_U", "x")
+    except KeyError as err:
+        assert "not a balance term" in str(err)
+    else:
+        raise AssertionError("a stored name is no balance term")
+    print("difference-energy balance from both layouts: OK")
+
+
+# ── Log-coordinate moments and growth laws ───────────────────────────
+
+
+def _gaussian(xi, eta, mean, cov) -> np.ndarray:
+    """An unnormalized bivariate Gaussian on the ``(eta, xi)`` grid."""
+    inv = np.linalg.inv(np.asarray(cov, dtype=float))
+    dx = xi[None, :] - mean[0]
+    dy = eta[:, None] - mean[1]
+    q = inv[0, 0] * dx**2 + 2.0 * inv[0, 1] * dx * dy + inv[1, 1] * dy**2
+    return np.exp(-0.5 * q)
+
+
+def test_log_moments() -> None:
+    """A planted Gaussian's moments, the cancellations, linearity."""
+    xi = np.linspace(-4.0, 6.0, 501)  # ln lambda
+    eta = np.linspace(-5.0, 4.0, 451)  # ln y
+    mean, cov = (1.3, -0.4), [[0.5, 0.18], [0.18, 0.3]]
+    f = _gaussian(xi, eta, mean, cov)
+    weights = np.ones_like(f)  # a uniform grid: equal cell areas
+    m = log_moments(log_moment_sums(f, weights, xi, eta))
+    assert_allclose([m.mean_lam, m.mean_y], mean, atol=1e-9)
+    assert_allclose([m.var_lam, m.var_y, m.cov], [0.5, 0.3, 0.18], rtol=1e-8)
+    assert_allclose(m.rho, 0.18 / np.sqrt(0.5 * 0.3), rtol=1e-8)
+    assert_allclose(m.slope, 0.18 / 0.3, rtol=1e-8)
+    assert_allclose(m.sqrt_det, np.sqrt(0.5 * 0.3 - 0.18**2), rtol=1e-8)
+    assert_allclose(m.angle, 0.5 * np.arctan2(0.36, 0.2), rtol=1e-8)
+    # A constant factor moves the mass and nothing else.
+    scaled = log_moments(log_moment_sums(7.3 * f, weights, xi, eta))
+    assert_allclose(scaled.mass, 7.3 * m.mass, rtol=1e-12)
+    for name in ("mean_lam", "mean_y", "var_lam", "var_y", "cov"):
+        assert_allclose(getattr(scaled, name), getattr(m, name), rtol=1e-10)
+    # A coordinate-dependent weight does move them: it reweights.
+    tilted = log_moments(
+        log_moment_sums(f, np.exp(-eta)[:, None] * weights, xi, eta)
+    )
+    assert tilted.mean_y < m.mean_y - 0.1
+    # The sums are linear, so the moments of a mean come from the mean
+    # of the sums -- which is not the mean of the moments.
+    g = _gaussian(xi, eta, (-0.5, 1.0), [[0.2, -0.05], [-0.05, 0.4]])
+    both = np.stack([f, g])
+    sums = log_moment_sums(both, weights, xi, eta)
+    of_mean = log_moments(log_moment_sums(both.mean(0), weights, xi, eta))
+    via_sums = log_moments(sums.mean(0))
+    assert_allclose(via_sums.cov, of_mean.cov, rtol=1e-10)
+    assert not np.isclose(of_mean.cov, log_moments(sums).cov.mean())
+    # A non-finite cell is an empty one.
+    holed = f.copy()
+    holed[0, 0] = np.nan
+    assert np.isfinite(log_moment_sums(holed, weights, xi, eta)).all()
+    print("log-coordinate moments: OK")
+
+
+def test_moment_rates() -> None:
+    """The per-term split closes on the finite-difference rates."""
+    xi = np.linspace(-5.0, 7.0, 481)
+    eta = np.linspace(-5.0, 5.0, 401)
+    weights = np.ones((eta.size, xi.size))
+
+    def density(t: float) -> np.ndarray:
+        # Moving, spreading, tilting and growing at once.
+        mean = (0.3 * t, -0.2 * t)
+        cov = [[0.4 + 0.1 * t, 0.05 + 0.04 * t], [0.05 + 0.04 * t, 0.3]]
+        return (1.0 + 0.5 * t) * _gaussian(xi, eta, mean, cov)
+
+    t, h = 0.7, 1e-4
+    rate = (density(t + h) - density(t - h)) / (2.0 * h)
+    e_sums = log_moment_sums(density(t), weights, xi, eta)
+    # Split the rate into two arbitrary parts: their contributions must
+    # add up to the whole, which must match the moments' own rates.
+    rng = np.random.default_rng(4)
+    part = rng.standard_normal(rate.shape) * np.abs(rate).max()
+    a = moment_rates(e_sums, log_moment_sums(part, weights, xi, eta))
+    b = moment_rates(e_sums, log_moment_sums(rate - part, weights, xi, eta))
+    plus = log_moments(log_moment_sums(density(t + h), weights, xi, eta))
+    minus = log_moments(log_moment_sums(density(t - h), weights, xi, eta))
+    for name in ("mean_lam", "mean_y", "var_lam", "var_y", "cov"):
+        fd = (getattr(plus, name) - getattr(minus, name)) / (2.0 * h)
+        assert_allclose(getattr(a, name) + getattr(b, name), fd, atol=1e-6)
+    fd_mass = (np.log(plus.mass) - np.log(minus.mass)) / (2.0 * h)
+    assert_allclose(a.mass + b.mass, fd_mass, atol=1e-6)
+    # Exact closures: mean_lam moves at 0.3, var_lam at 0.1.
+    assert_allclose(a.mean_lam + b.mean_lam, 0.3, atol=1e-6)
+    assert_allclose(a.var_lam + b.var_lam, 0.1, atol=1e-6)
+    # A pure growth term changes the mass and no centred moment.
+    f = density(t)
+    grow = moment_rates(e_sums, log_moment_sums(0.25 * f, weights, xi, eta))
+    assert_allclose(grow.mass, 0.25, rtol=1e-10)
+    for name in ("mean_lam", "mean_y", "var_lam", "var_y", "cov"):
+        assert abs(getattr(grow, name)) < 1e-10, name
+    print("moment budget: OK")
+
+
+def test_growth_laws() -> None:
+    """Each planted law reads as itself on its own axes."""
+    t = np.linspace(0.0, 30.0, 3001)
+    # Exponential, far from its bound: flat rate, flat gamma-R diagram.
+    e = 1e-8 * np.exp(0.4 * t)
+    g = log_rate(t, e)
+    assert_allclose(g[5:-5], 0.4, rtol=1e-6)
+    assert np.all(np.abs(log_slope(e / 1.0, g)[5:-5]) < 1e-4)
+    # Algebraic, E ~ (t - t0)^2: constant alpha and slope -1/2.
+    t0 = -3.0
+    e = (t - t0) ** 2
+    g = log_rate(t, e)
+    assert_allclose(algebraic_exponent(t, g)[10:-10], 2.0, rtol=1e-3)
+    assert_allclose(log_slope(e / 1e6, g)[10:-10], -0.5, rtol=1e-3)
+    # The logistic at rate gamma0: gamma = gamma0 (1 - R), the slope is
+    # -R/(1 - R), and f grows at exactly gamma0 R -- the early rate
+    # again once R is near 1.
+    gamma0, ts = 0.4, 15.0
+    r = 1.0 / (1.0 + np.exp(-gamma0 * (t - ts)))
+    g = log_rate(t, r)
+    assert_allclose(g[5:-5], logistic_rate(r, gamma0)[5:-5], rtol=1e-4)
+    s = log_slope(r, g)
+    assert_allclose(s[200:-200], (-r / (1.0 - r))[200:-200], rtol=1e-3)
+    df = np.gradient(bound_free(r), t)
+    assert_allclose(df[5:-5], (gamma0 * r)[5:-5], rtol=1e-4)
+    assert df[-6] > 0.99 * gamma0
+    # Exponential decorrelation: f is exactly linear.
+    nu = 0.06
+    r = 1.0 - np.exp(-nu * t[1:])
+    assert_allclose(bound_free(r), nu * t[1:], rtol=1e-10)
+    g = log_rate(t[1:], r)
+    away = t[1:] > 1.0  # gamma ~ 1/t near t = 0 outruns a difference
+    assert_allclose(
+        g[away][:-5], decorrelation_rate(r, nu)[away][:-5], rtol=1e-4
+    )
+    assert np.isnan(bound_free(np.array([1.0, 1.2]))).all()
+    # The window finder: the longest run within 10 % of its own mean.
+    v = np.array([1.0, 1.0, 1.0, 1.05, 0.95, 1.0, 2.0, 2.02, 3.0])
+    start, stop, mean = longest_window(v, 0.1)
+    assert (start, stop) == (0, 6) and abs(mean - 1.0) < 1e-12
+    valid = np.ones(v.size, dtype=bool)
+    valid[2] = False
+    assert longest_window(v, 0.1, valid)[:2] == (3, 6)
+    assert longest_window(np.array([1.0, 5.0, 25.0]), 0.1)[:2] == (0, 0)
+    print("growth laws: OK")
+
+
+if __name__ == "__main__":
+    test_readers()
+    test_closure_residuals()
+    test_aggregation()
+    test_aggregation_at_driver_precision()
+    test_fits()
+    test_spectra_reader()
+    test_yspectra_reader()
+    test_stored_layouts()
+    test_bin_energies_without_the_plane()
+    test_fluctuation_energy()
+    test_shape_alignment()
+    test_ybudget_reader()
+    test_balance_terms()
+    test_reference_layouts()
+    test_cube_reader()
+    test_integral_lengths_core()
+    test_build_twin()
+    test_log_moments()
+    test_moment_rates()
+    test_growth_laws()
+    print("All twin analysis tests passed.")

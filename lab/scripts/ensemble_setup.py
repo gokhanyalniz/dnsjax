@@ -1,0 +1,965 @@
+r"""Set up ensemble response experiments (harvest + member run trees).
+
+JAX-free orchestration (stdlib + the JAX-free ``dnsjax`` leaves
+``snapshot_meta``/``harmonics``/``seeding``, and for ``build-twin``
+the ``dnsjax-twin`` parameter model, which is JAX-free at import) for
+ensemble-averaged response experiments: run a perturbed copy of many
+statistically independent snapshots, record the perturbed mode with
+the probe stream, and average -- the ensemble mean isolates the
+coherent (impulse) response while the incoherent turbulence cancels.
+Residual noise in the mean decays as `$1/\sqrt{N}$` in the member
+count, so ``--n`` trades compute for a cleaner response (antithetic
+pairing lowers the prefactor, not the rate).  Aggregation /
+identification of the resulting probe streams:
+:mod:`dnsjax_lab.analysis.response.ensemble`.
+
+Two subcommands:
+
+``harvest``
+    Select statistically independent snapshots from a completed run
+    directory: all ``*.tar`` dnsjax snapshots with ``t >= --t-min``
+    (cut the transient), thinned to a minimum spacing ``--spacing``
+    (in simulation time units; pick several eddy-turnover times), at
+    most ``--n`` of them.  ``*_twin.tar`` files are skipped -- a
+    ``dnsjax-twin`` run directory holds partner snapshots beside its
+    reference trajectory, and a partner is a *perturbed copy* of the
+    reference at the same ``t``, not an independent sample.  Writes a
+    JSON manifest consumed by ``build``.
+
+``build``
+    Materialize the member run tree from a manifest: per parent
+    snapshot, one directory per ensemble member containing a
+    perturbed seed snapshot (via ``scripts/snapshot_perturb.py``, one
+    subprocess each -- sources and the ``--amplitude-energy``
+    convention are its own) and a generated ``parameters.toml`` (the
+    seed inherits the physics; the TOML layer sets only the stop
+    horizon and the probe stream).  Pairing (``--pairing``):
+
+    - ``antithetic`` (default): members ``mNNNN_p`` / ``mNNNN_m``
+      seeded with ``+eps`` / ``-eps`` from the *same* parent.  The
+      combination ``(u_+ - u_-)/2`` cancels the common turbulent
+      evolution **and** all even-order nonlinear contributions at the
+      same cost as a baseline pair (dnsjax runs are deterministic for
+      a fixed configuration and device layout, so the shared
+      background cancels to the linear-response accuracy).
+    - ``baseline``: ``mNNNN_p`` (perturbed) / ``mNNNN_b`` (the
+      unperturbed parent, resumed as-is); combination ``u_p - u_b``.
+    - ``none``: perturbed members only; the background turbulence
+      only cancels in the plain ensemble mean (slowest convergence).
+
+    Emits ``run_commands.txt`` (one scheduler-agnostic launch line
+    per member; submit them however the site likes) and
+    ``members.json`` (the aggregation index).  ``--dry-run`` prints
+    the planned tree and every command without writing anything.
+    This script never executes solver runs.
+
+``build-twin``
+    Materialize a **twin-run** member tree from a manifest: one
+    directory per member, each launched with ``dnsjax-twin``
+    (:mod:`dnsjax_lab.twin.driver`) against its parent snapshot.  No seed
+    subprocesses -- the driver perturbs in-process at start (the
+    random divergence-free field of exactly ``--e0``), so a member
+    directory holds only a generated ``parameters.toml`` ([init]
+    snapshot, [stop] horizon, the [twin] section with the member's
+    seed and perturbation shape, and an [outs] section for whichever
+    cadences were asked for).  The shape -- ``--smoothness``,
+    ``--wall-smoothness``, ``--wall-confinement``, ``--mean-flow`` --
+    is written into every member whether given or not, an unset one at
+    the driver's default of the moment: like the seed, it is what a
+    member *is*, so a tree has to mean the same thing whichever code
+    version launches or resumes it, and the defaults do move.  The
+    driver records ``stats.dat`` / ``steps.dat`` / ``corrector.dat``
+    for **both** states of the pair, the partner's under the ``_twin``
+    suffix, but each stream is gated on its own ``[outs]`` cadence:
+    without ``--it-stats`` / ``--it-steps`` / ``--it-corrector`` a
+    member records none of them.  Seeds are ``--seed-base + k`` over
+    the flat member index (``--members-per-snapshot`` fans several
+    seeds out of one parent).  ``check_laminarization`` is forced off
+    so every member runs the full horizon and the streams aggregate on
+    one shared time grid (a relaminarized member is visible offline in
+    its ``E_ref`` column).  Emits ``run_commands.txt`` and a
+    ``members.json`` with ``kind: "twin"``, the index
+    :func:`dnsjax_lab.analysis.twin.ensemble.aggregate_members` consumes.
+
+The injected mode is auto-appended to ``--probe-modes`` when missing
+(the response could otherwise never be recorded).  Injecting the
+``(0,0)`` mean mode is allowed on the Cartesian flows, where
+``scripts/snapshot_perturb.py`` checks the profile against the
+mean-mode conservation laws (:mod:`dnsjax.ic.mean_mode`) -- but note
+what it identifies: under a held mean the mean-mode block is *affine*,
+not the clean linear block ``analysis.response`` fits, so read such an
+ensemble as a response measurement rather than an operator
+identification.  Pick ``--horizon`` to cover the response
+feature to be measured or fitted -- e.g. past the transient-growth
+peak `$t_\mathrm{opt}$` of the injected mode (the TG summary) -- and
+no longer: member cost is linear in it, and identification horizons
+must lie inside it.  It should also be a whole number of probe
+intervals (``it_probes * dt``) so every member records the
+cadence-aligned final sample; ``build`` checks this against the
+parent snapshot's ``step.dt`` and warns otherwise (``build-twin``
+makes the same check against ``it_energy * dt``).
+
+Usage::
+
+    uv run python lab/scripts/ensemble_setup.py harvest \
+        --run-dir prod/ --t-min 200 --spacing 5 --n 300 \
+        --out manifest.json
+
+    uv run python lab/scripts/ensemble_setup.py build \
+        --manifest manifest.json --tree members/ --mode 3,0 \
+        --tg-npz U_mean_tg.npz --which input --amplitude-energy 1e-6 \
+        --horizon 30 --probe-modes "3,0" --it-probes 10 [--dry-run]
+
+    uv run python lab/scripts/ensemble_setup.py build-twin \
+        --manifest manifest.json --tree twins/ --e0 1e-5 \
+        --horizon 5000 --it-budget 100 --it-spectra 100 \
+        --it-stats 100 [--dry-run]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+from dnsjax.harmonics import parse_mode_pairs
+from dnsjax.seeding import (
+    SOURCE_DRAWN,
+    NoEntropySource,
+    draw_seed,
+    seed_note,
+)
+from dnsjax.snapshot_meta import (
+    checkpoint_refusal,
+    git_hash,
+    is_snapshot_file,
+    read_snapshot_meta,
+)
+
+#: The repository root (this script lives in ``lab/scripts``).
+_REPO = Path(__file__).resolve().parents[2]
+
+_PERTURB = _REPO / "scripts" / "snapshot_perturb.py"
+
+
+# ── harvest ──────────────────────────────────────────────────────
+
+
+def harvest(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir)
+    candidates = []
+    for path in sorted(run_dir.glob("*.tar")):
+        if path.stem.endswith("_twin"):
+            # A ``dnsjax-twin`` partner (the suffix that driver's
+            # ``_partner_path`` owns): a valid snapshot, at the same
+            # ``t`` as its reference, but a perturbed copy of it --
+            # harvesting both would seed the ensemble with a
+            # statistically dependent pair.
+            continue
+        if not is_snapshot_file(path):
+            continue
+        meta = read_snapshot_meta(path)
+        if checkpoint_refusal(meta, path) is not None:
+            # A dnsjax tar that cannot seed a run: a reduced-resolution
+            # output or a twin cube, should the run directory hold one.
+            print(f"[harvest] skipping {path.name}: not a checkpoint")
+            continue
+        candidates.append(
+            {
+                "path": str(path.resolve()),
+                "t": float(meta["t"]),
+                "it": int(meta["it"]),
+                "isnap": int(meta.get("isnap", -1)),
+            }
+        )
+    candidates.sort(key=lambda c: c["t"])
+
+    picked: list[dict] = []
+    for cand in candidates:
+        if cand["t"] < args.t_min:
+            continue
+        if picked and cand["t"] - picked[-1]["t"] < args.spacing:
+            continue
+        picked.append(cand)
+        if len(picked) == args.n:
+            break
+    if not picked:
+        raise SystemExit(
+            f"no snapshots with t >= {args.t_min} in {run_dir} "
+            f"({len(candidates)} snapshots scanned)"
+        )
+    if len(picked) < args.n:
+        print(
+            f"[harvest] only {len(picked)} of the requested "
+            f"{args.n} snapshots satisfy the spacing; extend the run "
+            "or reduce --spacing."
+        )
+
+    manifest = {
+        "run_dir": str(run_dir.resolve()),
+        "t_min": args.t_min,
+        "spacing": args.spacing,
+        "created": datetime.now(UTC).isoformat(),
+        "git_hash": git_hash(),
+        "snapshots": picked,
+    }
+    with open(args.out, "w") as f:
+        json.dump(manifest, f, indent=2)
+    print(
+        f"[harvest] {len(picked)} snapshots "
+        f"(t = {picked[0]['t']:g} .. {picked[-1]['t']:g}) -> {args.out}"
+    )
+    return 0
+
+
+# ── build ────────────────────────────────────────────────────────
+
+
+def _source_args(args: argparse.Namespace) -> tuple[list[str], dict]:
+    """The snapshot_perturb source arguments + the members.json record."""
+    if args.tg_npz is not None:
+        return (
+            [
+                "--perturb.tg_npz",
+                str(Path(args.tg_npz).resolve()),
+                "--perturb.which",
+                args.which,
+            ],
+            {
+                "kind": "tg-npz",
+                "path": str(Path(args.tg_npz).resolve()),
+                "which": args.which,
+            },
+        )
+    if args.modes_npz is not None:
+        return (
+            [
+                "--perturb.modes_npz",
+                str(Path(args.modes_npz).resolve()),
+                "--perturb.index",
+                str(args.index),
+            ],
+            {
+                "kind": "modes-npz",
+                "path": str(Path(args.modes_npz).resolve()),
+                "index": args.index,
+            },
+        )
+    return (
+        ["--perturb.npy", str(Path(args.npy).resolve())],
+        {"kind": "npy", "path": str(Path(args.npy).resolve())},
+    )
+
+
+def _member_plan(
+    args: argparse.Namespace, snapshots: list[dict]
+) -> list[dict]:
+    """One record per member: directory, sign, parent."""
+    signs = {
+        "antithetic": (("p", +1), ("m", -1)),
+        "baseline": (("p", +1), ("b", 0)),
+        "none": (("p", +1),),
+    }[args.pairing]
+    members = []
+    for k, snap in enumerate(snapshots):
+        for tag, sign in signs:
+            members.append(
+                {
+                    "dir": f"m{k:04d}_{tag}",
+                    "sign": sign,
+                    "parent": snap["path"],
+                    "parent_t": snap["t"],
+                }
+            )
+    return members
+
+
+def _member_toml(
+    seed_path: str, horizon: float, probe_modes: str, it_probes: int
+) -> str:
+    # ``stop.max_sim_time`` is the horizon *relative* to the member's
+    # seed snapshot, so every member carries the same value however
+    # far apart their parents were harvested.
+    return (
+        "# generated by lab/scripts/ensemble_setup.py build\n"
+        "[init]\n"
+        f'snapshot = "{seed_path}"\n'
+        "\n"
+        "[stop]\n"
+        f"max_sim_time = {horizon!r}\n"
+        "check_laminarization = false\n"
+        "\n"
+        "[outs]\n"
+        "snapshot_save_initial = false\n"
+        "snapshot_save_final = false\n"
+        "\n"
+        "[probes]\n"
+        f'modes = "{probe_modes}"\n'
+        f"it_probes = {it_probes}\n"
+    )
+
+
+def build(args: argparse.Namespace) -> int:
+    with open(args.manifest) as f:
+        manifest = json.load(f)
+    snapshots = manifest["snapshots"]
+
+    pairs = parse_mode_pairs(args.mode)
+    if len(pairs) != 1:
+        raise SystemExit("--mode takes exactly one 'i2,i3' pair")
+    i2, i3 = pairs[0]
+
+    probe_pairs = parse_mode_pairs(args.probe_modes)
+    if (i2, i3) not in probe_pairs:
+        print(
+            f"[build] note: adding the injected mode ({i2},{i3}) to "
+            "the probe list (its response must be recorded)."
+        )
+        probe_pairs.append((i2, i3))
+    probe_modes = ";".join(f"{a},{b}" for a, b in probe_pairs)
+    if args.it_probes < 1:
+        # 0 is the probe stream switched off, and a response member
+        # without one records nothing to aggregate.
+        raise SystemExit("--it-probes must be >= 1")
+
+    # Final-sample alignment check against the parents' step.dt.
+    meta0 = read_snapshot_meta(Path(snapshots[0]["path"]))
+    dt = float(meta0["params"]["step"]["dt"])
+    interval = dt * args.it_probes
+    n_intervals = args.horizon / interval
+    if abs(n_intervals - round(n_intervals)) > 1e-9:
+        print(
+            f"[build] note: --horizon {args.horizon:g} is not a whole "
+            f"number of probe intervals (it_probes * dt = "
+            f"{interval:g}); the members' final samples will not be "
+            "cadence-aligned."
+        )
+
+    dnsjax_bin = args.dnsjax_bin
+    if dnsjax_bin is None:
+        sibling = Path(sys.executable).with_name("dnsjax")
+        dnsjax_bin = str(sibling) if sibling.exists() else "dnsjax"
+
+    tree = Path(args.tree)
+    src_args, src_record = _source_args(args)
+    members = _member_plan(args, snapshots)
+
+    seed_cmds: list[tuple[dict, list[str]]] = []
+    run_lines: list[str] = []
+    for mem in members:
+        mdir = tree / mem["dir"]
+        if mem["sign"] == 0:
+            seed = mem["parent"]  # baseline: resume the parent as-is
+        else:
+            seed = str((mdir / "seed.tar").resolve())
+            cmd = [
+                sys.executable,
+                str(_PERTURB),
+                "--init.snapshot",
+                mem["parent"],
+                "--perturb.out",
+                seed,
+                "--perturb.mode",
+                f"{i2},{i3}",
+                *src_args,
+                "--perturb.amplitude_energy",
+                str(args.amplitude_energy),
+            ]
+            if mem["sign"] < 0:
+                cmd += ["--perturb.negate", "True"]
+            seed_cmds.append((mem, cmd))
+        mem["seed"] = seed
+        # Record only (the members.json index): the member's TOML
+        # carries the *relative* horizon, not this absolute time.
+        mem["t_end"] = mem["parent_t"] + args.horizon
+        # ``--dist.np0`` as well as ``mpirun -np``: the mesh size is a
+        # *parameter*, and a run whose visible device count does not
+        # equal ``np0 * np1`` exits 1 at startup (``sharding.py``).
+        # Emitting only ``-np N`` therefore produced a launch line that
+        # could never run for any N > 1.  np0 is the wall-normal / k_z
+        # axis, the 1-D split the solver's own launch recipes use: its
+        # exchange moves 2/3 of the bytes np1's does, and snapshot
+        # granularity no longer distinguishes the two.  A member whose
+        # ``ny`` / ``nr`` does not divide N is auto-padded, not
+        # rejected, and says so at startup.
+        dist = f" --dist.np0 {args.np}" if args.np > 1 else ""
+        run_lines.append(
+            f"cd {mdir.resolve()} && mpirun -np {args.np} {dnsjax_bin}{dist}"
+        )
+
+    if args.dry_run:
+        print(f"[build] DRY RUN: {len(members)} members under {tree}/")
+        for mem in members:
+            print(f"  {mem['dir']}: seed {mem['seed']}")
+        for _, cmd in seed_cmds:
+            print("  seed-cmd:", " ".join(cmd))
+        for line in run_lines:
+            print("  run-cmd:", line)
+        return 0
+
+    tree.mkdir(parents=True, exist_ok=True)
+    for mem, cmd in seed_cmds:
+        (tree / mem["dir"]).mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise SystemExit(
+                f"seed generation failed for {mem['dir']}:\n"
+                + result.stdout[-2000:]
+                + result.stderr[-2000:]
+            )
+    for mem in members:
+        mdir = tree / mem["dir"]
+        mdir.mkdir(parents=True, exist_ok=True)
+        (mdir / "parameters.toml").write_text(
+            _member_toml(
+                mem["seed"], args.horizon, probe_modes, args.it_probes
+            )
+        )
+
+    (tree / "run_commands.txt").write_text("\n".join(run_lines) + "\n")
+    with open(tree / "members.json", "w") as f:
+        json.dump(
+            {
+                "manifest": str(Path(args.manifest).resolve()),
+                "mode": [i2, i3],
+                "amplitude_energy": args.amplitude_energy,
+                "pairing": args.pairing,
+                "horizon": args.horizon,
+                "probe_modes": probe_modes,
+                "it_probes": args.it_probes,
+                "source": src_record,
+                "created": datetime.now(UTC).isoformat(),
+                "git_hash": git_hash(),
+                "members": members,
+            },
+            f,
+            indent=2,
+        )
+    print(
+        f"[build] {len(members)} members under {tree}/ "
+        f"({len(seed_cmds)} seeds written); launch with the lines in "
+        f"{tree / 'run_commands.txt'}, then aggregate with "
+        "python -m dnsjax_lab.analysis.response.ensemble."
+    )
+    return 0
+
+
+# ── build-twin ───────────────────────────────────────────────────
+
+
+#: The ``[twin]`` fields that shape a member's perturbation, pinned in
+#: every member TOML (:func:`_twin_shape`).
+_TWIN_SHAPE_KEYS: tuple[str, ...] = (
+    "smoothness",
+    "wall_smoothness",
+    "wall_confinement",
+    "mean_flow",
+)
+
+
+def _twin_shape(args: argparse.Namespace) -> dict:
+    """The members' perturbation shape: each flag, else the default.
+
+    Resolved through the driver's own
+    :class:`~dnsjax_lab.twin.driver.TwinParams`, so an unset knob takes
+    exactly the default ``dnsjax-twin`` would, and a set one is
+    range-checked by the model that will read it -- here, rather than
+    at every member's launch.  Written into each member either way (the
+    module docstring says why).
+    """
+    from dnsjax_lab.twin.driver import TwinParams
+    from pydantic import ValidationError
+
+    given = {
+        key: getattr(args, key)
+        for key in _TWIN_SHAPE_KEYS
+        if getattr(args, key) is not None
+    }
+    try:
+        values = TwinParams(e0=args.e0, **given)
+    except ValidationError as exc:
+        raise SystemExit(f"ensemble_setup: error: {exc}") from None
+    return {key: getattr(values, key) for key in _TWIN_SHAPE_KEYS}
+
+
+#: ``[twin]`` cadences and counts written into a member's TOML exactly
+#: as given (``--it-spectra3d`` -> ``it_spectra3d``), when given.
+_TWIN_PASSTHROUGH: tuple[str, ...] = (
+    "it_spectra_ref",
+    "it_yspectra_ref",
+    "it_spectra3d",
+    "it_spectra3d_ref",
+    "it_budget3d",
+    "n_y3d",
+    "n_kz3d",
+    "n_kx3d",
+    "it_lowres_delta",
+)
+
+
+def _twin_member_toml(mem: dict, args: argparse.Namespace, shape: dict) -> str:
+    lines = [
+        "# generated by lab/scripts/ensemble_setup.py build-twin",
+        "[init]",
+        f'snapshot = "{mem["parent"]}"',
+        "",
+        "[stop]",
+        # Relative to the member's parent snapshot (see _member_toml).
+        f"max_sim_time = {args.horizon!r}",
+        # Uniform horizons: aggregation needs one shared time grid
+        # (see the module docstring).
+        "check_laminarization = false",
+        "",
+    ]
+    # ``dnsjax-twin`` writes stats/steps/corrector for *both* states
+    # (``stats.dat`` + ``stats_twin.dat``, ...), each gated on its own
+    # ``[outs]`` cadence; unset, the member records none of them.
+    outs = [
+        (name, getattr(args, name))
+        for name in ("it_snapshot", "it_stats", "it_steps", "it_corrector")
+    ]
+    if any(v is not None for _, v in outs):
+        lines.append("[outs]")
+        lines += [f"{k} = {v}" for k, v in outs if v is not None]
+        # ``validate_parameters`` requires it_error_check <=
+        # it_corrector; the default (10) is too coarse for a fine
+        # corrector cadence.  ``0`` is the stream switched off, which
+        # constrains nothing.
+        if args.it_corrector and args.it_corrector < 10:
+            lines.append(f"it_error_check = {args.it_corrector}")
+        lines.append("")
+    lines += [
+        "[twin]",
+        f"e0 = {args.e0!r}",
+        f"seed = {mem['seed']}",
+        f"smoothness = {shape['smoothness']!r}",
+        f"wall_smoothness = {shape['wall_smoothness']!r}",
+        f"wall_confinement = {shape['wall_confinement']!r}",
+        f"mean_flow = {'true' if shape['mean_flow'] else 'false'}",
+        f"it_energy = {args.it_energy}",
+    ]
+    # ``twin.bins`` is off by default; ``it_budget`` needs it (the
+    # closure check reads twin.dat's three-bin energies) -- a positive
+    # one, ``0`` being the budget switched off.
+    if args.bins or args.it_budget:
+        lines.append("bins = true")
+    if args.it_budget is not None:
+        lines.append(f"it_budget = {args.it_budget}")
+    if args.it_spectra is not None:
+        lines.append(f"it_spectra = {args.it_spectra}")
+    if args.it_yspectra is not None:
+        lines.append(f"it_yspectra = {args.it_yspectra}")
+    if args.it_ybudget is not None:
+        lines.append(f"it_ybudget = {args.it_ybudget}")
+    for key in _TWIN_PASSTHROUGH:
+        value = getattr(args, key)
+        if value is not None:
+            lines.append(f"{key} = {value}")
+    # ``[lowres]`` rides the shared surface and is inherited from the
+    # parent snapshot unless set, so it is written only when asked for.
+    lowres = [
+        (key, getattr(args, f"lowres_{key}"))
+        for key in ("it_lowres", "nx", "ny", "nz")
+        if getattr(args, f"lowres_{key}") is not None
+    ]
+    if args.lowres_pressure is not None:
+        lowres.append(
+            ("pressure", "true" if args.lowres_pressure else "false")
+        )
+    if lowres:
+        lines += ["", "[lowres]"] + [f"{k} = {v}" for k, v in lowres]
+    return "\n".join(lines) + "\n"
+
+
+def build_twin(args: argparse.Namespace) -> int:
+    with open(args.manifest) as f:
+        manifest = json.load(f)
+    snapshots = manifest["snapshots"]
+
+    # Sample-grid alignment note (the ``build`` check, against the
+    # energy cadence).
+    meta0 = read_snapshot_meta(Path(snapshots[0]["path"]))
+    dt = float(meta0["params"]["step"]["dt"])
+    interval = dt * args.it_energy
+    n_intervals = args.horizon / interval
+    if abs(n_intervals - round(n_intervals)) > 1e-9:
+        print(
+            f"[build-twin] note: --horizon {args.horizon:g} is not a "
+            f"whole number of energy intervals (it_energy * dt = "
+            f"{interval:g}); the members' final twin.dat rows will "
+            "not be cadence-aligned."
+        )
+
+    twin_bin = args.twin_bin
+    if twin_bin is None:
+        sibling = Path(sys.executable).with_name("dnsjax-twin")
+        twin_bin = str(sibling) if sibling.exists() else "dnsjax-twin"
+
+    shape = _twin_shape(args)
+    print(
+        "[build-twin] perturbation shape, pinned in every member: "
+        + ", ".join(f"{key} = {value}" for key, value in shape.items())
+    )
+
+    tree = Path(args.tree)
+    # Unset base: draw one, so two ensembles built from the same parent
+    # snapshots do not both run seeds 1..N.  Single process and JAX-free
+    # here, so no cross-rank agreement is needed -- and each member's
+    # concrete seed is pinned in its parameters.toml below either way,
+    # which is what keeps the tree reproducible and resumable.
+    seed_base = args.seed_base
+    if seed_base is None:
+        try:
+            seed_base = draw_seed()
+        except NoEntropySource as exc:
+            # Not ``missing_entropy_message``: its "or set it in
+            # parameters.toml" advice is wrong here, since the member
+            # TOMLs are what this command writes.
+            raise SystemExit(
+                "ensemble_setup: error: --seed-base is unset and no "
+                f"system entropy source is available ({exc}).  Pass "
+                "--seed-base <int> to choose the members' seeds."
+            ) from None
+        print(
+            f"[build-twin] {seed_note('seed-base', seed_base, SOURCE_DRAWN)}"
+        )
+
+    members: list[dict] = []
+    run_lines: list[str] = []
+    k = 0
+    for snap in snapshots:
+        for _ in range(args.members_per_snapshot):
+            mem = {
+                "dir": f"m{k:04d}",
+                "seed": seed_base + k,
+                "parent": snap["path"],
+                "parent_t": snap["t"],
+                # Record only; see the sibling in :func:`build`.
+                "t_end": snap["t"] + args.horizon,
+            }
+            members.append(mem)
+            # ``--dist.np0``: see the sibling in :func:`build`.
+            dist = f" --dist.np0 {args.np}" if args.np > 1 else ""
+            run_lines.append(
+                f"cd {(tree / mem['dir']).resolve()} && "
+                f"mpirun -np {args.np} {twin_bin}{dist}"
+            )
+            k += 1
+
+    if args.dry_run:
+        print(f"[build-twin] DRY RUN: {len(members)} members under {tree}/")
+        for mem in members:
+            print(
+                f"  {mem['dir']}: seed {mem['seed']} parent "
+                f"{mem['parent']} (t = {mem['parent_t']:g})"
+            )
+        for line in run_lines:
+            print("  run-cmd:", line)
+        return 0
+
+    tree.mkdir(parents=True, exist_ok=True)
+    for mem in members:
+        mdir = tree / mem["dir"]
+        mdir.mkdir(parents=True, exist_ok=True)
+        (mdir / "parameters.toml").write_text(
+            _twin_member_toml(mem, args, shape)
+        )
+
+    (tree / "run_commands.txt").write_text("\n".join(run_lines) + "\n")
+    with open(tree / "members.json", "w") as f:
+        json.dump(
+            {
+                "kind": "twin",
+                "manifest": str(Path(args.manifest).resolve()),
+                "e0": args.e0,
+                **shape,
+                "horizon": args.horizon,
+                "it_energy": args.it_energy,
+                "it_stats": args.it_stats,
+                "it_steps": args.it_steps,
+                "it_corrector": args.it_corrector,
+                "bins": bool(args.bins or args.it_budget is not None),
+                "it_budget": args.it_budget,
+                "it_spectra": args.it_spectra,
+                "it_yspectra": args.it_yspectra,
+                "it_ybudget": args.it_ybudget,
+                **{key: getattr(args, key) for key in _TWIN_PASSTHROUGH},
+                "lowres": {
+                    key: getattr(args, f"lowres_{key}")
+                    for key in ("it_lowres", "nx", "ny", "nz", "pressure")
+                },
+                "created": datetime.now(UTC).isoformat(),
+                "git_hash": git_hash(),
+                "members": members,
+            },
+            f,
+            indent=2,
+        )
+    print(
+        f"[build-twin] {len(members)} members under {tree}/; launch "
+        f"with the lines in {tree / 'run_commands.txt'}, then "
+        "aggregate with python -m dnsjax_lab.analysis.twin.ensemble."
+    )
+    return 0
+
+
+# ── CLI ──────────────────────────────────────────────────────────
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(
+        prog="python lab/scripts/ensemble_setup.py",
+        description="Harvest snapshots / build ensemble member trees "
+        "(see the module docstring).",
+        allow_abbrev=False,
+    )
+    sub = p.add_subparsers(dest="command", required=True)
+
+    ph = sub.add_parser("harvest", help="select independent snapshots")
+    ph.add_argument("--run-dir", required=True)
+    ph.add_argument(
+        "--t-min",
+        type=float,
+        default=0.0,
+        help="discard the initial transient before this time",
+    )
+    ph.add_argument(
+        "--spacing",
+        type=float,
+        required=True,
+        help="minimum time separation between selected snapshots",
+    )
+    ph.add_argument(
+        "--n",
+        type=int,
+        required=True,
+        help="ensemble size target (mean noise decays as 1/sqrt(n))",
+    )
+    ph.add_argument("--out", required=True, help="manifest JSON path")
+    ph.set_defaults(func=harvest)
+
+    pb = sub.add_parser("build", help="materialize the member tree")
+    pb.add_argument("--manifest", required=True)
+    pb.add_argument("--tree", required=True, help="member tree root")
+    pb.add_argument("--mode", required=True, help='"i2,i3" injected mode')
+    src = pb.add_mutually_exclusive_group(required=True)
+    src.add_argument("--tg-npz", default=None)
+    src.add_argument("--modes-npz", default=None)
+    src.add_argument("--npy", default=None)
+    pb.add_argument("--which", default="input", choices=("input", "response"))
+    pb.add_argument("--index", type=int, default=0)
+    pb.add_argument(
+        "--amplitude-energy",
+        type=float,
+        required=True,
+        help="injected E' per member (linearity guidance: the "
+        "snapshot_perturb.py docstring)",
+    )
+    pb.add_argument(
+        "--pairing",
+        default="antithetic",
+        choices=("antithetic", "baseline", "none"),
+    )
+    pb.add_argument(
+        "--horizon",
+        type=float,
+        required=True,
+        help="member run length past the parent snapshot time "
+        "(cover the response of interest; see the docstring)",
+    )
+    pb.add_argument("--probe-modes", required=True)
+    pb.add_argument("--it-probes", type=int, required=True)
+    pb.add_argument(
+        "--np",
+        type=int,
+        default=1,
+        help="devices per member run (emitted as mpirun -np N plus "
+        "--dist.np0 N, the wall-normal split, for N > 1)",
+    )
+    pb.add_argument(
+        "--dnsjax-bin",
+        default=None,
+        help="solver binary in run_commands.txt (default: the "
+        "installed console script next to this interpreter)",
+    )
+    pb.add_argument("--dry-run", action="store_true")
+    pb.set_defaults(func=build)
+
+    pt = sub.add_parser(
+        "build-twin", help="materialize a twin-run member tree"
+    )
+    pt.add_argument("--manifest", required=True)
+    pt.add_argument("--tree", required=True, help="member tree root")
+    pt.add_argument(
+        "--e0",
+        type=float,
+        required=True,
+        help="initial perturbation energy per member (twin.e0)",
+    )
+    pt.add_argument(
+        "--seed-base",
+        type=int,
+        default=None,
+        help=(
+            "member k gets twin.seed = seed-base + k "
+            "(default: drawn from the system entropy pool, so two "
+            "ensembles off the same parents are independent)"
+        ),
+    )
+    pt.add_argument(
+        "--members-per-snapshot",
+        type=int,
+        default=1,
+        help="independent seeds fanned out of each parent snapshot",
+    )
+    pt.add_argument(
+        "--horizon",
+        type=float,
+        required=True,
+        help="member run length past the parent snapshot time",
+    )
+    # The perturbation shape.  Unset means the driver's default, which
+    # is resolved here and written into every member all the same
+    # (:func:`_twin_shape`).
+    pt.add_argument(
+        "--smoothness",
+        type=float,
+        default=None,
+        help="periodic spectral envelope of the perturbation "
+        "(twin.smoothness; default: the driver's, pinned per member)",
+    )
+    pt.add_argument(
+        "--wall-smoothness",
+        type=float,
+        default=None,
+        help="its wall-normal envelope (twin.wall_smoothness; default: "
+        "the driver's, pinned per member)",
+    )
+    pt.add_argument(
+        "--wall-confinement",
+        type=float,
+        default=None,
+        help="scale-dependent narrowing of its wall window "
+        "(twin.wall_confinement; default: the driver's, pinned per "
+        "member)",
+    )
+    pt.add_argument(
+        "--mean-flow",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="perturb the (0, 0) mode as well (twin.mean_flow; default: "
+        "the driver's, pinned per member)",
+    )
+    pt.add_argument("--it-energy", type=int, default=1)
+    pt.add_argument(
+        "--bins",
+        action="store_true",
+        help="also record the Delta-U / Delta-u1 / Delta-u2 three-bin "
+        "energies in twin.dat (twin.bins; implied by --it-budget)",
+    )
+    pt.add_argument("--it-budget", type=int, default=None)
+    pt.add_argument("--it-spectra", type=int, default=None)
+    pt.add_argument(
+        "--it-yspectra",
+        type=int,
+        default=None,
+        help="wall-normal-resolved (y, k) energy-spectra cadence",
+    )
+    pt.add_argument(
+        "--it-ybudget",
+        type=int,
+        default=None,
+        help="wall-normal-resolved (y, k) budget cadence",
+    )
+    for key, help_text in (
+        ("it_spectra_ref", "reference (kz, kx) spectra cadence"),
+        ("it_yspectra_ref", "reference (y, k) spectra cadence"),
+        ("it_spectra3d", "3-D (y, kz, kx) energy-cube cadence"),
+        ("it_spectra3d_ref", "reference energy-cube cadence"),
+        ("it_budget3d", "3-D budget-cube cadence"),
+        ("n_y3d", "log-spaced wall distances the 3-D cubes keep"),
+        ("n_kz3d", "log-spaced |kz| harmonics the 3-D cubes keep"),
+        ("n_kx3d", "log-spaced kx harmonics the 3-D cubes keep"),
+        ("it_lowres_delta", "difference reduced-snapshot cadence"),
+    ):
+        pt.add_argument(
+            "--" + key.replace("_", "-"),
+            type=int,
+            default=None,
+            help=f"{help_text} (twin.{key})",
+        )
+    pt.add_argument(
+        "--lowres-it",
+        dest="lowres_it_lowres",
+        type=int,
+        default=None,
+        help="reference-state reduced-snapshot cadence (lowres.it_lowres); "
+        "0 drops a [lowres] the members would inherit from their parent",
+    )
+    for key in ("nx", "ny", "nz"):
+        pt.add_argument(
+            f"--lowres-{key}",
+            type=int,
+            default=None,
+            help=f"reduced-snapshot resolution (lowres.{key})",
+        )
+    pt.add_argument(
+        "--lowres-pressure",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="the static pressure in the reduced snapshots "
+        "(lowres.pressure; default: the driver's)",
+    )
+    pt.add_argument(
+        "--it-snapshot",
+        type=int,
+        default=None,
+        help="paired-restart snapshot cadence (outs.it_snapshot)",
+    )
+    pt.add_argument(
+        "--it-stats",
+        type=int,
+        default=None,
+        help="per-state statistics cadence (outs.it_stats): "
+        "stats.dat for the reference, stats_twin.dat for the partner",
+    )
+    pt.add_argument(
+        "--it-steps",
+        type=int,
+        default=None,
+        help="per-state CFL cadence (outs.it_steps): steps.dat + "
+        "steps_twin.dat",
+    )
+    pt.add_argument(
+        "--it-corrector",
+        type=int,
+        default=None,
+        help="per-state corrector cadence (outs.it_corrector): "
+        "corrector.dat + corrector_twin.dat",
+    )
+    pt.add_argument(
+        "--np",
+        type=int,
+        default=1,
+        help="devices per member run (mpirun -np N plus --dist.np0 N "
+        "for N > 1)",
+    )
+    pt.add_argument(
+        "--twin-bin",
+        default=None,
+        help="driver binary in run_commands.txt (default: the "
+        "installed dnsjax-twin console script next to this "
+        "interpreter)",
+    )
+    pt.add_argument("--dry-run", action="store_true")
+    pt.set_defaults(func=build_twin)
+
+    args = p.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

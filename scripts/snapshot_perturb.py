@@ -14,7 +14,7 @@ trajectory-defining parameters match the ones the parent recorded.
 defaulted on resumes as a **new** trajectory unless that run passes
 ``--res.consistent_imm False`` (or ``--init.force_resume``).  The
 primary use is seeding perturbed ensemble members from harvested
-turbulent snapshots (``scripts/ensemble_setup.py``).
+turbulent snapshots (``lab/scripts/ensemble_setup.py``).
 
 Runs single-device (``np0 = np1 = 1``) on the snapshot's own
 parameters and stored precision, so every untouched mode round-trips
