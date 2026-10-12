@@ -87,15 +87,12 @@ from pathlib import Path
 import jax
 import numpy as np
 from dnsjax_lab.extensions import probes_params
+from dnsjax_lab.flows import VISCOELASTIC_SYSTEMS
 from jax import Array, lax, shard_map
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
-from ..flows.registry import (
-    cartesian_systems,
-    spec_for,
-    viscoelastic_systems,
-)
+from ..flows.registry import cartesian_systems, spec_for
 from ..harmonics import complex_harmonics, parse_mode_pairs, real_harmonics
 from ..param_surface import recorded_params_dump
 from ..parameters import derived_params, params
@@ -148,20 +145,10 @@ def _component_labels(n_components: int) -> list[str]:
     """
     if params.phys.system in cartesian_systems:
         labels = ["u_x", "u_y", "u_z"]
-    elif params.phys.system in viscoelastic_systems:
+    elif params.phys.system in VISCOELASTIC_SYSTEMS:
         # Velocity + the 6 stored physical conformation-tensor
         # components (the stored/physical layout).
-        labels = [
-            "u_z",
-            "u_r",
-            "u_theta",
-            "c_zz",
-            "c_rz",
-            "c_theta_z",
-            "c_rr",
-            "c_theta_theta",
-            "c_r_theta",
-        ]
+        labels = list(spec_for(params.phys.system).components)
     else:  # cylindrical / annular velocity basis
         labels = ["u_z", "u_r", "u_theta"]
     if len(labels) != n_components:
@@ -200,7 +187,7 @@ def build_mode_extractor(
     pairs = tuple((int(i2), int(i3)) for i2, i3 in mode_pairs)
     if params.phys.system in cartesian_systems:
         to_physical = None
-    elif params.phys.system in viscoelastic_systems:
+    elif params.phys.system in VISCOELASTIC_SYSTEMS:
         # The 9-component spin map, from the geometry-free module both
         # viscoelastic geometries share -- importing either geometry
         # here would build the wrong family's singletons.

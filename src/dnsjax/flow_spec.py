@@ -106,10 +106,7 @@ class FlowSpec:
     (``"triply-periodic"``, ``"cartesian"``, ``"cylindrical"`` or
     ``"annular"``): the registry's geometry lists
     (:data:`~dnsjax.flows.registry.cylindrical_systems`, ...) are built
-    from it, and it groups the ``--help`` flow list.  ``family`` is a
-    finer key within a geometry (``"cylindrical-viscoelastic"``,
-    ``"annular-viscoelastic"`` for the viscoelastic flows, the
-    geometry's name otherwise), read by the registry's rheology lists.
+    from it, and it groups the ``--help`` flow list.
 
     Hooks (all optional):
 
@@ -220,7 +217,6 @@ class FlowSpec:
     """
 
     system: str
-    family: str
     geometry: str
     summary: str
     fields: tuple[FieldSpec, ...]

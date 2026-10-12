@@ -31,7 +31,6 @@ def _control_summary(params) -> str:
 
 SPEC = FlowSpec(
     system="taylor-couette",
-    family="annular",
     geometry="annular",
     summary="rotating-cylinder annular flow",
     flow_module="dnsjax.flows.wall_bounded.taylor_couette",

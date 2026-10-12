@@ -86,7 +86,6 @@ def _control_summary(params) -> str:
 
 SPEC = FlowSpec(
     system="quasi-keplerian",
-    family="annular",
     geometry="annular",
     summary="co-rotating Rayleigh-stable annular flow",
     flow_module="dnsjax.flows.wall_bounded.quasi_keplerian",

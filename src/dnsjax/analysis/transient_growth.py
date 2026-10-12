@@ -889,18 +889,18 @@ def _dispatch(system: str) -> tuple[Any, Any, str]:
     """Import the flow / geometry modules for *system*.
 
     Both come from the flow spec: the flow module is
-    ``FlowSpec.flow_module``, the geometry module is the family
-    (``cartesian``/``cylindrical``/``annular`` name their
-    ``geometries.wall_bounded`` module directly).
+    ``FlowSpec.flow_module``, the geometry module is
+    ``FlowSpec.geometry`` (``cartesian``/``cylindrical``/``annular``
+    name their ``geometries.wall_bounded`` module directly).
     """
     import importlib
 
     spec = spec_for(system)
     fmod = importlib.import_module(spec.flow_module)
     gmod = importlib.import_module(
-        f"dnsjax.geometries.wall_bounded.{spec.family.replace('-', '_')}"
+        f"dnsjax.geometries.wall_bounded.{spec.geometry}"
     )
-    return fmod, gmod, spec.family
+    return fmod, gmod, spec.geometry
 
 
 def _linear_step(gmod: Any, fmod: Any = None):

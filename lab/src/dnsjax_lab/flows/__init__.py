@@ -25,3 +25,9 @@ SPECS = (
     DEAN,
     VISCOELASTIC_DEAN,
 )
+
+#: The viscoelastic (sPTT) flows, one per geometry: their state holds
+#: the conformation tensor beside the velocity.
+VISCOELASTIC_SYSTEMS: frozenset[str] = frozenset(
+    {VISCOELASTIC_PIPE.system, VISCOELASTIC_DEAN.system}
+)

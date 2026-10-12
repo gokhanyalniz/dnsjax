@@ -45,7 +45,6 @@ def _validate(params, derived) -> None:
 
 SPEC = FlowSpec(
     system="pipe",
-    family="cylindrical",
     geometry="cylindrical",
     summary="pressure/bulk-driven circular pipe",
     flow_module="dnsjax.flows.wall_bounded.pipe",

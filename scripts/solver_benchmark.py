@@ -406,7 +406,6 @@ def run_child(a: argparse.Namespace) -> None:
 
     import jax.numpy as jnp
 
-    from dnsjax.flows.registry import viscoelastic_systems
     from dnsjax.ic.random_field import generate_random_state
     from dnsjax.sharding import sharding
 
@@ -420,7 +419,7 @@ def run_child(a: argparse.Namespace) -> None:
 
     # Operator classes + exact persistent factor bytes.
     groups = {"Lk": flow.Lk_op, "Hk": flow.Hk_op}
-    if a.system in viscoelastic_systems:
+    if hasattr(flow, "Hc_op"):  # a conformation-tensor flow
         groups["Hc"] = flow.Hc_op
     operators: dict[str, str | None] = {}
     factor_bytes: dict[str, int] = {}

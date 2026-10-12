@@ -106,7 +106,6 @@ def _rehydrate(sections: dict) -> None:
 
 SPEC = FlowSpec(
     system="viscoelastic-pipe",
-    family="cylindrical-viscoelastic",
     geometry="cylindrical",
     summary="viscoelastic (sPTT) pressure-driven circular pipe",
     flow_module="dnsjax.flows.wall_bounded.viscoelastic_pipe",

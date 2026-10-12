@@ -21,7 +21,6 @@ def _derive(params, derived, user_set) -> None:
 
 SPEC = FlowSpec(
     system="dean",
-    family="annular",
     geometry="annular",
     summary="force-driven curved-channel (annular) flow",
     flow_module="dnsjax.flows.wall_bounded.dean",
