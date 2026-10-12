@@ -264,6 +264,54 @@ BULK_TARGET: float = 0.5
 
 
 @register_dataclass_pytree
+def _straight_divergence(
+    state_rthz: Array,
+    fourier_: Fourier,
+    flow_: CylindricalFlow,
+) -> Array:
+    r"""Straight cylindrical divergence of the carried state.
+
+    .. math::
+        \nabla_0\cdot\mathbf{w} = \frac{1}{r}\partial_r(r w_r)
+        + \frac{im}{r} w_\theta + i k_s w_s
+
+    Zero for an incompressible straight pipe; on the curved pipe it is
+    the `$O(\kappa)$` field the metric leaves behind, and the only
+    place curvature reaches the reconstruction
+    (:meth:`~.cylindrical_curved.CurvedCylindricalFlow.divergence_defect`
+    computes the same quantity from the *constraint*, which is what the
+    reconstruction must be driven by).
+    """
+    psv = 1 - fourier_.m_is_even * 2  # (-1)^{m+1}: the u_r parity class
+    inv_r = flow_.inv_r[:, None, None]
+    d1_ur = _parity_y_matvec(flow_.D1_pos, flow_.D1_ghost, state_rthz[1], psv)
+    return (
+        d1_ur
+        + inv_r * state_rthz[1]
+        + 1j * fourier_.m * inv_r * state_rthz[2]
+        + 1j * fourier_.kz * state_rthz[0]
+    )
+
+
+def _grad_pm(
+    scalar: Array,
+    fourier_: Fourier,
+    flow_: CylindricalFlow,
+) -> Array:
+    r"""Transverse spin pair of a scalar gradient.
+
+    `$(\nabla_0 g)_\pm = \partial_r g \mp (m/r)\,g$`, stacked on
+    axis 1 like the quad's spin pairs.  The scalar carries the
+    `$(-1)^m$` parity class.
+    """
+    psp = fourier_.m_is_even * 2 - 1
+    d1_g = _parity_y_matvec(flow_.D1_pos, flow_.D1_ghost, scalar, psp)
+    m_over_r = fourier_.m * flow_.inv_r[:, None, None]
+    return jnp.stack(
+        [d1_g - m_over_r * scalar, d1_g + m_over_r * scalar], axis=1
+    )
+
+
 @dataclass
 class CurvedCylindricalFlow(CylindricalFlow):
     r"""Straight-pipe flow data plus the toroidal metric.
@@ -278,7 +326,6 @@ class CurvedCylindricalFlow(CylindricalFlow):
     not touch them.
     """
 
-    is_curved: ClassVar[bool] = True
     cfl_names: ClassVar[tuple[str, str, str]] = CFL_NAMES_S
     #: The streamwise direction is the centreline arclength.
     driving_key: ClassVar[str] = DRIVING_KEY_S
@@ -619,6 +666,39 @@ class CurvedCylindricalFlow(CylindricalFlow):
         if FORCE_S == 0.0:
             return out
         return out.at[0].add(FORCE_S)
+
+    def solenoidal_phi_pm(
+        self, phi_pm: Array, velocity: Array, fourier_: Fourier
+    ) -> Array:
+        r"""The evolved `$\Phi_\pm$`, solenoidal in the toroidal metric.
+
+        The evolved `$\Phi = -\nabla_0\times\nabla_0\times w$` is the
+        *solenoidal* Laplacian, which is what makes its evolution
+        equation pressure-free for any explicit RHS.  The straight vector
+        Laplacian *phi_pm* overshoots it by
+        `$\nabla_0(\nabla_0\cdot w)$` -- identically zero on the
+        straight pipe, `$O(\kappa)$` here -- which this subtracts.
+        """
+        return phi_pm - _grad_pm(
+            _straight_divergence(velocity, fourier_, self), fourier_, self
+        )
+
+    def solenoidal_phi_sum(
+        self, phi_sum: Array, state: Array, fourier_: Fourier, parity: Array
+    ) -> Array:
+        r"""The spin quad's sum half, solenoidal in the toroidal metric.
+
+        :meth:`solenoidal_phi_pm` for the quad's sum half, exactly
+        evaluable at `$t^n$` from the accepted *state*: the radial
+        component of `$\nabla_0(\nabla_0\cdot w)$` (the sum half of
+        :func:`_grad_pm`) is `$D_1$` of the divergence.
+        """
+        return phi_sum - _parity_y_matvec(
+            self.D1_pos,
+            self.D1_ghost,
+            _straight_divergence(state, fourier_, self),
+            parity,
+        )
 
     def divergence_defect(self, state: Array, fourier_: Fourier) -> Array:
         r"""The straight divergence `$\nabla_0\cdot w$` the metric leaves.

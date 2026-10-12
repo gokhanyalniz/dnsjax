@@ -603,32 +603,34 @@ def _resize_wrapped_axis(
 
 # ── Wall-normal regrid (resume, reduced snapshots) ────────
 
-#: Axis-parity class of each **stored physical** state component, as
+#: Axis-parity class of the stored velocity ``(u_z, u_r, u_theta)``,
 #: ``True`` for the `$(-1)^m$` (even) class and ``False`` for
-#: `$(-1)^{m+1}$` (odd): the order is
-#: ``(u_z, u_r, u_theta, c_zz, c_rz, c_theta_z, c_rr, c_theta_theta,
-#: c_r_theta)``, truncated to the first 3 for a velocity-only flow.  A
-#: scalar (the pressure of a reduced snapshot) is even, like ``u_z``.
-#: Read by the pipe's parity-aware regrid; the annular and Cartesian
-#: geometries have no axis and ignore it.
-PARITY_EVEN_STORED: tuple[bool, ...] = (
-    True,  # u_z
-    False,  # u_r
-    False,  # u_theta
-    True,  # c_zz
-    False,  # c_rz
-    False,  # c_theta_z
-    True,  # c_rr
-    True,  # c_theta_theta
-    True,  # c_r_theta
-)
+#: `$(-1)^{m+1}$` (odd).  A flow storing further components declares
+#: the classes of all of them (``FlowSpec.component_parity``,
+#: :func:`stored_component_parity`).  A scalar (the pressure of a
+#: reduced snapshot) is even, like ``u_z``.  Read by the pipe's
+#: parity-aware regrid; the annular and Cartesian geometries have no
+#: axis and ignore it.
+VELOCITY_PARITY_EVEN: tuple[bool, ...] = (True, False, False)
+
+
+def stored_component_parity() -> tuple[bool, ...]:
+    """The axis-parity class of each of this run's stored components.
+
+    The flow's ``FlowSpec.component_parity``, else the velocity's
+    (:data:`VELOCITY_PARITY_EVEN`).
+    """
+    from .flows.registry import spec_for
+
+    parity = spec_for(params.phys.system).component_parity
+    return parity if parity is not None else VELOCITY_PARITY_EVEN
 
 
 def wall_regrid_geometry() -> str:
     """This run's :func:`dnsjax.fd.build_interpolation_matrix` geometry.
 
-    Each geometry list includes its viscoelastic member, so the
-    9-component flows regrid with their own geometry's operators.
+    A flow storing more than the velocity regrids with its geometry's
+    operators too.
     """
     from .flows.registry import annular_systems, cylindrical_systems
 
@@ -692,7 +694,7 @@ def apply_wall_normal_regrid(
     device-local GEMM -- ``_base.apply_y_matrix``, a real GEMM on the
     split real and imaginary parts.  A parity pair *T* is applied per
     azimuthal mode by component class: *parity_even* holds one
-    :data:`PARITY_EVEN_STORED` entry per component of *state*,
+    :func:`stored_component_parity` entry per component of *state*,
     *m_even* is ``cylindrical.fourier.m_is_even`` -- the parity of the
     **physical** `$m = m_0 h$` over the padded axis, so the regrid has
     to run before any `$m$` truncation.  Both contractions run on every

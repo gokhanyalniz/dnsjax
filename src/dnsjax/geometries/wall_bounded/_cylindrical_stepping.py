@@ -412,8 +412,8 @@ def _get_rhs_core(
         lambda s: _curl_fn(s, fourier_, flow_),
         measure_fn,
         flow_.rhs_extra_spec_fn(fourier_),
-        flow_.to_physical if flow_.is_curved else None,
-        flow_.metric_rhs if flow_.is_curved else None,
+        flow_.to_physical,
+        flow_.metric_rhs,
     )
     if measure_fn is not None:
         nonlin_rthz, measurements = nonlin_rthz
@@ -510,54 +510,6 @@ def _parity_y_matvec(
     return jnp.concatenate([head, tail], axis=ax)
 
 
-def _straight_divergence(
-    state_rthz: Array,
-    fourier_: Fourier,
-    flow_: CylindricalFlow,
-) -> Array:
-    r"""Straight cylindrical divergence of the carried state.
-
-    .. math::
-        \nabla_0\cdot\mathbf{w} = \frac{1}{r}\partial_r(r w_r)
-        + \frac{im}{r} w_\theta + i k_s w_s
-
-    Zero for an incompressible straight pipe; on the curved pipe it is
-    the `$O(\kappa)$` field the metric leaves behind, and the only
-    place curvature reaches the reconstruction
-    (:meth:`~.cylindrical_curved.CurvedCylindricalFlow.divergence_defect`
-    computes the same quantity from the *constraint*, which is what the
-    reconstruction must be driven by).
-    """
-    psv = 1 - fourier_.m_is_even * 2  # (-1)^{m+1}: the u_r parity class
-    inv_r = flow_.inv_r[:, None, None]
-    d1_ur = _parity_y_matvec(flow_.D1_pos, flow_.D1_ghost, state_rthz[1], psv)
-    return (
-        d1_ur
-        + inv_r * state_rthz[1]
-        + 1j * fourier_.m * inv_r * state_rthz[2]
-        + 1j * fourier_.kz * state_rthz[0]
-    )
-
-
-def _grad_pm(
-    scalar: Array,
-    fourier_: Fourier,
-    flow_: CylindricalFlow,
-) -> Array:
-    r"""Transverse spin pair of a scalar gradient.
-
-    `$(\nabla_0 g)_\pm = \partial_r g \mp (m/r)\,g$`, stacked on
-    axis 1 like the quad's spin pairs.  The scalar carries the
-    `$(-1)^m$` parity class.
-    """
-    psp = fourier_.m_is_even * 2 - 1
-    d1_g = _parity_y_matvec(flow_.D1_pos, flow_.D1_ghost, scalar, psp)
-    m_over_r = fourier_.m * flow_.inv_r[:, None, None]
-    return jnp.stack(
-        [d1_g - m_over_r * scalar, d1_g + m_over_r * scalar], axis=1
-    )
-
-
 # ── The carried spin-quad differences ───────────────────────────
 
 
@@ -610,10 +562,7 @@ def kinematic_differences(
     meff2_pm = jnp.stack([(m + 1) ** 2, (m - 1) ** 2], axis=1)
     phi_pm = A_pair - (meff2_pm * inv_r2_y + fourier_.kz2[:, None]) * pair
     physical = from_pm_basis(velocity)
-    if flow_.is_curved:
-        phi_pm = phi_pm - _grad_pm(
-            _straight_divergence(physical, fourier_, flow_), fourier_, flow_
-        )
+    phi_pm = flow_.solenoidal_phi_pm(phi_pm, physical, fourier_)
     d1_uz = _parity_y_matvec(flow_.D1_pos, flow_.D1_ghost, physical[0], psp)
     d_om = 1j * (1j * fourier_.kz * physical[1] - d1_uz)
     d_phi = (phi_pm[:, 0] - phi_pm[:, 1]) / 2
@@ -946,21 +895,7 @@ def _imm_iteration_vw(
         - ((fourier_.m2 + 1.0) * inv_r2 + kz2) * ur_n
         - 2.0 * im * inv_r2 * ut_n
     )
-    if flow_.is_curved:
-        # The evolved `$\Phi = -\nabla_0\times\nabla_0\times w$` is
-        # the *solenoidal* Laplacian, which is what makes its evolution
-        # equation pressure-free for any explicit RHS.  The straight
-        # vector Laplacian above overshoots it by
-        # `$\nabla_0(\nabla_0\cdot w)$` -- identically zero on the
-        # straight pipe, `$O(\kappa)$` here, and exactly evaluable at
-        # `$t^n$` from the accepted state; its radial component (the
-        # sum half of :func:`_grad_pm`) is `$D_1$` of the divergence.
-        phi_sum = phi_sum - _parity_y_matvec(
-            flow_.D1_pos,
-            flow_.D1_ghost,
-            _straight_divergence(state_n, fourier_, flow_),
-            psp,
-        )
+    phi_sum = flow_.solenoidal_phi_sum(phi_sum, state_n, fourier_, psp)
     om_r_n = im * inv_r * state_n[0] - ikz * ut_n
     d_phi_n, d_om_n = carried_n[0], carried_n[1]
     phi_pm = jnp.stack([phi_sum + d_phi_n, phi_sum - d_phi_n], axis=1)
