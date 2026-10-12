@@ -36,6 +36,8 @@ from ...geometries.wall_bounded.annular import (
 from ...geometries.wall_bounded.annular import (
     frozen_profile_flow as _frozen_flow_copy,
 )
+from ...ic.localized_rolls import generate_annular_rolls
+from ...ic.random_field import generate_annular
 from ...parameters import derived_params, params
 from ...sharding import register_dataclass_pytree, sharding
 
@@ -280,3 +282,36 @@ def _get_driving_jit(
 ) -> dict[str, Array]:
     r"""Wall-shear inference of the applied mean-mode driving."""
     return mean_driving(state, flow_)
+
+
+# ── Initial conditions ───────────────────────────────────────────
+
+
+def init_random_state(
+    amplitude: float,
+    smoothness: float,
+    wall_smoothness: float,
+    wall_confinement: float | None,
+    seed: int,
+    mean_flow: bool = False,
+) -> Array:
+    """The random IC: :func:`dnsjax.ic.random_field.generate_annular`.
+
+    The ``init_random_state`` hook of the flow-module surface
+    (:class:`~dnsjax.flow_spec.FlowSpec`): the annular draw.
+    *mean_flow* is deferred for this flow, so always false.
+    """
+    return generate_annular(
+        amplitude, smoothness, wall_smoothness, wall_confinement, seed
+    )
+
+
+def init_localized_rolls(
+    amplitude: float, width: float, wavelength: float
+) -> Array:
+    """The localized rolls of the flow-module surface's IC hooks.
+
+    :func:`dnsjax.ic.localized_rolls.generate_annular_rolls`, the
+    ``init_localized_rolls`` hook.
+    """
+    return generate_annular_rolls(amplitude, width, wavelength)

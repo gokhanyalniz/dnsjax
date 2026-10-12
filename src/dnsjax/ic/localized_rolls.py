@@ -39,8 +39,10 @@ localized in both `$x$` and `$z$`.  The spanwise derivative `$\Psi'$` is built
 **spectrally** as `$\mathrm{i}k_z\,\hat\Psi$` so the discrete divergence is
 truncation-level (projected out by the first corrector step).  Pipe and annular
 use the analogous per-geometry streamfunction (see the per-generator
-docstrings), and the curved pipe the pipe's in its toroidal metric, which
-divides the pipe's pair by `$h$` (:func:`generate_curved_pipe_rolls`).
+docstrings).  Every flow chooses its own rolls through the
+``init_localized_rolls`` hook of its flow module, which
+:func:`generate_localized_rolls` calls: a core-geometry flow takes its
+geometry's generator here, and a total-field flow adds its laminar state.
 
 **Triply-periodic.** `$y$` is Fourier rather than a wall-normal grid, so
 the only wall-specific ingredient -- `$G$`, whose shape exists to satisfy
@@ -136,14 +138,7 @@ import numpy as np
 # builders must never fetch the ``fourier`` singleton's wavenumber
 # arrays, which are global multi-device arrays (not addressable per
 # process under ``mpirun``).
-from ..flows.registry import (
-    annular_systems,
-    annular_viscoelastic_systems,
-    cartesian_systems,
-    cylindrical_systems,
-    cylindrical_viscoelastic_systems,
-    periodic_systems,
-)
+from ..flows.registry import flow_hook
 from ..harmonics import complex_harmonics, real_harmonics
 from ..parameters import derived_params, params
 
@@ -279,7 +274,7 @@ def _complex_axis_spectrum(signal: np.ndarray) -> np.ndarray:
 # ── Peak normalization (replication-free, host-side) ─────────────
 
 
-def _peak_velocity(
+def peak_velocity(
     components: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
     weight: np.ndarray | None = None,
 ) -> float:
@@ -426,7 +421,7 @@ def generate_cartesian_rolls(
     u_x = jnp.zeros_like(u_y)
     state = jnp.stack([u_x, u_y, u_z]).astype(sharding.complex_type)
 
-    peak = _peak_velocity([(g, psi_dz, x_sig), (gp, psi_sig, x_sig)])
+    peak = peak_velocity([(g, psi_dz, x_sig), (gp, psi_sig, x_sig)])
     return state * (amplitude / peak)
 
 
@@ -464,17 +459,17 @@ def generate_cylindrical_rolls(
     `$\max|\mathbf{u}'| = A$`.  ``wavelength`` is ignored (the
     azimuthal structure is fixed by the domain).
     """
-    state, components, _ = _pipe_rolls(width)
-    return state * (amplitude / _peak_velocity(components))
+    state, components, _ = pipe_rolls(width)
+    return state * (amplitude / peak_velocity(components))
 
 
-def _pipe_rolls(
+def pipe_rolls(
     width: float,
 ) -> tuple[Array, list[tuple[np.ndarray, np.ndarray, np.ndarray]], np.ndarray]:
     r"""The pipe puff before its peak normalization.
 
     Returns the :func:`generate_cylindrical_rolls` state at unit scale,
-    its :func:`_peak_velocity` components and the radial grid.
+    its :func:`peak_velocity` components and the radial grid.
     """
     from jax import numpy as jnp
 
@@ -517,42 +512,6 @@ def _pipe_rolls(
     u_z = jnp.zeros_like(u_r)
     state = jnp.stack([u_z, u_r, u_theta]).astype(sharding.complex_type)
     return state, [(p_r, sin_m, x_sig), (p_theta, cos_m, x_sig)], rs_np
-
-
-def generate_curved_pipe_rolls(
-    amplitude: float, width: float, wavelength: float
-) -> Array:
-    r"""The pipe's puff in the toroidal metric (`$\lambda$` unused).
-
-    Components `$(u_s, u_r, u_\theta)$`, axes `$[r, \theta, k_s]$`.
-    With `$u_s = 0$`, toroidal continuity
-    `$\partial_r(r h u_r) + \partial_\theta(h u_\theta) = 0$` makes
-    `$(r h u_r,\, h u_\theta) = (\partial_\theta\psi,\,
-    -\partial_r\psi)$`, so :func:`generate_cylindrical_rolls`'s
-    streamfunction gives that generator's pair divided by
-    `$h = 1 + \kappa r\cos\theta$`, taken exactly on the stored modes
-    (:func:`~dnsjax.flows.wall_bounded.curved_pipe.toroidal_map`).  Its
-    residual on the solver's continuity row is the pipe pair's on the
-    straight one, plus roundoff; the no-slip wall and `$u_s = 0$`
-    survive the map.  Peak-normalized like every spot, on
-    `$1/h$` sampled at the points the factors are.
-
-    The one spot with mean content: `$u_s$`, which carries the mass
-    flux and the wall shear, keeps an identically zero `$(0, 0)$`
-    mode, and so do `$h u_r$` and `$h u_\theta$` (to roundoff), but
-    the metric gives `$u_\theta$` an `$O(\kappa)$` mean
-    (`$u_r$`'s vanishes with the `$\theta \to -\theta$` oddness of
-    its pre-image) -- the means the random field keeps too.  Zeroing
-    it would break continuity on the `$m = \pm 1$` modes.
-    """
-    from ..flows.wall_bounded.curved_pipe import toroidal_map
-
-    state, components, rs = _pipe_rolls(width)
-    nz = params.res.nz
-    theta = (params.geo.lz / nz) * np.arange(nz)
-    inv_h = 1.0 / (1.0 + params.geo.curvature * np.outer(rs, np.cos(theta)))
-    peak = _peak_velocity(components, inv_h)
-    return toroidal_map(state) * (amplitude / peak)
 
 
 # ── Annular (Taylor-Couette / Dean) rolls ────────────────────────
@@ -626,7 +585,7 @@ def generate_annular_rolls(
     u_theta = jnp.zeros_like(u_r)
     state = jnp.stack([u_z, u_r, u_theta]).astype(sharding.complex_type)
 
-    peak = _peak_velocity(
+    peak = peak_velocity(
         [(p_over_r, az_sig, z_dz), (pp_over_r, az_sig, z_sig)]
     )
     return state * (amplitude / peak)
@@ -715,7 +674,7 @@ def generate_periodic_rolls(
     u_x = jnp.zeros_like(u_y)
     state = jnp.stack([u_x, u_y, u_z]).astype(sharding.complex_type)
 
-    peak = _peak_velocity([(g_sig, psi_dz, x_sig), (gp_sig, psi_sig, x_sig)])
+    peak = peak_velocity([(g_sig, psi_dz, x_sig), (gp_sig, psi_sig, x_sig)])
     return state * (amplitude / peak)
 
 
@@ -727,65 +686,25 @@ def generate_localized_rolls(
 ) -> Array:
     r"""Generate the localized-rolls IC for the configured flow system.
 
-    Dispatches to the geometry-specific generator for
-    ``params.phys.system`` and returns the sharded spectral state (on
-    ``sharding.spec_vector_shard``), ready to time step -- the same
-    object type that ``init_state`` / ``load_snapshot`` return.  The
-    perturbation is a fixed-physical localized spot with
+    Calls the ``init_localized_rolls`` hook of ``params.phys.system``'s
+    flow module (the module docstring) and returns the sharded spectral
+    state (on ``sharding.spec_vector_shard``), ready to time step -- the
+    same object type that ``init_state`` / ``load_snapshot`` return.
+    The perturbation is a fixed-physical localized spot with
     `$\max|\mathbf{u}'| =$` *amplitude*; *width* is the physical
     localization half-width (flow units) and *wavelength* the cross-roll
     spanwise wavelength (ignored by the pipe family, whose cross-section
-    is the lowest azimuthal mode the domain holds).  The total-field
-    flows get their laminar profile added to the perturbation, reusing
-    the random field's helpers: Dean
-    (:func:`~dnsjax.ic.random_field.add_dean_laminar`), the curved pipe
-    (:func:`~dnsjax.ic.random_field.add_curved_pipe_laminar`, the
-    `$\kappa = 0$` profile its docstring explains, on the toroidal
-    rolls of :func:`generate_curved_pipe_rolls`) and both
-    viscoelastic flows, which also get the laminar conformation.  Every
-    other system returns the perturbation directly.  The triply-periodic
-    family has no wall-normal direction and takes
-    :func:`generate_periodic_rolls`, whose `$y$` factor is a
-    localization rather than a wall profile.
+    is the lowest azimuthal mode the domain holds).  A total-field flow
+    adds its laminar state to the perturbation; every other flow
+    returns the perturbation itself.  The triply-periodic family has no
+    wall-normal direction and takes :func:`generate_periodic_rolls`,
+    whose `$y$` factor is a localization rather than a wall profile.
 
     Requires JAX to be configured and the parameter singletons set (the
     geometry ``fourier`` singleton is built lazily by the dispatched
     generator's import).
     """
-    system = params.phys.system
-    if system in cartesian_systems:
-        return generate_cartesian_rolls(amplitude, width, wavelength)
-    if system in periodic_systems:
-        return generate_periodic_rolls(amplitude, width, wavelength)
-    # Rheology before geometry: the viscoelastic systems are members of
-    # their geometry's list too (see ``flows.registry``).  Both take a
-    # velocity-only rolls perturbation on the total-field IC, so the
-    # laminar velocity profile and the laminar conformation are added.
-    if system in annular_viscoelastic_systems:
-        from .random_field import add_viscoelastic_laminar
-
-        return add_viscoelastic_laminar(
-            generate_annular_rolls(amplitude, width, wavelength)
-        )
-    if system in cylindrical_viscoelastic_systems:
-        from .random_field import add_viscoelastic_pipe_laminar
-
-        return add_viscoelastic_pipe_laminar(
-            generate_cylindrical_rolls(amplitude, width, wavelength)
-        )
-    if system == "curved-pipe":
-        from .random_field import add_curved_pipe_laminar
-
-        return add_curved_pipe_laminar(
-            generate_curved_pipe_rolls(amplitude, width, wavelength)
-        )
-    if system in cylindrical_systems:
-        return generate_cylindrical_rolls(amplitude, width, wavelength)
-    if system in annular_systems:
-        state = generate_annular_rolls(amplitude, width, wavelength)
-        if system == "dean":
-            from .random_field import add_dean_laminar
-
-            state = add_dean_laminar(state)
-        return state
-    raise ValueError(f"Localized rolls are not defined for system: {system}")
+    init_localized_rolls = flow_hook(
+        params.phys.system, "init_localized_rolls"
+    )
+    return init_localized_rolls(amplitude, width, wavelength)

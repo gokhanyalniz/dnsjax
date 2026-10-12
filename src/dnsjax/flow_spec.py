@@ -145,9 +145,16 @@ class FlowSpec:
     exporting the stepping surface (``init_state``, ``get_stats``,
     ``predict_and_fully_correct(_measured)``, ``step_cnab2(_measured)``,
     ``set_dt`` / ``reset_ab2_kappa`` (the adaptive-dt hooks),
-    ``get_perturbation_energy``) -- a string, so the spec stays
-    JAX-free; consumers import it lazily (the ``__main__`` flow
-    dispatch, the transient-growth driver).  One export is
+    ``get_perturbation_energy``) and the initial-condition hooks
+    ``init_random_state(amplitude, smoothness, wall_smoothness,
+    wall_confinement, seed, mean_flow)`` and
+    ``init_localized_rolls(amplitude, width, wavelength)``, which
+    :mod:`dnsjax.ic.random_field` and :mod:`dnsjax.ic.localized_rolls`
+    call (the flow composes the core generators of its geometry with
+    what it adds itself, e.g. a total-field flow's laminar state) -- a
+    string, so the spec stays JAX-free; consumers import it lazily (the
+    ``__main__`` flow dispatch, the transient-growth driver,
+    :func:`dnsjax.flows.registry.flow_hook`).  One export is
     **optional**: ``get_driving(state) -> dict[str, Array]``, the
     wall-shear inference of the mean-mode driving from the
     physical-basis state (the same contract as ``get_stats``), exported

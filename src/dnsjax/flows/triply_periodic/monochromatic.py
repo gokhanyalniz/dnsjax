@@ -57,6 +57,8 @@ from ...geometries.triply_periodic.triply_periodic import (
     get_norm2,
     ly,
 )
+from ...ic.localized_rolls import generate_periodic_rolls
+from ...ic.random_field import generate_triply_periodic
 from ...operators import phys_to_spec  # noqa: F401 – public re-export
 from ...parameters import derived_params, padded_res, params
 from ...sharding import register_dataclass_pytree, sharding
@@ -289,3 +291,35 @@ def _get_perturbation_energy_jit(
 def get_perturbation_energy(state: Array) -> Array:
     """Perturbation kinetic energy E' (for the laminarization check)."""
     return _get_perturbation_energy_jit(state, fourier, flow)
+
+
+# ── Initial conditions ───────────────────────────────────────────
+
+
+def init_random_state(
+    amplitude: float,
+    smoothness: float,
+    wall_smoothness: float,
+    wall_confinement: float | None,
+    seed: int,
+    mean_flow: bool = False,
+) -> Array:
+    """The random IC: :func:`dnsjax.ic.random_field.generate_triply_periodic`.
+
+    The ``init_random_state`` hook of the flow-module surface
+    (:class:`~dnsjax.flow_spec.FlowSpec`): the triply-periodic draw.
+    The flow has no walls, so *wall_smoothness* and *wall_confinement*
+    do not apply; *mean_flow* is deferred for this flow, so always false.
+    """
+    return generate_triply_periodic(amplitude, smoothness, seed)
+
+
+def init_localized_rolls(
+    amplitude: float, width: float, wavelength: float
+) -> Array:
+    """The localized rolls of the flow-module surface's IC hooks.
+
+    :func:`dnsjax.ic.localized_rolls.generate_periodic_rolls`, the
+    ``init_localized_rolls`` hook.
+    """
+    return generate_periodic_rolls(amplitude, width, wavelength)

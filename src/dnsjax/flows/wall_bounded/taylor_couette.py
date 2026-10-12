@@ -55,11 +55,13 @@ from ...geometries.wall_bounded.annular import (
     from_solver_basis,  # noqa: F401 — re-exported (basis boundary)
     to_solver_basis,  # noqa: F401 — re-exported (basis boundary)
 )
-from ._circular_couette import (
+from ._circular_couette import (  # noqa: F401 -- the IC hooks
     CircularCouetteFlow,
     _get_driving_jit,
     _get_perturbation_energy_jit,
     _get_stats_jit,
+    init_localized_rolls,
+    init_random_state,
 )
 from ._circular_couette import (
     frozen_profile_flow as _frozen_cc_flow,

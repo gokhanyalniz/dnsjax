@@ -224,7 +224,9 @@ def viscoelastic_laminar_profiles(
     Pure (NumPy, build-time); shared by the flow's laminar state and
     the viscoelastic random / rolls ICs.
     """
-    from .annular import annular_forced_laminar_u_theta
+    from dnsjax_lab.geometries.wall_bounded._annular_forced import (
+        annular_forced_laminar_u_theta,
+    )
 
     rs_np = np.asarray(rs)
     u_theta = np.asarray(
