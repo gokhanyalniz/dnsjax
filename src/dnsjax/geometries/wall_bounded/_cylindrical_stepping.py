@@ -2,7 +2,7 @@ r"""Time stepping shared by the cylindrical (pipe) geometries.
 
 The straight pipe (:mod:`~dnsjax.geometries.wall_bounded.cylindrical`)
 and the curved, zero-torsion pipe
-(:mod:`~dnsjax.geometries.wall_bounded.cylindrical_curved`) share one
+(:mod:`~dnsjax_lab.geometries.wall_bounded.cylindrical_curved`) share one
 set of stepping functions: the pseudo-spectral RHS, the FFT-free
 base-flow coupling, the `$u_r$`-`$\omega_r$` influence-matrix pass, the
 predictor / corrector / norm and the stepper factory.  They are written
@@ -594,7 +594,7 @@ def column_differences(
     """:func:`kinematic_differences` of solver-basis mode columns.
 
     ``(K, 3, N_r)`` in, ``(K, N_CARRIED, N_r)`` out: a forcing kick's
-    contribution to the carried slots (:mod:`dnsjax.extensions.forcing`).
+    contribution to the carried slots (:mod:`dnsjax_lab.extensions.forcing`).
     """
     field_ = jnp.moveaxis(columns, 0, -1)[..., None]  # (3, N_r, K, 1)
     diff = kinematic_differences(field_, fourier_, flow_)

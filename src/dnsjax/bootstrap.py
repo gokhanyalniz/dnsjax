@@ -72,7 +72,7 @@ whole multi-GPU node without MPI.
 **The coordinator port.**  The order of :data:`_PORT_VARS` is not
 cosmetic.  A *scheduler job id* is shared by every ``mpirun`` in the
 job, so seeding on it hands two concurrent launches -- the ensemble
-members of one allocation (``scripts/ensemble_setup.py``) -- the same
+members of one allocation (``lab/scripts/ensemble_setup.py``) -- the same
 port, whereupon the second run's rank 0 connects to the first run's
 coordination service and is killed by it (``INTERNAL: wrong service
 incarnation``, then ``signal 6``; measured).  ``PMIX_NAMESPACE``

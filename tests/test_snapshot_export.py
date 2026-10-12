@@ -252,8 +252,9 @@ def _generate(system: str, outdir: str, m0: int = 1) -> None:
         # (om_s, h om_r, h om_th), and its continuity row -- the
         # straight divergence of the carried state less
         # divergence_defect -- is h^2 div u.
-        from dnsjax.flows.wall_bounded import curved_pipe as cp
-        from dnsjax.flows.wall_bounded.curved_pipe import flow, get_stats
+        from dnsjax_lab.flows.wall_bounded import curved_pipe as cp
+        from dnsjax_lab.flows.wall_bounded.curved_pipe import flow, get_stats
+
         from dnsjax.geometries.wall_bounded._base import from_pm_basis
         from dnsjax.geometries.wall_bounded._cylindrical_stepping import (
             _curl_fn,
@@ -290,10 +291,11 @@ def _generate(system: str, outdir: str, m0: int = 1) -> None:
         # slice), and the ground truth for the tensor is the stored
         # conformation slice itself -- which on the m0 = 2 wedge is
         # what pins the analysis package's tensor parity classes.
-        from dnsjax.flows.wall_bounded.viscoelastic_pipe import (
+        from dnsjax_lab.flows.wall_bounded.viscoelastic_pipe import (
             flow,
             get_stats,
         )
+
         from dnsjax.geometries.wall_bounded._base import to_pm_basis
         from dnsjax.geometries.wall_bounded.cylindrical import fourier
 
@@ -316,7 +318,7 @@ def _generate(system: str, outdir: str, m0: int = 1) -> None:
         # is the stored conformation slice itself (format 6: the
         # native components 3..8 are the physical tensor
         # (c_zz, c_rz, c_thz, c_rr, c_thth, c_rth), read one-to-one).
-        from dnsjax.flows.wall_bounded.viscoelastic_dean import get_stats
+        from dnsjax_lab.flows.wall_bounded.viscoelastic_dean import get_stats
 
         conf_true = state[3:]
         # The solver state axes (r, m, k_ax) ARE the snapshot layout

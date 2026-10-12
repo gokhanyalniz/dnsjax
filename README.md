@@ -253,7 +253,7 @@ in [`docs/validation.md`](docs/validation.md).
 |---|---|
 | **Banded-LU GPU kernel** | $O(N_y p)$ factors instead of dense $O(N_y^2)$, with a dense reference solver; checked in interpret mode *and* by lowering to CUDA on GPU-less machines |
 | **Differentiable time steps** | `jax.grad` through a step, opt-in: a fixed-count corrector replaces the one construct reverse mode cannot traverse, and the banded GPU kernel carries a custom adjoint — [docs/differentiability.md](docs/differentiability.md) |
-| **Twin-run perturbation growth** | a reference snapshot and a perturbed copy stepped in lockstep, streaming difference-field energy, $y$-resolved spectra with the matching budget, $(k_z, k_x)$ spectra, and subsampled $(y, k_z, k_x)$ cubes of both — [twin/](src/dnsjax/twin/README.md) |
+| **Twin-run perturbation growth** | a reference snapshot and a perturbed copy stepped in lockstep, streaming difference-field energy, $y$-resolved spectra with the matching budget, $(k_z, k_x)$ spectra, and subsampled $(y, k_z, k_x)$ cubes of both — [twin/](lab/src/dnsjax_lab/twin/README.md) |
 | **Optimal-growth analysis** | linear optimal energy growth $G(t)$ about an arbitrary wall-normal profile, reusing the solver's own linear step per mode — [docs/validation.md](docs/validation.md#non-modal-optimal-growth-against-published-values) |
 | **Two-axis device mesh** | $(n_{p0}, n_{p1})$ with an in-FFT reshard pipeline — [docs/scaling.md](docs/scaling.md#parallelization) |
 | **A memory–throughput dial** | `solver.rhs_transform_chunks` splits the batched inverse transform $k$ ways, cutting its working set $k$-fold at identical results |
@@ -266,7 +266,7 @@ in [`docs/validation.md`](docs/validation.md).
 | **Crash-consistent diagnostics** | buffered streams flushed before snapshots and on termination; a NaN or inf aborts naming the quantity and writes no snapshot of the broken state |
 | **Graceful shutdown** | an ISO 8601 wall-time budget ends the run cleanly, final snapshot included, before a queue kills it |
 | **Laminarization auto-stop** | a run ends once the perturbation energy falls below a threshold |
-| **Response and identification** | record spectral modes, drive them with white-in-time kicks, identify a data-driven generator three interchangeable ways — [response/](src/dnsjax/analysis/response/README.md) |
+| **Response and identification** | record spectral modes, drive them with white-in-time kicks, identify a data-driven generator three interchangeable ways — [response/](lab/src/dnsjax_lab/analysis/response/README.md) |
 
 ## Documentation
 
@@ -284,9 +284,9 @@ in [`docs/validation.md`](docs/validation.md).
 | [`tests/README.md`](tests/README.md) | how the suite is laid out and how to run it |
 | [`scripts/README.md`](scripts/README.md) | the offline tools: figures, benchmarks, ensembles, post-processing |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | setup, lint, tests, adding a flow, commit style |
-| [`src/dnsjax/extensions`](src/dnsjax/extensions/README.md) | the `[probes]` and `[force]` runtime streams |
-| [`src/dnsjax/analysis/response`](src/dnsjax/analysis/response/README.md) | probe stream → turbulent mean → linear operator → identification |
-| [`src/dnsjax/twin`](src/dnsjax/twin/README.md) | the `dnsjax-twin` driver, its streams and its ensembles |
+| [`src/dnsjax/extensions`](lab/src/dnsjax_lab/extensions/README.md) | the `[probes]` and `[force]` runtime streams |
+| [`lab/src/dnsjax_lab/analysis/response`](lab/src/dnsjax_lab/analysis/response/README.md) | probe stream → turbulent mean → linear operator → identification |
+| [`lab/src/dnsjax_lab/twin`](lab/src/dnsjax_lab/twin/README.md) | the `dnsjax-twin` driver, its streams and its ensembles |
 
 Field-by-field parameter documentation lives in the code, rendered per
 flow by `dnsjax --help <system>` and `dnsjax --sample-toml <system>`.

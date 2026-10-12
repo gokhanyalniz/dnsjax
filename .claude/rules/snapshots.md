@@ -2,11 +2,11 @@
 paths:
   - "src/dnsjax/snapshot*.py"
   - "src/dnsjax/lowres.py"
-  - "src/dnsjax/twin/cubes.py"
+  - "lab/src/dnsjax_lab/twin/cubes.py"
   - "src/dnsjax/{__main__,param_surface}.py"
   - "src/dnsjax/flows/registry.py"
   - "src/dnsjax/analysis/**/*.py"
-  - "src/dnsjax/twin/driver.py"
+  - "lab/src/dnsjax_lab/twin/driver.py"
   - "scripts/{snapshot_perturb,snapshot_figure,ensemble_setup,twin_postprocess}.py"
   - "tests/test_{snapshot,snapshot_export,snapshot_import,snapshot_perturb,resume}.py"
 ---
@@ -37,7 +37,7 @@ paths:
   while `parameters.trajectory_defining_changes` is empty, unless
   `init.force_resume`.
 - An interrupted save leaves `*.tar.partial`, which `*.tar` globs skip
-  (`scripts/ensemble_setup.py` relies on it).
+  (`lab/scripts/ensemble_setup.py` relies on it).
 - Every dnsjax tar goes through `snapshot.write_archive`: states, the
   `[lowres]` files and the twin cubes. A new array output does too,
   y-major, with a metadata `kind` if it is not a state (absent means a

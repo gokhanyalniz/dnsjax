@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 r"""Render a snapshot as a publication-style field figure.
 
-The presentation counterpart of ``scripts/twin_spectral_maps.py``: it
+The presentation counterpart of ``lab/scripts/twin_spectral_maps.py``: it
 turns one snapshot into a single PNG of a velocity plane, for a
 README, a talk, or a quick look at what a run is doing.  It
 reads the snapshot through :func:`dnsjax.analysis.read_state` alone --

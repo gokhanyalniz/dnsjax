@@ -304,7 +304,7 @@ mode below is guarded per mode with an explicit error.
   basis), the bases `$V, F, Q$`, and the coordinate contract -- the
   input for controllability / growth-curve / identification
   post-processing
-  (:mod:`dnsjax.analysis.response.operator_tools`; the storage
+  (:mod:`dnsjax_lab.analysis.response.operator_tools`; the storage
   layout: the ``_write_operator_npz`` docstring).
 - ``--tg.export_amplitude`` (1e-4): volume-averaged energy `$E'$` of
   the exported seed (the solver's own measure).  The default keeps
@@ -1465,7 +1465,7 @@ def _write_operator_npz(
     ``mode_k_metric`` and the ``i3 = 0`` conjugate partner supply the
     same factor 2).
 
-    Consumers: :mod:`dnsjax.analysis.response.operator_tools`
+    Consumers: :mod:`dnsjax_lab.analysis.response.operator_tools`
     (controllability modes, growth curves, subspace restriction).
     """
     results = sorted(results, key=lambda m: (m.i2, m.i3))

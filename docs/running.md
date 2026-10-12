@@ -240,7 +240,7 @@ the corrector applied over that step, positive when accelerating. Two
 optional binary streams — a spectral-mode probe stream and a
 stochastic-forcing log — are available through the `[probes]` and
 `[force]` sections; see
-[`src/dnsjax/extensions`](../src/dnsjax/extensions/README.md).
+[`src/dnsjax/extensions`](../lab/src/dnsjax_lab/extensions/README.md).
 
 ### Reduced-resolution snapshots
 

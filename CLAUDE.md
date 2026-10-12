@@ -52,7 +52,7 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
   `mpirun -np 4 .venv/bin/dnsjax --dist.np0 2 --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 28`
 
 - Twin runs (Cartesian wall-bounded flows, fixed `dt`, launched like
-  the solver; `src/dnsjax/twin/CLAUDE.md`):
+  the solver; `lab/src/dnsjax_lab/twin/CLAUDE.md`):
 
   `.venv/bin/dnsjax-twin --init.snapshot parent.tar --twin.e0 1e-6 --twin.seed 3 --stop.max_sim_time 10`
 

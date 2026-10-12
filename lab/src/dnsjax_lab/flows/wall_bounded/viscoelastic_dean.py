@@ -1,0 +1,636 @@
+r"""Viscoelastic (sPTT) Dean flow between two stationary cylinders.
+
+Force-driven flow of an sPTT viscoelastic fluid in the annular gap
+between two **stationary** concentric cylinders, driven by an azimuthal
+body force `$-\Pi_\theta = (r_1 + r_2)/(\mathrm{Re}\,r)$` (half-gap
+units, `$r_1 = \delta$`, `$r_2 = \delta + 2$`; at mid-gap the force is
+the `$2/\mathrm{Re}$` that drives the plane channel of the sPTT system
+this flow integrates,
+:mod:`~dnsjax_lab.geometries.wall_bounded._viscoelastic_common`).  The
+velocity is coupled to a symmetric conformation tensor `$\mathbf{c}$`
+via the polymer-stress divergence; see the module docstring of
+:mod:`~dnsjax_lab.geometries.wall_bounded.annular_viscoelastic` for the
+governing equations, the 9-component state layout, and the spin
+diagonalization of the tensor Laplacian.
+
+Total-field formulation
+-----------------------
+Like Newtonian Dean flow, the **total** velocity is integrated (base
+flow zero, so the rotational nonlinear term evaluates the full field),
+with the azimuthal body force applied at the mean mode through
+``force_theta``.  The reported perturbation energy `$E'$` is velocity-only:
+the kinetic energy of the deviation of `$\mathbf{u}$` from the analytical
+laminar profile (the laminarization-check quantity).  ``get_stats`` also
+reports polymer diagnostics (mean trace, elastic energy, polymer work).
+
+Laminar state
+-------------
+``start_from_laminar`` uses the analytical laminar pair: the azimuthal
+velocity profile `$U_\theta(r)$` (solving the viscous + body-force
+balance, `$C = r_1 + r_2$`) and the pointwise sPTT-equilibrium
+conformation on the **discrete** local shear
+`$S = D_1 U_\theta - U_\theta/r$`,
+
+.. math::
+    c_{rr} = c_{zz} = 1, \quad c_{r\theta} = \frac{\mathrm{Wi}\,S}{f},
+    \quad c_{\theta\theta} = 1 + \frac{2(\mathrm{Wi}\,S)^2}{f^2},
+    \quad f^3 - f^2 = 2\epsilon(\mathrm{Wi}\,S)^2,
+
+with `$c_{rz} = c_{\theta z} = 0$`.  For `$\kappa = 0$` the
+conformation slice of the full 9-component RHS vanishes to machine
+precision at every `$\epsilon$` (the curvilinear advection and
+stretching terms cancel algebraically); for `$\kappa > 0$` it is an
+approximation twice over -- the diffusion of the `$r$`-varying
+conformation is neglected, and the equilibrium profile does not satisfy
+the `$\nabla^2 c = 0$` wall rows `$H_c$` imposes.
+
+**The velocity slice closes exactly only at** `$\epsilon = 0$`, where
+`$f \equiv 1$` and the polymer contributes a constant extra viscosity, so the
+Newtonian `$U_\theta$` is also the sPTT one.  At `$\epsilon > 0$` the polymer
+shear-thins (the true balance is
+`$(1/r^2)\,\partial_r[r^2\tau] - \Pi_\theta = 0$` with
+`$\tau = (S/\mathrm{Re})[\beta + (1-\beta)/f]$`) and that correction is
+neglected, as in ``viscoelastic-pipe``, so the pair is **not** a steady state
+there, and the defect is not small at the shipped defaults (Design notes: "The
+laminar defect, measured").  Consequences: ``start_from_laminar`` is not
+laminar, and `$E'$` -- which is measured against *this* reference, hence the
+``stop.check_laminarization`` quantity -- has a floor of a few percent of `$E$`
+instead of decaying to zero.  Fixing it needs a shooting solve for `$U_\theta$`
+(invert `$\tau(S)$` through the cubic, integrate, match both no-slip walls),
+which is why the closed form is kept and the defect documented instead.
+
+Design notes
+------------
+**The laminar defect, measured.**  Stepping the laminar pair at
+`$\epsilon = 10^{-3}$` drifts at `$\max|\Delta u|/\Delta t \approx 0.3$`,
+against `$2\!\cdot\!10^{-13}$` at `$\epsilon = 0$`, and the laminar
+ledger `$I = D_s - W_p$` misses by 15 % (``viscoelastic-pipe``: 8 %).
+"""
+
+from dataclasses import dataclass
+from math import pi
+
+import numpy as np
+from jax import Array, jit
+from jax import numpy as jnp
+
+from dnsjax.geometries.wall_bounded._base import (
+    extract_mean_mode,
+    pad_base_flow,
+)
+from dnsjax.geometries.wall_bounded.annular import (
+    DRIVING_KEY_Z,
+    get_enstrophy_annular,
+    get_norm2_annular,
+    integrate_scalar,
+)
+from dnsjax.harmonics import complex_harmonics, real_harmonics
+from dnsjax.ic.localized_rolls import generate_annular_rolls
+from dnsjax.ic.random_field import (
+    column_draw,
+    hermitian_column,
+    normalize_mode,
+    real_product,
+    scaled_wall_window,
+    wall_normal_filter,
+)
+from dnsjax.parameters import derived_params, params
+from dnsjax.sharding import register_dataclass_pytree, sharding
+from dnsjax_lab.geometries.wall_bounded.annular_viscoelastic import (
+    Fourier,
+    ViscoelasticAnnularFlow,
+    _div_c,
+    build_viscoelastic_stepper,
+    fourier,
+    from_solver_basis,  # noqa: F401 — re-exported (basis boundary)
+    get_norm2_conformation,  # noqa: F401 -- available for callers
+    to_solver_basis,  # noqa: F401 — re-exported (basis boundary)
+    viscoelastic_laminar_profiles,
+)
+
+
+@register_dataclass_pytree
+@dataclass
+class ViscoelasticDeanFlow(ViscoelasticAnnularFlow):
+    r"""Precomputed data for viscoelastic (sPTT) Dean flow.
+
+    Delegates the velocity grid / IMM operators (solvent viscosity
+    `$\nu = \beta/\mathrm{Re}$`) and the conformation Helmholtz operator
+    to :class:`ViscoelasticAnnularFlow`, then sets the azimuthal body
+    force `$-\Pi_\theta = (r_1 + r_2)/(\mathrm{Re}\,r)$` and zeros the base
+    flow (total-field integration).
+    """
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+
+        r1 = derived_params.r_inner
+        r2 = derived_params.r_outer
+        Re = params.phys.re
+
+        # Azimuthal body force -Pi_theta = (r1 + r2) / (Re r), applied
+        # at the mean mode by
+        # ``ViscoelasticAnnularFlow.add_mean_body_force`` (the shared
+        # RHS's driving adapter).
+        self.force_theta = (r1 + r2) / (self.rs * Re)
+
+        # Total-field formulation: no base flow to subtract.
+        self.base_flow = jnp.zeros(
+            (3, params.res.ny),
+            dtype=sharding.float_type,
+            out_sharding=sharding.no_shard,
+        )[:, :, None, None]
+        self.curl_base_flow = jnp.zeros_like(self.base_flow)
+        pad_base_flow(self)
+
+
+flow: ViscoelasticDeanFlow = ViscoelasticDeanFlow()
+
+(
+    _init_state_laminar_zero,  # overridden below
+    predict_and_fully_correct,
+    predict_and_fully_correct_measured,
+    step_cnab2,
+    step_cnab2_measured,
+    set_dt,
+    reset_ab2_kappa,
+) = build_viscoelastic_stepper(flow)
+
+
+def _build_laminar_profile() -> Array:
+    r"""The laminar state's mean-mode column, ``(9, N_r)``.
+
+    The analytical laminar `$r$`-profiles (velocity + sPTT-equilibrium
+    conformation; see
+    :func:`~dnsjax_lab.geometries.wall_bounded.annular_viscoelastic.viscoelastic_laminar_profiles`)
+    -- the only nonzero column of the laminar state.
+    """
+    prof = viscoelastic_laminar_profiles(
+        flow.rs,
+        flow.D1.dense,
+        derived_params.r_inner,
+        derived_params.r_outer,
+        params.phys.wi,
+        params.phys.epsilon,
+    )
+    return sharding.distribute(
+        np.asarray(prof, dtype=sharding.complex_type), sharding.no_shard
+    )
+
+
+#: The laminar reference, kept as its mean-mode column rather than the
+#: field it spans: the full ``(C, N_r, N_m, N_{k_z})`` array would hold
+#: a whole state's worth of device memory for the run to carry
+#: ``C N_r`` nonzero values.  :func:`_laminar_field` rebuilds the field
+#: where it is needed -- inside the jitted diagnostics, fused into the
+#: subtraction -- and ``init_state`` builds it on demand.  Physical
+#: basis: ``init_state`` hands it to ``__main__``, which converts the
+#: initial state once, so the deviations below are physical too.
+_laminar_profile: Array = _build_laminar_profile()
+
+
+def _laminar_field(profile: Array, fourier_: Fourier) -> Array:
+    """The spectral field that is *profile* ``(C, N_r)`` on the mean mode.
+
+    Zero on every other mode, padding included.
+    """
+    return jnp.where(fourier_.mean_mask[None], profile[:, :, None, None], 0.0)
+
+
+def _perturbation_energy(
+    state: Array,
+    laminar_profile: Array,
+    fourier_: Fourier,
+    flow_: ViscoelasticDeanFlow,
+) -> Array:
+    r"""Velocity-only kinetic energy of the deviation from laminar.
+
+    `$E' = \|u - U_{\mathrm{lam}}\|^2/2$` over the three velocity components.
+    The single definition, shared by :func:`get_stats` (which reports it as
+    ``E'``) and the laminarization read :func:`get_perturbation_energy`.
+    """
+    return (
+        get_norm2_annular(
+            state[:3] - _laminar_field(laminar_profile[:3], fourier_),
+            fourier_.k_metric,
+            flow_.y_weights,
+        )
+        / 2
+    )
+
+
+def init_state() -> Array:
+    """The ``start_from_laminar`` 9-component state.
+
+    Returns the analytical laminar velocity/conformation pair (this
+    flow integrates the **total** field).  Snapshot resume and the
+    in-process random / localized-rolls modes
+    (:mod:`dnsjax.ic.random_field` / :mod:`dnsjax.ic.localized_rolls`)
+    are dispatched in ``__main__``; this is called only for the
+    laminar start.
+    """
+    return _laminar_field(_laminar_profile, fourier)
+
+
+# ── Diagnostic statistics ────────────────────────────────────────
+
+
+@jit
+def _get_stats_jit(
+    state: Array,
+    laminar_profile: Array,
+    fourier_: Fourier,
+    flow_: ViscoelasticDeanFlow,
+) -> dict[str, Array]:
+    r"""Total-field diagnostics + polymer quantities.
+
+    *state* and *laminar_profile* are the **physical** 9-component view
+    `$(u_z, u_r, u_\theta, c_{zz}, c_{rz}, c_{\theta z}, c_{rr},
+    c_{\theta\theta}, c_{r\theta})$` -- diagnostics sit outside the
+    solver, whose working basis is the `$u_\pm$`/spin one (the
+    ``annular_viscoelastic.py`` module docstring).
+
+    - `$E$`: total kinetic energy; `$E'$`: velocity-only deviation from
+      the laminar profile (laminarization quantity).
+    - `$I = -\langle u_\theta \Pi_\theta \rangle$`: body-force input.
+    - `$D_s = \nu\langle|\nabla u|^2\rangle$`: solvent dissipation
+      (`$\nu = \beta/\mathrm{Re}$`).
+    - `$W_p = \tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}
+      \langle u\cdot\nabla\cdot c\rangle$`: polymer work.
+    - `$\langle\mathrm{tr}\,c\rangle$`, elastic energy
+      `$E_p = \tfrac{1-\beta}{2\,\mathrm{Re}\,\mathrm{Wi}}
+      (\langle\mathrm{tr}\,c\rangle - 3)$`.
+    - wall shear stresses (solvent), bulk velocities.
+    """
+    Re = params.phys.re
+    volfac = derived_params.volume_fac
+    nu = derived_params.nu
+    coef = (1.0 - params.phys.beta) / (Re * params.phys.wi)
+
+    vel = state[:3]
+    total_energy = (
+        get_norm2_annular(vel, fourier_.k_metric, flow_.y_weights) / 2
+    )
+    perturbation_energy = _perturbation_energy(
+        state, laminar_profile, fourier_, flow_
+    )
+
+    # Mean velocity profiles.
+    mean_vel = extract_mean_mode(vel)  # (3, Nr)
+    mean_uz = mean_vel[0].real
+    mean_utheta = mean_vel[2].real
+
+    tau_theta = flow_.D1_bnd @ mean_utheta  # (2,) [inner, outer]
+    tau_z = flow_.D1_bnd @ mean_uz
+    U_bulk_theta = integrate_scalar(mean_utheta, flow_.y_weights) / volfac
+    U_bulk_z = integrate_scalar(mean_uz, flow_.y_weights) / volfac
+
+    energy_input = (
+        integrate_scalar(mean_utheta * flow_.force_theta, flow_.y_weights)
+        / volfac
+    )
+    enstrophy = get_enstrophy_annular(
+        vel,
+        flow_.D1,
+        flow_.inv_r,
+        fourier_.m,
+        fourier_.kz2,
+        fourier_.k_metric,
+        flow_.y_weights,
+    )
+    dissipation = nu * enstrophy
+
+    # Polymer diagnostics (native components throughout).
+    div_r, div_th, div_z = _div_c(
+        state[6],
+        state[7],
+        state[8],
+        state[4],
+        state[5],
+        state[3],
+        fourier_,
+        flow_,
+    )
+    # <u . div c> as a spectral inner product in (z, r, theta).
+    div_rthz = jnp.array([div_z, div_r, div_th])
+    polymer_work = coef * (
+        integrate_scalar(
+            jnp.sum(
+                jnp.conj(vel) * fourier_.k_metric * div_rthz, axis=(0, 2, 3)
+            ).real,
+            flow_.y_weights,
+        )
+        / volfac
+    )
+
+    mean_c = extract_mean_mode(state[3:])  # (6, Nr)
+    # tr c = c_zz + c_rr + c_theta_theta.
+    trace_profile = (mean_c[0] + mean_c[3] + mean_c[4]).real
+    mean_trace = integrate_scalar(trace_profile, flow_.y_weights) / volfac
+    elastic_energy = (
+        (1.0 - params.phys.beta)
+        / (2.0 * Re * params.phys.wi)
+        * (mean_trace - 3.0)
+    )
+
+    return {
+        "E": total_energy,
+        "E'": perturbation_energy,
+        "I": energy_input,
+        "D_s": dissipation,
+        "W_p": polymer_work,
+        "E_p": elastic_energy,
+        "TrC": mean_trace,
+        "tau_th,i": nu * tau_theta[0],
+        "tau_th,o": nu * tau_theta[1],
+        "tau_z,i": nu * tau_z[0],
+        "tau_z,o": nu * tau_z[1],
+        "Ub_th": U_bulk_theta,
+        "Ub_z": U_bulk_z,
+    }
+
+
+def get_stats(state: Array) -> dict[str, Array]:
+    """The ``stats.dat`` columns of the physical-basis *state*."""
+    return _get_stats_jit(state, _laminar_profile, fourier, flow)
+
+
+@jit
+def _get_perturbation_energy_jit(
+    state: Array,
+    laminar_profile: Array,
+    fourier_: Fourier,
+    flow_: ViscoelasticDeanFlow,
+) -> Array:
+    r"""Velocity-only deviation energy (laminarization check)."""
+    return _perturbation_energy(state, laminar_profile, fourier_, flow_)
+
+
+def get_perturbation_energy(state: Array) -> Array:
+    r"""Velocity-only perturbation energy E' (laminarization check).
+
+    Takes the **physical** 9-component view, like :func:`get_stats`,
+    which reports the same number as ``E'``.
+    """
+    return _get_perturbation_energy_jit(state, _laminar_profile, fourier, flow)
+
+
+def get_driving(state: Array) -> dict[str, Array]:
+    r"""Applied mean-mode driving: **keys only**, value zero.
+
+    The ``t = t0`` ``stats.dat`` row has no step behind it, so it is
+    normally filled with the wall-shear inference of the driving
+    (``mean_driving`` in each geometry).  That inference balances the
+    mean-mode axial momentum against the **solvent** wall traction
+    alone, and for an sPTT flow it does not close: the polymer carries
+    its own axial traction at the walls, so the solvent-only number
+    would be wrong rather than merely approximate.
+
+    Rather than report a wrong value, this returns a zero placeholder
+    under the right key, so the column exists and is correctly shaped
+    from the first row; every later row carries the value the corrector
+    applied, which is exact.  Empty unless
+    ``phys.block_mean_spanwise_velocity`` is on.
+    """
+    if not params.phys.block_mean_spanwise_velocity:
+        return {}
+    return {DRIVING_KEY_Z: jnp.zeros((), dtype=sharding.float_type)}
+
+
+# ── Initial conditions ───────────────────────────────────────────
+
+
+def add_viscoelastic_laminar(vel_state: Array) -> Array:
+    r"""Turn a velocity perturbation into a viscoelastic Dean total state.
+
+    Adds the analytical laminar velocity profile to *vel_state* and
+    appends the laminar sPTT-equilibrium conformation (both at the mean
+    mode), giving the total-field IC in the physical layout
+    `$(u_z, u_r, u_\theta, c_{zz}, c_{rz}, c_{\theta z}, c_{rr},
+    c_{\theta\theta}, c_{r\theta})$`.
+    Used by the localized-rolls IC (a velocity-only perturbation); the
+    random IC builds its 9 components directly.
+    """
+    from jax import numpy as jnp
+
+    from dnsjax.geometries.wall_bounded.annular import (
+        build_annular_grid,
+        fourier,
+    )
+    from dnsjax_lab.geometries.wall_bounded.annular_viscoelastic import (
+        viscoelastic_laminar_profiles,
+    )
+
+    r1 = derived_params.r_inner
+    r2 = derived_params.r_outer
+    rs, D1, *_ = build_annular_grid(
+        params.res.ny,
+        params.res.fd_order,
+        params.geo.wall_grid,
+        params.geo.grid_type,
+        params.geo.grid_stretch,
+        r_inner=r1,
+        r_outer=r2,
+    )
+    prof = viscoelastic_laminar_profiles(
+        rs, D1, r1, r2, params.phys.wi, params.phys.epsilon
+    )
+    prof_jax = jnp.asarray(prof, dtype=vel_state.dtype)
+    laminar = jnp.where(
+        fourier.mean_mask[None], prof_jax[:, :, None, None], 0.0
+    )
+    total_vel = vel_state + laminar[:3]
+    return jnp.concatenate([total_vel, laminar[3:]])
+
+
+# Viscoelastic conformation noise: every physical tensor
+# component (c_zz, c_rz, c_theta_z, c_rr, c_theta_theta, c_r_theta) is
+# the transform of a real field, so its draws use the same
+# per-component machinery as the velocity -- with a trailing ``1`` in
+# the PRNG key (the ``stream`` argument) to keep the conformation
+# stream distinct from the velocity draw at the same mode.
+
+
+def generate_viscoelastic_dean(
+    amplitude: float,
+    conf_amplitude: float,
+    smoothness: float,
+    wall_smoothness: float,
+    wall_confinement: float | None,
+    seed: int,
+) -> Array:
+    r"""Random 9-component IC for viscoelastic (sPTT) Dean flow.
+
+    Built per device (no full-array replication): the velocity part is
+    the divergence-free annular draw of :func:`generate_annular` (rows
+    ``0:3``); the conformation part (rows ``3:9``) is windowed,
+    spectrally-decaying symmetric-tensor noise.  Velocity and
+    conformation noise are rescaled to *amplitude* / *conf_amplitude*
+    separately, then the
+    analytical laminar pair (velocity profile + sPTT-equilibrium
+    conformation) is added at the mean mode (total-field IC).  The
+    conformation noise vanishes at both walls and at the mean mode (so
+    the laminar wall / mean values are preserved).
+    """
+    from jax import numpy as jnp
+
+    from dnsjax.geometries.wall_bounded.annular import (
+        build_annular_grid,
+        fourier,
+        get_norm2_annular,
+    )
+    from dnsjax.snapshot import assemble_local_shards
+    from dnsjax_lab.geometries.wall_bounded.annular_viscoelastic import (
+        viscoelastic_laminar_profiles,
+    )
+
+    nx = params.res.nx
+    Nr = params.res.ny
+    nz = params.res.nz
+    r1 = derived_params.r_inner
+    r2 = derived_params.r_outer
+    rs, D1, _, y_weights, inv_r = build_annular_grid(
+        Nr,
+        params.res.fd_order,
+        params.geo.wall_grid,
+        params.geo.grid_type,
+        params.geo.grid_stretch,
+        r_inner=r1,
+        r_outer=r2,
+    )
+    derived_params.wall_normal_grid = [float(v) for v in np.asarray(rs)]
+
+    rs_np = np.asarray(rs)
+    inv_r_np = np.asarray(inv_r)
+    D1_np = np.asarray(D1)
+    yw_np = np.asarray(y_weights)
+    kz_np = real_harmonics(nx) * (2 * pi / params.geo.lx)  # axial
+    # Physical azimuthal wavenumbers m = m0 * harmonic over the wedge
+    # (m0 = 1 full circle): the continuity relation needs the physical
+    # m; the decay envelope then weights by |m| directly.
+    m_np = params.geo.m0 * complex_harmonics(nz)
+
+    decay = 1.0 - smoothness
+    wn_filter = wall_normal_filter(rs_np, 1.0 - wall_smoothness)
+    window_base = (rs_np - r1) * (r2 - rs_np)
+    window_base = window_base / np.max(window_base)
+
+    def fill_local(buf, m_start, n_m, kz_start, n_kz):
+        for li in range(n_m):
+            g2 = m_start + li
+            m_val = int(m_np[g2])
+            for lj in range(n_kz):
+                g3 = kz_start + lj
+                kz_val = kz_np[g3]
+                envelope = decay ** (abs(kz_val) + abs(m_val))
+                window_lin = scaled_wall_window(
+                    window_base, np.hypot(kz_val, m_val), wall_confinement
+                )
+                window_wn = window_lin**2
+
+                # Velocity (rows 0:3): divergence-free draw.
+                if g3 == 0:
+                    vcol = hermitian_column(seed, g2, nz, Nr)
+                else:
+                    vcol = column_draw(seed, g2, g3, Nr)
+                vcol = real_product(vcol, wn_filter.T)
+                vcol[0] *= window_lin
+                vcol[1] *= window_wn
+                vcol[2] *= window_wn
+                # Close continuity per mode against the annular
+                # divergence, exactly as :func:`generate_annular` does
+                # (same operator, same r-diagonal coefficients).
+                if kz_val != 0:
+                    div_perp = (
+                        real_product(vcol[1], D1_np.T)
+                        + inv_r_np * vcol[1]
+                        + 1j * m_val * inv_r_np * vcol[2]
+                    )
+                    vcol[0] = -div_perp / (1j * kz_val)
+                elif m_val != 0:
+                    # k_z = 0: u_z drops out; close through u_theta.
+                    d1_v = real_product(vcol[1], D1_np.T)
+                    vcol[2] = 1j * rs_np * (d1_v + inv_r_np * vcol[1]) / m_val
+                else:
+                    # k_z = 0, m = 0 mean mode: (1/r) d(r u_r)/dr = 0
+                    # with no-slip forces u_r = 0.
+                    vcol[1] = 0.0
+                vcol = normalize_mode(vcol, yw_np, envelope)
+                # Mean mode: the (0, 0) conservation laws are only
+                # established for the Cartesian flows, so every other
+                # flow defers ``init.random_mean_flow``
+                # (``dnsjax.ic.mean_mode``, and the per-flow
+                # ``DeferredSpec``s).
+                if g2 == 0 and g3 == 0:
+                    vcol[:] = 0.0
+                buf[0:3, :, li, lj] = vcol
+
+                # Conformation (rows 3:9): windowed, wall-vanishing noise;
+                # zero at the mean mode (laminar added below).
+                if g3 == 0:
+                    ccol = hermitian_column(
+                        seed, g2, nz, Nr, rows=6, stream=(1,)
+                    )
+                else:
+                    ccol = column_draw(seed, g2, g3, Nr, rows=6, stream=(1,))
+                ccol = real_product(ccol, wn_filter.T) * window_wn
+                ccol = normalize_mode(ccol, yw_np, envelope)
+                if g2 == 0 and g3 == 0:
+                    ccol[:] = 0.0
+                buf[3:9, :, li, lj] = ccol
+
+    state = assemble_local_shards(fill_local)
+
+    # Rescale velocity and conformation noise separately.
+    vel_norm2 = get_norm2_annular(state[:3], fourier.k_metric, y_weights)
+    conf_norm2 = get_norm2_conformation(state[3:], fourier.k_metric, y_weights)
+    scale_v = amplitude / vel_norm2**0.5
+    scale_c = conf_amplitude / conf_norm2**0.5
+    state = jnp.concatenate([state[:3] * scale_v, state[3:] * scale_c])
+
+    # Add the laminar pair at the mean mode (total-field IC).
+    prof = viscoelastic_laminar_profiles(
+        rs, D1, r1, r2, params.phys.wi, params.phys.epsilon
+    )
+    prof_jax = jnp.asarray(prof, dtype=state.dtype)
+    laminar = jnp.where(
+        fourier.mean_mask[None], prof_jax[:, :, None, None], 0.0
+    )
+    return state + laminar
+
+
+def init_random_state(
+    amplitude: float,
+    smoothness: float,
+    wall_smoothness: float,
+    wall_confinement: float | None,
+    seed: int,
+    mean_flow: bool = False,
+) -> Array:
+    """The random IC: :func:`generate_viscoelastic_dean`.
+
+    Velocity and conformation noise on the laminar pair, the tensor's
+    amplitude ``init.random_conformation_amplitude``.  *mean_flow*
+    is deferred for this flow, so always false.
+    """
+    return generate_viscoelastic_dean(
+        amplitude,
+        params.init.random_conformation_amplitude,
+        smoothness,
+        wall_smoothness,
+        wall_confinement,
+        seed,
+    )
+
+
+def init_localized_rolls(
+    amplitude: float, width: float, wavelength: float
+) -> Array:
+    """The annular localized rolls on the laminar pair.
+
+    :func:`dnsjax.ic.localized_rolls.generate_annular_rolls` and
+    :func:`add_viscoelastic_laminar`.
+    """
+    return add_viscoelastic_laminar(
+        generate_annular_rolls(amplitude, width, wavelength)
+    )

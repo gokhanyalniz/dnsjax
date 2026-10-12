@@ -9,7 +9,7 @@ consumers: the reduced-resolution snapshots of :mod:`dnsjax.lowres`
 (the perturbation pressure `$p'$` of one state, or a twin run's
 difference pressure `$\Delta p$`, :func:`convective_nonlinear` with a
 reference) and the twin budget's `$\Delta p$`
-(:mod:`dnsjax.twin.pressure`).  All solve the same problem with a
+(:mod:`dnsjax_lab.twin.pressure`).  All solve the same problem with a
 different source; nothing below reads the source except as a source.
 
 Interior equation
@@ -83,7 +83,7 @@ one banded solve.  Right under either ``res.consistent_imm``: both
 schemes deliver discrete continuity at the walls (the default delivers
 it everywhere).  The analytic condition then supplies an independent
 truncation diagnostic (``DifferencePressure.neumann_residual``,
-:mod:`dnsjax.twin.pressure`).
+:mod:`dnsjax_lab.twin.pressure`).
 
 The mean mode
 -------------
@@ -107,7 +107,7 @@ some 12 % on top at ``fd_order = 8``.  Build it only when a consumer
 is enabled.  Per sample, :func:`static_pressure` takes 15 single-field
 transforms (:func:`convective_nonlinear`) and one banded solve, and a
 difference pressure 30 (the same function with a reference).  Their
-peak transients, measured as :mod:`dnsjax.twin.diagnostics`
+peak transients, measured as :mod:`dnsjax_lab.twin.diagnostics`
 ("Memory") measures every program: 13 / 11 and 16 / 17 padded
 physical components at ``solver.rhs_transform_chunks`` 1 / 3, below
 the time step's own on CPU (22 / 20 iterative-CN), so a ``[lowres]``
@@ -343,11 +343,12 @@ def convective_nonlinear(
     are `$\mathrm{i}(k_xP_x + k_zP_z)\Delta\hat{\mathbf{u}}$` with
     *state*'s profile, `$\mathrm{i}(k_x\Delta P_x + k_z\Delta P_z)
     \hat{\mathbf{u}}'^{(1)}$` and `$\Delta\hat v\,\partial_y
-    \mathbf{U}_b$`. That is :func:`dnsjax.twin.diagnostics._convective_sources`
-    summed, to round-off, without the six-piece split its budget needs: 30
-    transforms, and each half of a component's pair goes back on its own,
-    behind its own barrier, so one gradient set is live at a time -- the peak
-    the pressure of a reduced difference snapshot sets (Design notes: "Cost").
+    \mathbf{U}_b$`. That is
+    :func:`dnsjax_lab.twin.diagnostics._convective_sources` summed, to
+    round-off, without the six-piece split its budget needs: 30 transforms,
+    and each half of a component's pair goes back on its own, behind its own
+    barrier, so one gradient set is live at a time -- the peak the pressure
+    of a reduced difference snapshot sets (Design notes: "Cost").
     Without a reference the program is the single-state one above, unchanged.
 
     Returns ``(n_hat, div_n)``: `$\hat{\mathcal{N}}$`

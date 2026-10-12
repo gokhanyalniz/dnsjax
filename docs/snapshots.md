@@ -75,10 +75,10 @@ Two more kinds of output use this format and its writer:
   `dnsjax-twin` writes the same files for its reference state, and in
   `lowres_delta/` for the difference field.
 - The 3-D spectra and budget **cubes** of `dnsjax-twin`
-  ([twin runs](../src/dnsjax/twin/README.md)). These hold real
+  ([twin runs](../lab/src/dnsjax_lab/twin/README.md)). These hold real
   `(field, y, k_z, k_x)` arrays, y-major like a state, with a metadata
   `kind` naming what they are. Every field reader and `init.snapshot`
-  refuses them by that name; `dnsjax.analysis.twin.read_cube` reads
+  refuses them by that name; `dnsjax_lab.analysis.twin.read_cube` reads
   them.
 
 A state snapshot carries no `kind`, so every file written before the

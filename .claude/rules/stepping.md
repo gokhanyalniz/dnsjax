@@ -2,7 +2,7 @@
 paths:
   - "src/dnsjax/{timestep,adaptive,rhs,__main__}.py"
   - "src/dnsjax/geometries/**/*.py"
-  - "src/dnsjax/twin/driver.py"
+  - "lab/src/dnsjax_lab/twin/driver.py"
   - "src/dnsjax/analysis/transient_growth.py"
   - "tests/test_{cnab2,temporal_order,adaptive,autodiff,imm_continuity}.py"
 ---

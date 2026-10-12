@@ -16,6 +16,9 @@ dependencies = [
     "dnsjax",
 ]
 
+[project.scripts]
+dnsjax-twin = "dnsjax_lab.twin.driver:main"
+
 [tool.uv.sources]
 dnsjax = { workspace = true }
 

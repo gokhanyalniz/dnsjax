@@ -905,7 +905,8 @@ def test_kick_carried_contribution_matches_the_field_map() -> None:
     :func:`kinematic_differences` of the whole field at that mode --
     a check on the forcer's own wavenumber arithmetic too.
     """
-    from dnsjax.extensions.forcing import StochasticForcer
+    from dnsjax_lab.extensions.forcing import StochasticForcer
+
     from dnsjax.geometries.wall_bounded._cylindrical_stepping import (
         kinematic_differences,
     )

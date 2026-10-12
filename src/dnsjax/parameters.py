@@ -1066,7 +1066,7 @@ class Initiation(BaseModel):
     # check in ``validate_parameters`` compares a direct assignment
     # against.  ``dnsjax-twin`` does not read this field: its partner
     # perturbation has its own ``twin.mean_flow``, which defaults
-    # **on** (``dnsjax.twin.driver``).  The localized-rolls
+    # **on** (``dnsjax_lab.twin.driver``).  The localized-rolls
     # perturbation stays mean-free whatever this is set to (its
     # (0, 0) content is a cubic in y, which the compatibility
     # conditions annihilate -- ``ic/localized_rolls.py``), and the
@@ -1723,7 +1723,7 @@ class Termination(BaseModel):
     # ``max_sim_time = 300`` therefore stops at ``t = 400``: what a
     # launch integrates does not depend on where its trajectory
     # started, so one horizon serves an ensemble of members harvested
-    # at different times (``scripts/ensemble_setup.py``).  The
+    # at different times (``lab/scripts/ensemble_setup.py``).  The
     # consequence for a run split across several launches (a
     # wall-clock budget, a paired twin resume) is that each launch
     # gets the whole horizon again -- a fixed *absolute* end time is

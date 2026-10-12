@@ -1,95 +1,35 @@
-"""Pytest bridge over the standalone test scripts.
+"""Pytest bridge over the core suite's standalone test scripts.
 
-The ``tests/test_*.py`` files are standalone scripts and remain the
-source of truth, each runnable directly as
-``uv run python tests/test_X.py``.  They rely on module-level singleton
-/ JAX setup performed by their own ``__main__`` runners, so pytest must
-never **import** them -- collection would execute the module top level
-with the singletons unconfigured.  This module is the only file
-pytest collects (``[tool.pytest.ini_options] python_files`` in
-``pyproject.toml``): every case shells one script out as a subprocess
-in its default invocation, asserts a zero exit code, and surfaces the
-output tail on failure.  Adding a test script means adding one row to
-``_SCRIPTS``.
+The machinery and the markers: ``tests/_bridge.py``.  The lab's
+scripts have their own bridge, ``lab/tests/pytest_suite.py``.
 
-Output streams live: each case prints a banner, then tees the
-script's stdout/stderr through as it arrives (``tests/_live.py``,
-which also sets ``PYTHONUNBUFFERED=1`` in the child), and pytest runs
-with ``-s`` by default (``addopts`` in ``pyproject.toml``) so the
-stream reaches the terminal immediately -- a tailed run shows
-progress and can be aborted early.  Failures still end with the
-compact output tail in the pytest summary.
-
-Markers:
-
-- ``mpi``: the script launches solver runs via ``mpirun`` (even at
-  ``-np 1``); skipped automatically when ``mpirun`` is not on PATH.
-- ``slow``: full solver integration runs / dt sweeps / the
-  published transient-growth values (minutes each).
-
-Usage::
-
-    uv run pytest                            # everything available
-    uv run pytest -m "not slow and not mpi"  # offline: no mpirun launch
-    uv run pytest -m "not slow"              # + the nine quick mpirun
-                                             #   rows (probes, forcing,
-                                             #   seeding, twin_postprocess,
-                                             #   device_grid,
-                                             #   host_placement,
-                                             #   mpi_communicators,
-                                             #   wall_time_stop,
-                                             #   run_status)
-    uv run pytest -k padding                 # a single script
+The quick ``mpirun`` rows that ``-m "not slow"`` adds: seeding,
+device_grid, host_placement, mpi_communicators, wall_time_stop and
+run_status.
 """
 
 from __future__ import annotations
 
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 _TESTS_DIR = Path(__file__).resolve().parent
-_REPO_ROOT = _TESTS_DIR.parent
-
 sys.path.insert(0, str(_TESTS_DIR))
 
-from _live import run_live  # noqa: E402
+from _bridge import MPI, NO_MPI_ONLY, SLOW, Row, script_test  # noqa: E402
 
-_MPI = (
-    pytest.mark.mpi,
-    pytest.mark.skipif(
-        shutil.which("mpirun") is None, reason="mpirun not on PATH"
-    ),
-)
-_SLOW = (pytest.mark.slow,)
-# ``--unit-only`` fallback rows: they exist so the unit halves still
-# run where mpirun is absent; with mpirun present the full (mpi) rows
-# re-run those same units, so the fallback would be pure duplication.
-# ``test_driving`` is the exception and carries no such mark: its full
-# row launches no mpirun, so it is marked ``slow`` only, and the fast
-# tiers would otherwise never run its unit half.
-_NO_MPI_ONLY = (
-    pytest.mark.skipif(
-        shutil.which("mpirun") is not None,
-        reason="the full (mpi) row covers the unit subset",
-    ),
-)
-
-# One row per invocation: (script, extra args, marks, timeout in s).
-# Scripts appearing twice: ``test_resume`` (offline ``--unit-only``
-# subset + full mpirun run), ``test_device_grid``/``test_forcing``/
-# ``test_probes``/``test_seeding``/``test_twin_postprocess`` (the
-# no-mpirun unit fallback + the full run), ``test_driving`` (the
-# always-run unit half + the slow full run),
-# ``test_transient_growth`` (offline ``--fast`` structure checks +
-# the slow full run with the published values), ``test_run_status``
-# (the ``--no-mpi`` tiers + the ``--mpi-only`` one, disjoint), and
-# ``test_laminar_smoke`` (single-device + the ``--np 2`` mesh row
-# whose reason is spelled out at that entry).
-_SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
+# One row per invocation.  Scripts appearing twice: ``test_resume``
+# (offline ``--unit-only`` subset + full mpirun run),
+# ``test_device_grid``/``test_seeding`` (the no-mpirun unit fallback +
+# the full run), ``test_driving`` (the always-run unit half + the slow
+# full run: its full row launches no mpirun, so it is marked slow only
+# and its unit row carries no NO_MPI_ONLY, or the fast tiers would never
+# run it), ``test_transient_growth`` (offline ``--fast`` structure
+# checks + the slow full run with the published values),
+# ``test_run_status`` (the ``--no-mpi`` tiers + the ``--mpi-only`` one,
+# disjoint), and ``test_laminar_smoke`` (single-device + the ``--np 2``
+# mesh row whose reason is spelled out at that entry).
+_SCRIPTS: list[Row] = [
     ("test_adaptive.py", (), (), 1800),
     ("test_annular.py", (), (), 1800),
     # Eight in-process (forced CPU device) subprocesses, each a
@@ -100,13 +40,10 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_bootstrap.py", (), (), 1800),
     ("test_cartesian.py", (), (), 1800),
     ("test_cnab2.py", (), (), 1800),
-    # Seven checks, one subprocess each (the geometry captures kappa at
-    # import); ~3 min, no mpirun.
-    ("test_curved_pipe.py", (), (), 1800),
     ("test_cylindrical.py", (), (), 1800),
     # Offline (no mpirun), but it runs five full solver steps in
     # subprocesses, so it is a slow row.
-    ("test_imm_continuity.py", (), _SLOW, 3600),
+    ("test_imm_continuity.py", (), SLOW, 3600),
     ("test_integration.py", (), (), 1800),
     ("test_localized_rolls.py", (), (), 1800),
     # In-process (forced CPU device) workers, one per case; no mpirun.
@@ -117,17 +54,10 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_monochromatic.py", (), (), 1800),
     ("test_padding.py", (), (), 1800),
     ("test_param_surface.py", (), (), 1800),
-    ("test_device_grid.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
+    ("test_device_grid.py", ("--unit-only",), NO_MPI_ONLY, 1800),
     ("test_driving.py", ("--unit-only",), (), 1800),
-    ("test_forcing.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
-    ("test_probes.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
-    ("test_seeding.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
+    ("test_seeding.py", ("--unit-only",), NO_MPI_ONLY, 1800),
     ("test_quasi_keplerian.py", (), (), 1800),
-    ("response/test_ensemble.py", (), (), 1800),
-    ("response/test_lim.py", (), (), 1800),
-    ("response/test_operator_tools.py", (), (), 1800),
-    ("response/test_probes_reader.py", (), (), 1800),
-    ("response/test_ssi.py", (), (), 1800),
     ("test_resume.py", ("--unit-only",), (), 1800),
     # ~2 min: the units plus seven one-process solver and twin launches
     # (no launcher); the mpirun tier is its own row below.
@@ -137,102 +67,43 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_snapshot_import.py", (), (), 1800),
     ("test_snapshot_perturb.py", (), (), 1800),
     ("test_transient_growth.py", ("--fast",), (), 1800),
-    ("test_twin_analysis.py", (), (), 1800),
-    ("test_twin_postprocess.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
-    # Offline and matplotlib-only; skips itself with a message where
-    # the ``plots`` dependency group is not installed.
-    ("test_twin_spectral_maps.py", (), (), 1800),
-    ("test_twin_unit.py", (), (), 1800),
-    ("test_viscoelastic.py", (), (), 1800),
-    ("test_viscoelastic_pipe.py", (), (), 1800),
     # Nine in-process (forced CPU device) workers, one per case, each
     # compiling one step twice; no mpirun.
     ("test_wall_normal_matvec.py", (), (), 1800),
-    ("test_temporal_order.py", (), _SLOW, 3600),
-    ("test_energy_budget.py", (), _MPI + _SLOW, 3600),
+    ("test_temporal_order.py", (), SLOW, 3600),
+    ("test_energy_budget.py", (), MPI + SLOW, 3600),
     # Three (2, 2) launches of a few steps, two of them over a faked
     # second host; about a minute.
-    ("test_device_grid.py", (), _MPI, 1800),
-    ("test_driving.py", (), _SLOW, 2400),
-    ("test_forcing.py", (), _MPI, 1800),
+    ("test_device_grid.py", (), MPI, 1800),
+    ("test_driving.py", (), SLOW, 2400),
     # ~4 min: sixteen 2-rank launches of a few steps each (every flow
     # family, [force], [lowres], adaptive dt, cnab2, single precision,
-    # a twin member, a regrid resume) -- not a _SLOW row.
-    ("test_host_placement.py", (), _MPI, 1800),
-    ("test_laminar_smoke.py", (), _MPI + _SLOW, 3600),
+    # a twin member, a regrid resume) -- not a SLOW row.
+    ("test_host_placement.py", (), MPI, 1800),
+    ("test_laminar_smoke.py", (), MPI + SLOW, 3600),
     # Under 10 s: two 4-rank launches, the second over a faked second
-    # host, no stepping -- not a _SLOW row.
-    ("test_mpi_communicators.py", (), _MPI, 1800),
+    # host, no stepping -- not a SLOW row.
+    ("test_mpi_communicators.py", (), MPI, 1800),
     # Multi-device, and specifically on the np1 (k_x / axial) axis:
     # every entry runs at the runner default --np 1 otherwise, which
     # is how a total np1 > 1 failure of res.consistent_imm reached
     # production in the cylindrical and annular families -- the
     # geometries build wavenumber arrays that are unsharded on that
     # axis, so a spec mismatch there is invisible single-device.
-    ("test_laminar_smoke.py", ("--np", "2"), _MPI + _SLOW, 3600),
-    ("test_probes.py", (), _MPI, 1800),
-    ("test_random_smoke.py", (), _MPI + _SLOW, 3600),
-    # _MPI for the cross-process seed-agreement row alone; the seven
+    ("test_laminar_smoke.py", ("--np", "2"), MPI + SLOW, 3600),
+    ("test_random_smoke.py", (), MPI + SLOW, 3600),
+    # MPI for the cross-process seed-agreement row alone; the seven
     # solver/twin launches are all a handful of steps each.
-    ("test_seeding.py", (), _MPI, 1800),
-    ("test_resume.py", (), _MPI + _SLOW, 3600),
-    ("test_rolls_smoke.py", (), _MPI + _SLOW, 3600),
-    ("test_transient_growth.py", (), _SLOW, 3600),
-    # No _MPI: single-process throughout (a lone process needs no
-    # launcher).  ~20 min at the default single seed -- the
-    # per-rung 50-advective-unit parent spin-ups dominate.
-    ("test_twin_budget.py", (), _SLOW, 3600),
-    ("test_twin_driver.py", (), _MPI + _SLOW, 3600),
-    # ~2.5 min: three short twin members plus the reconstructions of
-    # them, the last on a (2, 1) mesh -- not a _SLOW row.
-    ("test_twin_postprocess.py", (), _MPI, 1800),
+    ("test_seeding.py", (), MPI, 1800),
+    ("test_resume.py", (), MPI + SLOW, 3600),
+    ("test_rolls_smoke.py", (), MPI + SLOW, 3600),
+    ("test_transient_growth.py", (), SLOW, 3600),
     # ~2.5 min: one solver and one twin run, each to its 60 s wall-clock
-    # budget on two ranks -- not a _SLOW row.
-    ("test_wall_time_stop.py", (), _MPI, 1800),
+    # budget on two ranks -- not a SLOW row.
+    ("test_wall_time_stop.py", (), MPI, 1800),
     # ~2 min: one solver run for the twin's parent, then four short
     # two-rank runs, each stopped on request.
-    ("test_run_status.py", ("--mpi-only",), _MPI, 1800),
+    ("test_run_status.py", ("--mpi-only",), MPI, 1800),
 ]
 
-
-def _case_id(script: str, args: tuple[str, ...]) -> str:
-    suffix = "".join(a.replace("--", "-") for a in args)
-    return Path(script).stem + suffix
-
-
-def _tail(stdout: str, stderr: str) -> str:
-    return "\n".join(stdout.splitlines()[-50:] + stderr.splitlines()[-30:])
-
-
-@pytest.mark.parametrize(
-    ("script", "args", "timeout"),
-    [
-        pytest.param(
-            script, args, timeout, marks=marks, id=_case_id(script, args)
-        )
-        for script, args, marks, timeout in _SCRIPTS
-    ],
-)
-def test_script(script: str, args: tuple[str, ...], timeout: int) -> None:
-    """Run one standalone script; PASS is its zero exit code."""
-    invocation = " ".join([f"tests/{script}", *args])
-    print(f"\n=== running {invocation} [timeout {timeout}s] ===", flush=True)
-    try:
-        result = run_live(
-            [sys.executable, str(_TESTS_DIR / script), *args],
-            cwd=_REPO_ROOT,
-            timeout=timeout,
-            echo=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        pytest.fail(
-            f"{invocation} timed out after {timeout}s\n"
-            f"{_tail(exc.output or '', exc.stderr or '')}",
-            pytrace=False,
-        )
-    if result.returncode != 0:
-        pytest.fail(
-            f"{invocation} exited with code {result.returncode}\n"
-            f"{_tail(result.stdout or '', result.stderr or '')}",
-            pytrace=False,
-        )
+test_script = script_test(_TESTS_DIR, _SCRIPTS)

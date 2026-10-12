@@ -69,9 +69,9 @@ map to them as follows.
 | Claim | Pinned by |
 |---|---|
 | A stepped state's discrete divergence is round-off at any resolution | `tests/test_imm_continuity.py` |
-| On the toroidal pipe, where the metric makes the constraint iterative, that divergence instead tracks the corrector tolerance | `tests/test_curved_pipe.py` |
-| The toroidal equation set reproduces its published reference, and $\kappa = 0$ reproduces the straight pipe | `tests/test_curved_pipe.py` |
-| Curvature produces Dean vortices: the streamwise maximum moves to the outer wall and the flux drops under a fixed pressure gradient | `tests/test_curved_pipe.py` |
+| On the toroidal pipe, where the metric makes the constraint iterative, that divergence instead tracks the corrector tolerance | `lab/tests/test_curved_pipe.py` |
+| The toroidal equation set reproduces its published reference, and $\kappa = 0$ reproduces the straight pipe | `lab/tests/test_curved_pipe.py` |
+| Curvature produces Dean vortices: the streamwise maximum moves to the outer wall and the flux drops under a fixed pressure gradient | `lab/tests/test_curved_pipe.py` |
 | The default formulation is second order in time in all three wall-bounded geometries, and beats the primitive one in absolute error *and* decay rate | `tests/test_temporal_order.py` |
 | Second-order temporal convergence, fixed and variable step | `tests/test_temporal_order.py` |
 | The default off-centred Crank–Nicolson weight stays second order, as accurate as the trapezoidal rule to within 25 % | `tests/test_temporal_order.py` |
@@ -82,13 +82,13 @@ map to them as follows.
 | Reverse-mode gradients of a step match a central difference, and the default corrector still refuses | `tests/test_autodiff.py` |
 | The banded kernel's adjoint matches the portable sweep's own autodiff, and composes inside the sharded solve | `tests/test_banded_solver.py` |
 | Triton lowering does not regress on GPU-less machines | `tests/test_banded_solver.py` (CUDA-lowering rows) |
-| Per-geometry operators and matvecs match independent NumPy constructions | `tests/test_cartesian.py`, `tests/test_cylindrical.py`, `tests/test_annular.py`, `tests/test_viscoelastic.py`, `tests/test_viscoelastic_pipe.py` |
+| Per-geometry operators and matvecs match independent NumPy constructions | `tests/test_cartesian.py`, `tests/test_cylindrical.py`, `tests/test_annular.py`, `lab/tests/test_viscoelastic.py`, `lab/tests/test_viscoelastic_pipe.py` |
 | Snapshots round-trip, resume across any device count, and carry lineage; a pipe-family resume continues the uninterrupted run to round-off | `tests/test_snapshot.py`, `tests/test_resume.py` |
 | Host-built arrays reach the devices without JAX's cross-process gather, at setup and at every forcing kick, in every flow family and the twin driver | `tests/test_host_placement.py` |
 | A run spans nodes: each `np1` group stays on one node whatever order the launcher numbers the ranks in, and a two-host run reproduces the one-host statistics and snapshot | `tests/test_device_grid.py` |
 | Under the MPI collectives every device group a run uses has its communicator open before a collective can run off the MPI thread, on one host and across two | `tests/test_mpi_communicators.py` |
 | The JAX-free analysis API reproduces the solver's own discrete operators | `tests/test_snapshot_export.py` |
 | The $(k_x, k_z) = (0, 0)$ perturbation respects its conservation laws | `tests/test_mean_mode.py` |
-| The applied mean-mode driving column agrees with the wall-shear inference at converged resolution, and on the toroidal pipe with its whole mean-momentum balance | `tests/test_driving.py`, `tests/test_curved_pipe.py` |
-| A zero-energy twin perturbation reproduces the reference bit-for-bit, every stream included | `tests/test_twin_driver.py` |
+| The applied mean-mode driving column agrees with the wall-shear inference at converged resolution, and on the toroidal pipe with its whole mean-momentum balance | `tests/test_driving.py`, `lab/tests/test_curved_pipe.py` |
+| A zero-energy twin perturbation reproduces the reference bit-for-bit, every stream included | `lab/tests/test_twin_driver.py` |
 | Quadrature weights and interpolation matrices | `tests/test_integration.py` |

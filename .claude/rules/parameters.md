@@ -4,7 +4,7 @@ paths:
   - "src/dnsjax/flows/registry.py"
   - "src/dnsjax/flows/**/specs/*.py"
   - "src/dnsjax/extensions/__init__.py"
-  - "src/dnsjax/twin/driver.py"
+  - "lab/src/dnsjax_lab/twin/driver.py"
   - "src/dnsjax/analysis/transient_growth.py"
   - "tests/**/*.py"
   - "scripts/*.py"
@@ -57,8 +57,8 @@ paths:
   (`extensions/__init__.py`); `[twin]` belongs to `dnsjax-twin`, `[tg]`
   to `analysis.transient_growth`, `[perturb]` to
   `scripts/snapshot_perturb.py`, `[recon]` to
-  `scripts/twin_postprocess.py`, `[calib]` to
-  `scripts/random_ic_calibrate.py`.
+  `lab/scripts/twin_postprocess.py`, `[calib]` to
+  `lab/scripts/random_ic_calibrate.py`.
 - Add no knob, and no per-hardware table of defaults, for a value
   nobody has measured: ship the measured default and point at the tool
   that tunes it.

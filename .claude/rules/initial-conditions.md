@@ -2,8 +2,8 @@
 paths:
   - "src/dnsjax/ic/*.py"
   - "src/dnsjax/{seeding,bootstrap}.py"
-  - "src/dnsjax/twin/driver.py"
-  - "src/dnsjax/extensions/forcing.py"
+  - "lab/src/dnsjax_lab/twin/driver.py"
+  - "lab/src/dnsjax_lab/extensions/forcing.py"
   - "src/dnsjax/analysis/transient_growth.py"
   - "scripts/{snapshot_perturb,ensemble_setup,random_ic_calibrate}.py"
   - "tests/test_{mean_mode,localized_rolls,rolls_smoke,random_smoke,seeding,snapshot_perturb,forcing}.py"
@@ -19,7 +19,7 @@ paths:
   unit) are one law with deliberately different defaults: what `s`
   sets, `ic/random_field.py`; the twin value per flow, `TwinParams`.
 - Every seed defaults to unset, meaning "draw one": `init.random_seed`,
-  `twin.seed`, `force.seed`, `scripts/ensemble_setup.py --seed-base`.
+  `twin.seed`, `force.seed`, `lab/scripts/ensemble_setup.py --seed-base`.
   The contract (draw, agree across processes, print, record, refuse
   only a seed the run would draw with): `seeding.py`. The solver
   resolves them in `bootstrap.resolve_run_seeds`, between

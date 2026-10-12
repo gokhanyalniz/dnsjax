@@ -212,7 +212,7 @@ def _import_flow(system: str):
     elif system == "taylor-couette":
         from dnsjax.flows.wall_bounded import taylor_couette as m
     elif system == "dean":
-        from dnsjax.flows.wall_bounded import dean as m
+        from dnsjax_lab.flows.wall_bounded import dean as m
     else:
         raise SystemExit(f"unsupported system for this diagnostic: {system}")
     return m
