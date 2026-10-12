@@ -28,3 +28,6 @@ lab = "dnsjax_lab.flows:SPECS"
 
 [project.entry-points."dnsjax.parameters"]
 lab = "dnsjax_lab.parameters:FIELDS"
+
+[project.entry-points."dnsjax.extensions"]
+lab = "dnsjax_lab.extensions"

@@ -148,6 +148,7 @@ configure_jax_platform(platform_from_argv())
 
 import numpy as np  # noqa: E402
 from _live import run_live  # noqa: E402
+from dnsjax_lab.extensions import force_params  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
 from dnsjax.analysis.twin.series import (  # noqa: E402
@@ -156,7 +157,7 @@ from dnsjax.analysis.twin.series import (  # noqa: E402
     read_dat,
     read_twin,
 )
-from dnsjax.extensions import force_params, reset_extensions  # noqa: E402
+from dnsjax.extensions import reset_extensions  # noqa: E402
 from dnsjax.snapshot_meta import read_snapshot_meta  # noqa: E402
 
 PARENT_T = 1.0

@@ -86,6 +86,7 @@ from pathlib import Path
 
 import jax
 import numpy as np
+from dnsjax_lab.extensions import probes_params
 from jax import Array, lax, shard_map
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
@@ -100,7 +101,7 @@ from ..param_surface import recorded_params_dump
 from ..parameters import derived_params, params
 from ..sharding import sharding
 from ..snapshot_meta import git_hash, write_sidecar_json
-from . import probes_params
+from . import RunHooks
 
 #: Sidecar schema version.  Bumped whenever the stored *meaning*
 #: changes at fixed layout -- the physical component basis of the
@@ -392,3 +393,39 @@ class ProbeStream:
         self._ts.clear()
         self._idx = 0
         return bad
+
+
+class ProbeHooks(RunHooks):
+    r"""The ``[probes]`` section's part in the solver's run loop.
+
+    The section's ``runtime`` factory
+    (:class:`~dnsjax.extensions.RunHooks`).  Records the initial state
+    (``start``), then every ``it_probes`` steps the pre-step state
+    (``sample``, which skips ``it == it0``, the start record's), and
+    the final state when the run ends on the cadence (``finish``): the
+    loop samples *before* each step, so the post-step final state is
+    never sampled there, and only a cadence-aligned final record (a
+    ``stop.max_sim_time`` horizon of a whole number of probe
+    intervals ends exactly on the grid) keeps the sample times uniform
+    for the readers.  A non-finite record, possible only when it fills
+    the buffer (``outs.nbuffer``), aborts the run.
+    """
+
+    def __init__(self, state: Array, t: float) -> None:
+        self.stream = ProbeStream(state)
+
+    def start(self, state: Array, t: float) -> str | None:
+        return self.stream.record(state, t)
+
+    def sample(self, it: int, state: Array, t: float) -> str | None:
+        if it % probes_params.it_probes == 0 and it > params.init.it0:
+            return self.stream.record(state, t)
+        return None
+
+    def finish(self, it: int, state: Array, t: float) -> str | None:
+        if it > params.init.it0 and it % probes_params.it_probes == 0:
+            return self.stream.record(state, t)
+        return None
+
+    def flush(self, check: bool) -> str | None:
+        return self.stream.flush(check=check)

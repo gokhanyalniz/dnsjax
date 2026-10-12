@@ -243,7 +243,7 @@ def run_unit_checks() -> str | None:
         # The trajectory-defining ``force`` extension: turning kicks
         # on over a kick-free snapshot is a trajectory change; a
         # stored section matching the live singleton is not.
-        from dnsjax.extensions import force_params
+        from dnsjax_lab.extensions import force_params
 
         force_params.amplitude = 0.5
         changes = trajectory_defining_changes(snap)
@@ -536,9 +536,11 @@ def run_off_cadence_checks() -> str | None:
     defaults instead of failing its "set together" check on what it
     inherited.
     """
+    from dnsjax_lab.extensions import force_params, probes_params
+
     import dnsjax.parameters as P
     from dnsjax.bootstrap import resolve_parameters
-    from dnsjax.extensions import force_params, probes_params, reset_extensions
+    from dnsjax.extensions import reset_extensions
     from dnsjax.param_surface import recorded_params_dump
     from dnsjax.parameters import params
 

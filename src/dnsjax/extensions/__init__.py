@@ -1,4 +1,4 @@
-r"""Extension parameter sections: JAX-free registry and built-ins.
+r"""Extension parameter sections: the JAX-free registry and its plugins.
 
 An *extension* owns a parameter section outside
 :mod:`dnsjax.parameters`: the section is parsed from the ``dnsjax``
@@ -10,187 +10,29 @@ recorded in snapshot metadata / sidecar JSON, and can be
 trajectory-defining.  Modules and scripts register their sections via
 :func:`register_extension`; the resolved values live on the
 extension's ``values`` singleton (analogous to the global ``params``).
+An entry point owns its section (the transient-growth CLI's ``[tg]``,
+``scripts/snapshot_perturb.py``'s ``[perturb]``); an installed plugin
+package registers its sections from a module it names under the
+``dnsjax.extensions`` entry-point group, which this module imports
+last, once every name such a module imports from it exists.
 
-Built-ins registered here:
+A section can take part in the solver's run as well:
+:attr:`ParamExtension.runtime` names a factory of :class:`RunHooks`,
+which :mod:`dnsjax.__main__` builds once the section is configured and
+calls at fixed points of every iteration.
 
-- ``probes`` -- the runtime spectral-mode probe stream
-  (:mod:`dnsjax.extensions.probes` writes ``probes.bin``/
-  ``probes.json`` during the run); wall-bounded flows.
-- ``force`` -- the white-in-time stochastic mode kicks
-  (:mod:`dnsjax.extensions.forcing` injects them into the stepping
-  loop and logs ``forcing.bin``/``forcing.json``); wall-bounded
-  non-viscoelastic flows, **trajectory-defining** (kicks alter the
-  dynamics exactly like a ``phys`` change).
-
-Their runtime modules import JAX at module scope, so the parameter
-models and live singletons live here (JAX-free), importable before
-the JAX runtime is configured -- e.g. by ``--help``.
-
-Import direction: this module may import :mod:`dnsjax.flows.registry`
-and :mod:`dnsjax.harmonics` but never :mod:`dnsjax.parameters` (the
-validate hooks receive the live ``params`` as an argument), so
-``parameters -> flows.registry`` and ``bootstrap -> extensions``
-stay cycle-free.
+Import direction: this module never imports :mod:`dnsjax.parameters`
+(the validate hooks receive the live ``params`` as an argument), so
+``parameters -> flows.registry`` and ``bootstrap -> extensions`` stay
+cycle-free.
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from importlib import import_module
+from importlib.metadata import entry_points
 
-from pydantic import BaseModel, ConfigDict, Field
-
-from ..flows.registry import viscoelastic_systems, walled_systems
-from ..harmonics import parse_mode_pairs
-
-
-class ProbesParams(BaseModel):
-    r"""Spectral-mode probe stream (state probes), optional.
-
-    Enabled when ``modes`` and ``it_probes`` are both set: every
-    ``it_probes`` steps the run records the complex wall-normal
-    profiles ``u_hat(y)`` of the listed global spectral modes into a
-    binary ``probes.bin`` (+ a ``probes.json`` schema sidecar).
-    ``modes`` is an ``"i2,i3;i2,i3;..."`` list of stored-layout
-    indices (axis 2 = complex slot, axis 3 = real-FFT slot -- the
-    transient-growth CLI ``--modes`` convention); the mean mode
-    ``(0,0)`` is allowed (it records the instantaneous mean profile).
-    Wall-bounded systems only.  ``it_probes`` trades time resolution
-    for disk (a record is ``8 + K*C*ny*2`` values); the buffered
-    writer makes any cadence cheap at runtime.  Format, buffering,
-    and the reader: the :mod:`dnsjax.extensions.probes` and
-    :mod:`dnsjax.analysis.response.probes` docstrings.
-
-    On ``curved-pipe`` component 0 is the solver's carried streamwise
-    variable `$w_s = h\,u_s$` (`$h = 1 + \kappa r\cos\theta$`), not
-    `$u_s$`: `$1/h$` couples every azimuthal mode, so no single mode
-    column converts exactly.  The sidecar keeps the cylindrical label.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    modes: str | None = Field(
-        default=None,
-        description=(
-            "Spectral modes 'i2,i3;i2,i3;...' whose complex "
-            "wall-normal profiles stream to probes.bin every "
-            "it_probes steps."
-        ),
-    )
-    it_probes: int | None = Field(
-        default=None,
-        ge=0,
-        description=(
-            "Steps between probe records; set together with modes. "
-            "0 switches the stream off, whatever else the section "
-            "inherited."
-        ),
-    )
-
-
-class ForceParams(BaseModel):
-    r"""White-in-time stochastic mode forcing (state kicks), optional.
-
-    Enabled when ``modes`` / ``profiles`` / ``amplitude`` /
-    ``it_force`` are all set (all-or-none): every ``it_force`` steps
-    the main loop adds to each listed spectral mode (plus its
-    real-FFT conjugate partner) a random superposition of the stored
-    channel profiles -- a sequence of independent state increments
-    ("kicks"), the discrete-time realization of white-in-time
-    forcing.  The drawn coefficients stream to
-    ``forcing.bin``/``forcing.json``, keeping the run's full forcing
-    history available to offline analysis -- e.g. their
-    cross-covariance with the probe stream identifies the mode's
-    linear operator (:mod:`dnsjax.analysis.response.ssi`).
-
-    Kicks rather than a body-force term: a forcing term inside the
-    nonlinear RHS would be AB2-extrapolated under ``cnab2``
-    (colouring the noise) or corrector-iterated under
-    ``iterative-cn``, and would trace into the jitted steppers; a
-    loop-level kick keeps both schemes untouched and makes the
-    per-kick response exactly the solver's own propagator.  Full
-    conventions (timing relative to probes/snapshots, resume
-    continuation, amplitude guidance): the
-    :mod:`dnsjax.extensions.forcing` module docstring.
-
-    Wall-bounded, non-viscoelastic systems only: the injector's
-    cylindrical/annular branch hard-codes the 3-component velocity map
-    ``to_pm_basis`` and has no ``to_spin_basis`` counterpart (unlike the probe
-    extractor, which does).  The conjugate partner itself is basis-agnostic --
-    a plain conjugate of a physical profile, valid for any component count.  On
-    ``curved-pipe`` a kick's component-0 profile lands on the carried
-    `$w_s = h\,u_s$` -- the column a probe records there -- not on `$u_s$`.
-    The whole section is **trajectory-defining**: resuming with changed forcing
-    starts a new trajectory (like a ``phys`` change).
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    # Forced modes should normally also be probed, or the response
-    # cannot be identified (a startup note reminds when they are not).
-    modes: str | None = Field(
-        default=None,
-        description=(
-            "Spectral modes 'i2,i3;i2,i3;...' to kick (the "
-            "probes.modes convention); the (0,0) mean mode is "
-            "rejected."
-        ),
-    )
-    # ``(m, C, Ny)`` complex, unit energy norm -- the
-    # ``operator_tools.save_modes_npz`` bundle format; any unit-energy
-    # profile set works, typically the leading controllability modes.
-    # Exact grid match required; regrid offline if needed.
-    profiles: str | None = Field(
-        default=None,
-        description=(
-            "npz with per-mode channel profiles profiles_{i2}_{i3} "
-            "on this run's wall-normal grid."
-        ),
-    )
-    # Fewer channels = fewer directions identified but less injected
-    # energy and a smaller operator to fit.
-    n_channels: int | None = Field(
-        default=None,
-        ge=1,
-        description=("Leading stored channels used per mode (default: all)."),
-    )
-    # Each kick adds ``eps * sum_j w_j profile_j`` with
-    # ``w_j ~ CN(0,1)`` i.i.d.  Pick eps in the linear-response window
-    # (halving it must leave the identified operator unchanged); the
-    # predicted stationary forced energy for planning:
-    # ``dnsjax.analysis.response.ssi.predicted_forced_variance``.
-    amplitude: float | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Kick coefficient scale eps; the expected injected "
-            "energy is eps^2 per channel per kick."
-        ),
-    )
-    # ``Delta_f = it_force * dt``.  Larger values give cleaner
-    # per-kick responses; smaller values more statistics per run time.
-    it_force: int | None = Field(
-        default=None,
-        ge=0,
-        description=(
-            "Steps between kicks; must be a multiple of the probe "
-            "cadence when probing.  0 switches the forcing off, "
-            "whatever else the section inherited."
-        ),
-    )
-    # Unset means "draw one" (:mod:`dnsjax.seeding`), resolved by
-    # ``bootstrap.resolve_run_seeds`` only when the enabling quartet
-    # below is configured -- so an unconfigured [force] never draws, and
-    # the stray-knob check further down still sees ``None``.  The drawn
-    # value is recorded in the snapshot and in ``forcing.json``, so an
-    # append-resume inherits it and its match key still agrees.
-    seed: int | None = Field(
-        default=None,
-        description=(
-            "Seed of the kick-coefficient PRNG (host-side; a resumed "
-            "run skips the recorded draws and continues the stream "
-            "exactly). Unset: drawn from the system entropy pool at "
-            "startup, printed, and recorded."
-        ),
-    )
+from pydantic import BaseModel
 
 
 @dataclass
@@ -218,6 +60,18 @@ class ParamExtension:
     knobs, inherited and impossible to unset, would otherwise fail its
     "set together" check.  ``values`` is the live merged singleton
     (analogous to the global ``params``).
+
+    ``configured(values)`` says whether the section is switched on;
+    ``None`` means it only parameterizes the entry point that owns it.
+    Once it is, :func:`dnsjax.bootstrap.resolve_run_seeds` draws each
+    unset field of ``seed_fields`` (and records it), unless
+    ``seeds_at_start`` is false, when the owner resolves them itself
+    (``dnsjax-twin``, after its paired-resume decision) and startup
+    only records where a given value came from.  ``runtime``
+    (``"module:attr"``) names a factory ``(state, t) -> RunHooks``,
+    the section's part in the solver's run loop (:class:`RunHooks`),
+    in a module imported only once the section is configured, so it
+    may import JAX.
     """
 
     name: str
@@ -231,6 +85,10 @@ class ParamExtension:
     record_in_metadata: bool = True
     off_cadences: tuple[str, ...] = ()
     reset_when_off: bool = False
+    configured: Callable[[BaseModel], bool] | None = None
+    seed_fields: tuple[str, ...] = ()
+    seeds_at_start: bool = True
+    runtime: str | None = None
     values: BaseModel = field(init=False)
 
     def __post_init__(self) -> None:
@@ -357,184 +215,94 @@ def reset_extensions() -> None:
         _reset_values(ext)
 
 
-# ── Built-in extensions ──────────────────────────────────────────
+class RunHooks:
+    r"""A configured extension's part in the solver's run loop.
+
+    :mod:`dnsjax.__main__` builds one per relevant, configured
+    extension that has a :attr:`ParamExtension.runtime` factory, as
+    soon as the initial state is in place, and calls it at fixed points
+    of the run, the extensions in registration order:
+
+    1. :meth:`start` -- once, on the initial state (``it0``, ``t0``),
+       right after the factory;
+    2. :meth:`sample` -- at the top of each iteration, after the stats
+       row and before the periodic snapshot, so on the state that
+       snapshot records;
+    3. :meth:`modify` -- after the periodic snapshot and the lowres
+       write, immediately before the step: the one hook that may
+       change the state, so every saved state precedes it;
+    4. :meth:`finish` -- once after the loop, before the final
+       snapshot;
+    5. :meth:`flush` -- with every flush of the diagnostic streams
+       (before each snapshot, after the first step, at shutdown and on
+       a termination signal).
+
+    Every default does nothing.  ``state`` is the solver-basis state
+    the steppers carry.  A ``str`` returned by :meth:`start`,
+    :meth:`sample`, :meth:`finish` or :meth:`flush` reports a
+    non-finite value, and the run aborts with it (exit code 3), as on a
+    non-finite core diagnostic.
+    """
+
+    def start(self, state, t: float) -> str | None:
+        """Record on the initial state; a non-finite message or None."""
+        return None
+
+    def sample(self, it: int, state, t: float) -> str | None:
+        """Record on the pre-step state; a non-finite message or None."""
+        return None
+
+    def modify(self, it: int, state, t: float):
+        """The state to step from (the default: *state* unchanged)."""
+        return state
+
+    def finish(self, it: int, state, t: float) -> str | None:
+        """Record on the final state; a non-finite message or None."""
+        return None
+
+    def flush(self, check: bool) -> str | None:
+        """Write buffered records; checked, a non-finite message."""
+        return None
 
 
-def _validate_probes(values: ProbesParams, params) -> None:
-    # Both knobs together, wall-bounded only, and every probed index
-    # must address a *true* (unpadded) mode -- axis 2 carries
-    # ``nz - 1`` complex modes, axis 3 carries ``nx // 2`` real-FFT
-    # modes (Nyquist omitted; ``harmonics``).
-    if (values.modes is None) != (values.it_probes is None):
-        raise ValueError(
-            "probes.modes and probes.it_probes must be set together "
-            "(one selects the modes, the other the cadence)."
-        )
-    if values.modes is None:
-        return
-    if params.step.adaptive:
-        # probes.bin records carry t, but every reader reconstructs
-        # the uniform sample interval as it_probes * dt from the
-        # sidecar (and dt is an append-resume match key), so the
-        # stream is a fixed-dt feature.
-        raise ValueError(
-            "probes.modes: the probe stream requires a fixed time "
-            "step (step.adaptive = False); its readers assume the "
-            "uniform sample interval it_probes * dt."
-        )
-    if params.phys.system not in walled_systems:
-        raise ValueError(
-            "probes.modes: the spectral-mode probe stream supports "
-            "wall-bounded systems only (system "
-            f"{params.phys.system!r})."
-        )
-    n2, n3 = params.res.nz - 1, params.res.nx // 2
-    for i2, i3 in parse_mode_pairs(values.modes):
-        if i2 >= n2 or i3 >= n3:
-            raise ValueError(
-                f"probes.modes: mode ({i2},{i3}) out of range "
-                f"(axis 2 has {n2} modes from res.nz = "
-                f"{params.res.nz}, axis 3 has {n3} modes from "
-                f"res.nx = {params.res.nx})."
-            )
+def runtime_extensions(system: str) -> list[ParamExtension]:
+    """The relevant, configured extensions of *system* with a runtime."""
+    return [
+        ext
+        for ext in relevant_extensions(system).values()
+        if ext.runtime is not None
+        and ext.configured is not None
+        and ext.configured(ext.values)
+    ]
 
 
-def _validate_force(values: ForceParams, params) -> None:
-    # All-or-none knobs, wall-bounded non-viscoelastic only,
-    # true-mode indices, no mean-mode kick, and kick/probe sample
-    # alignment.
-    f_set = {
-        "modes": values.modes,
-        "profiles": values.profiles,
-        "amplitude": values.amplitude,
-        "it_force": values.it_force,
-    }
-    missing = [k for k, v in f_set.items() if v is None]
-    if missing and len(missing) < len(f_set):
-        raise ValueError(
-            "force.modes, force.profiles, force.amplitude and "
-            "force.it_force enable the stochastic forcing together; "
-            f"missing: {', '.join(missing)}."
-        )
-    if values.modes is None:
-        # The secondary knobs have no effect without the enabling
-        # quartet -- and a recorded non-default value would flag a
-        # spurious trajectory change on a later resume (the section is
-        # trajectory-defining), so reject rather than ignore.
-        #
-        # ``seed == 0`` is exempt: it was this field's default before
-        # seeds became drawable, so every snapshot written by an
-        # *unforced* run of an older version records it.  The snapshot
-        # layer feeds that ``0`` straight back in, and rejecting it
-        # here would make those snapshots unresumable.  It costs
-        # nothing: ``0`` was never distinguishable from unset here
-        # either, and a configured ``force.seed = 0`` is still honoured
-        # (``resolve_run_seeds`` only draws over ``None``).
-        stray = [
-            k
-            for k, v in (
-                ("n_channels", values.n_channels),
-                ("seed", values.seed or None),
-            )
-            if v is not None
-        ]
-        if stray:
-            raise ValueError(
-                f"force.{' / force.'.join(stray)} set without the "
-                "enabling force.modes / profiles / amplitude / "
-                "it_force quartet (no forcing is configured)."
-            )
-        return
-    if params.step.adaptive:
-        # The white-in-time kick statistics and their readers
-        # hard-code the uniform kick interval it_force * dt (and dt
-        # is an append-resume match key of forcing.json).
-        raise ValueError(
-            "force.modes: stochastic forcing requires a fixed time "
-            "step (step.adaptive = False); the kick interval "
-            "it_force * dt must be uniform."
-        )
-    if (
-        params.phys.system not in walled_systems
-        or params.phys.system in viscoelastic_systems
-    ):
-        raise ValueError(
-            "force.modes: stochastic forcing supports the "
-            "wall-bounded velocity systems only (system "
-            f"{params.phys.system!r})."
-        )
-    n2, n3 = params.res.nz - 1, params.res.nx // 2
-    force_pairs = parse_mode_pairs(values.modes)
-    for i2, i3 in force_pairs:
-        if i2 >= n2 or i3 >= n3:
-            raise ValueError(
-                f"force.modes: mode ({i2},{i3}) out of range "
-                f"(axis 2 has {n2} modes, axis 3 has {n3} modes)."
-            )
-        if (i2, i3) == (0, 0):
-            raise ValueError(
-                "force.modes: the (0,0) mean mode cannot be forced "
-                "(its coefficient is real, and under bulk-velocity "
-                "driving it is constrained)."
-            )
-    probes = probes_params
-    if probes.it_probes is not None:
-        if values.it_force % probes.it_probes != 0:
-            raise ValueError(
-                f"force.it_force ({values.it_force}) must be a "
-                f"multiple of probes.it_probes ({probes.it_probes}) "
-                "so every kick coincides with a (pre-kick) probe "
-                "sample."
-            )
-        probed = set(parse_mode_pairs(probes.modes))
-        unprobed = [m for m in force_pairs if m not in probed]
-        if unprobed:
-            # A note, not an error: forcing one mode while probing
-            # another is a legitimate cross-mode experiment.
-            print(
-                f"[force] note: forced mode(s) {unprobed} are not in "
-                "probes.modes; their own response will not be "
-                "recorded."
-            )
-    else:
-        print(
-            "[force] note: no probe stream configured (probes.modes); "
-            "the forced responses will not be recorded (response "
-            "identification, e.g. dnsjax.analysis.response.ssi, "
-            "needs them)."
-        )
+def build_run_hooks(ext: ParamExtension, state, t: float) -> RunHooks:
+    """Import *ext*'s runtime factory and build its hooks on *state*."""
+    module, _, attr = ext.runtime.partition(":")
+    return getattr(import_module(module), attr)(state, t)
 
 
-PROBES_EXTENSION = register_extension(
-    ParamExtension(
-        name="probes",
-        model=ProbesParams,
-        relevant=lambda system: system in walled_systems,
-        summary="Spectral-mode probe stream (response analysis).",
-        validate=_validate_probes,
-        off_cadences=("it_probes",),
-        reset_when_off=True,
-    )
-)
+#: The entry-point group under which plugin packages register
+#: extension sections: each names a module whose import registers them.
+EXTENSIONS_ENTRY_POINT_GROUP = "dnsjax.extensions"
 
-FORCE_EXTENSION = register_extension(
-    ParamExtension(
-        name="force",
-        model=ForceParams,
-        relevant=lambda system: (
-            system in walled_systems and system not in viscoelastic_systems
-        ),
-        summary=(
-            "White-in-time stochastic mode kicks (response analysis; "
-            "trajectory-defining)."
-        ),
-        validate=_validate_force,
-        trajectory_defining=True,
-        off_cadences=("it_force",),
-        reset_when_off=True,
-    )
-)
 
-#: Live merged built-in sections (analogous to the global ``params``).
-probes_params: ProbesParams = PROBES_EXTENSION.values
-force_params: ForceParams = FORCE_EXTENSION.values
+def _load_plugins() -> None:
+    """Import the modules registered under the entry-point group.
+
+    Last in this module, so a plugin module importing from it finds
+    every name it needs; an import already under way (the plugin
+    module imported first, importing this one) is left to finish.
+    """
+    found = entry_points(group=EXTENSIONS_ENTRY_POINT_GROUP)
+    for ep in sorted(found, key=lambda e: e.name):
+        try:
+            ep.load()
+        except Exception as exc:
+            raise RuntimeError(
+                f"extension plugin {ep.name!r} ({ep.value}) failed to "
+                f"load: {exc}"
+            ) from exc
+
+
+_load_plugins()

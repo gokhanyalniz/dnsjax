@@ -119,6 +119,7 @@ from pathlib import Path
 
 import jax
 import numpy as np
+from dnsjax_lab.extensions import force_params
 from jax import Array, lax, shard_map
 from jax import numpy as jnp
 from jax.sharding import NamedSharding
@@ -130,7 +131,7 @@ from ..param_surface import recorded_params_dump
 from ..parameters import derived_params, params
 from ..sharding import sharding
 from ..snapshot_meta import git_hash, write_sidecar_json
-from . import force_params
+from . import RunHooks
 from .probes import _component_labels
 
 #: Sidecar schema version.  Bumped whenever the stored *meaning*
@@ -612,3 +613,31 @@ class StochasticForcer:
                 f.flush()
                 os.fsync(f.fileno())
         self._rows.clear()
+
+
+class ForceHooks(RunHooks):
+    r"""The ``[force]`` section's part in the solver's run loop.
+
+    The section's ``runtime`` factory
+    (:class:`~dnsjax.extensions.RunHooks`).  Kicks the state every
+    ``it_force`` steps in ``modify``: after the equal-t probe sample
+    and any snapshot, which both record the pre-kick state, and
+    immediately before the step, so a resumed continuation never
+    double-applies a kick (saved states are pre-kick; the kick belongs
+    to the segment that steps from them) and the coefficient stream
+    continues seamlessly.  The coefficient log flushes with the other
+    streams, unchecked: host-drawn Gaussians are finite by
+    construction.
+    """
+
+    def __init__(self, state: Array, t: float) -> None:
+        self.forcer = StochasticForcer(state)
+
+    def modify(self, it: int, state: Array, t: float) -> Array:
+        if it % force_params.it_force == 0:
+            return self.forcer.kick(state, t)
+        return state
+
+    def flush(self, check: bool) -> str | None:
+        self.forcer.flush()
+        return None
