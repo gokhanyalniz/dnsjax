@@ -421,17 +421,21 @@ is its share of the summed one's peak, which it never exceeds (the
 spectra are non-negative), and a budget term's is its size against
 the production's, which it can.
 
-The anchor panel is drawn on a scale frozen over the series,
-whatever ``--clim`` says: `$[0, 1]$` for the summed spectrum, and the
-production's from its most negative value in any frame up to 1.  The
-bands are the same in every frame, so a growth phase decades below
-saturation draws as legibly as saturation does, which the frozen
-absolute scale cannot give and ``--clim frame`` gives only with a
-colour bar that moves.  Every other panel is drawn on its own range
-in that frame, as under ``--clim frame``: its levels move with it, and
-what they show is its shape.  ``--quantile`` reaches neither.  The
-band below the first level stays unfilled, as on every non-negative
-map here.
+Under ``--clim series`` and ``frame`` the anchor panel is drawn on a
+scale frozen over the series: `$[0, 1]$` for the summed spectrum, and
+the production's from its most negative value in any frame up to 1.
+The bands are the same in every frame, so a growth phase decades
+below saturation draws as legibly as saturation does, which the
+frozen absolute scale cannot give and ``--clim frame`` gives only
+with a colour bar that moves.  Every other panel is drawn on its own
+range in that frame, as under ``--clim frame``: its levels move with
+it, and what they show is its shape.  ``--clim ramped`` reaches every
+panel instead, as it reaches every other map: each is frozen on the
+frames so far past the perturbation ("Colour scales"), which leaves
+the summed spectrum's `$[0, 1]$` as it was and lets the production's
+negative side and every other panel's range grow with the run.
+``--quantile`` reaches no shape panel.  The band below the first
+level stays unfilled, as on every non-negative map here.
 
 Whatever is constant over a frame cancels from the map: the unit
 conversion and ``volume_fac``.  So do the units of `$y$`: a shape map
@@ -713,9 +717,19 @@ against freezing on all of them.  The sign family is decided once for
 the whole series in every mode, so a panel never changes colour map
 mid-run.
 
-A shape map takes none of the three: its anchor panel is frozen on
-the series and every other panel takes its own frame, whatever
-``--clim`` says ("Shape maps").
+The ramp leaves out the perturbation: the record at
+`$t_\mathrm{rel} = 0$` is the random field the twin was seeded with,
+not yet shaped by the flow, and its extremes would otherwise hold for
+the rest of the run.  That frame is drawn exactly as
+``--clim frame`` draws it, and the ramp counts from the next one
+(:func:`ramp_start`); a selection whose ``--first`` already skips it
+ramps from its own first frame.  So the ramp ends on the frozen scale
+only where the series extreme falls after the perturbation.
+
+A shape map takes neither of the first two: under either, its anchor
+panel is frozen on the series and every other panel takes its own
+frame.  Under ``--clim ramped`` every panel ramps ("Shape maps"), its
+perturbation frame drawn as under ``--clim frame``.
 
 Peak tracking
 -------------
@@ -2470,10 +2484,11 @@ class Map:
     ``peak`` and ``clim`` are set on a shape map alone (module
     docstring, "Shape maps").  ``peak`` is what it was divided by: the
     frame's peak of its figure's anchor panel.  ``clim`` is the
-    ``--clim`` mode it is drawn under whatever ``--clim`` says, which
-    :func:`panel_figure` reads: ``series`` for the anchor panel, whose
-    scale is frozen, and ``frame`` for every other, whose levels show
-    its own shape in that frame.
+    ``--clim`` mode it is drawn under when ``--clim`` is ``series`` or
+    ``frame``, which :func:`panel_figure` reads: ``series`` for the
+    anchor panel, whose scale is frozen, and ``frame`` for every other,
+    whose levels show its own shape in that frame.  ``--clim ramped``
+    overrides it on every frame past the perturbation's.
     """
 
     lam: np.ndarray  # (n_lam,) wavelength, plotted units
@@ -2947,8 +2962,8 @@ def make_map(
     *ylim*, :func:`y_limits`' default when ``None`` -- so that the
     anchor panel reaches 1 there.  That peak is :attr:`Map.peak`, which
     the anchor panel's title reports, and :attr:`Map.clim` says how the
-    panel's levels are read (module docstring, "Shape maps").  Every
-    other map ignores *ylim*.
+    panel's levels are read unless ``--clim ramped`` overrides it
+    (module docstring, "Shape maps").  Every other map ignores *ylim*.
     """
     suffix = name.rpartition("_")[2]
     source = shape_source(name)
@@ -2997,14 +3012,27 @@ def make_map(
 # ── Colour scales ────────────────────────────────────────────────────
 
 
+def ramp_start(t_rel: np.ndarray) -> int:
+    r"""The first frame ``--clim ramped`` counts, past the perturbation.
+
+    The record at `$t_\mathrm{rel} = 0$` (to :data:`_T_ATOL`) is the
+    perturbation itself, the random field the twin was seeded with,
+    so the ramp starts after it: 1 where the first frame is that
+    record, 0 where ``--first`` has left it out (module docstring,
+    "Colour scales").
+    """
+    return int(t_rel.size > 0 and abs(float(t_rel[0])) <= _T_ATOL)
+
+
 @dataclass(frozen=True)
 class PanelScale:
     """One panel's series-global range and its sign family.
 
     *frame_lo* / *frame_hi* are each frame's own extremes over the same
     rows, ``nan`` where a frame has nothing finite: what ``--clim
-    ramped`` accumulates (:meth:`data_range`).  A spacetime panel, one
-    figure for the whole run, has neither.
+    ramped`` accumulates (:meth:`data_range`), from frame *ramp_from*
+    on (:func:`ramp_start`).  A spacetime panel, one figure for the
+    whole run, has neither.
     """
 
     lo: float
@@ -3016,18 +3044,22 @@ class PanelScale:
     frame_hi: np.ndarray | None = field(
         default=None, repr=False, compare=False
     )
+    ramp_from: int = 0
 
     def data_range(self, clim: str, frame: int) -> tuple[float, float] | None:
         """The range one frame's levels are read from, under *clim*.
 
         ``series`` is the frozen range, ``frame`` none (the figure
-        reads its own), and ``ramped`` the extremes of every frame up
-        to and including *frame*, each side separately (module
-        docstring, "Colour scales").  That range always contains the
-        frame's own, never shrinks, and is the frozen range itself from
-        the frame holding the series extreme onward.  Before any frame
-        has anything finite it is ``(0, 0)``, which draws as
-        identically zero, as an empty series' frozen range does.
+        reads its own), and ``ramped`` the extremes of every frame from
+        :attr:`ramp_from` up to and including *frame*, each side
+        separately (module docstring, "Colour scales").  That range
+        always contains the frame's own, never shrinks, and is the
+        frozen range itself from the frame holding the series extreme
+        onward, unless the perturbation held it.  The perturbation's own
+        frame, before :attr:`ramp_from`, is ``None`` under ``ramped``
+        as under ``frame``.  Before any counted frame has anything
+        finite it is ``(0, 0)``, which draws as identically zero, as an
+        empty series' frozen range does.
         """
         if clim == "series":
             return self.lo, self.hi
@@ -3035,8 +3067,10 @@ class PanelScale:
             return None
         if clim != "ramped":
             raise ValueError(f"clim must be series/frame/ramped, not {clim!r}")
-        seen_lo = self.frame_lo[: frame + 1]
-        seen_hi = self.frame_hi[: frame + 1]
+        if frame < self.ramp_from:
+            return None
+        seen_lo = self.frame_lo[self.ramp_from : frame + 1]
+        seen_hi = self.frame_hi[self.ramp_from : frame + 1]
         if np.all(np.isnan(seen_lo)):
             return 0.0, 0.0
         return float(np.nanmin(seen_lo)), float(np.nanmax(seen_hi))
@@ -3067,7 +3101,8 @@ def scan_panels(
     (:meth:`Map.drawn`), which is what keeps the colour bar a legend
     for the visible map rather than for a near-wall peak the ordinate
     floors away.  Each frame's own extremes over those rows are kept
-    as well, for ``--clim ramped`` (:meth:`PanelScale.data_range`).
+    as well, with the frame the ramp starts from, for ``--clim ramped``
+    (:meth:`PanelScale.data_range`).
     """
     scales: dict[tuple[str, int | None], PanelScale] = {}
     notes: list[str] = []
@@ -3103,7 +3138,12 @@ def scan_panels(
         if note is not None:
             notes.append(note)
         scales[(name, component)] = PanelScale(
-            lo, hi, non_negative, frame_lo, frame_hi
+            lo,
+            hi,
+            non_negative,
+            frame_lo,
+            frame_hi,
+            ramp_from=ramp_start(series.t_rel),
         )
     return scales, notes
 
@@ -3747,10 +3787,15 @@ def panel_figure(
     them all.  A panel with an entry in *tracks* carries its peak's
     track up to this frame (:func:`draw_track`).
 
-    A shape panel reads its levels under its own :attr:`Map.clim`,
-    whatever ``--clim`` says, and never under ``--quantile``: frozen on
-    the series for the anchor panel, and its own range in this frame
-    for every other (module docstring, "Shape maps").
+    Under ``--clim series`` or ``frame`` a shape panel reads its levels
+    under its own :attr:`Map.clim`: frozen on the series for the anchor
+    panel, and its own range in this frame for every other.  Under
+    ``--clim ramped`` it ramps like any other panel.  ``--quantile``
+    never reaches a shape panel (module docstring, "Shape maps").
+    Under ``--clim ramped`` the perturbation's frame, before
+    :attr:`PanelScale.ramp_from`, is drawn exactly as ``--clim frame``
+    draws it, shape panels included (module docstring, "Colour
+    scales").
     """
     ylim = y_limits(series, options, style.ylim)
     maps = [
@@ -3779,6 +3824,14 @@ def panel_figure(
     fig = plt.figure(figsize=(geometry.fig_w, geometry.fig_h))
     for panel, (map_, key) in enumerate(zip(maps, panels, strict=True)):
         ax = fig.add_axes(geometry.axes_rect(panel))
+        # --clim ramped reaches every panel past the perturbation, whose
+        # frame is drawn as --clim frame draws it; under the other two a
+        # shape panel keeps its own mode (module docstring, "Shape maps").
+        clim = style.clim
+        if clim == "ramped" and frame < scales[key].ramp_from:
+            clim = "frame"
+        if clim != "ramped":
+            clim = map_.clim or clim
         draw_map(
             ax,
             map_,
@@ -3786,7 +3839,7 @@ def panel_figure(
             n_levels=style.n_levels,
             cmap_positive=style.cmap_positive,
             cmap_signed=style.cmap_signed,
-            data_range=scales[key].data_range(map_.clim or style.clim, frame),
+            data_range=scales[key].data_range(clim, frame),
             quantile=None if map_.clim else style.quantile,
             nice=style.nice,
             fill=style.fill,
@@ -8092,7 +8145,10 @@ def build_parser() -> argparse.ArgumentParser:
         default="series",
         help="colour scale frozen on the whole series, per figure, or "
         "ramped: frozen on the frames so far, so it grows with the "
-        "field and ends on the series scale",
+        "field, leaving out the perturbation at t = 0, whose frame is "
+        "drawn as under frame; ramped reaches every panel, while under "
+        "series and frame a shape map keeps its anchor panel frozen and "
+        "its other panels per figure",
     )
     p.add_argument(
         "--signs-from-data",
