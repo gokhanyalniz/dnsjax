@@ -172,38 +172,38 @@ InputNorm = Literal["backward", "forward", "ortho"]
 # ── Geometry descriptors ─────────────────────────────────────────
 
 
+#: Geometry (``FlowSpec.geometry``) -> the family string of this module.
+_FAMILIES = {
+    "cartesian": "cartesian",
+    "triply-periodic": "periodic",
+    "cylindrical": "pipe",
+    "annular": "annular",
+}
+
+
 def _geo_family(system: str) -> str:
     """Map a flow ``system`` to a geometry family string.
 
     Returns one of ``"cartesian"``, ``"periodic"``, ``"pipe"``,
-    ``"annular"``.  Imports the system lists lazily (JAX/params must be
-    configured first).
+    ``"annular"``, refusing a flow that stores more than the 3
+    velocity components.
     """
-    from ..flows.registry import (
-        annular_systems,
-        cartesian_systems,
-        cylindrical_systems,
-        periodic_systems,
-        viscoelastic_systems,
-    )
+    from ..flows.registry import spec_for
 
-    # Rheology before geometry: the viscoelastic systems are members of
-    # their geometry's list too (see ``dnsjax.flows.registry``).
-    if system in viscoelastic_systems:
+    spec = spec_for(system)
+    if spec.n_components != 3:
         raise ValueError(
-            f"system {system!r} has a 9-component tensor state; "
+            f"system {system!r} stores {spec.n_components} components; "
             "snapshot_import only supports the 3-component velocity "
-            "systems (tensor import is not yet implemented)."
+            "systems."
         )
-    if system in cartesian_systems:
-        return "cartesian"
-    if system in periodic_systems:
-        return "periodic"
-    if system in cylindrical_systems:
-        return "pipe"
-    if system in annular_systems:
-        return "annular"
-    raise ValueError(f"unknown system: {system!r}")
+    try:
+        return _FAMILIES[spec.geometry]
+    except KeyError:
+        raise ValueError(
+            f"system {system!r} has geometry {spec.geometry!r}, which "
+            "snapshot_import does not support."
+        ) from None
 
 
 # ── Wavenumber gather (numpy FFT order -> dnsjax order) ──────────

@@ -388,7 +388,11 @@ from ..bootstrap import (
 )
 from ..extensions import ParamExtension, register_extension
 from ..fd import local_interpolation_matrix
-from ..flows.registry import total_field_systems, walled_systems
+from ..flows.registry import (
+    spec_for,
+    total_field_systems,
+    walled_systems,
+)
 from ..parameters import (
     Parameters,
     _user_set_fields,
@@ -891,8 +895,6 @@ def _dispatch(system: str) -> tuple[Any, Any, str]:
     """
     import importlib
 
-    from ..flows.registry import spec_for
-
     spec = spec_for(system)
     fmod = importlib.import_module(spec.flow_module)
     gmod = importlib.import_module(
@@ -1301,16 +1303,8 @@ def _write_summary(
     """Write (and print) the human-readable summary table."""
     lines: list[str] = []
     lines.append(f"# transient growth: {params.phys.system}")
-    re_str = f"re={params.phys.re}"
-    if params.phys.system == "taylor-couette":
-        re_str = (
-            f"re1={params.phys.re1} re2={params.phys.re2} eta={params.geo.eta}"
-        )
-    elif params.phys.system == "quasi-keplerian":
-        re_str = (
-            f"re1={params.phys.re1} r_omega={params.phys.r_omega} "
-            f"eta={params.geo.eta} (re2={params.phys.re2})"
-        )
+    summary = spec_for(params.phys.system).control_summary
+    re_str = f"re={params.phys.re}" if summary is None else summary(params)
     lines.append(
         f"# {re_str} tilt={params.geo.tilt_degree} "
         f"lx={params.geo.lx} lz={params.geo.lz}"
@@ -1605,7 +1599,6 @@ def _seed_metadata_params():
     """
     from ..extensions import EXTENSIONS
     from ..flow_spec import UNSET
-    from ..flows.registry import spec_for
     from ..parameters import TimeStepping
 
     recorded = {

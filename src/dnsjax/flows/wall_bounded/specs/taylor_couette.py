@@ -25,6 +25,10 @@ def _rehydrate(sections: dict) -> None:
     circular_couette_rehydrate(sections)
 
 
+def _control_summary(params) -> str:
+    return f"re1={params.phys.re1} re2={params.phys.re2} eta={params.geo.eta}"
+
+
 SPEC = FlowSpec(
     system="taylor-couette",
     family="annular",
@@ -43,4 +47,5 @@ SPEC = FlowSpec(
     grid_type_default="cgl",
     derive=_derive,
     rehydrate=_rehydrate,
+    control_summary=_control_summary,
 )

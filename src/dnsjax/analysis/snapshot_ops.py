@@ -20,18 +20,19 @@ axis.
 :func:`to_physical` / :func:`to_spectral` bridge the two spaces.
 
 Directions are named per geometry: ``"x"/"y"/"z"`` (cartesian),
-``"r"/"z"/"theta"`` (cylindrical/annular, ``z`` axial; ``"s"`` for the
-curved pipe's streamwise arclength), ``"x"/"y"/"z"``
-(triply-periodic).  Wall-normal derivatives/integrals require the full
-wall-normal grid -- do not subset ``wall_normal_points`` first.
+``"r"/"z"/"theta"`` (cylindrical/annular, ``z`` axial), ``"x"/"y"/"z"``
+(triply-periodic), unless the flow names its axes itself
+(:attr:`~dnsjax.analysis._core.GeometryInfo.name`).  Wall-normal
+derivatives/integrals require the full wall-normal grid -- do not
+subset ``wall_normal_points`` first.
 
-A ``curved-pipe`` snapshot carries the toroidal metric
-`$h = 1 + \kappa r\cos\theta$`: scale factors `$(1, r, h)$` along
-`$(r, \theta, s)$`.  :func:`derivative` and :func:`gradient` stay
-coordinate partials (`$\partial_s$`, not the physical
-`$h^{-1}\partial_s$`), :func:`curl` and :func:`divergence` take the
-solver's metric-weighted forms and divide the weight out, and
-:func:`integrate` takes the volume element `$r h$`.
+A cylindrical flow bent along its axis carries an axial scale factor
+`$h(r, \theta)$` (:attr:`~dnsjax.analysis._core.GeometryInfo.metric`):
+scale factors `$(1, r, h)$` along `$(r, \theta, z)$`.
+:func:`derivative` and :func:`gradient` stay coordinate partials
+(`$\partial_z$`, not the physical `$h^{-1}\partial_z$`), :func:`curl`
+and :func:`divergence` take the metric-weighted forms and divide the
+weight out, and :func:`integrate` takes the volume element `$r h$`.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ from ..fd import (
     clenshaw_curtis_weights,
     is_cgl_grid,
 )
+from ..flow_spec import VELOCITY_PARITY
 from . import _core
 from ._core import to_physical, to_spectral  # re-exported helpers
 
@@ -57,31 +59,32 @@ __all__ = [
 ]
 
 
-# Maps a component label to its radial parity class (pipe only).  A
-# component's axis parity is (-1)^(m+s) with s its spin weight, i.e.
-# it is set by how many of the component's indices are radial or
-# azimuthal -- each flips sign under the axis reflection.  So an even
-# count gives the "even" class (-1)^m and an odd count the "odd" class
-# (-1)^{m+1}.  Accepts the long and short spellings; ``u_s`` is the
-# curved pipe's streamwise component, and the six conformation labels
-# are present only for a viscoelastic pipe.
-_PARITY_CLASS = {
-    "uz": "even",
-    "u_z": "even",
-    "us": "even",
-    "u_s": "even",
-    "ur": "odd",
-    "u_r": "odd",
-    "utheta": "odd",
-    "u_theta": "odd",
-    "uth": "odd",
-    "c_zz": "even",
-    "c_rr": "even",
-    "c_theta_theta": "even",
-    "c_r_theta": "even",
-    "c_rz": "odd",
-    "c_theta_z": "odd",
-}
+#: The pipe's velocity labels, accepted for every cylindrical flow
+#: beside its own (:func:`_parity_classes`).
+_VELOCITY_LABELS = ("u_z", "u_r", "u_theta")
+
+
+def _parity_classes(info) -> dict[str, str]:
+    r"""Component label -> radial parity class, for a pipe snapshot.
+
+    A component's axis parity is `$(-1)^{m+s}$`, `$s$` the number of
+    its radial and azimuthal indices (each flips sign under the axis
+    reflection): an even count gives the ``"even"`` class `$(-1)^m$`
+    and an odd one the ``"odd"`` class `$(-1)^{m+1}$`.  The labels are
+    the flow's stored components (:attr:`GeometryInfo.components`, with
+    their :attr:`GeometryInfo.component_parity`) and the velocity's,
+    each also spelled without underscores (``uz``, ``utheta``), plus
+    ``uth``.
+    """
+    pairs = [
+        *zip(_VELOCITY_LABELS, VELOCITY_PARITY, strict=True),
+        *zip(info.components, info.component_parity, strict=True),
+    ]
+    out = {}
+    for label, even in pairs:
+        out[label] = out[label.replace("_", "")] = "even" if even else "odd"
+    out["uth"] = out["u_theta"]
+    return out
 
 
 def _resolve_parity(info, ax, cylindrical_parity):
@@ -90,25 +93,23 @@ def _resolve_parity(info, ax, cylindrical_parity):
     ``None`` for Fourier axes and for the cartesian/annular grid axis
     (a plain ``D1``).  The pipe's radial axis is parity-dependent at the
     axis, so *cylindrical_parity* must name the component being
-    differentiated -- any label in :data:`_PARITY_CLASS`, i.e. the
-    velocity triad (``u_s`` for the curved pipe's streamwise one) plus,
-    for a viscoelastic pipe, the six conformation components.
+    differentiated -- any label of :func:`_parity_classes`.
     """
     if info.kind[ax] != "grid" or info.family != "cylindrical":
         return None
+    classes = _parity_classes(info)
     if cylindrical_parity is None:
         raise ValueError(
             "pipe radial derivatives are parity-dependent at the axis; "
-            "pass cylindrical_parity naming the component, e.g. "
-            "'u_z', 'u_r', 'u_theta' (or 'c_rz', ... for a "
-            "viscoelastic pipe)."
+            "pass cylindrical_parity naming the component, one of "
+            f"{info.components}."
         )
     try:
-        return _PARITY_CLASS[str(cylindrical_parity).lower()]
+        return classes[str(cylindrical_parity).lower()]
     except KeyError:
         raise ValueError(
             f"cylindrical_parity={cylindrical_parity!r} invalid; use "
-            f"one of {sorted(_PARITY_CLASS)}."
+            f"one of {sorted(classes)}."
         ) from None
 
 
@@ -117,8 +118,8 @@ def derivative(field, direction, params, coords, cylindrical_parity=None):
 
     *coords* is the ``spectral_coords`` tuple from
     :func:`~dnsjax.analysis.read_state`.  Returns a spectral array.
-    *cylindrical_parity* (``"u_z"`` or the curved pipe's ``"u_s"`` /
-    ``"u_r"`` / ``"u_theta"``) is required only for a **pipe** radial
+    *cylindrical_parity* (``"u_z"``, ``"u_r"``, ``"u_theta"`` or another
+    stored component's label) is required only for a **pipe** radial
     (``"r"``) derivative, naming the component being differentiated;
     ignored otherwise.
     """
@@ -140,9 +141,9 @@ def gradient(component, params, coords, cylindrical_parity=None):
 
     Returns a 3-tuple of spectral partials in axis order
     (``∂/∂``\ *axis0*, *axis1*, *axis2*).  *cylindrical_parity* names
-    the component (``"u_z"`` or ``"u_s"`` / ``"u_r"`` / ``"u_theta"``)
-    and is required only for the **pipes** (their radial partial, axis
-    0, is parity-dependent); ignored otherwise.
+    the component (as for :func:`derivative`) and is required only for
+    the **pipes** (their radial partial, axis 0, is parity-dependent);
+    ignored otherwise.
     """
     info = _core.geometry_info(params)
     arr = np.asarray(component)
@@ -173,20 +174,20 @@ def divergence(field, params, coords):
     matches the solver's operator node-for-node, including the pipe's
     parity-reduced radial ``D1``).
 
-    On the curved pipe, with `$\nabla_0\cdot$` that straight expansion,
+    With an axial scale factor `$h$` (:attr:`GeometryInfo.metric`)
+    and `$\nabla_0\cdot$` that straight expansion,
 
     .. math::
         h^2\,\nabla\cdot\mathbf{u}
-        = h\,\nabla_0\cdot(u_s,\, h u_r,\, h u_\theta) ,
+        = h\,\nabla_0\cdot(u_z,\, h u_r,\, h u_\theta) ,
 
-    whose right-hand side is the solver's continuity row, the quantity
-    its corrector drives to zero
-    (``CurvedCylindricalFlow.divergence_defect``).  This forms that row
-    and divides the `$h^2$` out (:func:`_core.metric_product`), so it
-    vanishes exactly where the solver's does.  Dividing
-    `$\nabla_0\cdot(u_s, h u_r, h u_\theta)$` by `$h$` alone would
-    not: the product with `$h$` drops the top mode's outflow, which
-    sets the two apart by `$O(\kappa^2)$` of that mode's amplitude.
+    whose right-hand side is the continuity row of a solver carrying
+    the metric, the quantity its corrector drives to zero.  This forms
+    that row and divides the `$h^2$` out, every product the metric's
+    truncating one (:meth:`AxialMetric.product`), so it vanishes
+    exactly where the solver's does.  Dividing
+    `$\nabla_0\cdot(u_z, h u_r, h u_\theta)$` by `$h$` alone would
+    not: the truncated product with `$h$` drops the top mode's outflow.
     """
     info = _core.geometry_info(params)
     fd = params.res.get("fd_order")
@@ -195,10 +196,9 @@ def divergence(field, params, coords):
         u_z, u_r, u_th = (np.asarray(f) for f in field)
         r = np.asarray(coords[0], dtype=float)
         rinv = _core._broadcast_along(1.0 / r, 0)
-        if info.curvature:
-            u_r, u_th = (
-                _core.metric_product(f, r, info, 1) for f in (u_r, u_th)
-            )
+        metric = info.metric
+        if metric is not None:
+            u_r, u_th = (metric.product(f, r, info, 1) for f in (u_r, u_th))
         p_ur = "odd" if info.family == "cylindrical" else None
         d_ur = _core.radial_derivative(
             u_r,
@@ -210,9 +210,9 @@ def divergence(field, params, coords):
         d_th = _core.fourier_derivative(u_th, 1, coords[1])  # im u_θ
         d_z = _core.fourier_derivative(u_z, 2, coords[2])  # i k_z u_z
         div = d_ur + rinv * u_r + rinv * d_th + d_z
-        if info.curvature:
-            row = _core.metric_product(div, r, info, 1)
-            div = _core.metric_product(row, r, info, -2)
+        if metric is not None:
+            row = metric.product(div, r, info, 1)
+            div = metric.product(row, r, info, -2)
         return div
 
     # cartesian / triply-periodic: sum_i ∂u_i/∂x_i
@@ -236,12 +236,11 @@ def curl(field, params, coords):
     (``ω_z = ∂u_θ/∂r + u_θ/r - (im/r) u_r`` etc.), with the pipe's
     parity-reduced radial ``D1``.
 
-    On the curved pipe that expansion, applied to the solver's carried
-    state `$(h u_s, u_r, u_\theta)$`, is
-    `$(\omega_s, h\,\omega_r, h\,\omega_\theta)$` (identity 1 of the
-    ``cylindrical_curved`` module docstring).  This forms it and divides
-    the `$h$` out of the transverse pair (:func:`_core.metric_product`),
-    as the solver's own statistics do.
+    With an axial scale factor `$h$` (:attr:`GeometryInfo.metric`),
+    that expansion applied to `$(h u_z, u_r, u_\theta)$` is
+    `$(\omega_z, h\,\omega_r, h\,\omega_\theta)$` for the scale
+    factors `$(1, r, h)$`.  This forms it and divides the `$h$` out of
+    the transverse pair (:meth:`AxialMetric.product`).
     """
     info = _core.geometry_info(params)
     fd = params.res.get("fd_order")
@@ -263,15 +262,14 @@ def curl(field, params, coords):
 
         p_uz = "even" if cyl else None
         p_uth = "odd" if cyl else None
-        if info.curvature:
-            u_z = _core.metric_product(u_z, r, info, 1)  # h u_s
+        metric = info.metric
+        if metric is not None:
+            u_z = metric.product(u_z, r, info, 1)  # h u_z
         w_r = rinv * d_th(u_z) - d_z(u_th)
         w_th = d_z(u_r) - d_r(u_z, p_uz)
         w_z = d_r(u_th, p_uth) + rinv * u_th - rinv * d_th(u_r)
-        if info.curvature:
-            w_r, w_th = (
-                _core.metric_product(f, r, info, -1) for f in (w_r, w_th)
-            )
+        if metric is not None:
+            w_r, w_th = (metric.product(f, r, info, -1) for f in (w_r, w_th))
         return (w_z, w_r, w_th)
 
     def d(comp, direction):
@@ -327,15 +325,16 @@ def integrate(field, params, coords, directions=None):
     directions for a wall-normal profile).  A tuple/list *field* is
     integrated component-wise.
 
-    On the curved pipe the metric `$h$` rides with `$s$`: an integral
-    over `$s$` measures the arclength `$h\,ds$`, so the volume element
-    is `$r h\,dr\,d\theta\,ds$` while an integral over `$(r, \theta)$`
+    An axial scale factor `$h$` (:attr:`GeometryInfo.metric`) rides
+    with the axial direction: an integral over `$z$` measures the
+    arclength `$h\,dz$`, so the volume element is
+    `$r h\,dr\,d\theta\,dz$` while an integral over `$(r, \theta)$`
     alone keeps the metric-free cross-section element
-    `$r\,dr\,d\theta$` (that of `$u_s$` is the mass flux).  An
-    integral over `$s$` alone is therefore one along the streamwise
-    line through `$(r, \theta)$`, of length `$h L_s$`: divide by that,
-    not by `$L_s$`, for the streamwise mean (or take ``np.mean`` along
-    the axis).
+    `$r\,dr\,d\theta$` (that of `$u_z$` is the mass flux).  An
+    integral over `$z$` alone is therefore one along the axial line
+    through `$(r, \theta)$`, of length `$h L_z$`: divide by that, not
+    by `$L_z$`, for the axial mean (or take ``np.mean`` along the
+    axis).
 
     Examples
     --------
@@ -353,13 +352,14 @@ def integrate(field, params, coords, directions=None):
         axes = sorted({info.axis_of(d) for d in directions}, reverse=True)
     # Weights built once and shared across a tuple's components.
     weights = [(ax, _axis_weights(info, ax, coords, params)) for ax in axes]
-    # The curved pipe's h(r, theta), constant along s, multiplies the
-    # field before any axis drops whenever s is integrated.
+    # An axial scale factor h(r, theta), constant along the axis
+    # (axis 2), multiplies the field before any axis drops whenever
+    # that axis is integrated.
     metric = None
-    if info.curvature and info.axis_of("s") in axes:
+    if info.metric is not None and 2 in axes:
         r = np.asarray(coords[0], dtype=float)[:, None, None]
         theta = np.asarray(coords[1], dtype=float)[None, :, None]
-        metric = 1.0 + info.curvature * r * np.cos(theta)
+        metric = info.metric.scale(r, theta)
 
     def _reduce(f):
         out = np.asarray(f)

@@ -1,11 +1,68 @@
 r"""The curved pipe's azimuthal harmonics (JAX-free).
 
-The dealiasing pad of the toroidal metric's `$1/h^2$`
-(:func:`curvature_dealiasing_pad`), which the curved-pipe spec's
-padding hook applies before the core's mesh and FFT rounding.
+The exact harmonics of the toroidal metric's `$1/h$` and `$1/h^2$`
+(:func:`inverse_metric_harmonics`), which the solver's flux read and
+the analysis package's toroidal metric share, and the dealiasing pad of
+`$1/h^2$` (:func:`curvature_dealiasing_pad`), which the curved-pipe
+spec's padding hook applies before the core's mesh and FFT rounding.
 """
 
 import math
+
+import numpy as np
+from numpy import ndarray
+
+
+def inverse_metric_harmonics(
+    kappa: float, rs: ndarray, m_vals: ndarray, power: int = 1
+) -> ndarray:
+    r"""Exact azimuthal harmonics of the curved pipe's `$h^{-p}$`.
+
+    `$h = 1 + \kappa r\cos\theta$` is the toroidal metric
+    (:mod:`dnsjax.geometries.wall_bounded.cylindrical_curved`).  With
+    `$\epsilon = \kappa r$`,
+
+    .. math::
+        \frac{1}{1 + \epsilon\cos\theta}
+        = \frac{1}{\sqrt{1-\epsilon^2}}
+          \Big[1 + 2\sum_{n\ge1} q^n \cos n\theta\Big], \qquad
+        q = \frac{-\epsilon}{1 + \sqrt{1-\epsilon^2}},
+
+    so the complex coefficients of `$1/h$` are
+    `$c_m = q^{|m|}/\sqrt{1-\epsilon^2}$`.  Those of `$1/h^2$` follow
+    by differentiating `$1/(\lambda + \epsilon\cos\theta)$` in
+    `$\lambda$` at `$\lambda = 1$`:
+    `$q^{|m|}\,(1 + |m|\sqrt{1-\epsilon^2})/(1-\epsilon^2)^{3/2}$`.
+    Both are real, even in `$m$` and `$O(r^{|m|})$` at the axis, hence
+    in the `$(-1)^m$` parity class like the fields they weight, and
+    exact to machine precision (``tests/test_curved_pipe.py`` checks
+    them against an FFT).
+
+    Parameters
+    ----------
+    kappa:
+        Curvature `$\kappa = a/R_c$`, below 1.
+    rs:
+        Radii, shape ``(n_r,)``.
+    m_vals:
+        Azimuthal wavenumbers.
+    power:
+        `$p$`, 1 or 2.
+
+    Returns
+    -------
+    :
+        Shape ``(len(rs), len(m_vals))``.
+    """
+    if power not in (1, 2):
+        raise ValueError(f"power must be 1 or 2, got {power}.")
+    eps = kappa * np.asarray(rs)[:, None]
+    root = np.sqrt(1.0 - eps**2)
+    q = -eps / (1.0 + root)
+    abs_m = np.abs(np.asarray(m_vals))[None, :]
+    if power == 1:
+        return q**abs_m / root
+    return q**abs_m * (1.0 + abs_m * root) / root**3
 
 
 def curvature_dealiasing_pad(kappa: float, tol: float) -> int:
@@ -24,7 +81,7 @@ def curvature_dealiasing_pad(kappa: float, tol: float) -> int:
         \|e\|_1 \le 2 \sum_{j \ge J} |c^{(2)}_j|\;\|\hat P\|_1 ,
 
     with `$c^{(2)}_j$` the harmonics of
-    :func:`dnsjax.harmonics.inverse_metric_harmonics` (``power=2``) at
+    :func:`inverse_metric_harmonics` (``power=2``) at
     the wall, where
     `$\epsilon = \kappa$` is largest.  The bound holds for any `$P$`,
     resolved or not, which is why `$J$` depends on `$\kappa$` and *tol*

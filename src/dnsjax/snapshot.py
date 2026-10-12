@@ -603,27 +603,20 @@ def _resize_wrapped_axis(
 
 # ── Wall-normal regrid (resume, reduced snapshots) ────────
 
-#: Axis-parity class of the stored velocity ``(u_z, u_r, u_theta)``,
-#: ``True`` for the `$(-1)^m$` (even) class and ``False`` for
-#: `$(-1)^{m+1}$` (odd).  A flow storing further components declares
-#: the classes of all of them (``FlowSpec.component_parity``,
-#: :func:`stored_component_parity`).  A scalar (the pressure of a
-#: reduced snapshot) is even, like ``u_z``.  Read by the pipe's
-#: parity-aware regrid; the annular and Cartesian geometries have no
-#: axis and ignore it.
-VELOCITY_PARITY_EVEN: tuple[bool, ...] = (True, False, False)
-
 
 def stored_component_parity() -> tuple[bool, ...]:
     """The axis-parity class of each of this run's stored components.
 
     The flow's ``FlowSpec.component_parity``, else the velocity's
-    (:data:`VELOCITY_PARITY_EVEN`).
+    (:data:`dnsjax.flow_spec.VELOCITY_PARITY`).  Read by the pipe's
+    parity-aware regrid; the annular and Cartesian geometries have no
+    axis and ignore it.
     """
+    from .flow_spec import VELOCITY_PARITY
     from .flows.registry import spec_for
 
     parity = spec_for(params.phys.system).component_parity
-    return parity if parity is not None else VELOCITY_PARITY_EVEN
+    return parity if parity is not None else VELOCITY_PARITY
 
 
 def wall_regrid_geometry() -> str:

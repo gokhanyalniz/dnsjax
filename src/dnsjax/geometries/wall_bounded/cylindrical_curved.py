@@ -210,15 +210,12 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 import numpy as np
+from dnsjax_lab.harmonics import inverse_metric_harmonics
 from jax import Array, lax, shard_map
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
-from ...harmonics import (
-    complex_harmonics,
-    inverse_metric_harmonics,
-    real_harmonics,
-)
+from ...harmonics import complex_harmonics, real_harmonics
 from ...operators import pad_harmonics
 from ...parameters import derived_params, padded_res, params
 from ...sharding import register_dataclass_pytree, sharding
@@ -788,7 +785,7 @@ class CurvedCylindricalFlow(CylindricalFlow):
         r"""Flux contribution of a mean-mode `$w_s$` profile.
 
         The bulk-correction response is a `$(0,0)$` profile, so only the
-        `$c_0$` of :func:`~dnsjax.harmonics.inverse_metric_harmonics`
+        `$c_0$` of :func:`~dnsjax_lab.harmonics.inverse_metric_harmonics`
         weights it.
         """
         return jnp.dot(self.flux_weights_mean, profile)

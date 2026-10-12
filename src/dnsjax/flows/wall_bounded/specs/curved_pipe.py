@@ -170,6 +170,14 @@ SPEC = FlowSpec(
     geometry="cylindrical",
     summary="pressure/bulk-driven toroidal (curved) pipe",
     flow_module="dnsjax.flows.wall_bounded.curved_pipe",
+    # The streamwise direction is the centreline arclength s of a bent
+    # pipe, not a straight axis, with the toroidal metric as its scale
+    # factor.  The stored components are the physical ones, as
+    # everywhere else: the solver's carried h u_s is undone at the basis
+    # boundary.
+    components=("u_s", "u_r", "u_theta"),
+    axis_names=("r", "theta", "s"),
+    analysis_metric="dnsjax_lab.analysis.toroidal:metric",
     total_field=True,
     fields=(
         *_WALL_FIELDS,

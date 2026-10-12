@@ -26,7 +26,6 @@ family              spectral axes (as read)  physical axes
 ==================  =======================  =================
 cartesian           (y, kz, kx)              (y, z, x)
 cylindrical/annular (r, m, k_axial)          (r, θ, z)
-viscoelastic (both) (r, m, k_axial)          (r, θ, z)
 triply-periodic     (ky, kz, kx)             (y, z, x)
 ==================  =======================  =================
 
@@ -34,12 +33,10 @@ Components are ``(u_x, u_y, u_z)`` for cartesian / triply-periodic and
 ``(u_z, u_r, u_θ)`` for cylindrical / annular -- as of snapshot format
 6 the stored components *are* these physical components (each the
 transform of a real field; the solver confines its decoupled
-``u_±`` / spin bases to the implicit solves).  The two viscoelastic
-systems (dean and pipe) share the cylindrical/annular axes with **9
-components**: the 3 velocity components plus the physical conformation
-tensor ``(c_zz, c_rz, c_θz, c_rr, c_θθ, c_rθ)`` as components ``3..8``.
-Returned components are stored components, one-to-one
-(:func:`geometry_info`).
+``u_±`` / spin bases to the implicit solves).  A flow storing further
+components, or naming its axes otherwise, labels them in its spec
+(``FlowSpec.components``, ``FlowSpec.axis_names``).  Returned
+components are stored components, one-to-one (:func:`geometry_info`).
 
 Component order is (streamwise, wall-normal, spanwise) for the
 cartesian, triply-periodic, and cylindrical (pipe) families, but
@@ -56,18 +53,17 @@ the stored axes -- no transpose.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
+from typing import Protocol
 
 import numpy as np
 from numpy import ndarray
 
 from ..fd import build_diff_matrices
+from ..flow_spec import VELOCITY_PARITY, FlowSpec
 from ..flows import registry as _registry
-from ..harmonics import (
-    complex_harmonics,
-    inverse_metric_harmonics,
-    real_harmonics,
-)
+from ..harmonics import complex_harmonics, real_harmonics
 from ..snapshot_meta import (
     STATE_KIND,
     is_snapshot_file,
@@ -83,12 +79,6 @@ from ..snapshot_meta import (
 CARTESIAN_SYSTEMS = frozenset(_registry.cartesian_systems)
 CYLINDRICAL_SYSTEMS = frozenset(_registry.cylindrical_systems)
 ANNULAR_SYSTEMS = frozenset(_registry.annular_systems)
-#: Viscoelastic systems (9-component state: 3 velocity + 6 symmetric
-#: conformation-tensor components).  This is the *rheology* axis and
-#: cuts across the geometry sets above, each of which contains its own
-#: viscoelastic member: the geometry decides the operators, this set
-#: decides the component schema.
-VISCOELASTIC_SYSTEMS = frozenset(_registry.viscoelastic_systems)
 PERIODIC_SYSTEMS = frozenset(_registry.periodic_systems)
 #: Systems whose stored field is the **total** field rather than the
 #: perturbation about the laminar profile (``FlowSpec.total_field``):
@@ -103,8 +93,8 @@ LY_PERIODIC = 4.0
 _NP_DTYPES = {
     "complex128": np.dtype("<c16"),
     "complex64": np.dtype("<c8"),
-    # The twin's 3-D cubes share the container with real chunks
-    # (:mod:`dnsjax.analysis.twin.cubes`).
+    # Real chunks: outputs of another kind sharing the container
+    # (:func:`dnsjax.snapshot_meta.snapshot_kind`).
     "float64": np.dtype("<f8"),
     "float32": np.dtype("<f4"),
 }
@@ -198,9 +188,7 @@ class GeometryInfo:
     name: tuple[str, str, str]  # direction name per axis
     n: tuple[int, int, int]  # full physical size per axis
     length: tuple[float | None, ...]  # physical length (None for grid axis)
-    # Returned component labels (axis-0 order).  Length 3 for the
-    # velocity-only systems; 9 for the viscoelastic systems (velocity +
-    # physical conformation-tensor components).
+    # Returned component labels (axis-0 order; ``FlowSpec.components``).
     components: tuple[str, ...]
     wall_normal_axis: int  # physical axis carrying the wall-normal direction
     grid_axis: int | None  # spectral axis stored as a grid (None if periodic)
@@ -210,10 +198,14 @@ class GeometryInfo:
     # sets the pipe's axis parity class (:func:`radial_derivative`).
     # 1 for every family without an azimuthal direction.
     azimuthal_m0: int = 1
-    # The curved pipe's `$\kappa$` (``geo.curvature``), which sets its
-    # toroidal metric `$h = 1 + \kappa r\cos\theta$`
-    # (:func:`metric_product`); 0 for every other system.
-    curvature: float = 0.0
+    # Axis-parity class of each component, ``True`` for the `$(-1)^m$`
+    # class (``FlowSpec.component_parity``): the cylindrical and
+    # annular families; ``None`` elsewhere.
+    component_parity: tuple[bool, ...] | None = None
+    # The scale factor of the axial direction (axis 2), for a
+    # cylindrical flow bent along it (``FlowSpec.analysis_metric``);
+    # ``None`` where it is 1.
+    metric: AxialMetric | None = None
 
     def axis_of(self, direction: str) -> int:
         """On-disk axis index of a named direction."""
@@ -226,17 +218,60 @@ class GeometryInfo:
             ) from None
 
 
+class AxialMetric(Protocol):
+    r"""Scale factor `$h(r, \theta)$` of a cylindrical axial direction.
+
+    A cylindrical flow bent along its axis has the orthogonal scale
+    factors `$(1, r, h)$` along `$(r, \theta, z)$`, with `$h$`
+    independent of `$z$`; `$h = 1$` is the straight cylinder.  The flow
+    supplies one through ``FlowSpec.analysis_metric``, and the operators
+    of :mod:`dnsjax.analysis.snapshot_ops` read it through these two
+    methods.
+    """
+
+    def scale(self, r: ndarray, theta: ndarray) -> ndarray:
+        r"""`$h$` at the points *r*, *theta* (broadcast together)."""
+        ...
+
+    def product(
+        self, field: ndarray, grid, info: GeometryInfo, power: int
+    ) -> ndarray:
+        r"""A spectral *field* times `$h^p$`, *power* `$p$` 1, -1 or -2.
+
+        *field* and the result are in the stored layout of *info*: the
+        radii of *grid* on axis 0, the azimuthal modes on axis 1.  The
+        result keeps the stored modes and drops what lies beyond them,
+        as the solver's own truncating product does, and every power
+        keeps the radial parity class of its input.
+        """
+        ...
+
+
+def _axial_metric(spec: FlowSpec, params) -> AxialMetric | None:
+    """The flow's :class:`AxialMetric` for *params*, or ``None``."""
+    if spec.analysis_metric is None:
+        return None
+    module, _, attr = spec.analysis_metric.partition(":")
+    return getattr(import_module(module), attr)(params)
+
+
 def geometry_info(params: Namespace) -> GeometryInfo:
     """Build the :class:`GeometryInfo` for a snapshot's parameters.
 
+    The geometry gives the axes; the flow's spec labels the components
+    and axes where they differ from the geometry's velocity
+    (``FlowSpec.components``, ``axis_names``, ``component_parity``,
+    ``analysis_metric``).
+
     *params* is normally the :class:`Namespace` view over a snapshot's
     embedded parameters, but the live pydantic ``params`` singleton is
-    also passed here (``tests/test_viscoelastic.py``).  Both are read
-    through **plain attribute access only** -- no mapping API, since a
+    also passed here (the in-process tests).  Both are read through
+    **plain attribute access only** -- no mapping API, since a
     pydantic model has none.  Use ``getattr(section, name, default)``
     for a field that may be absent on one of the two.
     """
     system = str(params.phys.system)
+    spec = _registry.spec_for(system)
     nx, ny, nz = int(params.res.nx), int(params.res.ny), int(params.res.nz)
     lx, lz = float(params.geo.lx), float(params.geo.lz)
 
@@ -245,74 +280,51 @@ def geometry_info(params: Namespace) -> GeometryInfo:
             family="cartesian",
             walled=True,
             kind=("grid", "complex", "real"),
-            name=("y", "z", "x"),
+            name=spec.axis_names or ("y", "z", "x"),
             n=(ny, nz, nx),
             length=(None, lz, lx),
-            components=("u_x", "u_y", "u_z"),
+            components=spec.components or ("u_x", "u_y", "u_z"),
             wall_normal_axis=0,
             grid_axis=0,
         )
     if system in CYLINDRICAL_SYSTEMS or system in ANNULAR_SYSTEMS:
         family = "cylindrical" if system in CYLINDRICAL_SYSTEMS else "annular"
-        if system in VISCOELASTIC_SYSTEMS:
-            # Velocity + physical conformation-tensor components (the
-            # stored basis, one-to-one).
-            components = (
-                "u_z",
-                "u_r",
-                "u_theta",
-                "c_zz",
-                "c_rz",
-                "c_theta_z",
-                "c_rr",
-                "c_theta_theta",
-                "c_r_theta",
-            )
-        elif system == "curved-pipe":
-            # The streamwise direction is the centreline arclength of a
-            # bent pipe, not a straight axis.  The stored components are
-            # the physical ones, as everywhere else: the solver's
-            # metric weight `$h u_s$` is undone at the basis boundary.
-            components = ("u_s", "u_r", "u_theta")
-        else:
-            components = ("u_z", "u_r", "u_theta")
         # Azimuthal length is the wedge extent lz = 2*pi/m0 (m0 = 1 full
         # circle; stored in geo.lz); the real axis (2) is axial (lx).
         return GeometryInfo(
             family=family,
             walled=True,
             kind=("grid", "complex", "real"),
-            name=("r", "theta", "s" if system == "curved-pipe" else "z"),
+            name=spec.axis_names or ("r", "theta", "z"),
             n=(ny, nz, nx),
             length=(None, lz, lx),
-            components=components,
+            components=spec.components or ("u_z", "u_r", "u_theta"),
             wall_normal_axis=0,
             grid_axis=0,
             # ``getattr``, not ``Namespace.get``: this function is
-            # duck-typed on plain attribute access, and
-            # ``tests/test_viscoelastic.py`` hands it the *live pydantic*
-            # ``params`` singleton, whose ``geo`` has no mapping API.
+            # duck-typed on plain attribute access, and the in-process
+            # tests hand it the *live pydantic* ``params`` singleton,
+            # whose ``geo`` has no mapping API.
             azimuthal_m0=int(getattr(params.geo, "m0", 1) or 1),
-            curvature=(
-                float(params.geo.curvature) if system == "curved-pipe" else 0.0
-            ),
+            component_parity=spec.component_parity or VELOCITY_PARITY,
+            metric=_axial_metric(spec, params),
         )
     if system in PERIODIC_SYSTEMS:
         return GeometryInfo(
             family="triply_periodic",
             walled=False,
             kind=("complex", "complex", "real"),
-            name=("y", "z", "x"),
+            name=spec.axis_names or ("y", "z", "x"),
             n=(ny, nz, nx),
             length=(LY_PERIODIC, lz, lx),
-            components=("u_x", "u_y", "u_z"),
+            components=spec.components or ("u_x", "u_y", "u_z"),
             wall_normal_axis=0,
             grid_axis=None,
         )
     raise ValueError(
-        f"Unknown system {system!r}: not in any family of the "
-        "dnsjax.flows.registry specs this reader has a component "
-        "schema for (a new family needs a geometry_info branch)."
+        f"system {system!r} has geometry {spec.geometry!r}, which this "
+        "reader has no axis schema for (a new geometry needs a "
+        "geometry_info branch)."
     )
 
 
@@ -337,17 +349,17 @@ def read_meta(path: str | Path) -> dict:
 def read_state_meta(path: str | Path) -> dict:
     """:func:`read_meta`, refusing a tar that holds no solver state.
 
-    The twin's 3-D cubes share the snapshot container but not its
-    meaning (a ``kind`` of their own,
+    Outputs of another kind may share the snapshot container but not
+    its meaning (a ``kind`` of their own,
     :func:`dnsjax.snapshot_meta.snapshot_kind`), so the field readers
-    turn them away by name rather than misread spectra as a velocity.
+    turn them away by name rather than misread them as a velocity.
     """
     meta = read_meta(path)
     kind = snapshot_kind(meta)
     if kind != STATE_KIND:
         raise ValueError(
             f"{path} is a {kind!r} file, not a state snapshot; read it "
-            "with dnsjax.analysis.twin.read_cube."
+            "with the reader of the package that wrote it."
         )
     return meta
 
@@ -383,8 +395,8 @@ def read_chunks(
 
     *slab_indices* is only valid for the wall-bounded families, whose
     outer axis is the wall-normal direction (a slab is contiguous on
-    disk, so each is a single ``seek`` + ``read``) -- and for the twin's
-    cubes, which keep that axis outermost too.
+    disk, so each is a single ``seek`` + ``read``) -- and for any other
+    output that keeps that axis outermost.
 
     *offsets* selects another member than ``state/`` -- the
     ``pressure/`` chunk of a reduced snapshot
@@ -591,11 +603,10 @@ def radial_derivative(
     *parity* is ``None`` for the cartesian wall-normal axis and the
     annular radius (a plain ``D1`` matmul).  For the pipe it selects the
     parity-reduced operator per azimuthal mode ``m`` (axis 1):
-    ``"even"`` for the ``(-1)^m`` class (``u_z``, and the conformation
-    components with an even number of radial/azimuthal indices);
-    ``"odd"`` for the ``(-1)^{m+1}`` class (``u_r`` / ``u_θ``,
-    ``c_rz`` / ``c_θz``).  Callers map component labels to the class
-    with ``snapshot_ops._PARITY_CLASS``.
+    ``"even"`` for the ``(-1)^m`` class (``u_z``); ``"odd"`` for the
+    ``(-1)^{m+1}`` class (``u_r`` / ``u_θ``).  Callers map component
+    labels to the class through :attr:`GeometryInfo.component_parity`
+    (``snapshot_ops._parity_classes``).
 
     The class is set by the **physical** azimuthal wavenumber
     ``m = m0 * h``: axis regularity is a statement about the field on
@@ -652,53 +663,3 @@ def derivative_axis(
         info,
         parity=parity,
     )
-
-
-def metric_product(
-    field: ndarray, grid, info: GeometryInfo, power: int
-) -> ndarray:
-    r"""Multiply a spectral curved-pipe field by `$h^p$`, exactly.
-
-    `$h = 1 + \kappa r\cos\theta$` is the toroidal metric
-    (:attr:`GeometryInfo.curvature`) and *power* `$p$` is 1, -1 or -2.
-    Each is a convolution along the azimuthal axis (axis 1) with the
-    harmonics `$c_j(r)$` of `$h^p$` on each radius of *grid* (axis 0):
-    `$h$` has three, `$c_0 = 1$` and `$c_{\pm1} = \kappa r/2$`, and
-    :func:`~dnsjax.harmonics.inverse_metric_harmonics` gives those of
-    `$1/h$` and `$1/h^2$` in closed form.  Every stored coefficient of
-    the product is the full sum `$\sum_n c_{m-n}\hat f_n$` over the
-    input's modes, so the result is exact on the stored set and drops
-    only what lies beyond `$|m| = M$`, as the solver's truncating shift
-    does for `$h$`.
-
-    The solver forms the inverse powers by collocation on its
-    dealiased grid of `$N$` azimuthal points instead, so the two agree
-    to the aliased harmonics, `$O(|q|^{N - 2M})$` with
-    `$q \approx -\kappa r/2$`: below roundoff on the default
-    ``phys.curvature_padding`` grid, `$N \ge 3M + J(\kappa)$`.
-
-    Every power preserves the radial parity class (`$\chi = r\cos\theta$`
-    shifts `$m$` by one and multiplies by `$r$`), so the product takes
-    the radial operator its input did.
-    """
-    field = np.asarray(field)
-    rs = np.asarray(grid, dtype=float)
-    m = complex_harmonics(info.n[1]) * info.azimuthal_m0
-    offset = np.abs(m[:, None] - m[None, :])  # |m_a - m_b|, (n_m, n_m)
-    n_harm = int(offset.max()) + 2  # at least c_0 and c_1
-    if power == 1:
-        coeffs = np.zeros((len(rs), n_harm))
-        coeffs[:, 0] = 1.0
-        coeffs[:, 1] = 0.5 * info.curvature * rs
-    elif power in (-1, -2):
-        coeffs = inverse_metric_harmonics(
-            info.curvature, rs, np.arange(n_harm), -power
-        )
-    else:
-        raise ValueError(f"power must be 1, -1 or -2, got {power}.")
-    # One (n_m, n_m) Toeplitz matrix per radius: stacking them would
-    # cost n_r times the memory.
-    out = np.empty_like(field)
-    for j in range(len(rs)):
-        out[j] = coeffs[j][offset].astype(field.dtype) @ field[j]
-    return out

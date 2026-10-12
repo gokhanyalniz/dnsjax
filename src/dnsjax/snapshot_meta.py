@@ -446,21 +446,18 @@ def checkpoint_refusal(meta: dict, path: str | Path) -> str | None:
     """Why the tar described by *meta* cannot seed a run, or ``None``.
 
     Two kinds of dnsjax tar are not checkpoints though they share the
-    container: the twin's 3-D cubes (a ``kind`` other than
-    :data:`STATE_KIND`), which hold spectra rather than a field, and
+    container: an output of another kind (a ``kind`` other than
+    :data:`STATE_KIND`), which holds something other than a field, and
     the reduced-resolution snapshots of :mod:`dnsjax.lowres` (a
     ``lowres`` entry), which hold a filtered field without what a
     resume needs.  Shared by the resume path
     (:func:`dnsjax.parameters.read_snapshot_params`,
-    :func:`dnsjax.snapshot.validate_snapshot_params`) and the parent
-    harvest of ``scripts/ensemble_setup.py``.
+    :func:`dnsjax.snapshot.validate_snapshot_params`) and every other
+    reader that wants a checkpoint.
     """
     kind = snapshot_kind(meta)
     if kind != STATE_KIND:
-        return (
-            f"{path} is a {kind!r} file (read it with "
-            "dnsjax.analysis.twin), not a state snapshot."
-        )
+        return f"{path} is a {kind!r} file, not a state snapshot."
     if meta.get("lowres") is not None:
         return (
             f"{path} is a reduced-resolution output snapshot (lowres), "

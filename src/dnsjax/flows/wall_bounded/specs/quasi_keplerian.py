@@ -77,6 +77,13 @@ def _rehydrate(sections: dict) -> None:
     circular_couette_rehydrate(sections)
 
 
+def _control_summary(params) -> str:
+    return (
+        f"re1={params.phys.re1} r_omega={params.phys.r_omega} "
+        f"eta={params.geo.eta} (re2={params.phys.re2})"
+    )
+
+
 SPEC = FlowSpec(
     system="quasi-keplerian",
     family="annular",
@@ -96,4 +103,5 @@ SPEC = FlowSpec(
     derive=_derive,
     validate=_validate,
     rehydrate=_rehydrate,
+    control_summary=_control_summary,
 )

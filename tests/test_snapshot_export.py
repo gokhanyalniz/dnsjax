@@ -511,14 +511,14 @@ def _check_system(system: str, family: str, outdir: str) -> None:
         else:
             exp *= info.length[ax]
     assert abs(vol - exp) / exp < VOL_TOL, f"{system}: vol {vol} != {exp}"
-    if info.curvature:
+    if info.metric is not None:
         # The metric h = 1 + kappa r cos(theta) rides with s: cos(theta)
         # integrates to kappa pi L_s R^3 / 3 over the volume, and to
         # zero over each cross-section, whose element carries no h.
         r_max = float(np.asarray(st.physical_coords[0])[-1])
         cos_th = np.cos(st.physical_coords[1])[None, :, None] * ones
         got = float(integrate(cos_th, st.params, st.physical_coords))
-        want = info.curvature * np.pi * info.length[2] * r_max**3 / 3
+        want = info.metric.curvature * np.pi * info.length[2] * r_max**3 / 3
         assert abs(got - want) / want < VOL_TOL, (
             f"{system}: volume metric {got} != {want}"
         )
