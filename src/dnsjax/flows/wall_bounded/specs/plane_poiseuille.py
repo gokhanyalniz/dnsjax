@@ -11,7 +11,7 @@ from ._family import (
 SPEC = FlowSpec(
     system="plane-poiseuille",
     family="cartesian",
-    geometry_label="cartesian",
+    geometry="cartesian",
     summary="pressure/bulk-driven plane channel",
     flow_module="dnsjax.flows.wall_bounded.plane_poiseuille",
     fields=(

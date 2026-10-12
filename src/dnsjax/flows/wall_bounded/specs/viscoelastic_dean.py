@@ -55,7 +55,7 @@ def _rehydrate(sections: dict) -> None:
 SPEC = FlowSpec(
     system="viscoelastic-dean",
     family="annular-viscoelastic",
-    geometry_label="annular",
+    geometry="annular",
     summary="viscoelastic (sPTT) force-driven annular flow",
     flow_module="dnsjax.flows.wall_bounded.viscoelastic_dean",
     total_field=True,

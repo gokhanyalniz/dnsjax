@@ -126,7 +126,7 @@ def _rehydrate(sections: dict) -> None:
 SPEC = FlowSpec(
     system="curved-pipe",
     family="cylindrical",
-    geometry_label="cylindrical",
+    geometry="cylindrical",
     summary="pressure/bulk-driven toroidal (curved) pipe",
     flow_module="dnsjax.flows.wall_bounded.curved_pipe",
     total_field=True,

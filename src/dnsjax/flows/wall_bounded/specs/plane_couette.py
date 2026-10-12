@@ -24,7 +24,7 @@ def _validate(params, derived) -> None:
 SPEC = FlowSpec(
     system="plane-couette",
     family="cartesian",
-    geometry_label="cartesian",
+    geometry="cartesian",
     summary="wall-driven plane channel",
     flow_module="dnsjax.flows.wall_bounded.plane_couette",
     fields=(
