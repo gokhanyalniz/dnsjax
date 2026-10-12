@@ -28,7 +28,7 @@ def _rehydrate(sections: dict) -> None:
 SPEC = FlowSpec(
     system="taylor-couette",
     family="annular",
-    geometry_label="annular",
+    geometry="annular",
     summary="rotating-cylinder annular flow",
     flow_module="dnsjax.flows.wall_bounded.taylor_couette",
     fields=(

@@ -59,6 +59,20 @@ dev = [
 plots = [
     "matplotlib>=3.10",
 ]
+# The unpublished workspace member (lab/), installed by default so one
+# `uv sync` gives the whole codebase; `--no-group lab` leaves it out.
+lab = [
+    "dnsjax-lab",
+]
+
+[tool.uv]
+default-groups = ["dev", "lab"]
+
+[tool.uv.workspace]
+members = ["lab"]
+
+[tool.uv.sources]
+dnsjax-lab = { workspace = true }
 
 [build-system]
 requires = ["uv_build>=0.11.4,<0.13.0"]

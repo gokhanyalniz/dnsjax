@@ -14,9 +14,10 @@ heavier than the standard library -- no pydantic, no JAX, and never
 :mod:`dnsjax.parameters` (the hooks receive the live ``params`` /
 ``derived_params`` objects as arguments) -- so rendering ``--help`` or
 validating a TOML never configures JAX and cannot create an import
-cycle.  The concrete specs live in ``flows/*/specs/``; the aggregation
-(system list, lookup, stored-metadata helpers) in
-:mod:`dnsjax.flows.registry`.
+cycle.  The concrete specs live in ``flows/*/specs/``, and in installed
+plugin packages, which register theirs under the ``dnsjax.flows``
+entry-point group; the aggregation (system list, lookup,
+stored-metadata helpers) in :mod:`dnsjax.flows.registry`.
 """
 
 from collections.abc import Callable
@@ -94,14 +95,14 @@ class DeferredSpec:
 class FlowSpec:
     r"""Complete per-flow parameter declaration.
 
-    ``family`` keys the shared machinery (``"cartesian"``,
-    ``"cylindrical"``, ``"annular"``, ``"cylindrical-viscoelastic"``,
-    ``"annular-viscoelastic"``, ``"triply-periodic"``); the two
-    viscoelastic families are grouped with their geometry *and* with
-    each other by :mod:`dnsjax.flows.registry`, along the geometry and
-    rheology axes respectively.  ``geometry_label`` groups the
-    ``--help`` flow list (each viscoelastic flow displays under its
-    geometry).
+    ``geometry`` names the geometry whose machinery drives the flow
+    (``"triply-periodic"``, ``"cartesian"``, ``"cylindrical"`` or
+    ``"annular"``): the registry's geometry lists
+    (:data:`~dnsjax.flows.registry.cylindrical_systems`, ...) are built
+    from it, and it groups the ``--help`` flow list.  ``family`` is a
+    finer key within a geometry (``"cylindrical-viscoelastic"``,
+    ``"annular-viscoelastic"`` for the viscoelastic flows, the
+    geometry's name otherwise), read by the registry's rheology lists.
 
     Hooks (all optional):
 
@@ -166,7 +167,7 @@ class FlowSpec:
 
     system: str
     family: str
-    geometry_label: str
+    geometry: str
     summary: str
     fields: tuple[FieldSpec, ...]
     deferred: tuple[DeferredSpec, ...] = ()

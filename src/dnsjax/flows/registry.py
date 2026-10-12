@@ -1,25 +1,94 @@
 r"""Registry of all flow parameter specs (JAX-free).
 
 Aggregates the per-flow :class:`~dnsjax.flow_spec.FlowSpec` modules of
-``flows/*/specs/`` into the canonical system list (the source of the
-``phys.system`` ``Literal`` and the ``--help`` flow list), the
-system -> spec lookup, the family groupings, and the helpers that map
-*stored* (public-named, relevance-filtered) snapshot-metadata
-parameters back onto the internal names.
+``flows/*/specs/``, and those of installed plugins, into the canonical
+system list (the source of the ``phys.system`` ``Literal`` and the
+``--help`` flow list), the system -> spec lookup, the geometry
+groupings, and the helpers that map *stored* (public-named,
+relevance-filtered) snapshot-metadata parameters back onto the
+internal names.
+
+A plugin package registers flows under the ``dnsjax.flows`` entry-point
+group; each entry point names a :class:`~dnsjax.flow_spec.FlowSpec` or
+an iterable of them, in a JAX-free module that never imports
+:mod:`dnsjax.parameters` (the spec rules).  The canonical order lists
+the flows by geometry -- the core geometries first, in
+:data:`GEOMETRY_ORDER`, then any geometry a plugin introduces -- and,
+within a geometry, the core flows before the plugins' (by entry-point
+name, each in its own order).
 
 Import direction: ``parameters.py -> flows.registry -> flows.*.specs
 -> flow_spec.py``; nothing here may import :mod:`dnsjax.parameters`.
 """
 
+from importlib.metadata import entry_points
+
 from ..flow_spec import FlowSpec
 from .triply_periodic.specs import SPECS as _PERIODIC_SPECS
 from .wall_bounded.specs import SPECS as _WALL_SPECS
 
+#: The core geometries, in listing order.
+GEOMETRY_ORDER: tuple[str, ...] = (
+    "triply-periodic",
+    "cartesian",
+    "cylindrical",
+    "annular",
+)
+
+#: The entry-point group plugin packages register their flows under.
+FLOWS_ENTRY_POINT_GROUP = "dnsjax.flows"
+
+
+def _plugin_specs() -> list[FlowSpec]:
+    """The specs registered under :data:`FLOWS_ENTRY_POINT_GROUP`.
+
+    Raises if an entry point fails to load or names anything but
+    specs: a flow that silently went missing would turn a run of it
+    into an "unknown system" error far from the cause.
+    """
+    out: list[FlowSpec] = []
+    found = entry_points(group=FLOWS_ENTRY_POINT_GROUP)
+    for ep in sorted(found, key=lambda e: e.name):
+        try:
+            obj = ep.load()
+        except Exception as exc:
+            raise RuntimeError(
+                f"flow plugin {ep.name!r} ({ep.value}) failed to load: {exc}"
+            ) from exc
+        specs = (obj,) if isinstance(obj, FlowSpec) else tuple(obj)
+        bad = [s for s in specs if not isinstance(s, FlowSpec)]
+        if bad:
+            raise TypeError(
+                f"flow plugin {ep.name!r} ({ep.value}) names {bad!r}, "
+                "not FlowSpec objects"
+            )
+        out.extend(specs)
+    return out
+
+
+def _canonical(specs: list[FlowSpec]) -> dict[str, FlowSpec]:
+    """*specs* by system, grouped by geometry in listing order."""
+    order = list(GEOMETRY_ORDER)
+    for spec in specs:
+        if spec.geometry not in order:
+            order.append(spec.geometry)
+    out: dict[str, FlowSpec] = {}
+    # A stable sort keeps the core flows before the plugins' within
+    # each geometry.
+    for spec in sorted(specs, key=lambda s: order.index(s.geometry)):
+        if spec.system in out:
+            raise ValueError(
+                f"flow system {spec.system!r} is registered twice"
+            )
+        out[spec.system] = spec
+    return out
+
+
 #: All flow specs, in the canonical order (drives the ``phys.system``
 #: ``Literal``, ``--help``, and every listing).
-SPECS: dict[str, FlowSpec] = {
-    spec.system: spec for spec in (*_PERIODIC_SPECS, *_WALL_SPECS)
-}
+SPECS: dict[str, FlowSpec] = _canonical(
+    [*_PERIODIC_SPECS, *_WALL_SPECS, *_plugin_specs()]
+)
 
 #: The parameter fields every flow accepts, ``(section, name)`` on the
 #: internal ``parameters.Parameters`` models (public name = internal
@@ -101,40 +170,47 @@ def spec_for(system: str) -> FlowSpec:
 
 
 def systems_by_geometry() -> dict[str, list[FlowSpec]]:
-    """Specs grouped by ``geometry_label`` (canonical order kept)."""
+    """Specs grouped by ``geometry`` (canonical order kept)."""
     out: dict[str, list[FlowSpec]] = {}
     for spec in SPECS.values():
-        out.setdefault(spec.geometry_label, []).append(spec)
+        out.setdefault(spec.geometry, []).append(spec)
     return out
+
+
+def _by_geometry(geometry: str) -> list[str]:
+    return [s.system for s in SPECS.values() if s.geometry == geometry]
 
 
 def _by_family(family: str) -> list[str]:
     return [s.system for s in SPECS.values() if s.family == family]
 
 
-# Family groupings (defined here; consumers import them from the
-# registry).
-periodic_systems: list[str] = _by_family("triply-periodic")
-cartesian_systems: list[str] = _by_family("cartesian")
+# Geometry groupings (defined here; consumers import them from the
+# registry): "which geometry's machinery drives this?" -- the basis
+# maps, the resume regrid, the IC builders, the analysis component
+# schema.
+periodic_systems: list[str] = _by_geometry("triply-periodic")
+cartesian_systems: list[str] = _by_geometry("cartesian")
+cylindrical_systems: list[str] = _by_geometry("cylindrical")
+annular_systems: list[str] = _by_geometry("annular")
+walled_systems: list[str] = [
+    *cartesian_systems,
+    *cylindrical_systems,
+    *annular_systems,
+]
 
 # The viscoelastic (sPTT) extension exists in two geometries, so its
-# systems are classified along two independent axes and a consumer
-# reads whichever it actually means:
-#
-# * **geometry** -- ``cylindrical_systems`` / ``annular_systems``
-#   answer "which geometry's machinery drives this?": the basis maps,
-#   the resume regrid, the IC builders, the analysis component schema.
-#   Each geometry list *includes* its viscoelastic member, so a
-#   viscoelastic pipe routes with the Newtonian pipe.
-# * **rheology** -- ``viscoelastic_systems`` answers "does this carry a
-#   conformation tensor?": the solvent viscosity `nu = beta/re`, the
-#   9-component probe labels, the ``[force]`` rejection, the
-#   ``snapshot_import`` refusal.  It cuts *across* the geometry lists.
-#
-# So the two kinds of list overlap by construction.  An ordered
-# ``if/elif`` chain that mixes them must test the rheology axis
-# **first** (the geometry branch would otherwise swallow the
-# viscoelastic member and hand it 3-component machinery).
+# systems are classified along a second, independent axis, and a
+# consumer reads whichever it actually means: **rheology** --
+# ``viscoelastic_systems`` answers "does this carry a conformation
+# tensor?": the solvent viscosity `nu = beta/re`, the 9-component probe
+# labels, the ``[force]`` rejection, the ``snapshot_import`` refusal.
+# It cuts *across* the geometry lists, each of which *includes* its
+# viscoelastic member (a viscoelastic pipe routes with the Newtonian
+# pipe), so an ordered ``if/elif`` chain that mixes the two kinds of
+# list must test the rheology axis **first** (the geometry branch would
+# otherwise swallow the viscoelastic member and hand it 3-component
+# machinery).
 #
 # A third axis, ``total_field_systems``, answers "is the state (and so
 # every snapshot) the total field rather than a perturbation about a
@@ -145,22 +221,9 @@ annular_viscoelastic_systems: list[str] = _by_family("annular-viscoelastic")
 cylindrical_viscoelastic_systems: list[str] = _by_family(
     "cylindrical-viscoelastic"
 )
-cylindrical_systems: list[str] = [
-    *_by_family("cylindrical"),
-    *cylindrical_viscoelastic_systems,
-]
-annular_systems: list[str] = [
-    *_by_family("annular"),
-    *annular_viscoelastic_systems,
-]
 viscoelastic_systems: list[str] = [
     *annular_viscoelastic_systems,
     *cylindrical_viscoelastic_systems,
-]
-walled_systems: list[str] = [
-    *cartesian_systems,
-    *cylindrical_systems,
-    *annular_systems,
 ]
 total_field_systems: list[str] = [
     s.system for s in SPECS.values() if s.total_field
