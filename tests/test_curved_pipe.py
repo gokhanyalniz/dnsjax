@@ -25,7 +25,7 @@ of the things they capture.
     shift **truncates** rather than wraps at `$|m| = M$`; and the
     `$1/h$` harmonics the flux read contracts with, and the `$1/h^2$`
     ones ``dnsjax.analysis.divergence`` divides by, match their closed
-    forms (:func:`dnsjax.harmonics.inverse_metric_harmonics`) to
+    forms (:func:`dnsjax_lab.harmonics.inverse_metric_harmonics`) to
     machine precision.
 
 ``defect``
@@ -293,10 +293,11 @@ def _check_metric(kappa: float) -> str:
     """
     _configure(kappa)
     import numpy as np
+    from dnsjax_lab.harmonics import inverse_metric_harmonics
     from jax import numpy as jnp
 
     import dnsjax.flows.wall_bounded.curved_pipe as cp
-    from dnsjax.harmonics import complex_harmonics, inverse_metric_harmonics
+    from dnsjax.harmonics import complex_harmonics
     from dnsjax.operators import pad_harmonics
     from dnsjax.parameters import params
     from dnsjax.sharding import sharding

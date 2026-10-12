@@ -55,11 +55,24 @@ def _derive(params, derived, user_set) -> None:
     params.phys.re = params.phys.wi / params.phys.el
 
 
-#: Axis-parity class of each stored component, ``(u_z, u_r, u_theta,
-#: c_zz, c_rz, c_theta_z, c_rr, c_theta_theta, c_r_theta)``: a
-#: component's class is `$(-1)^{m+s}$`, `$s$` the number of its
-#: radial/azimuthal indices (``FlowSpec.component_parity``).  Shared
-#: by both sPTT flows.
+#: The stored components: the velocity and the physical
+#: conformation-tensor components (``FlowSpec.components``).  Shared by
+#: both sPTT flows.
+COMPONENTS: tuple[str, ...] = (
+    "u_z",
+    "u_r",
+    "u_theta",
+    "c_zz",
+    "c_rz",
+    "c_theta_z",
+    "c_rr",
+    "c_theta_theta",
+    "c_r_theta",
+)
+
+#: Axis-parity class of each of :data:`COMPONENTS`: a component's class
+#: is `$(-1)^{m+s}$`, `$s$` the number of its radial/azimuthal indices
+#: (``FlowSpec.component_parity``).  Shared by both sPTT flows.
 COMPONENT_PARITY: tuple[bool, ...] = (
     True,  # u_z
     False,  # u_r
@@ -100,6 +113,7 @@ SPEC = FlowSpec(
     total_field=True,
     # 3 velocity + 6 symmetric conformation-tensor components.
     n_components=9,
+    components=COMPONENTS,
     fields=(
         *wall_fields(0.5, CYLINDRICAL_GRIDS),
         *cyl_annular_fields(),

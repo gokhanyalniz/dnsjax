@@ -7,10 +7,7 @@ them wrapped in ``jnp.asarray`` so the runtime keeps device arrays,
 while host-side / external code (which must run without JAX) imports
 the NumPy versions directly.  :func:`parse_mode_pairs`, the shared
 parser of ``"i2,i3;..."`` spectral-mode lists (the probes / forcing /
-transient-growth surfaces), also lives here, as does
-:func:`inverse_metric_harmonics`, the curved pipe's `$1/h$` in
-azimuthal harmonics, which the solver's flux read and the analysis
-package's toroidal operators share.
+transient-growth surfaces), also lives here.
 
 The conventions match the storage layout: the Nyquist mode is always
 omitted, so a real-FFT axis carries `$n / 2$` modes and a full-complex
@@ -176,55 +173,3 @@ def complex_harmonics(n: int) -> ndarray:
     qs_out[: n // 2] = qs[: n // 2]
     qs_out[n // 2 :] = qs[n // 2 + 1 :]
     return qs_out
-
-
-def inverse_metric_harmonics(
-    kappa: float, rs: ndarray, m_vals: ndarray, power: int = 1
-) -> ndarray:
-    r"""Exact azimuthal harmonics of the curved pipe's `$h^{-p}$`.
-
-    `$h = 1 + \kappa r\cos\theta$` is the toroidal metric
-    (:mod:`dnsjax.geometries.wall_bounded.cylindrical_curved`).  With
-    `$\epsilon = \kappa r$`,
-
-    .. math::
-        \frac{1}{1 + \epsilon\cos\theta}
-        = \frac{1}{\sqrt{1-\epsilon^2}}
-          \Big[1 + 2\sum_{n\ge1} q^n \cos n\theta\Big], \qquad
-        q = \frac{-\epsilon}{1 + \sqrt{1-\epsilon^2}},
-
-    so the complex coefficients of `$1/h$` are
-    `$c_m = q^{|m|}/\sqrt{1-\epsilon^2}$`.  Those of `$1/h^2$` follow
-    by differentiating `$1/(\lambda + \epsilon\cos\theta)$` in
-    `$\lambda$` at `$\lambda = 1$`:
-    `$q^{|m|}\,(1 + |m|\sqrt{1-\epsilon^2})/(1-\epsilon^2)^{3/2}$`.
-    Both are real, even in `$m$` and `$O(r^{|m|})$` at the axis, hence
-    in the `$(-1)^m$` parity class like the fields they weight, and
-    exact to machine precision (``tests/test_curved_pipe.py`` checks
-    them against an FFT).
-
-    Parameters
-    ----------
-    kappa:
-        Curvature `$\kappa = a/R_c$`, below 1.
-    rs:
-        Radii, shape ``(n_r,)``.
-    m_vals:
-        Azimuthal wavenumbers.
-    power:
-        `$p$`, 1 or 2.
-
-    Returns
-    -------
-    :
-        Shape ``(len(rs), len(m_vals))``.
-    """
-    if power not in (1, 2):
-        raise ValueError(f"power must be 1 or 2, got {power}.")
-    eps = kappa * np.asarray(rs)[:, None]
-    root = np.sqrt(1.0 - eps**2)
-    q = -eps / (1.0 + root)
-    abs_m = np.abs(np.asarray(m_vals))[None, :]
-    if power == 1:
-        return q**abs_m / root
-    return q**abs_m * (1.0 + abs_m * root) / root**3

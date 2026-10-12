@@ -36,6 +36,13 @@ class _Unset:
 #: the field's model default.
 UNSET: Final = _Unset()
 
+#: Axis-parity class of the stored cylindrical velocity
+#: ``(u_z, u_r, u_theta)``: ``True`` for the `$(-1)^m$` (even) class,
+#: ``False`` for `$(-1)^{m+1}$` (odd).  A scalar (the pressure of a
+#: reduced snapshot) is even, like ``u_z``.  The default of
+#: :attr:`FlowSpec.component_parity`.
+VELOCITY_PARITY: Final[tuple[bool, ...]] = (True, False, False)
+
 
 @dataclass(frozen=True)
 class FieldSpec:
@@ -135,6 +142,9 @@ class FlowSpec:
         mesh and FFT rounding, appending a startup note to
         ``padded.notes`` for each change: for a nonlinear term that the
         oversampling factor alone does not dealias.
+    ``control_summary(params) -> str``
+        The flow's control parameters in one line, for the
+        transient-growth summary; unset, it is ``re=<phys.re>``.
 
     ``grid_type_default`` resolves the wall-normal grid when no layer
     sets ``geo.grid_type``: a literal value, or a callable receiving
@@ -165,20 +175,38 @@ class FlowSpec:
     it with ``getattr`` and falls back to no column.
 
     ``n_components`` is the leading state-axis size (3 velocity
-    components unless the flow carries more, e.g. the 9-component
-    viscoelastic state); the snapshot writer and loader read it, while
-    the IC builders and the FFT, sharding and stepper machinery are
-    component-count-agnostic (the leading state axis is replicated).
-    A flow with its own component set also needs a branch in the
-    analysis schema (:func:`dnsjax.analysis._core.geometry_info`),
-    which is keyed on the system, not on this count.
+    components unless the flow carries more); the snapshot writer and
+    loader read it, while the IC builders and the FFT, sharding and
+    stepper machinery are component-count-agnostic (the leading state
+    axis is replicated).
 
-    ``component_parity`` gives the axis-parity class of each stored
-    component, in storage order (``True``: the `$(-1)^m$` class of
-    `$u_z$`; ``False``: `$(-1)^{m+1}$`, of `$u_r$`, `$u_\theta$`),
-    for the pipe's parity-aware regrid
-    (:func:`dnsjax.snapshot.stored_component_parity`); ``None`` means
-    the velocity's.  A flow storing more than the velocity declares it.
+    The stored components and axes, as the snapshot analysis
+    (:func:`dnsjax.analysis.geometry_info`) labels them:
+
+    ``components``
+        One label per stored component, in storage order; ``None``
+        means the geometry's velocity, ``("u_x", "u_y", "u_z")`` or,
+        in the cylindrical and annular geometries,
+        ``("u_z", "u_r", "u_theta")``.  A flow storing more than three
+        components declares it.
+    ``component_parity``
+        The axis-parity class of each stored component, in storage
+        order (``True``: the `$(-1)^m$` class of `$u_z$`; ``False``:
+        `$(-1)^{m+1}$`, of `$u_r$`, `$u_\theta$`), for the pipe's
+        parity-aware regrid
+        (:func:`dnsjax.snapshot.stored_component_parity`) and radial
+        derivatives; ``None`` means :data:`VELOCITY_PARITY`.  A
+        cylindrical flow storing more than the velocity declares it.
+    ``axis_names``
+        The direction named by each stored axis; ``None`` means the
+        geometry's, ``("y", "z", "x")`` or ``("r", "theta", "z")``.
+    ``analysis_metric``
+        The ``"module:attr"`` path of a JAX-free factory
+        ``(params) -> metric``, for a cylindrical flow whose axial
+        direction carries a scale factor
+        `$h(r, \theta) \ne 1$` (:class:`dnsjax.analysis.AxialMetric`);
+        the factory returns ``None`` where `$h = 1$`.  A string, like
+        ``flow_module``, imported only when a snapshot is analysed.
 
     ``total_field`` declares what the state -- and so every snapshot --
     holds: ``False`` (the default) for the perturbation `$u'$` about the
@@ -203,9 +231,13 @@ class FlowSpec:
     rehydrate: Callable[[dict], None] | None = None
     viscosity: Callable[[Any], float] | None = None
     pad: Callable[[Any, Any], None] | None = None
-    component_parity: tuple[bool, ...] | None = None
+    control_summary: Callable[[Any], str] | None = None
     flow_module: str | None = None
     n_components: int = 3
+    components: tuple[str, ...] | None = None
+    component_parity: tuple[bool, ...] | None = None
+    axis_names: tuple[str, str, str] | None = None
+    analysis_metric: str | None = None
     total_field: bool = False
 
     #: ``(section, name) -> FieldSpec`` over :attr:`fields` (cached).
@@ -230,6 +262,28 @@ class FlowSpec:
                 f"{self.system!r} spec lists {sorted(overlap)} as both "
                 "relevant and deferred"
             )
+        if self.components is None and self.n_components != 3:
+            raise ValueError(
+                f"{self.system!r} spec stores {self.n_components} "
+                "components but labels none (FlowSpec.components)"
+            )
+        if (
+            self.geometry == "cylindrical"
+            and self.n_components != 3
+            and self.component_parity is None
+        ):
+            raise ValueError(
+                f"{self.system!r} spec stores {self.n_components} "
+                "cylindrical components but gives no axis parity "
+                "(FlowSpec.component_parity)"
+            )
+        for name in ("components", "component_parity"):
+            value = getattr(self, name)
+            if value is not None and len(value) != self.n_components:
+                raise ValueError(
+                    f"{self.system!r} spec: {name} has {len(value)} "
+                    f"entries for {self.n_components} components"
+                )
         object.__setattr__(self, "field_map", fm)
         object.__setattr__(
             self, "deferred_map", {d.key: d for d in self.deferred}

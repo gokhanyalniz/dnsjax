@@ -264,7 +264,7 @@ def _metric_weighted(true: np.ndarray) -> np.ndarray:
     continuity row (``CurvedCylindricalFlow.divergence_defect``), with
     the exact truncating `$h$` product the solver applies.
     """
-    from dnsjax.analysis._core import geometry_info, metric_product
+    from dnsjax.analysis._core import geometry_info
     from dnsjax.geometries.wall_bounded.cylindrical import (
         build_cylindrical_grid,
     )
@@ -280,7 +280,7 @@ def _metric_weighted(true: np.ndarray) -> np.ndarray:
     info = geometry_info(params)
     out = true.copy()
     for c in (1, 2):
-        out[c] = metric_product(true[c], np.asarray(rs), info, 1)
+        out[c] = info.metric.product(true[c], np.asarray(rs), info, 1)
     return out
 
 
@@ -297,9 +297,9 @@ def _max_divergence(true: np.ndarray, system: str) -> float:
 
     The curved pipe is measured on its own continuity row, the
     straight divergence of `$(u_s, h u_r, h u_\theta)$` that its
-    corrector drives to zero, with the exact truncating product of
-    :func:`dnsjax.analysis._core.metric_product`: the straight
-    divergence of a toroidally solenoidal field is `$O(\kappa)$`.
+    corrector drives to zero, with the exact truncating product of its
+    analysis metric (``GeometryInfo.metric``): the straight divergence
+    of a toroidally solenoidal field is `$O(\kappa)$`.
     """
     from dnsjax.flows.registry import cylindrical_systems
     from dnsjax.operators import complex_harmonics, real_harmonics

@@ -26,7 +26,14 @@ See :func:`read_state` and :mod:`dnsjax.analysis.snapshot_ops`.
 """
 
 # Object-like view over embedded params/stats (re-exported for typing).
-from ._core import Namespace, geometry_info, read_meta, read_stats
+from ._core import (
+    AxialMetric,
+    GeometryInfo,
+    Namespace,
+    geometry_info,
+    read_meta,
+    read_stats,
+)
 from .snapshot_export import StateData, read_pressure, read_state
 from .snapshot_ops import (
     curl,
@@ -52,5 +59,7 @@ __all__ = [
     "read_meta",
     "read_stats",
     "geometry_info",
+    "GeometryInfo",
+    "AxialMetric",
     "Namespace",
 ]

@@ -21,7 +21,11 @@ from ._family import (
     wall_fields,
     wedge_rehydrate,
 )
-from .viscoelastic_pipe import COMPONENT_PARITY, solvent_viscosity
+from .viscoelastic_pipe import (
+    COMPONENT_PARITY,
+    COMPONENTS,
+    solvent_viscosity,
+)
 
 
 def _derive(params, derived, user_set) -> None:
@@ -62,6 +66,7 @@ SPEC = FlowSpec(
     total_field=True,
     # 3 velocity + 6 symmetric conformation-tensor components.
     n_components=9,
+    components=COMPONENTS,
     fields=(
         *wall_fields(0.0, CARTESIAN_ANNULAR_GRIDS),
         *cyl_annular_fields(axial_default=2 * pi),
