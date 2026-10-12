@@ -21,6 +21,7 @@ from ._family import (
     wall_fields,
     wedge_rehydrate,
 )
+from .viscoelastic_pipe import solvent_viscosity
 
 
 def _derive(params, derived, user_set) -> None:
@@ -77,4 +78,5 @@ SPEC = FlowSpec(
     grid_type_default="cgl",
     derive=_derive,
     rehydrate=_rehydrate,
+    viscosity=solvent_viscosity,
 )
