@@ -264,30 +264,25 @@ product on an ``m0``-times too coarse grid and fail it outright.
 
 from dataclasses import dataclass, field
 from datetime import timedelta
+from importlib.metadata import entry_points
 from math import cos, pi, sin
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from .flow_spec import UNSET
 
-# The flow registry aggregates the per-flow parameter specs
-# (``flows/*/specs/``) into the system list and family groupings
-# (consumers import the groupings from ``flows.registry`` directly).
-# ``viscoelastic_systems`` is the *rheology* axis and cuts across the
-# geometry lists, each of which contains its own viscoelastic member
-# (so a consumer picking machinery by geometry gets it right, and one
-# asking "does this carry a conformation tensor?" reads the other
-# list) -- the rationale, and the ordering rule for a chain that mixes
-# the two, are in ``flows.registry``.  Import direction is strictly
+# The flow registry aggregates the per-flow parameter specs (the
+# core's ``flows/*/specs/`` and the plugins') into the system list and
+# geometry groupings (consumers import the groupings from
+# ``flows.registry`` directly).  Import direction is strictly
 # ``parameters -> flows.registry -> flows.*.specs -> flow_spec`` (the
 # spec hooks receive ``params``/``derived_params`` as arguments), so
 # no cycle exists.
 from .flows.registry import (
     periodic_systems,
     spec_for,
-    viscoelastic_systems,
     walled_systems,
 )
 
@@ -599,12 +594,6 @@ class Physics(BaseModel):
     # ``re = Re_ref`` so every downstream 1/re viscous/IMM/stats path is
     # reused unchanged.  See the annular branch of ``update_parameters``
     # and ``flows.wall_bounded.taylor_couette``.
-    #
-    # The quasi-Keplerian system (``system == "quasi-keplerian"``) reuses
-    # ``re1`` as the inner Reynolds number Re_i and takes ``r_omega``
-    # (below) instead of ``re2``; the annular branch derives and stores
-    # ``re2`` so every downstream circular-Couette path is shared with
-    # Taylor-Couette.  See ``flows.wall_bounded.quasi_keplerian``.
     re1: float | None = Field(
         default=None,
         description=(
@@ -617,87 +606,6 @@ class Physics(BaseModel):
         description=(
             "Outer-cylinder Reynolds number Re_2 = Omega_2 r_2 d / nu "
             "(negative = counter-rotating)."
-        ),
-    )
-    # Rotation number R_Omega (system == "quasi-keplerian"), following
-    # Dubrulle et al. 2005:
-    #   R_Omega = (1 - eta) (Re_i + Re_o) / (eta Re_o - Re_i),
-    # with Re_i = re1 and Re_o the derived outer Reynolds number.  It is
-    # constant along half-lines through the origin of (Re_o, Re_i) space.
-    # The quasi-Keplerian regime (co-rotating, angular momentum
-    # increasing / angular velocity decreasing outward -- linearly stable
-    # by Rayleigh's criterion) is the open half-line -inf < R_Omega < -1,
-    # bounded by the Rayleigh line R_Omega = -1 (Re_o = eta Re_i) and the
-    # solid-body limit R_Omega -> -inf (Re_o = Re_i / eta).  The annular
-    # branch of ``update_parameters`` requires re1 > 0 and r_omega < -1,
-    # then derives re2 = re1 (1 - eta + R_Omega) / (eta R_Omega -
-    # (1 - eta)).
-    r_omega: float | None = Field(
-        default=None,
-        description=(
-            "Rotation number R_Omega < -1 selecting a quasi-Keplerian "
-            "regime; the outer Reynolds number is derived from "
-            "(re1, r_omega, eta)."
-        ),
-    )
-    # Viscoelastic (sPTT) control parameters, shared by both
-    # viscoelastic systems ("viscoelastic-pipe" / "viscoelastic-dean";
-    # see ``flows.wall_bounded.viscoelastic_{pipe,dean}`` and
-    # ``geometries.wall_bounded.{cylindrical,annular}_viscoelastic``).
-    # All ``None`` for other systems; unset values fall back to each
-    # flow's own FieldSpec defaults.  beta 0.8 / epsilon 0.001 /
-    # kappa 5e-5 are shared -- the values of Lellep, Linkmann &
-    # Morozov, PNAS 121, e2318851121 (2024), whose sPTT system both
-    # flows integrate (``_viscoelastic_common``) -- but el and wi are
-    # not: Re := Wi/El is derived, so those two *are* the Reynolds
-    # number, and each flow picks the regime it is about -- el 80,
-    # wi 105 (Re ~ 1.3, inertialess and strongly elastic) for the
-    # annulus; el 0.02, wi 20 (Re = 1000, elasto-inertial) for the
-    # pipe.
-    el: float | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Elasticity number El; the Reynolds number is derived as "
-            "Re = Wi / El."
-        ),
-    )
-    wi: float | None = Field(
-        default=None, gt=0, description="Weissenberg number Wi."
-    )
-    beta: float | None = Field(
-        default=None,
-        gt=0,
-        le=1,
-        description=(
-            "Solvent-to-total viscosity ratio in (0, 1]: the solvent "
-            "carries nu = beta/Re, the polymer stress (1-beta)/(Re Wi)."
-        ),
-    )
-    # Deliberately unbounded above: the relaxation factor
-    # f = 1 + epsilon (tr c - 3) is positive for every admissible c only
-    # while epsilon <= 1/3 (above it, f flips sign once tr c < 3 - 1/eps,
-    # turning relaxation into growth), but the literature range extends
-    # past that and no realizable state reaches the threshold at the
-    # shipped defaults.  The cnab2 split stays exact either way -- its
-    # implicit half carries (1 - 3 epsilon)/Wi, which merely turns
-    # anti-dissipative there and costs corrector contraction, not
-    # correctness.
-    epsilon: float | None = Field(
-        default=None,
-        ge=0,
-        description=(
-            "sPTT extensibility parameter (>= 0); f = 1 + epsilon "
-            "(tr c - 3) is sign-definite only up to 1/3."
-        ),
-    )
-    kappa: float | None = Field(
-        default=None,
-        ge=0,
-        description=(
-            "Artificial conformation stress diffusivity; 0 makes the "
-            "conformation transport purely hyperbolic (no wall BC on "
-            "c)."
         ),
     )
     # Default "plane-couette": a wall-bounded flow that integrates
@@ -716,23 +624,6 @@ class Physics(BaseModel):
             "Physical-space oversampling for dealiasing: (n+1)/2 grid "
             "points per mode dealias an n-th order nonlinearity "
             "(default 3 = the 3/2 rule)."
-        ),
-    )
-    # Off in the model, on in the curved-pipe spec: a snapshot written
-    # before the field existed ran without it, which is what a resume's
-    # trajectory comparison reads for an absent key.
-    curvature_padding: bool = Field(
-        default=False,
-        description=(
-            "Curved pipe: raise the azimuthal dealiasing grid from the "
-            "3/2 rule's 3M + 3 points to 3M + J(kappa), M the largest "
-            "stored azimuthal wavenumber.  The nonlinear term carries "
-            "1/h^2, h = 1 + kappa r cos(theta), whose harmonics never "
-            "end, so no oversampling factor dealiases it exactly; J is "
-            "the smallest pad that bounds the aliasing below the "
-            "working precision's roundoff (see "
-            "dnsjax.harmonics.curvature_dealiasing_pad).  "
-            "Trajectory-defining; needs oversampling_factor >= 3."
         ),
     )
     driving: Literal[
@@ -866,9 +757,7 @@ class Geometry(BaseModel):
             "homogeneous plane."
         ),
     )
-    # Required for every annular system (Taylor-Couette,
-    # quasi-Keplerian, Dean); the viscoelastic annulus uses ``delta``
-    # instead.
+    # Required by the annular flows that read it in their ``derive``.
     eta: float | None = Field(
         default=None,
         gt=0,
@@ -898,27 +787,6 @@ class Geometry(BaseModel):
             "m0-periodic wedge theta in [0, 2*pi/m0) (1 = full "
             "circle), cutting azimuthal cost/memory by m0 at fixed "
             "resolution."
-        ),
-    )
-    curvature: float = Field(
-        default=0.0,
-        ge=0,
-        description=(
-            "Dimensionless centreline curvature kappa = a/R_c of a "
-            "curved (toroidal, zero-torsion) pipe; 0 is the straight "
-            "pipe.  The complete torus is a streamwise period of "
-            "2*pi/kappa, but any period is geometrically consistent "
-            "because no metric coefficient depends on the streamwise "
-            "coordinate."
-        ),
-    )
-    # Default 11 (applied in the viscoelastic ``derive`` hook).
-    delta: float | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Inner radius of the viscoelastic annulus in half-gap "
-            "units (gap fixed at 2: r1 = delta, r2 = delta + 2)."
         ),
     )
     wall_grid: Path | None = Field(
@@ -1211,17 +1079,6 @@ class Initiation(BaseModel):
             "unchanged mean pressure gradient (= compatibility with "
             "no-slip at both walls), and an unchanged bulk velocity "
             "in each direction whose mean the driving holds."
-        ),
-    )
-    # Radially windowed to zero at both walls, which keep their laminar
-    # conformation; shares the velocity draw's ``random_smoothness`` /
-    # ``random_wall_smoothness`` / ``random_wall_confinement`` shaping.
-    random_conformation_amplitude: float = Field(
-        default=700.0,
-        description=(
-            "Amplitude of the random symmetric-tensor perturbation "
-            "added to the laminar conformation in the viscoelastic "
-            "random IC."
         ),
     )
     # A compact fixed-physical structure localized in every homogeneous
@@ -2067,6 +1924,112 @@ class Solver(BaseModel):
     )
 
 
+#: The entry-point group under which plugin packages add fields to the
+#: core parameter sections.
+PARAMETERS_ENTRY_POINT_GROUP = "dnsjax.parameters"
+
+
+def _plugin_fields() -> dict[str, dict[str, tuple]]:
+    """The fields plugins add to the core sections, by section.
+
+    Each entry point under :data:`PARAMETERS_ENTRY_POINT_GROUP` names a
+    mapping ``{section: {name: (annotation, FieldInfo)}}``, in a module
+    that imports neither JAX nor this one.  A field two plugins add is
+    an error.  A flow reaches such a field through its spec's
+    ``FieldSpec``, exactly as a core field.
+    """
+    out: dict[str, dict[str, tuple]] = {}
+    found = entry_points(group=PARAMETERS_ENTRY_POINT_GROUP)
+    for ep in sorted(found, key=lambda e: e.name):
+        try:
+            fields = ep.load()
+        except Exception as exc:
+            raise RuntimeError(
+                f"parameter plugin {ep.name!r} ({ep.value}) failed to "
+                f"load: {exc}"
+            ) from exc
+        for section, defs in fields.items():
+            sec = out.setdefault(section, {})
+            for name, definition in defs.items():
+                if name in sec:
+                    raise ValueError(
+                        f"{section}.{name} is added by two parameter plugins"
+                    )
+                sec[name] = definition
+    return out
+
+
+def _with_plugin_fields(
+    model: type[BaseModel], section: str, fields: dict[str, tuple]
+) -> type[BaseModel]:
+    """*model* extended by the plugin *fields* (after its own)."""
+    clash = sorted(set(fields) & set(model.model_fields))
+    if clash:
+        raise ValueError(
+            f"a parameter plugin redefines core field(s) of [{section}]: "
+            f"{', '.join(clash)}"
+        )
+    return create_model(
+        model.__name__,
+        __base__=model,
+        __module__=__name__,
+        __doc__=model.__doc__,
+        **fields,
+    )
+
+
+_PLUGIN_FIELDS = _plugin_fields()
+_unknown_sections = sorted(
+    set(_PLUGIN_FIELDS)
+    - {
+        "dist",
+        "phys",
+        "geo",
+        "res",
+        "init",
+        "outs",
+        "lowres",
+        "step",
+        "stop",
+        "solver",
+    }
+)
+if _unknown_sections:
+    raise ValueError(
+        "parameter plugins add fields to unknown section(s) "
+        f"{_unknown_sections}; a section of its own is an extension "
+        "(dnsjax.extensions)"
+    )
+if "dist" in _PLUGIN_FIELDS:
+    Distribution = _with_plugin_fields(
+        Distribution, "dist", _PLUGIN_FIELDS["dist"]
+    )
+if "phys" in _PLUGIN_FIELDS:
+    Physics = _with_plugin_fields(Physics, "phys", _PLUGIN_FIELDS["phys"])
+if "geo" in _PLUGIN_FIELDS:
+    Geometry = _with_plugin_fields(Geometry, "geo", _PLUGIN_FIELDS["geo"])
+if "res" in _PLUGIN_FIELDS:
+    Resolution = _with_plugin_fields(Resolution, "res", _PLUGIN_FIELDS["res"])
+if "init" in _PLUGIN_FIELDS:
+    Initiation = _with_plugin_fields(
+        Initiation, "init", _PLUGIN_FIELDS["init"]
+    )
+if "outs" in _PLUGIN_FIELDS:
+    Outputs = _with_plugin_fields(Outputs, "outs", _PLUGIN_FIELDS["outs"])
+if "lowres" in _PLUGIN_FIELDS:
+    Lowres = _with_plugin_fields(Lowres, "lowres", _PLUGIN_FIELDS["lowres"])
+if "step" in _PLUGIN_FIELDS:
+    TimeStepping = _with_plugin_fields(
+        TimeStepping, "step", _PLUGIN_FIELDS["step"]
+    )
+if "stop" in _PLUGIN_FIELDS:
+    Termination = _with_plugin_fields(
+        Termination, "stop", _PLUGIN_FIELDS["stop"]
+    )
+if "solver" in _PLUGIN_FIELDS:
+    Solver = _with_plugin_fields(Solver, "solver", _PLUGIN_FIELDS["solver"])
+
+
 class Parameters(BaseModel):
     """Top-level parameter container aggregating all categories."""
 
@@ -2110,10 +2073,9 @@ class DerivedParameters:
         The resolved moving-frame speed, always a float (see
         ``phys.u_grid`` and ``update_parameters``).
     nu
-        The (solvent) kinematic viscosity multiplying the velocity
-        Laplacian: ``1/re`` for the Newtonian flows, ``beta/re`` for the
-        viscoelastic ones, whose polymer stress carries the remaining
-        ``(1-beta)/(re wi)``.
+        The kinematic viscosity multiplying the velocity Laplacian:
+        ``1/re``, unless the flow's spec gives its own
+        (``FlowSpec.viscosity``).
     """
 
     volume_fac: float = 1
@@ -2451,13 +2413,12 @@ def update_parameters(params_new: Parameters) -> None:
                     if value != sec_before[key]:
                         _derive_written.add((section, key))
 
-    # Solvent viscosity multiplying the velocity Laplacian: 1/re for the
-    # Newtonian systems; beta/re for the viscoelastic ones (the polymer
-    # stress carries the remaining (1-beta)/(re wi)).  Read by the
+    # The viscosity multiplying the velocity Laplacian: 1/re unless the
+    # flow's spec gives its own (``FlowSpec.viscosity``).  Read by the
     # cylindrical / annular operator builders and IMM -- which is why
     # they take it from here rather than forming 1/re themselves.
-    if system in viscoelastic_systems:
-        derived_params.nu = params.phys.beta / params.phys.re
+    if spec.viscosity is not None:
+        derived_params.nu = spec.viscosity(params)
     else:
         derived_params.nu = 1.0 / params.phys.re
 
@@ -2872,8 +2833,8 @@ class PaddedResolution:
     then rounded up to a mesh-divisible, FFT-friendly 7-smooth length
     (:meth:`apply_rounding`), with every adjustment recorded in
     :attr:`notes` for the startup diagnostics printed by
-    :mod:`dnsjax.sharding`.  The curved pipe's azimuthal grid may be
-    raised further first (:meth:`apply_curvature_padding`).
+    :mod:`dnsjax.sharding`.  A flow's spec may raise the natural sizes
+    first (``FlowSpec.pad``).
 
     Only the triply-periodic flows pad ``y`` (``ny_padded`` stays
     ``None`` for a wall-normal grid), so at the default oversampling
@@ -2981,48 +2942,10 @@ class PaddedResolution:
         self.nz_padded = (
             parameters.phys.oversampling_factor * parameters.res.nz // 2
         )
-        if parameters.phys.curvature_padding:
-            self.apply_curvature_padding(parameters)
+        pad = spec_for(parameters.phys.system).pad
+        if pad is not None:
+            pad(self, parameters)
         self.apply_rounding(parameters)
-
-    def apply_curvature_padding(self, parameters: Parameters) -> None:
-        r"""Raise the curved pipe's ``nz_padded`` to `$3M + J(\kappa)$`.
-
-        `$M$` is the largest stored azimuthal wavenumber and `$J$` the
-        pad :func:`dnsjax.harmonics.curvature_dealiasing_pad` returns
-        for ``geo.curvature`` at the working precision's unit roundoff,
-        so the `$1/h^2$` in the nonlinear term aliases below roundoff
-        at any resolution.  A larger natural size (a higher
-        ``oversampling_factor``) is kept.  Appends the startup note
-        either way, so an active pad is always reported.
-        """
-        from .harmonics import curvature_dealiasing_pad
-
-        kappa = parameters.geo.curvature
-        double = parameters.res.double_precision
-        j_pad = curvature_dealiasing_pad(
-            kappa, 2.0**-53 if double else 2.0**-24
-        )
-        m_top = parameters.res.nz // 2 - 1
-        target = 3 * m_top + j_pad
-        natural = self.nz_padded
-        if target > natural:
-            change = f"raised from {natural} to {target} = 3M + J"
-            self.nz_padded = target
-        else:
-            change = f"kept at {natural} (at least 3M + J = {target})"
-        self.notes.append(
-            f"Curvature padding: the azimuthal dealiasing grid "
-            f"(nz_padded) is {change}, with M = {m_top} the largest "
-            f"stored azimuthal wavenumber and J = {j_pad} at kappa = "
-            f"{kappa:g}.  The curved pipe's nonlinear term carries 1/h^2, "
-            f"h = 1 + kappa r cos(theta), whose harmonics never end, so "
-            f"the 3/2 rule alone leaves them aliased; the J points put "
-            f"that aliasing below "
-            f"{'double' if double else 'single'}-precision roundoff at "
-            f"any resolution.  Turn off with phys.curvature_padding = "
-            f"false (CLI: --phys.curvature_padding False)."
-        )
 
 
 padded_res: PaddedResolution = PaddedResolution()

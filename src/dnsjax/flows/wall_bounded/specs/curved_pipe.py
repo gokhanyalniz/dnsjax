@@ -119,6 +119,47 @@ def _validate(params, derived) -> None:
         )
 
 
+def _pad(padded, parameters) -> None:
+    r"""Raise the curved pipe's ``nz_padded`` to `$3M + J(\kappa)$`.
+
+    `$M$` is the largest stored azimuthal wavenumber and `$J$` the
+    pad :func:`dnsjax_lab.harmonics.curvature_dealiasing_pad` returns
+    for ``geo.curvature`` at the working precision's unit roundoff,
+    so the `$1/h^2$` in the nonlinear term aliases below roundoff
+    at any resolution.  A larger natural size (a higher
+    ``oversampling_factor``) is kept.  Appends the startup note
+    either way, so an active pad is always reported.  The spec's
+    ``pad`` hook: a no-op unless ``phys.curvature_padding``.
+    """
+    if not parameters.phys.curvature_padding:
+        return
+    from dnsjax_lab.harmonics import curvature_dealiasing_pad
+
+    kappa = parameters.geo.curvature
+    double = parameters.res.double_precision
+    j_pad = curvature_dealiasing_pad(kappa, 2.0**-53 if double else 2.0**-24)
+    m_top = parameters.res.nz // 2 - 1
+    target = 3 * m_top + j_pad
+    natural = padded.nz_padded
+    if target > natural:
+        change = f"raised from {natural} to {target} = 3M + J"
+        padded.nz_padded = target
+    else:
+        change = f"kept at {natural} (at least 3M + J = {target})"
+    padded.notes.append(
+        f"Curvature padding: the azimuthal dealiasing grid "
+        f"(nz_padded) is {change}, with M = {m_top} the largest "
+        f"stored azimuthal wavenumber and J = {j_pad} at kappa = "
+        f"{kappa:g}.  The curved pipe's nonlinear term carries 1/h^2, "
+        f"h = 1 + kappa r cos(theta), whose harmonics never end, so "
+        f"the 3/2 rule alone leaves them aliased; the J points put "
+        f"that aliasing below "
+        f"{'double' if double else 'single'}-precision roundoff at "
+        f"any resolution.  Turn off with phys.curvature_padding = "
+        f"false (CLI: --phys.curvature_padding False)."
+    )
+
+
 def _rehydrate(sections: dict) -> None:
     sections.setdefault("geo", {})["lz"] = 2 * pi
 
@@ -158,4 +199,5 @@ SPEC = FlowSpec(
     derive=_derive,
     validate=_validate,
     rehydrate=_rehydrate,
+    pad=_pad,
 )

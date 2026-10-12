@@ -55,6 +55,16 @@ def _derive(params, derived, user_set) -> None:
     params.phys.re = params.phys.wi / params.phys.el
 
 
+def solvent_viscosity(params) -> float:
+    """The solvent's share ``beta/re`` of the viscosity.
+
+    The spec's ``viscosity`` hook, shared by both sPTT flows: the
+    velocity Laplacian carries the solvent alone, and the polymer
+    stress the remaining ``(1-beta)/(re wi)``.
+    """
+    return params.phys.beta / params.phys.re
+
+
 def _rehydrate(sections: dict) -> None:
     wedge_rehydrate(sections)
     phys = sections.setdefault("phys", {})
@@ -92,4 +102,5 @@ SPEC = FlowSpec(
     derive=_derive,
     validate=_validate,
     rehydrate=_rehydrate,
+    viscosity=solvent_viscosity,
 )

@@ -25,3 +25,6 @@ build-backend = "uv_build"
 
 [project.entry-points."dnsjax.flows"]
 lab = "dnsjax_lab.flows:SPECS"
+
+[project.entry-points."dnsjax.parameters"]
+lab = "dnsjax_lab.parameters:FIELDS"

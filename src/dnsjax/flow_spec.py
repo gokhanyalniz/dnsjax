@@ -124,6 +124,18 @@ class FlowSpec:
         ``{section: {name: value}}`` dict of internal-named parameters
         read back from snapshot metadata.
 
+    ``viscosity(params) -> float``
+        The kinematic viscosity multiplying the velocity Laplacian
+        (``derived_params.nu``), from the final parameters; unset, it
+        is ``1/re``.  A flow whose stress splits between a solvent and
+        another component gives the solvent's share.
+    ``pad(padded, params)``
+        Raises the natural padded sizes of ``parameters.padded_res``
+        (``nx_padded``, ``ny_padded``, ``nz_padded``) before the core's
+        mesh and FFT rounding, appending a startup note to
+        ``padded.notes`` for each change: for a nonlinear term that the
+        oversampling factor alone does not dealias.
+
     ``grid_type_default`` resolves the wall-normal grid when no layer
     sets ``geo.grid_type``: a literal value, or a callable receiving
     ``step.scheme`` (the cylindrical family is scheme-dependent);
@@ -175,6 +187,8 @@ class FlowSpec:
     derive: Callable[..., None] | None = None
     validate: Callable[..., None] | None = None
     rehydrate: Callable[[dict], None] | None = None
+    viscosity: Callable[[Any], float] | None = None
+    pad: Callable[[Any, Any], None] | None = None
     flow_module: str | None = None
     n_components: int = 3
     total_field: bool = False
