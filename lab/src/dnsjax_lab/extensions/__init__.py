@@ -21,7 +21,7 @@ are the sections' ``runtime`` factories, in modules that import JAX:
 from pydantic import BaseModel, ConfigDict, Field
 
 from dnsjax.extensions import ParamExtension, register_extension
-from dnsjax.flows.registry import viscoelastic_systems, walled_systems
+from dnsjax.flows.registry import spec_for, walled_systems
 from dnsjax.harmonics import parse_mode_pairs
 
 
@@ -215,8 +215,13 @@ def _validate_probes(values: ProbesParams, params) -> None:
             )
 
 
+def _velocity_walled(system: str) -> bool:
+    """Whether *system* is wall-bounded and stores the velocity alone."""
+    return system in walled_systems and spec_for(system).n_components == 3
+
+
 def _validate_force(values: ForceParams, params) -> None:
-    # All-or-none knobs, wall-bounded non-viscoelastic only,
+    # All-or-none knobs, wall-bounded velocity systems only,
     # true-mode indices, no mean-mode kick, and kick/probe sample
     # alignment.
     f_set = {
@@ -270,10 +275,7 @@ def _validate_force(values: ForceParams, params) -> None:
             "step (step.adaptive = False); the kick interval "
             "it_force * dt must be uniform."
         )
-    if (
-        params.phys.system not in walled_systems
-        or params.phys.system in viscoelastic_systems
-    ):
+    if not _velocity_walled(params.phys.system):
         raise ValueError(
             "force.modes: stochastic forcing supports the "
             "wall-bounded velocity systems only (system "
@@ -339,9 +341,7 @@ FORCE_EXTENSION = register_extension(
     ParamExtension(
         name="force",
         model=ForceParams,
-        relevant=lambda system: (
-            system in walled_systems and system not in viscoelastic_systems
-        ),
+        relevant=_velocity_walled,
         summary=(
             "White-in-time stochastic mode kicks (response analysis; "
             "trajectory-defining)."

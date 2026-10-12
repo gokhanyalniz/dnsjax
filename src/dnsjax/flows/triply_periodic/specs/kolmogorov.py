@@ -5,7 +5,6 @@ from ._family import periodic_deferred, periodic_derive, periodic_fields
 
 SPEC = FlowSpec(
     system="kolmogorov",
-    family="triply-periodic",
     geometry="triply-periodic",
     summary="sine-forced box flow",
     flow_module="dnsjax.flows.triply_periodic.monochromatic",

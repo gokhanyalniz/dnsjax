@@ -200,10 +200,6 @@ def _by_geometry(geometry: str) -> list[str]:
     return [s.system for s in SPECS.values() if s.geometry == geometry]
 
 
-def _by_family(family: str) -> list[str]:
-    return [s.system for s in SPECS.values() if s.family == family]
-
-
 # Geometry groupings (defined here; consumers import them from the
 # registry): "which geometry's machinery drives this?" -- the basis
 # maps, the resume regrid, the IC builders, the analysis component
@@ -218,32 +214,11 @@ walled_systems: list[str] = [
     *annular_systems,
 ]
 
-# The viscoelastic (sPTT) extension exists in two geometries, so its
-# systems are classified along a second, independent axis, and a
-# consumer reads whichever it actually means: **rheology** --
-# ``viscoelastic_systems`` answers "does this carry a conformation
-# tensor?": the solvent viscosity `nu = beta/re`, the 9-component probe
-# labels, the ``[force]`` rejection, the ``snapshot_import`` refusal.
-# It cuts *across* the geometry lists, each of which *includes* its
-# viscoelastic member (a viscoelastic pipe routes with the Newtonian
-# pipe), so an ordered ``if/elif`` chain that mixes the two kinds of
-# list must test the rheology axis **first** (the geometry branch would
-# otherwise swallow the viscoelastic member and hand it 3-component
-# machinery).
-#
-# A third axis, ``total_field_systems``, answers "is the state (and so
-# every snapshot) the total field rather than a perturbation about a
-# laminar profile?" (``FlowSpec.total_field``): the force-driven flows,
-# across both geometries and both rheologies.  Its complement among
-# the walled systems is the transient-growth scope.
-annular_viscoelastic_systems: list[str] = _by_family("annular-viscoelastic")
-cylindrical_viscoelastic_systems: list[str] = _by_family(
-    "cylindrical-viscoelastic"
-)
-viscoelastic_systems: list[str] = [
-    *annular_viscoelastic_systems,
-    *cylindrical_viscoelastic_systems,
-]
+# A second axis, cutting across the geometry lists:
+# ``total_field_systems`` answers "is the state (and so every snapshot)
+# the total field rather than a perturbation about a laminar profile?"
+# (``FlowSpec.total_field``).  Its complement among the walled systems
+# is the transient-growth scope.
 total_field_systems: list[str] = [
     s.system for s in SPECS.values() if s.total_field
 ]
