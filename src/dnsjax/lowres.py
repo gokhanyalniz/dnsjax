@@ -79,11 +79,11 @@ from jax import numpy as jnp
 from .flows.registry import cartesian_systems, periodic_systems, spec_for
 from .parameters import derived_params, params
 from .snapshot import (
-    PARITY_EVEN_STORED,
     StoredLayout,
     _resize_wrapped_axis,
     apply_wall_normal_regrid,
     save_snapshot,
+    stored_component_parity,
     wall_regrid_geometry,
     wall_regrid_matrix,
     wall_velocity_rows,
@@ -275,7 +275,7 @@ class LowResWriter:
             field,
             self.T,
             self.m_even,
-            parity=(True,) * n if scalar else PARITY_EVEN_STORED[:n],
+            parity=(True,) * n if scalar else stored_component_parity()[:n],
             zero_rows=() if scalar else self.wall_rows,
             ky=self.ky,
         )

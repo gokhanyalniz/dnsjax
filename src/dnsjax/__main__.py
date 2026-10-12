@@ -386,13 +386,14 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
         return state
 
     from .snapshot import (
-        PARITY_EVEN_STORED,
         apply_wall_normal_regrid,
+        stored_component_parity,
         wall_regrid_matrix,
         wall_velocity_rows,
     )
 
     T = wall_regrid_matrix(np.array(snap_grid), np.array(curr_grid))
+    parity = stored_component_parity()
     m_even = None
     if isinstance(T, tuple):
         # Spectral parity-aware cylindrical interpolation: the even / odd
@@ -400,8 +401,8 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
         # component's axis parity is `$(-1)^{m+s}$` with `$s$` its spin
         # weight, i.e. it is set by how many of its indices are
         # radial/azimuthal (each flips sign under the axis reflection);
-        # ``PARITY_EVEN_STORED`` tabulates it in the **stored physical**
-        # component order, truncated to the state's own length.
+        # the flow declares it per **stored physical** component
+        # (``snapshot.stored_component_parity``).
         #
         # The mask is the geometry's own ``Fourier.m_is_even``, which
         # is the parity of the **physical** `$m = m_0 j$` (the wedge
@@ -412,24 +413,22 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
         from .geometries.wall_bounded.cylindrical import fourier
 
         n_comp = state.shape[0]
-        if n_comp not in (3, len(PARITY_EVEN_STORED)):
+        if n_comp > len(parity):
             raise ValueError(
-                "parity-aware radial interpolation is defined for the "
-                "3-component velocity state and the 9-component "
-                f"viscoelastic state, got {n_comp} components; a flow "
-                "with a different layout needs its own parity "
-                "assignment here."
+                "parity-aware radial interpolation needs the axis parity "
+                f"of every stored component: {n_comp} components, "
+                f"{len(parity)} declared; the flow's spec declares them "
+                "(FlowSpec.component_parity)."
             )
         m_even = fourier.m_is_even.astype(bool)
     # Enforce the wall boundary condition on the *velocity* only (the
-    # first 3 components): a viscoelastic state's 6 conformation
-    # components have ``div(grad c) = 0`` at the wall (the Hc operator
-    # during stepping), not a Dirichlet zero.
+    # first 3 components): further components carry boundary conditions
+    # of their own, not a Dirichlet zero.
     state = apply_wall_normal_regrid(
         state,
         T,
         m_even=m_even,
-        parity_even=PARITY_EVEN_STORED[: state.shape[0]],
+        parity_even=parity[: state.shape[0]],
         zero_velocity_walls=wall_velocity_rows(),
     )
 
@@ -507,9 +506,9 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
     # is also indistinguishable from a flow that *has* one and forgot
     # to re-export the pair -- which would feed the stepper a physical
     # state with no error, only wrong answers.  The cylindrical and
-    # annular geometries always carry one (their viscoelastic members
-    # included -- the geometry lists span them), so require it there
-    # and let the fallback serve the rest.
+    # annular geometries always carry one (every flow on them, whatever
+    # else it carries -- the geometry lists span them), so require it
+    # there and let the fallback serve the rest.
     _needs_basis = params.phys.system in (
         *cylindrical_systems,
         *annular_systems,
@@ -523,8 +522,8 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
         if missing:
             raise RuntimeError(
                 f"{_spec.flow_module} does not export "
-                f"{' / '.join(missing)}; a cylindrical, annular or "
-                "viscoelastic flow must re-export the pair (see the "
+                f"{' / '.join(missing)}; a cylindrical or annular "
+                "flow must re-export the pair (see the "
                 "existing flow modules) or its state would enter the "
                 "stepper in the wrong basis."
             )

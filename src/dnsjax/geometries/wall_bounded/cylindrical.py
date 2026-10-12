@@ -1093,18 +1093,15 @@ class CylindricalFlow:
 
     # ── Metric adapter surface ──────────────────────────────────
     #
-    # The straight pipe's half of the surface
-    # :mod:`._cylindrical_stepping` is written against; the curved
-    # (toroidal) pipe overrides it in :mod:`.cylindrical_curved`.
-    # Every member here is the trivial one, and ``is_curved`` gates
-    # each call site at **trace** time, so the straight pipe's
-    # compiled program is exactly what it was before the surface
-    # existed.  ``ClassVar``s and methods are not
-    # ``dataclasses.fields``, so none of this enters the pytree.
+    # The surface :mod:`._cylindrical_stepping` is written against,
+    # for a flow whose geometry carries a metric to override (the
+    # straight pipe's is the identity).  Every member here is the
+    # trivial one: a ``None`` hook is skipped and a no-op method returns
+    # its input, both at **trace** time, so the straight pipe's
+    # compiled program carries nothing of the surface.  ``ClassVar``s
+    # and methods are not ``dataclasses.fields``, so none of this
+    # enters the pytree.
 
-    #: Whether the metric carries curvature.  A Python ``bool`` read
-    #: while tracing, never a traced value.
-    is_curved: ClassVar[bool] = False
     #: Per-direction CFL column labels, in physical-component order.
     cfl_names: ClassVar[tuple[str, str, str]] = CFL_NAMES
     #: ``stats.dat`` column name for the applied mean-mode driving.
@@ -1603,25 +1600,15 @@ class CylindricalFlow:
         """
         return None
 
-    def to_physical(
-        self, velocity_phys: Array, vorticity_phys: Array
-    ) -> tuple[Array, Array]:
-        r"""Carried physical-space components -> the physical triad.
-
-        The identity here: the straight pipe carries
-        `$(u_z, u_r, u_\theta)$` themselves.
-        """
-        return velocity_phys, vorticity_phys
-
-    def metric_rhs(
-        self, nonlin_phys: Array, vorticity_phys: Array, extra_phys: Array
-    ) -> Array:
-        """Weighting and curvature remainder on the physical RHS.
-
-        The identity here: the straight pipe's momentum equation
-        carries no metric weight and no curvature term.
-        """
-        return nonlin_phys
+    #: Carried physical-space components -> the physical triad, and the
+    #: weighting and metric remainder on the physical RHS:
+    #: :func:`dnsjax.rhs.get_nonlin`'s *to_physical_fn* /
+    #: *metric_rhs_fn*.  ``None`` here, so skipped at trace time: the
+    #: straight pipe carries `$(u_z, u_r, u_\theta)$` themselves, with no
+    #: metric weight and no metric term.  A flow with a metric defines
+    #: them as methods.
+    to_physical: ClassVar[Callable | None] = None
+    metric_rhs: ClassVar[Callable | None] = None
 
     def divergence_defect(self, state: Array, fourier_: Fourier) -> None:
         r"""The straight divergence `$\nabla_0\cdot$` of the carried state.
@@ -1631,6 +1618,30 @@ class CylindricalFlow:
         and removes every dependent term at trace time.
         """
         return None
+
+    def solenoidal_phi_pm(
+        self, phi_pm: Array, velocity: Array, fourier_: Fourier
+    ) -> Array:
+        r"""The evolved spin pair `$\Phi_\pm$`, solenoidal in this metric.
+
+        *phi_pm* is the straight vector Laplacian of *velocity*
+        (physical components), its spin pair stacked on axis 1, which
+        the straight metric already makes the solenoidal one: returned
+        unchanged.  A metric under which the straight divergence of the
+        carried velocity does not vanish subtracts its gradient.
+        """
+        return phi_pm
+
+    def solenoidal_phi_sum(
+        self, phi_sum: Array, state: Array, fourier_: Fourier, parity: Array
+    ) -> Array:
+        r"""The evolved spin quad's sum half, solenoidal in this metric.
+
+        The radial counterpart of :meth:`solenoidal_phi_pm` for the
+        quad's sum half *phi_sum* of the accepted *state*, *parity* the
+        `$(-1)^m$` class: unchanged in the straight metric.
+        """
+        return phi_sum
 
     def mean_radial(self, defect: Array) -> None:
         r"""The `$(m, k) = (0, 0)$` radial velocity.

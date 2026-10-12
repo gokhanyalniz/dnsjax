@@ -138,7 +138,7 @@ def _host_reduce(np, field, *, scalar: bool):
     from dnsjax.harmonics import complex_harmonics, stored_mode_counts
     from dnsjax.parameters import derived_params, params
     from dnsjax.snapshot import (
-        PARITY_EVEN_STORED,
+        stored_component_parity,
         wall_regrid_geometry,
         wall_velocity_rows,
     )
@@ -170,7 +170,7 @@ def _host_reduce(np, field, *, scalar: bool):
         if isinstance(T, tuple):
             m_phys = complex_harmonics(res.nz) * params.geo.m0
             m_even = (m_phys % 2 == 0)[None, :, None]
-            parity = (True,) if scalar else PARITY_EVEN_STORED
+            parity = (True,) if scalar else stored_component_parity()
             rows = []
             for c in range(field.shape[0]):
                 a, b = T if parity[c] else T[::-1]

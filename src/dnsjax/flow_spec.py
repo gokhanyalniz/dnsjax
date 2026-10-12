@@ -173,6 +173,13 @@ class FlowSpec:
     analysis schema (:func:`dnsjax.analysis._core.geometry_info`),
     which is keyed on the system, not on this count.
 
+    ``component_parity`` gives the axis-parity class of each stored
+    component, in storage order (``True``: the `$(-1)^m$` class of
+    `$u_z$`; ``False``: `$(-1)^{m+1}$`, of `$u_r$`, `$u_\theta$`),
+    for the pipe's parity-aware regrid
+    (:func:`dnsjax.snapshot.stored_component_parity`); ``None`` means
+    the velocity's.  A flow storing more than the velocity declares it.
+
     ``total_field`` declares what the state -- and so every snapshot --
     holds: ``False`` (the default) for the perturbation `$u'$` about the
     flow's laminar profile, ``True`` for the total field, integrated
@@ -196,6 +203,7 @@ class FlowSpec:
     rehydrate: Callable[[dict], None] | None = None
     viscosity: Callable[[Any], float] | None = None
     pad: Callable[[Any, Any], None] | None = None
+    component_parity: tuple[bool, ...] | None = None
     flow_module: str | None = None
     n_components: int = 3
     total_field: bool = False

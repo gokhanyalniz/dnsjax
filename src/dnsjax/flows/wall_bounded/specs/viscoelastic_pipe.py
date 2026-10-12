@@ -55,6 +55,24 @@ def _derive(params, derived, user_set) -> None:
     params.phys.re = params.phys.wi / params.phys.el
 
 
+#: Axis-parity class of each stored component, ``(u_z, u_r, u_theta,
+#: c_zz, c_rz, c_theta_z, c_rr, c_theta_theta, c_r_theta)``: a
+#: component's class is `$(-1)^{m+s}$`, `$s$` the number of its
+#: radial/azimuthal indices (``FlowSpec.component_parity``).  Shared
+#: by both sPTT flows.
+COMPONENT_PARITY: tuple[bool, ...] = (
+    True,  # u_z
+    False,  # u_r
+    False,  # u_theta
+    True,  # c_zz
+    False,  # c_rz
+    False,  # c_theta_z
+    True,  # c_rr
+    True,  # c_theta_theta
+    True,  # c_r_theta
+)
+
+
 def solvent_viscosity(params) -> float:
     """The solvent's share ``beta/re`` of the viscosity.
 
@@ -103,4 +121,5 @@ SPEC = FlowSpec(
     validate=_validate,
     rehydrate=_rehydrate,
     viscosity=solvent_viscosity,
+    component_parity=COMPONENT_PARITY,
 )
