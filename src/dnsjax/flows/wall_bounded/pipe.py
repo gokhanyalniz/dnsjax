@@ -62,6 +62,8 @@ from ...geometries.wall_bounded.cylindrical import (
 from ...geometries.wall_bounded.cylindrical import (
     frozen_profile_flow as _frozen_flow_copy,
 )
+from ...ic.localized_rolls import generate_cylindrical_rolls
+from ...ic.random_field import generate_cylindrical
 from ...parameters import derived_params, params
 from ...sharding import register_dataclass_pytree, sharding
 
@@ -345,3 +347,36 @@ def get_driving(state: Array) -> dict[str, Array]:
     :func:`get_stats`.
     """
     return _get_driving_jit(state, flow)
+
+
+# ── Initial conditions ───────────────────────────────────────────
+
+
+def init_random_state(
+    amplitude: float,
+    smoothness: float,
+    wall_smoothness: float,
+    wall_confinement: float | None,
+    seed: int,
+    mean_flow: bool = False,
+) -> Array:
+    """The random IC: :func:`dnsjax.ic.random_field.generate_cylindrical`.
+
+    The ``init_random_state`` hook of the flow-module surface
+    (:class:`~dnsjax.flow_spec.FlowSpec`): the cylindrical draw.
+    *mean_flow* is deferred for this flow, so always false.
+    """
+    return generate_cylindrical(
+        amplitude, smoothness, wall_smoothness, wall_confinement, seed
+    )
+
+
+def init_localized_rolls(
+    amplitude: float, width: float, wavelength: float
+) -> Array:
+    """The localized rolls of the flow-module surface's IC hooks.
+
+    :func:`dnsjax.ic.localized_rolls.generate_cylindrical_rolls`, the
+    ``init_localized_rolls`` hook.
+    """
+    return generate_cylindrical_rolls(amplitude, width, wavelength)

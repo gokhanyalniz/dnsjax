@@ -56,6 +56,7 @@ a usable under-resolution diagnostic.
 
 from dataclasses import dataclass
 
+import numpy as np
 from jax import Array, jit
 from jax import numpy as jnp
 
@@ -83,6 +84,8 @@ from ...geometries.wall_bounded.cylindrical_curved import (
     CurvedCylindricalFlow,
     build_curved_cylindrical_stepper,
 )
+from ...ic.localized_rolls import peak_velocity, pipe_rolls
+from ...ic.random_field import generate_cylindrical
 from ...operators import phys_to_spec_2d, spec_to_phys_2d
 from ...parameters import derived_params, params
 from ...sharding import register_dataclass_pytree, sharding
@@ -453,3 +456,112 @@ def get_driving(state: Array) -> dict[str, Array]:
     `$4/\mathrm{Re}$` and no column is written.
     """
     return _get_driving_jit(state, fourier, flow)
+
+
+# ── Initial conditions ───────────────────────────────────────────
+
+
+def add_curved_pipe_laminar(state: Array) -> Array:
+    r"""Add the straight-pipe profile to a curved-pipe perturbation.
+
+    The curved pipe integrates the **total** velocity, and has no
+    closed-form laminar state to start from -- its laminar solution is
+    the two-dimensional Dean-vortex flow, which is numerical.  The
+    start is therefore the `$\kappa = 0$` profile `$u_s = 1 - r^2$`,
+    at the mean mode, plus the random perturbation; the flow relaxes
+    from there on a viscous timescale.
+
+    The profile is axisymmetric, streamwise-invariant and vanishes at
+    the wall, so it is solenoidal in the toroidal metric too and keeps
+    no-slip; the perturbation it is added to, the random draw or the
+    localized rolls, has already been mapped onto toroidal continuity
+    (:func:`~dnsjax.flows.wall_bounded.curved_pipe.toroidal_map`).
+    """
+    from jax import numpy as jnp
+
+    from dnsjax.geometries.wall_bounded.cylindrical import (
+        build_cylindrical_grid,
+        fourier,
+    )
+    from dnsjax.sharding import sharding
+
+    rs, *_ = build_cylindrical_grid(
+        params.res.ny,
+        params.res.fd_order,
+        params.geo.wall_grid,
+        params.geo.grid_type,
+        params.geo.grid_stretch,
+    )
+    profile = 1.0 - rs**2
+    u_spec = jnp.where(fourier.mean_mask, profile[:, None, None], 0.0)
+    zeros = jnp.zeros_like(u_spec, dtype=sharding.complex_type)
+    laminar = jnp.stack([u_spec.astype(sharding.complex_type), zeros, zeros])
+    return state + laminar
+
+
+def generate_curved_pipe_rolls(
+    amplitude: float, width: float, wavelength: float
+) -> Array:
+    r"""The pipe's puff in the toroidal metric (`$\lambda$` unused).
+
+    Components `$(u_s, u_r, u_\theta)$`, axes `$[r, \theta, k_s]$`.
+    With `$u_s = 0$`, toroidal continuity
+    `$\partial_r(r h u_r) + \partial_\theta(h u_\theta) = 0$` makes
+    `$(r h u_r,\, h u_\theta) = (\partial_\theta\psi,\,
+    -\partial_r\psi)$`, so :func:`generate_cylindrical_rolls`'s
+    streamfunction gives that generator's pair divided by
+    `$h = 1 + \kappa r\cos\theta$`, taken exactly on the stored modes
+    (:func:`~dnsjax.flows.wall_bounded.curved_pipe.toroidal_map`).  Its
+    residual on the solver's continuity row is the pipe pair's on the
+    straight one, plus roundoff; the no-slip wall and `$u_s = 0$`
+    survive the map.  Peak-normalized like every spot, on
+    `$1/h$` sampled at the points the factors are.
+
+    The one spot with mean content: `$u_s$`, which carries the mass
+    flux and the wall shear, keeps an identically zero `$(0, 0)$`
+    mode, and so do `$h u_r$` and `$h u_\theta$` (to roundoff), but
+    the metric gives `$u_\theta$` an `$O(\kappa)$` mean
+    (`$u_r$`'s vanishes with the `$\theta \to -\theta$` oddness of
+    its pre-image) -- the means the random field keeps too.  Zeroing
+    it would break continuity on the `$m = \pm 1$` modes.
+    """
+    state, components, rs = pipe_rolls(width)
+    nz = params.res.nz
+    theta = (params.geo.lz / nz) * np.arange(nz)
+    inv_h = 1.0 / (1.0 + params.geo.curvature * np.outer(rs, np.cos(theta)))
+    peak = peak_velocity(components, inv_h)
+    return toroidal_map(state) * (amplitude / peak)
+
+
+def init_random_state(
+    amplitude: float,
+    smoothness: float,
+    wall_smoothness: float,
+    wall_confinement: float | None,
+    seed: int,
+    mean_flow: bool = False,
+) -> Array:
+    """The random IC: the pipe's draw on toroidal continuity, plus laminar.
+
+    :func:`dnsjax.ic.random_field.generate_cylindrical`, mapped by
+    :func:`toroidal_perturbation`, plus :func:`add_curved_pipe_laminar`
+    (the flow integrates the total field).  *mean_flow* is deferred
+    for this flow, so always false.
+    """
+    straight = generate_cylindrical(
+        amplitude, smoothness, wall_smoothness, wall_confinement, seed
+    )
+    return add_curved_pipe_laminar(toroidal_perturbation(straight, amplitude))
+
+
+def init_localized_rolls(
+    amplitude: float, width: float, wavelength: float
+) -> Array:
+    """The toroidal localized rolls plus the straight-pipe profile.
+
+    :func:`generate_curved_pipe_rolls` and
+    :func:`add_curved_pipe_laminar`.
+    """
+    return add_curved_pipe_laminar(
+        generate_curved_pipe_rolls(amplitude, width, wavelength)
+    )

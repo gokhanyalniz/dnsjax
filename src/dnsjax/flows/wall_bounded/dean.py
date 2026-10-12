@@ -54,6 +54,9 @@ optional ``get_driving``, and the basis pair ``to_solver_basis`` /
 
 from dataclasses import dataclass
 
+from dnsjax_lab.geometries.wall_bounded._annular_forced import (
+    annular_forced_laminar_u_theta,
+)
 from jax import Array, jit
 from jax import numpy as jnp
 
@@ -61,7 +64,6 @@ from ...geometries.wall_bounded.annular import (
     AnnularFlow,
     Fourier,
     build_annular_stepper,
-    dean_laminar_u_theta,
     extract_mean_mode,
     fourier,
     from_solver_basis,  # noqa: F401 — re-exported (basis boundary)
@@ -72,6 +74,8 @@ from ...geometries.wall_bounded.annular import (
     pad_base_flow,
     to_solver_basis,  # noqa: F401 — re-exported (basis boundary)
 )
+from ...ic.localized_rolls import generate_annular_rolls
+from ...ic.random_field import generate_annular
 from ...parameters import derived_params, params
 from ...sharding import register_dataclass_pytree, sharding
 
@@ -123,6 +127,30 @@ flow: DeanFlow = DeanFlow()
     set_dt,
     reset_ab2_kappa,
 ) = build_annular_stepper(flow)
+
+
+def dean_laminar_u_theta(rs: Array, eta: float) -> Array:
+    r"""Analytical laminar Dean-flow azimuthal profile `$U_\theta(r)$`.
+
+    Thin wrapper over
+    :func:`~dnsjax_lab.geometries.wall_bounded._annular_forced.annular_forced_laminar_u_theta`
+    for the
+    Newtonian Dean body force
+    `$-\Pi_\theta = (2\eta + 2)/(r\,\mathrm{Re}\,(1 - \eta))$`, i.e.
+    `$C = 2(\eta + 1)/(1 - \eta) = 2(r_1 + r_2)$` on the gap-1 radii
+    `$r_1 = \eta/(1-\eta)$`, `$r_2 = 1/(1-\eta)$`.
+
+    Parameters
+    ----------
+    rs:
+        Radial grid on `$[r_1, r_2]$`, shape ``(Nr,)``.
+    eta:
+        Radius ratio `$\eta = r_1/r_2$`.
+    """
+    C = 2.0 * (eta + 1.0) / (1.0 - eta)
+    r1 = eta / (1.0 - eta)
+    r2 = 1.0 / (1.0 - eta)
+    return annular_forced_laminar_u_theta(rs, r1, r2, C)
 
 
 def _build_laminar_profile() -> Array:
@@ -323,3 +351,76 @@ def get_driving(state: Array) -> dict[str, Array]:
     :func:`get_stats`.
     """
     return _get_driving_jit(state, flow)
+
+
+# ── Initial conditions ───────────────────────────────────────────
+
+
+def add_dean_laminar(state: Array) -> Array:
+    r"""Add the analytical laminar Dean profile to a perturbation.
+
+    Dean flow integrates the **total** velocity, so a usable initial
+    condition is the closed-form laminar azimuthal profile (placed at
+    the mean mode) plus the divergence-free random perturbation from
+    :func:`generate_annular`.  The laminar profile is axisymmetric and
+    zero at both walls, so it preserves the perturbation's
+    divergence-free and no-slip properties.  Returns the total spectral
+    state in `$(u_z, u_r, u_\theta)$` form.
+    """
+    from jax import numpy as jnp
+
+    from dnsjax.geometries.wall_bounded.annular import (
+        build_annular_grid,
+        fourier,
+    )
+    from dnsjax.sharding import sharding
+
+    rs, *_ = build_annular_grid(
+        params.res.ny,
+        params.res.fd_order,
+        params.geo.wall_grid,
+        params.geo.grid_type,
+        params.geo.grid_stretch,
+        r_inner=derived_params.r_inner,
+        r_outer=derived_params.r_outer,
+    )
+    u_theta = dean_laminar_u_theta(rs, params.geo.eta)  # (Nr,) real
+    # Place U_theta at the mean mode as the u_theta component.
+    u_spec = jnp.where(fourier.mean_mask, u_theta[:, None, None], 0.0)
+    zeros = jnp.zeros_like(u_spec, dtype=sharding.complex_type)
+    laminar = jnp.stack([zeros, zeros, u_spec.astype(sharding.complex_type)])
+    return state + laminar
+
+
+def init_random_state(
+    amplitude: float,
+    smoothness: float,
+    wall_smoothness: float,
+    wall_confinement: float | None,
+    seed: int,
+    mean_flow: bool = False,
+) -> Array:
+    """The random IC: the annular draw plus Dean's laminar profile.
+
+    :func:`dnsjax.ic.random_field.generate_annular` and
+    :func:`add_dean_laminar` (the flow integrates the total field).
+    *mean_flow* is deferred for this flow, so always false.
+    """
+    return add_dean_laminar(
+        generate_annular(
+            amplitude, smoothness, wall_smoothness, wall_confinement, seed
+        )
+    )
+
+
+def init_localized_rolls(
+    amplitude: float, width: float, wavelength: float
+) -> Array:
+    """The localized rolls plus Dean's laminar profile.
+
+    :func:`dnsjax.ic.localized_rolls.generate_annular_rolls` and
+    :func:`add_dean_laminar`.
+    """
+    return add_dean_laminar(
+        generate_annular_rolls(amplitude, width, wavelength)
+    )

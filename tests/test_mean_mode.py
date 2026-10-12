@@ -253,14 +253,14 @@ def test_correction_converges(check) -> None:
         project_profile,
         smoothing_kernel,
     )
-    from dnsjax.ic.random_field import _wall_normal_filter
+    from dnsjax.ic.random_field import wall_normal_filter
 
     for case_b in (False, True):
         sizes = (17, 33, 65)
         corr = []
         for ny in sizes:
             y, D1, D2, w = _grid("cgl", ny, 6)
-            K = smoothing_kernel(1.0 - y**2, _wall_normal_filter(y, 0.6))
+            K = smoothing_kernel(1.0 - y**2, wall_normal_filter(y, 0.6))
             C = constraint_rows(D1, D2, w, fixed_bulk=case_b)
             d = np.sin(np.pi * y) if case_b else np.sin(np.pi * (y + 1) / 2)
             corr.append(float(np.max(np.abs(project_profile(d, C, K) - d))))
@@ -315,12 +315,12 @@ def test_projector_properties(check) -> None:
         project_profile,
         smoothing_kernel,
     )
-    from dnsjax.ic.random_field import _wall_normal_filter
+    from dnsjax.ic.random_field import wall_normal_filter
 
     y, D1, D2, w = _grid("cgl", 65, 6)
     win = 1.0 - y**2
     for smooth in (0.4, 0.95, 0.99):
-        F = _wall_normal_filter(y, 1.0 - smooth)
+        F = wall_normal_filter(y, 1.0 - smooth)
         K = smoothing_kernel(win, F)
         for case_b in (False, True):
             tag = f"s_w={smooth} case {'B' if case_b else 'A'}"

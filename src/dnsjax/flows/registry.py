@@ -21,6 +21,7 @@ Import direction: ``parameters.py -> flows.registry -> flows.*.specs
 -> flow_spec.py``; nothing here may import :mod:`dnsjax.parameters`.
 """
 
+from importlib import import_module
 from importlib.metadata import entry_points
 
 from ..flow_spec import FlowSpec
@@ -166,6 +167,24 @@ def spec_for(system: str) -> FlowSpec:
     except KeyError:
         raise ValueError(
             f"unknown flow system {system!r}; available: {', '.join(SPECS)}"
+        ) from None
+
+
+def flow_hook(system: str, name: str):
+    """The export *name* of *system*'s flow module, a required hook.
+
+    Imports the module ``spec_for(system).flow_module`` names -- which
+    imports JAX and builds the geometry singletons, so only once JAX is
+    configured -- and raises naming the hook if it lacks one (the
+    flow-module surface: :class:`~dnsjax.flow_spec.FlowSpec`).
+    """
+    module = spec_for(system).flow_module
+    try:
+        return getattr(import_module(module), name)
+    except AttributeError:
+        raise AttributeError(
+            f"{module} does not export {name}, part of the flow-module "
+            "surface (dnsjax.flow_spec.FlowSpec)"
         ) from None
 
 

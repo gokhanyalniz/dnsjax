@@ -509,9 +509,9 @@ def _check_initial(kappa: float) -> str:
     from jax import numpy as jnp
 
     import dnsjax.flows.wall_bounded.curved_pipe as cp
+    from dnsjax.flows.wall_bounded.curved_pipe import add_curved_pipe_laminar
     from dnsjax.geometries.wall_bounded.cylindrical import fourier
     from dnsjax.ic.random_field import (
-        add_curved_pipe_laminar,
         generate_cylindrical,
         generate_random_state,
     )
