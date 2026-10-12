@@ -58,11 +58,12 @@ os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
 # then configure JAX, before importing any dnsjax module that
 # captures values from them (``sharding.Sharding`` does so at class
 # definition time).
+from dnsjax_lab.extensions import probes_params  # noqa: E402
+
 from dnsjax.bootstrap import (  # noqa: E402
     configure_jax_platform,
     platform_from_argv,
 )
-from dnsjax.extensions import probes_params  # noqa: E402
 from dnsjax.parameters import derived_params, params  # noqa: E402
 
 NY = 6

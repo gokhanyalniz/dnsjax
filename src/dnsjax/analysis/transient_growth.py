@@ -790,15 +790,16 @@ def _configure_parameters(argv: list[str]) -> None:
         prog=_PROG,
     )
 
-    from ..extensions import force_params, probes_params
+    from ..extensions import EXTENSIONS
 
+    # A configured section with a run-loop part acts on solver runs
+    # only (``ParamExtension.runtime``).
     ignored = [
         name
-        for name, values in (
-            ("probes", probes_params),
-            ("force", force_params),
-        )
-        if values.modes is not None
+        for name, ext in EXTENSIONS.items()
+        if ext.runtime is not None
+        and ext.configured is not None
+        and ext.configured(ext.values)
     ]
     if ignored:
         print(

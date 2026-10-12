@@ -1,7 +1,7 @@
 r"""Shared entry-point setup: parameter layering and JAX runtime init.
 
-Every dnsjax entry point -- the ``dnsjax`` / ``dnsjax-twin`` console
-scripts (``python -m dnsjax`` / ``-m dnsjax.twin``), the analysis
+Every dnsjax entry point -- the ``dnsjax`` console script
+(``python -m dnsjax``), a plugin's own entry points, the analysis
 CLIs, the diagnostic scripts, and the offline tests -- must finalize
 parameters and configure JAX in the same order **before** importing
 :mod:`dnsjax.sharding` or any geometry module, because those modules
@@ -27,9 +27,9 @@ actually draw with into a concrete one (:mod:`dnsjax.seeding`) and
 agrees it across processes.  It sits *after* step 2 because the
 agreement is a JAX collective, and *before* step 3 because that is
 where the seed's consumers are built; a script that does no random
-draws never calls it.  ``dnsjax-twin`` resolves its one seed,
-``twin.seed``, with :func:`resolve_seed` instead, after its
-paired-resume decision.
+draws never calls it.  An entry point that can only decide on its
+own seed later (``ParamExtension.seeds_at_start`` false) resolves it
+with :func:`resolve_seed` instead, once it can.
 
 Production parsing is *surface-based* and two-pass:
 :func:`peek_run_context` scans the raw argv / ``parameters.toml`` (no
@@ -40,10 +40,10 @@ per-flow surface model (:mod:`dnsjax.param_surface`) parses the CLI
 and validates the TOML strictly -- a parameter that does not apply to
 the selected flow is an error, aliased fields go by their public
 names, and per-flow defaults are materialized.  The flow-relevant
-extension sections (:mod:`dnsjax.extensions`; e.g. ``[probes]``,
-``[force]``) ride the same surface: each layer's extension overlay is
-applied to the extension singletons right after its core
-``update_parameters`` call, snapshot layer included.
+extension sections (:mod:`dnsjax.extensions`) ride the same surface:
+each layer's extension overlay is applied to the extension singletons
+right after its core ``update_parameters`` call, snapshot layer
+included.
 
 This module is JAX-free at import time (JAX is imported inside the
 configuration functions), so it is always safe to import first.
@@ -151,7 +151,11 @@ from typing import Literal
 from pydantic import ValidationError
 from pydantic_settings import CliApp
 
-from .extensions import apply_extension_layer, relevant_extensions
+from .extensions import (
+    EXTENSIONS,
+    apply_extension_layer,
+    relevant_extensions,
+)
 from .flow_spec import FlowSpec
 from .flows.registry import all_systems, spec_for
 from .param_surface import (
@@ -431,7 +435,7 @@ def _snapshot_system(path: Path) -> str | None:
     """The stored system of a dnsjax snapshot (``None`` otherwise).
 
     Raises ``ValueError`` for a dnsjax tar that cannot seed a run --
-    a twin cube or a reduced-resolution snapshot
+    a non-state output, such as a reduced-resolution snapshot
     (:func:`dnsjax.snapshot_meta.checkpoint_refusal`) -- which the
     caller reports as its one-line error.
     """
@@ -472,14 +476,21 @@ def _flow_epilog(spec: FlowSpec, prog: str = "dnsjax") -> str:
     )
 
 
-#: The seed knobs, as ``(dotted name, section, key)``.  ``twin.seed``
-#: is here for its *provenance* only: the twin driver resolves it late,
-#: after the paired-resume decision (:mod:`dnsjax.twin.driver`).
-_SEED_KNOBS: tuple[tuple[str, str, str], ...] = (
-    ("init.random_seed", "init", "random_seed"),
-    ("force.seed", "force", "seed"),
-    ("twin.seed", "twin", "seed"),
-)
+def _seed_knobs() -> tuple[tuple[str, str, str], ...]:
+    """The seed knobs, as ``(dotted name, section, key)``.
+
+    ``init.random_seed`` and every registered extension's
+    ``seed_fields``; an extension that resolves its seeds itself
+    (``seeds_at_start`` false) is here for their *provenance* only.
+    """
+    return (
+        ("init.random_seed", "init", "random_seed"),
+        *(
+            (f"{name}.{key}", name, key)
+            for name, ext in EXTENSIONS.items()
+            for key in ext.seed_fields
+        ),
+    )
 
 
 def _seed_layers(
@@ -495,7 +506,7 @@ def _seed_layers(
     """
     found: dict[str, str] = {}
     for source, core, ext in layers:
-        for label, section, key in _SEED_KNOBS:
+        for label, section, key in _seed_knobs():
             if label in found:
                 continue
             layer = core.get(section) or ext.get(section) or {}
@@ -515,8 +526,9 @@ class ResolvedSetup:
     embedded parameters as the lowest layer.
 
     ``seed_layers`` maps a seed's dotted name (``"init.random_seed"``,
-    ``"force.seed"``, ``"twin.seed"``) to the ``seeding.SOURCE_*``
-    label of the layer that supplied it; a seed no layer set is absent.
+    or ``"<section>.<field>"`` for an extension's ``seed_fields``) to
+    the ``seeding.SOURCE_*`` label of the layer that supplied it; a
+    seed no layer set is absent.
     :func:`resolve_parameters` is the only place this can be known --
     ``parameters._user_set_fields`` is a union over the layers and so
     reports "set" on every resume, which cannot tell an inherited seed
@@ -565,8 +577,8 @@ def resolve_parameters(
     resolved flow, :func:`dnsjax.extensions.relevant_extensions`; a
     script whose surface carries its own section alone, e.g.
     ``[perturb]``, passes an explicit tuple); *own_extensions* names
-    the entry point's own sections (the ``dnsjax-twin`` ``[twin]``,
-    the transient-growth ``[tg]``), added to every flow's surface,
+    the entry point's own sections (e.g. the transient-growth
+    ``[tg]``), added to every flow's surface,
     relevant or not, so a flow the entry point does not support meets
     its own check rather than an unrecognized flag.  The bare
     ``--help`` shows the sections that do not depend on the flow: an
@@ -1361,21 +1373,21 @@ def resolve_run_seeds(setup: ResolvedSetup) -> list[str]:
     r"""Resolve the seeds this run will actually draw with.
 
     Fills in ``init.random_seed`` when the start mode is the random IC
-    (:func:`dnsjax.parameters.random_ic_selected`) and ``force.seed``
-    when the ``[force]`` section is configured, leaving both concrete so
-    the snapshot records the seed that ran.  A start mode that draws
-    nothing -- laminar, localized rolls, a snapshot resume -- resolves
-    nothing and so needs no entropy source at all.  ``twin.seed`` is
-    *not* handled here: the twin driver resolves it after its
-    paired-resume decision, which is only known much later
-    (:mod:`dnsjax.twin.driver`).
+    (:func:`dnsjax.parameters.random_ic_selected`), and the
+    ``seed_fields`` of every relevant extension section once it is
+    configured (:class:`dnsjax.extensions.ParamExtension`), leaving them
+    concrete so the snapshot records the seeds that ran.  A start mode
+    that draws nothing -- laminar, localized rolls, a snapshot resume --
+    resolves nothing and so needs no entropy source at all.  A section
+    whose owner resolves its seeds itself (``seeds_at_start`` false:
+    an entry point that decides only later whether it draws) is not
+    handled here.
 
     Returns one :func:`dnsjax.seeding.seed_note` line per resolved seed,
     for the caller's startup banner.  Call on every process, after
     :func:`configure_jax_runtime` and outside any main-process gate --
     it may enter a collective.
     """
-    from .extensions import EXTENSIONS, force_params
 
     def resolve(label: str, flag: str, value: int | None) -> tuple[int, str]:
         """Resolve one seed, labelled by what actually happened.
@@ -1403,14 +1415,18 @@ def resolve_run_seeds(setup: ResolvedSetup) -> list[str]:
             update_parameters(Parameters(init={"random_seed": seed}))
         notes.append(seed_note("init.random_seed", seed, source))
 
-    force = EXTENSIONS.get("force")
-    if (
-        force is not None
-        and force.relevant(setup.system)
-        and force_params.modes is not None
-    ):
-        seed, source = resolve("force.seed", "--force.seed", force_params.seed)
-        if force_params.seed is None:
-            apply_extension_layer({"force": {"seed": seed}})
-        notes.append(seed_note("force.seed", seed, source))
+    for name, ext in relevant_extensions(setup.system).items():
+        if (
+            not ext.seeds_at_start
+            or ext.configured is None
+            or not ext.configured(ext.values)
+        ):
+            continue
+        for key in ext.seed_fields:
+            label = f"{name}.{key}"
+            value = getattr(ext.values, key)
+            seed, source = resolve(label, f"--{label}", value)
+            if value is None:
+                apply_extension_layer({name: {key: seed}})
+            notes.append(seed_note(label, seed, source))
     return notes

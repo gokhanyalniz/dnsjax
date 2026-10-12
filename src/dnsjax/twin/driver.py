@@ -276,6 +276,7 @@ from functools import partial
 from pathlib import Path
 from time import perf_counter_ns
 
+from dnsjax_lab.extensions import force_params, probes_params
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..__main__ import (
@@ -296,8 +297,6 @@ from ..bootstrap import (
 )
 from ..extensions import (
     ParamExtension,
-    force_params,
-    probes_params,
     register_extension,
     relevant_extensions,
 )
@@ -320,7 +319,6 @@ from ..run_status import (
 from ..seeding import (
     SOURCE_CLI,
     SOURCE_DRAWN,
-    SOURCE_SIDECAR,
     seed_note,
 )
 from ..snapshot_meta import (
@@ -847,11 +845,19 @@ TWIN_EXTENSION = register_extension(
         validate=_validate_twin,
         record_in_metadata=False,
         off_cadences=_TWIN_OFF_CADENCES,
+        # Resolved by :func:`run` after the paired-resume decision; the
+        # startup layering only records where a given value came from.
+        seed_fields=("seed",),
+        seeds_at_start=False,
     )
 )
 
 #: Live merged section (analogous to the global ``params``).
 twin_params: TwinParams = TWIN_EXTENSION.values
+
+#: Provenance label of a ``twin.seed`` inherited from ``twin.json``
+#: (the :mod:`dnsjax.seeding` labels cover the core's layers).
+SOURCE_SIDECAR = "inherited from twin.json"
 
 
 #: Every file a twin run appends to.  A fresh start refuses to touch

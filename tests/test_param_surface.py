@@ -770,14 +770,13 @@ def case_externalize() -> None:
 
 
 def case_extensions() -> None:
+    from dnsjax_lab.extensions import force_params, probes_params
     from pydantic_settings import CliApp
 
     import dnsjax.param_surface as PS
     import dnsjax.parameters as P
     from dnsjax.extensions import (
         apply_extension_layer,
-        force_params,
-        probes_params,
         relevant_extensions,
         reset_extensions,
     )

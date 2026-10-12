@@ -211,25 +211,42 @@ def run_resolution_checks() -> str | None:
             return "draw_seed() returned None"
 
         # Layer -> label, highest priority winning.  The core seed
-        # rides the core sections and the two extension seeds their
-        # own, so both halves of each layer are exercised.
+        # rides the core sections and two extension seeds their own
+        # (sections registered here, relevant to no flow, so nothing
+        # else sees them), so both halves of each layer are exercised.
+        from pydantic import BaseModel
+
+        from dnsjax.extensions import ParamExtension, register_extension
+
+        class _Seeded(BaseModel):
+            seed: int | None = None
+
+        for name in ("seeded_a", "seeded_b"):
+            register_extension(
+                ParamExtension(
+                    name=name,
+                    model=_Seeded,
+                    relevant=lambda system: False,
+                    seed_fields=("seed",),
+                )
+            )
         found = _seed_layers(
             (SOURCE_CLI, {"init": {"random_seed": 5}}, {}),
             (
                 SOURCE_TOML,
                 {"init": {"random_seed": 6}},
-                {"twin": {"seed": 7}},
+                {"seeded_a": {"seed": 7}},
             ),
             (
                 SOURCE_SNAPSHOT,
                 {"init": {"random_seed": 8}},
-                {"force": {"seed": 9}, "twin": {"seed": 10}},
+                {"seeded_b": {"seed": 9}, "seeded_a": {"seed": 10}},
             ),
         )
         want = {
             "init.random_seed": SOURCE_CLI,
-            "twin.seed": SOURCE_TOML,
-            "force.seed": SOURCE_SNAPSHOT,
+            "seeded_a.seed": SOURCE_TOML,
+            "seeded_b.seed": SOURCE_SNAPSHOT,
         }
         if found != want:
             return f"seed provenance is {found!r}, expected {want!r}"
@@ -290,7 +307,7 @@ def run_resolution_checks() -> str | None:
                 return f"a laminar start resolved seeds: {notes!r}"
 
             # (c) An unconfigured [force] likewise.
-            from dnsjax.extensions import force_params
+            from dnsjax_lab.extensions import force_params
 
             if force_params.modes is not None:  # pragma: no cover
                 return "the [force] section leaked in from another test"

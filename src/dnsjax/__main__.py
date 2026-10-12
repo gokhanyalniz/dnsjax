@@ -119,25 +119,13 @@ corrector iteration count ``c`` and the final corrector error
 the pre-step time.  ``outs.it_error_check`` must not exceed
 ``it_corrector`` (:func:`dnsjax.parameters.validate_parameters`).
 
-``probes.bin`` records the complex wall-normal profiles of the
-``probes.modes`` spectral modes every ``probes.it_probes`` steps
-(the ``probes`` extension section; :mod:`dnsjax.extensions`;
-wall-bounded only) with the same buffering, but as fixed-size
-binary records with a ``probes.json`` schema sidecar -- see the
-:mod:`dnsjax.extensions.probes` module docstring for the format, the
-append-on-resume rules, and the
-:mod:`dnsjax.analysis.response.probes` reader.  The t0 sample is
-recorded at setup, in-loop samples before each step, and a final
-post-step sample only when cadence-aligned (uniform sample
-times).
-
-``forcing.bin`` records the coefficients of the stochastic mode
-kicks (the ``force`` extension section) every ``force.it_force``
-steps, with a ``forcing.json`` sidecar.  A kick fires at the top of
-the loop after the equal-``t`` probe sample and any snapshot (both
-pre-kick) and immediately before the step; format, resume semantics,
-and the kick construction: the :mod:`dnsjax.extensions.forcing`
-module docstring (reader: :mod:`dnsjax.analysis.response.ssi`).
+A configured extension section can add a stream, or a modification
+of the state, of its own (``ParamExtension.runtime``; where in the
+loop each of its hooks runs: the :class:`dnsjax.extensions.RunHooks`
+docstring).  Its records are flushed, and checked for non-finite
+values, with the core streams; a state modification fires after
+every record of its iteration and immediately before the step, so
+every saved state precedes it.
 
 Every diagnostic is guarded against non-finite floats: each
 flushed buffer row (stats / steps / corrector) is scanned on the
@@ -177,8 +165,9 @@ which lists what a resume never inherits).  The resume is a
 *continuation* (inherit ``t`` / ``it`` / ``isnap`` from the
 snapshot, do not re-save the IC) only when
 :func:`dnsjax.parameters.trajectory_defining_changes` is empty -- no
-Physics/Geometry/Resolution parameter, and nothing in the ``[force]``
-section, was overridden to a value different from the snapshot's.
+Physics/Geometry/Resolution parameter, and nothing in a
+trajectory-defining extension section, was overridden to a value
+different from the snapshot's.
 Any such change starts a NEW trajectory (``t = it = isnap = 0``, IC
 re-saved as ``state00000.tar``) unless ``init.force_resume`` is set.
 When the current wall-normal grid differs from the snapshot's,
@@ -192,8 +181,9 @@ Run status
 while the run is live, then ``FINISHED`` (a stop criterion of the
 run's own), ``STOPPED`` (on request) or ``TERMINATED`` (a failure,
 with its reason).  A stop request takes the closing path the
-wall-clock budget takes: the final stats row, probe sample and
-snapshot (``outs.snapshot_save_final``), then every stream flushed.
+wall-clock budget takes: the final stats row, the extensions' final
+records and snapshot (``outs.snapshot_save_final``), then every
+stream flushed.
 Exit codes: 0 for ``FINISHED`` and ``STOPPED``; for ``TERMINATED``, 4
 when the corrector failed to converge (after the final snapshot, which
 is the post-mortem state), 3 for the non-finite guard, ``128 + n`` for
@@ -259,7 +249,11 @@ from .bootstrap import (
     resolve_parameters,
     resolve_run_seeds,
 )
-from .extensions import force_params, probes_params, relevant_extensions
+from .extensions import (
+    build_run_hooks,
+    relevant_extensions,
+    runtime_extensions,
+)
 from .flows.registry import (
     annular_systems,
     cylindrical_systems,
@@ -496,9 +490,10 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
 
     # --- Component-basis boundary --------------------------------------------
     # The cylindrical/annular solvers work in a decoupled basis
-    # (``u_± = u_r ± i u_θ``, plus the conformation spin components)
-    # that diagonalizes their implicit operators, while everything
-    # outside the time stepper -- snapshots, diagnostics, probes,
+    # (``u_± = u_r ± i u_θ``, and likewise for any further components a
+    # flow carries) that diagonalizes their implicit operators, while
+    # everything outside the time stepper -- snapshots, diagnostics,
+    # extension streams,
     # initial conditions, the analysis package -- works in physical
     # components.  These two maps are that boundary; a given state
     # crosses it at most once and never crosses back (the physical
@@ -1041,35 +1036,22 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
         if sharding.main_device and not corr_file.exists():
             _write_dat_header(corr_file, ["t"] + corr_names, corr_col_width)
 
-    # --- Probe buffer setup ----------------------------------------------
-    # Spectral-mode probe stream (``probes.modes``/``probes.it_probes``,
-    # the ``probes`` extension section): complex wall-normal mode
-    # profiles into the binary ``probes.bin`` (see the
-    # :mod:`dnsjax.extensions.probes` docstring).  Same buffering state
-    # machine as the streams above; the t0 sample is recorded here (the
-    # in-loop record skips ``it == it0``).  A non-finite message from
-    # this record (possible only at ``nbuffer == 1``) is deferred to
-    # ``_abort_non_finite`` below, which is not yet defined here.
-    measure_probes: bool = probes_params.modes is not None
-    probe_bad_t0: str | None = None
-    if measure_probes:
-        from .extensions.probes import ProbeStream
-
-        probe_stream = ProbeStream(state)
-        probe_bad_t0 = probe_stream.record(state, t)
-
-    # --- Stochastic forcing setup ------------------------------------------
-    # White-in-time mode kicks (``force.modes``, the ``force``
-    # extension section; see the :mod:`dnsjax.extensions.forcing` docstring for
-    # the conventions).  The forcer holds the channel profiles, the
-    # rank-identical coefficient PRNG (advanced past any kicks already
-    # recorded in an appended ``forcing.bin``), and the buffered
-    # coefficient writer flushed with the other streams.
-    force_on: bool = force_params.modes is not None
-    if force_on:
-        from .extensions.forcing import StochasticForcer
-
-        forcer = StochasticForcer(state)
+    # --- Extension run hooks --------------------------------------------
+    # A configured extension section with a run-loop part
+    # (``ParamExtension.runtime``) gets one ``RunHooks``, called at the
+    # fixed points the ``dnsjax.extensions.RunHooks`` docstring lists,
+    # in registration order.  Each records on the initial state here; a
+    # non-finite message from that (possible only at ``nbuffer == 1``)
+    # is deferred to ``_abort_non_finite`` below, which is not yet
+    # defined here.
+    run_hooks = []
+    hooks_bad_t0: str | None = None
+    for ext in runtime_extensions(params.phys.system):
+        hooks = build_run_hooks(ext, state, t)
+        bad = hooks.start(state, t)
+        if hooks_bad_t0 is None:
+            hooks_bad_t0 = bad
+        run_hooks.append(hooks)
 
     def flush_all_buffers(check: bool = True) -> None:
         """Flush every buffered diagnostic stream to disk and reset it.
@@ -1135,16 +1117,12 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
             corr_idx = 0
             if bad is not None:
                 _abort_non_finite(bad)
-        if measure_probes:
-            # ProbeStream gates disk I/O on the main process and
-            # resets its buffer on all ranks itself.
-            bad = probe_stream.flush(check=check)
+        for hooks in run_hooks:
+            # Each gates its disk I/O on the main process and resets its
+            # buffer on all ranks itself.
+            bad = hooks.flush(check)
             if bad is not None:
                 _abort_non_finite(bad)
-        if force_on:
-            # Kick coefficients are finite by construction (host-drawn
-            # Gaussians): flushed for durability, never checked.
-            forcer.flush()
 
     def _abort_non_finite(reason: str) -> None:
         """Abort the run on a non-finite (NaN/inf) diagnostic value.
@@ -1186,9 +1164,9 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
     signal.signal(signal.SIGTERM, _flush_and_exit)
     signal.signal(signal.SIGINT, _flush_and_exit)
 
-    if probe_bad_t0 is not None:
-        # Deferred check of the t0 probe record (see the probe setup).
-        _abort_non_finite(probe_bad_t0)
+    if hooks_bad_t0 is not None:
+        # Deferred check of the initial-state records (the hook setup).
+        _abort_non_finite(hooks_bad_t0)
 
     # The stop poll -- the wall-clock budget and a stop request
     # (``RUNNING`` deleted, SIGUSR1) -- judged by all processes
@@ -1231,8 +1209,8 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
 
         # Physical view of u^n, built at most once per iteration and
         # shared by every full-field consumer below (the component-basis
-        # boundary; the probe stream converts its own extracted columns
-        # instead, which are far smaller than the field).  ``None`` on
+        # boundary; an extension stream converts its own extracted
+        # columns instead, which are far smaller than the field).  ``None`` on
         # an ordinary step, and the identity on the geometries whose
         # solver basis *is* the physical one.
         do_stats = (
@@ -1283,15 +1261,10 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
                 if bad is not None:
                     _abort_non_finite(bad)
 
-        # Spectral-mode probe sample -> GPU buffer (t0 was recorded at
-        # setup; a cadence-aligned final sample is recorded after the
-        # loop, keeping the time grid uniform).
-        if (
-            measure_probes
-            and it % probes_params.it_probes == 0
-            and it > params.init.it0
-        ):
-            bad = probe_stream.record(state, t)
+        # Extension samples of the pre-step state (the same state the
+        # stats row above and a periodic snapshot below record).
+        for hooks in run_hooks:
+            bad = hooks.sample(it, state, t)
             if bad is not None:
                 _abort_non_finite(bad)
 
@@ -1320,15 +1293,12 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
         # to the step's peak allocation for nothing.
         state_phys = None
 
-        # Stochastic forcing kick (``force.modes``): fires after the
-        # equal-t probe sample and any snapshot above (both record
-        # the pre-kick state) and immediately before the step, so a
-        # resumed continuation never double-applies a kick (saved
-        # states are pre-kick; the kick belongs to the segment that
-        # steps from them) and the coefficient stream continues
-        # seamlessly (see :mod:`dnsjax.extensions.forcing`).
-        if force_on and it % force_params.it_force == 0:
-            state = forcer.kick(state, t)
+        # Extension modifications of the state, after every record of
+        # this iteration and immediately before the step, so every
+        # saved state precedes them (a resumed continuation never
+        # applies one twice).
+        for hooks in run_hooks:
+            state = hooks.modify(it, state, t)
 
         # Time step (single JIT scope): iterative Crank-Nicolson
         # corrector, or one CN/AB2 step carrying the nonlinear-RHS
@@ -1553,8 +1523,8 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
     sharding.print("Stopped timestepping at", datetime.now())
 
     # Out of the solver, once, for the final state: the physical view
-    # shared by the final stats and the final snapshot below (the probe
-    # stream converts its own columns).
+    # shared by the final stats and the final snapshot below (an
+    # extension stream converts its own columns).
     state_phys = from_solver_basis(state)
 
     # Final-state stats: computed once when the run stepped, reused by
@@ -1572,17 +1542,10 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
                 f"at t = {t:.6e}, it = {it}"
             )
 
-    # Final probe sample: the loop records *before* each step, so the
-    # post-step final state is never sampled there.  Record it only
-    # when cadence-aligned (a stop.max_sim_time horizon of a whole
-    # number of probe intervals ends exactly on the grid), keeping the
-    # sample times uniform for the readers.
-    if (
-        measure_probes
-        and it > params.init.it0
-        and it % probes_params.it_probes == 0
-    ):
-        bad = probe_stream.record(state, t)
+    # Extension records of the final state: the loop samples *before*
+    # each step, so the post-step final state is never sampled there.
+    for hooks in run_hooks:
+        bad = hooks.finish(it, state, t)
         if bad is not None:
             _abort_non_finite(bad)
 

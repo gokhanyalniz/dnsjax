@@ -2,21 +2,21 @@ r"""Random-seed resolution: OS entropy, provenance, and agreement.
 
 Every random draw in the solver is seeded from a user-facing parameter
 -- ``init.random_seed`` (the random initial condition,
-:mod:`dnsjax.ic.random_field`), ``twin.seed`` (the ``dnsjax-twin``
-partner perturbation) and ``force.seed`` (the ``[force]`` stochastic
-kicks, :mod:`dnsjax.extensions.forcing`).  All three default to
-**unset** (``None``), and this module defines what that means:
+:mod:`dnsjax.ic.random_field`), or an extension section's
+``seed_fields`` (:class:`dnsjax.extensions.ParamExtension`).  Every
+seed defaults to **unset** (``None``), and this module defines what
+that means:
 
 1. **Unset** -- a seed is drawn from the local operating-system entropy
    pool, printed with its source, and recorded in the run's metadata
-   (the snapshot ``params`` dump, ``twin.json``, ``forcing.json``), so
+   (the snapshot ``params`` dump, and an extension's own sidecar), so
    the run stays reproducible by passing the printed value back.
 2. **Unset and no entropy source** -- the run refuses rather than
    silently falling back to a fixed value.  The refusal fires only for
    a seed the run would actually *draw* with: a laminar, localized-rolls
    or snapshot-resume start needs no entropy at all.
 3. **Set** (command line, ``parameters.toml``, or inherited from a
-   snapshot / ``twin.json``) -- used unchanged.
+   snapshot or an extension's sidecar) -- used unchanged.
 
 The draw is an explicit startup step (``bootstrap.resolve_run_seeds``),
 and the unset value is a plain ``None`` (Design notes).
@@ -42,15 +42,15 @@ Design notes
 ------------
 **Why an unset seed is drawn, not defaulted.**  With a hard-coded
 default, an ensemble of "independent" runs launched without an explicit
-seed is not an ensemble: every member draws the same initial condition,
-the same partner and the same kick sequence.  Reproducibility is not
+seed is not an ensemble: every member draws the same initial condition
+and the same sequence of every other random draw.  Reproducibility is not
 what a fixed default buys -- recording the drawn seed buys the same
 thing without pinning every user to one realization.
 
 **Why the sentinel is ``None``, not a pydantic ``default_factory``.**
 Several sites compare a live value against a freshly constructed model
-default -- the "stray knob" checks of the ``[force]`` and ``[twin]``
-sections, and the absent-key fallback of
+default -- an extension section's "stray knob" check, and the
+absent-key fallback of
 ``parameters.trajectory_defining_changes`` -- and
 ``param_surface.render_sample_toml`` reads ``field_info.default``
 directly.  A factory would draw a *new* seed at each of those, producing
@@ -76,7 +76,6 @@ _SEED_MASK: int = (1 << SEED_BITS) - 1
 SOURCE_CLI = "set on the command line"
 SOURCE_TOML = "set in parameters.toml"
 SOURCE_SNAPSHOT = "inherited from the snapshot"
-SOURCE_SIDECAR = "inherited from twin.json"
 SOURCE_DRAWN = "drawn from system entropy"
 
 
