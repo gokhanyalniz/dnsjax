@@ -85,7 +85,7 @@ two free wall differences taken from the corrector iterate (four wall
 values against two conditions is what the exact diagonalization
 costs).  No geometry changes what it observes: the evolved scalars are
 re-derived from the carried velocity at the top of each corrector pass
-and reconstructed away at its exit, so snapshots, probes, forcing,
+and reconstructed away at its exit, so snapshots, extension streams,
 diagnostics, the analysis package and resume see the same physical
 state under both formulations.  The one internal exception is the
 pipe family, which also carries the quad's two difference halves: the
@@ -197,8 +197,8 @@ speed-up is a bonus, not a guarantee.
 
 **The split corrector stays opt-in.**  At realistic ``dt`` the
 unsplit corrector converges in ~1-2 iterations for *every* flow
-(measured, the total-field Dean and high-Wi viscoelastic Dean
-included: unsplit ``c`` stays 2-3, far from the cap, at
+(measured, the lab's total-field Dean and high-Wi viscoelastic Dean
+flows included: unsplit ``c`` stays 2-3, far from the cap, at
 ``dt = 0.01``), so it is both correct and faster -- the split measured
 a few % slower at production sizes on GPU, up to tens of % on small
 problems.  The split pays off only once ``dt`` is pushed far enough
@@ -216,13 +216,13 @@ induced corrector stress can trip the fallback into rescuing single
 steps (``ny = 32`` completes via fallbacks, while ``ny = 48`` diverges
 with the corrector still converged).
 
-**Implicit mean-flow coupling.**  Decisive for Dean: at ``nz = 64``,
-``dt = 0.15`` (mean-flow ``CFL_th ~ 0.5``) the coupling off NaNs by
-``t ~ 4`` while the coupling on runs clean, matching ``iterative-cn``
-at ~4 FFT-free Picard iterations per step against its ~4 FFT
-evaluations.  Neutral where the limit is fluctuation-driven (the pipe
-near the axis), and only mildly slowing the counter-rotating
-Taylor-Couette blow-up.
+**Implicit mean-flow coupling.**  Decisive for the lab's total-field
+Dean flow: at ``nz = 64``, ``dt = 0.15`` (mean-flow ``CFL_th ~ 0.5``)
+the coupling off NaNs by ``t ~ 4`` while the coupling on runs clean,
+matching ``iterative-cn`` at ~4 FFT-free Picard iterations per step
+against its ~4 FFT evaluations.  Neutral where the limit is
+fluctuation-driven (the pipe near the axis), and only mildly slowing the
+counter-rotating Taylor-Couette blow-up.
 
 **The default implicitness.**  Measured on the solver's own one-step
 propagator (pipe, ``Re = 1``, ``dt = 0.01``, ``fd_order = 4``), the
@@ -924,15 +924,16 @@ class Initiation(BaseModel):
 
     Resume policy: when ``snapshot`` is a dnsjax snapshot, ``it``/``t``/
     ``isnap`` are inherited only when none of the Physics/Geometry/
-    Resolution parameters, nor the ``[force]`` section, was overridden
-    to a value different from the snapshot's (a *continuation*).  Any
+    Resolution parameters, nor a trajectory-defining extension section,
+    was overridden to a value different from the snapshot's (a
+    *continuation*).  Any
     such change starts a NEW trajectory by default
     (``it = t = isnap = 0``); ``force_resume`` keeps the run continuous
     instead.  See
     :func:`trajectory_defining_changes`.
 
-    Seeds (``random_seed`` here, ``twin.seed`` and ``force.seed`` on
-    their extension sections) default to **unset**, meaning "draw one
+    Seeds (``random_seed`` here, and any an extension section
+    declares) default to **unset**, meaning "draw one
     from the system entropy pool at startup"; the drawn value is
     printed and recorded, and a run that needs a seed it cannot draw
     refuses rather than falling back to a fixed one.  The contract and
@@ -997,11 +998,11 @@ class Initiation(BaseModel):
     # its own field: the two are separate laws, and
     # the moment either moves they want values an order of magnitude
     # apart, so one knob cannot serve both.  The value here seeds a
-    # *laminar* state, where large scales trigger transition; the
-    # ``dnsjax-twin`` partner perturbs a turbulent one and has its own,
-    # much smaller default (``twin.smoothness``, below the minimal flow
-    # unit).  What ``s`` sets and why the two differ:
-    # ``ic/random_field.py``.
+    # *laminar* state, where large scales trigger transition; a
+    # perturbation of a turbulent state wants a much smaller value,
+    # below the minimal flow unit, which an entry point making one
+    # keeps as its own default.  What ``s`` sets and why the two
+    # differ: ``ic/random_field.py``.
     random_smoothness: float = Field(
         gt=0,
         lt=1,
@@ -1064,13 +1065,10 @@ class Initiation(BaseModel):
     # make the mean mode behave differently per geometry for no
     # user-visible reason.  Off is also the inert value the deferred
     # check in ``validate_parameters`` compares a direct assignment
-    # against.  ``dnsjax-twin`` does not read this field: its partner
-    # perturbation has its own ``twin.mean_flow``, which defaults
-    # **on** (``dnsjax_lab.twin.driver``).  The localized-rolls
-    # perturbation stays mean-free whatever this is set to (its
-    # (0, 0) content is a cubic in y, which the compatibility
-    # conditions annihilate -- ``ic/localized_rolls.py``), and the
-    # runtime ``[force]`` kicks still reject the mode (``extensions``).
+    # against.  The localized-rolls perturbation stays mean-free
+    # whatever this is set to (its (0, 0) content is a cubic in y,
+    # which the compatibility conditions annihilate --
+    # ``ic/localized_rolls.py``).
     random_mean_flow: bool = Field(
         default=False,
         description=(
@@ -1181,7 +1179,7 @@ class Outputs(BaseModel):
         default=100,
         description=(
             "Rows buffered on device before each diagnostics flush "
-            "(stats/steps/corrector/probes) to disk."
+            "(stats/steps/corrector and extension streams) to disk."
         ),
     )
     stats_precision: int = Field(
@@ -1214,8 +1212,8 @@ class Outputs(BaseModel):
     # them as each snapshot's ``carry/`` member, so a resume continues
     # the trajectory to round-off rather than re-deriving them from the
     # velocity (a one-off, truncation-sized change).  Two more fields on
-    # a pipe snapshot's three (on the viscoelastic pipe's nine); the
-    # member and its resume rules: :mod:`dnsjax.snapshot`.
+    # a pipe snapshot's three; the member and its resume rules:
+    # :mod:`dnsjax.snapshot`.
     snapshot_embed_carry: bool = Field(
         default=True,
         description=(
@@ -1253,8 +1251,8 @@ class Lowres(BaseModel):
 
     Every ``it_lowres`` steps the run writes
     ``lowres/lowres_{it:010d}.tar`` (:mod:`dnsjax.lowres`): the stored
-    state -- the velocity, plus the conformation tensor of the
-    viscoelastic flows -- at the resolution below, in the snapshot
+    state -- every component the flow stores -- at the resolution
+    below, in the snapshot
     format, and under ``pressure`` the static pressure as one more
     member.  The Fourier axes drop their highest modes; the wall-normal
     axis is interpolated exactly as a regridding resume does it (the
@@ -1268,8 +1266,8 @@ class Lowres(BaseModel):
     ``ntheta`` on the cylindrical and annular flows).  These files are
     output, not checkpoints: a resume refuses them, and they carry no
     solver-carried fields.  Inherited on resume like ``[outs]``, and
-    switched off the same way: ``it_lowres = 0`` (a ``dnsjax-twin``
-    member seeded from a ``[lowres]`` run included).
+    switched off the same way: ``it_lowres = 0`` (a run of another
+    entry point seeded from a ``[lowres]`` run's snapshot included).
     """
 
     it_lowres: int | None = Field(
@@ -1396,7 +1394,7 @@ class TimeStepping(BaseModel):
 
       The residual ``dt`` bound is then the ordinary explicit
       self-advection CFL of the *fluctuations* on the clustered grid
-      (stationary-wall flows -- Poiseuille, pipe, Dean -- are bounded
+      (stationary-wall flows -- Poiseuille, the pipe -- are bounded
       only by this, their ``L_bf`` being mild as ``U -> 0`` at the
       wall).  Where it binds is geometry-specific.  For the **pipe** it
       is the *near-axis azimuthal* advection at the innermost radial
@@ -1433,10 +1431,11 @@ class TimeStepping(BaseModel):
       base-flow profiles, the coupling being linear in the profile
       pair).  The explicit AB2 remainder is then the pure
       fluctuation-fluctuation advection: the mean-flow *distortion*
-      (streaks; for total-field Dean the entire evolving mean profile,
-      whose ``L_bf`` is otherwise zero) no longer rides the explicit
-      term, removing its advective-CFL contribution (decisive for Dean at a
-      large ``dt``; Design notes: "Implicit mean-flow coupling").  The
+      (streaks; for a total-field flow the entire evolving mean
+      profile, whose ``L_bf`` is otherwise zero) no longer rides the
+      explicit term, removing its advective-CFL contribution (decisive
+      for a total-field flow at a large ``dt``; Design notes: "Implicit
+      mean-flow coupling").  The
       double-counted
       mean-mean product is a purely wall-normal (radial) profile at the
       mean mode, absorbed by the mean pressure in the projection -- and
@@ -1557,9 +1556,8 @@ class TimeStepping(BaseModel):
     self-advection is CFL-limited (target well below 1), while
     ``iterative-cn`` tolerates CFL above 1 but stays bound by the
     corrector-contraction ``dt`` limit above -- enforce that through
-    ``dt_max``.  The ``[probes]`` / ``[force]`` extensions reject
-    adaptive runs: their streams and readers assume a uniform
-    sample/kick interval ``it_* x dt``.
+    ``dt_max``.  An extension whose stream assumes a uniform sample
+    interval ``it_* x dt`` rejects adaptive runs in its validate hook.
     """
 
     scheme: Literal["iterative-cn", "cnab2"] = Field(
@@ -1723,9 +1721,9 @@ class Termination(BaseModel):
     # ``max_sim_time = 300`` therefore stops at ``t = 400``: what a
     # launch integrates does not depend on where its trajectory
     # started, so one horizon serves an ensemble of members harvested
-    # at different times (``lab/scripts/ensemble_setup.py``).  The
-    # consequence for a run split across several launches (a
-    # wall-clock budget, a paired twin resume) is that each launch
+    # at different times.  The consequence for a run split across
+    # several launches (a wall-clock budget, a resume) is that each
+    # launch
     # gets the whole horizon again -- a fixed *absolute* end time is
     # expressed by shortening ``max_sim_time`` on the resume.
     max_sim_time: float | None = Field(
@@ -1902,17 +1900,15 @@ class Solver(BaseModel):
         ),
     )
     # Applies to the 6-field velocity+vorticity batch of
-    # ``rhs.get_nonlin`` and the ~36-field fused viscoelastic batch
-    # (``_get_rhs_core`` in
-    # ``geometries/wall_bounded/_viscoelastic_stepping.py``), both via
-    # ``fft.chunked_transform``.  ``k > 1`` splits the batch into
+    # ``rhs.get_nonlin`` and to any larger batch a flow transforms
+    # through ``fft.chunked_transform``.  ``k > 1`` splits the batch into
     # ``k`` balanced groups, cutting the transform-stage transient
     # (the padded intermediate buffers; see the ``fft.py`` memory
     # note) by ~``k`` at the cost of ``k``x the FFT dispatches (and
     # ``k`` smaller reshard rounds per stage on multi-device runs).
     # Raise it only when that transient sets the device-memory peak:
-    # chiefly the viscoelastic batch; the Newtonian 6-field transient
-    # is ~6x smaller.  Forward transforms stay fused.
+    # chiefly a flow's larger batch, the velocity's 6-field transient
+    # being several times smaller.  Forward transforms stay fused.
     rhs_transform_chunks: int = Field(
         ge=1,
         default=1,
@@ -2065,8 +2061,8 @@ class DerivedParameters:
         differs.
     ccf_A, ccf_B
         The circular-Couette base-flow coefficients,
-        ``U_theta = ccf_A * r + ccf_B / r`` (taylor-couette and
-        quasi-keplerian).
+        ``U_theta = ccf_A * r + ccf_B / r`` (the circular-Couette
+        flows).
     r_inner, r_outer
         The annulus's dimensionless radii (every annular flow).
     u_grid
@@ -2132,7 +2128,7 @@ def read_snapshot_params(
     :data:`_SNAPSHOT_SKIP_FIELDS`, the resume-decision fields in
     :data:`_SNAPSHOT_LINEAGE_FIELDS`, and the whole ``solver`` section
     removed so they are not inherited -- plus the stored extension
-    sections (e.g. ``force``, ``probes``) keyed by section name, for
+    sections keyed by section name, for
     :func:`dnsjax.extensions.apply_extension_layer`.
 
     Returns ``None`` when *snapshot_path* is not a dnsjax snapshot file
@@ -2192,9 +2188,9 @@ def read_snapshot_params(
 # Core parameter sections that *define* the trajectory: on resume, a
 # change to any of their fields (other than the JAX-setup skip fields)
 # marks a new trajectory (reset ``it``/``t``/``isnap``) rather than a
-# continuation.  Trajectory-defining *extensions* (``force``:
-# stochastic kicks alter the dynamics exactly like a ``phys`` change)
-# are compared alongside in :func:`trajectory_defining_changes`.
+# continuation.  Trajectory-defining *extensions* (a section altering
+# the dynamics as a ``phys`` change would) are compared alongside in
+# :func:`trajectory_defining_changes`.
 _TRAJECTORY_SECTIONS: tuple[str, ...] = ("phys", "geo", "res")
 
 
@@ -2309,11 +2305,12 @@ _materialized_defaults: set[tuple[str, str]] = set()
 # ``(section, key)`` of the fields the *previous* pass's derive hook
 # wrote onto ``params`` (the hidden-derived values: the annular /
 # cylindrical azimuthal ``geo.lz``, the circular-Couette ``phys.re``,
-# the quasi-Keplerian ``phys.re2``, the viscoelastic ``phys.re``).
-# Restored alongside :data:`_materialized_defaults` for the same
-# reason: a ``system`` switch across layers must not leak one flow's
-# derived value into another flow's derivation (e.g. a leaked
-# quasi-Keplerian ``re2`` silently parameterizing Taylor-Couette).
+# and whatever a plugin flow's derive writes).  Restored alongside
+# :data:`_materialized_defaults` for the same reason: a ``system``
+# switch across layers must not leak one flow's derived value into
+# another flow's derivation (e.g. a ``re2`` derived by another
+# circular-Couette parameterization silently parameterizing
+# Taylor-Couette).
 _derive_written: set[tuple[str, str]] = set()
 
 #: The optional output cadences: off when unset **or 0**.  A layer
@@ -2343,7 +2340,7 @@ def update_parameters(params_new: Parameters) -> None:
     (:data:`OFF_CADENCES`).  The ``(section, key)`` of
     every explicitly-set field is recorded (across all layers) in the
     module-level :data:`_user_set_fields`, so a per-flow default (a
-    ``FieldSpec.default`` override, e.g. the viscoelastic axial period
+    ``FieldSpec.default`` override, e.g. a flow's own axial period
     ``geo.lx``) is materialized only when the user / snapshot / TOML
     never set the field.  Corollary: a **direct** assignment
     (``params.geo.grid_type = ...``) never enters
@@ -2603,10 +2600,9 @@ def validate_parameters() -> None:
         )
 
     # Azimuthal wedge (geo.m0): only flows whose surface carries the
-    # field (the cylindrical/annular geometries, both viscoelastic
-    # members included -- the u_+/u_- and tensor-spin
-    # integer-harmonic formulations -- except the curved pipe, whose
-    # metric couples neighbouring azimuthal harmonics); rejected
+    # field (the cylindrical/annular geometries, whose u_+/u_-
+    # formulations are integer-harmonic; a flow whose metric couples
+    # neighbouring azimuthal harmonics leaves it off); rejected
     # elsewhere.  Guards
     # direct assignment; the CLI/TOML surfaces reject it at parse.
     if params.geo.m0 != 1 and ("geo", "m0") not in spec.field_map:
@@ -2663,8 +2659,8 @@ def validate_parameters() -> None:
             f"{params.phys.system!r}"
         )
 
-    # Extension sections (the probe stream, stochastic forcing, and
-    # any script-registered section): each relevant extension's
+    # Extension sections (the plugins' and any script-registered
+    # one): each relevant extension's
     # validate hook runs here, with the merged global ``params``.
     from .extensions import validate_extensions
 
@@ -2672,8 +2668,7 @@ def validate_parameters() -> None:
 
     # Flow-specific cross-field checks and startup summaries (e.g.
     # the pipe's half-cgl/iterative-cn restriction, the plane-Couette
-    # driving restriction, the quasi-Keplerian derived summary) live
-    # in the flow specs.
+    # driving restriction) live in the flow specs.
     if spec.validate is not None:
         spec.validate(params, derived_params)
 
@@ -2683,11 +2678,11 @@ def validate_parameters() -> None:
     # ``block_mean_spanwise_velocity``), so a direct assignment on a
     # flow whose surface omits one is either silently inert -- e.g.
     # ``block_mean_spanwise_velocity`` on the pipe, which nothing reads
-    # -- or, worse, half-applied: ``phys.driving`` on the viscoelastic
-    # pipe would make the cylindrical corrector emit a ``-dPdz'``
-    # diagnostic for a flow module that exports no ``get_driving``, so
-    # ``__main__`` would size ``stats.dat`` one column short and fail
-    # mid-run on the first stats row.  The CLI/TOML reject both at
+    # -- or, worse, half-applied: ``phys.driving`` on a cylindrical
+    # flow whose module exports no ``get_driving`` would make the
+    # corrector emit a ``-dPdz'`` diagnostic for it, so ``__main__``
+    # would size ``stats.dat`` one column short and fail mid-run on the
+    # first stats row.  The CLI/TOML reject both at
     # parse; this is the scripts-and-tests path.  It runs after
     # ``spec.validate`` so a flow that refuses one of these itself
     # (plane-couette's constant-bulk refusal) keeps its own, more

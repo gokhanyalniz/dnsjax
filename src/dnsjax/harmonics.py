@@ -6,8 +6,9 @@ tooling (:mod:`dnsjax.analysis`).  :mod:`dnsjax.operators` re-exports
 them wrapped in ``jnp.asarray`` so the runtime keeps device arrays,
 while host-side / external code (which must run without JAX) imports
 the NumPy versions directly.  :func:`parse_mode_pairs`, the shared
-parser of ``"i2,i3;..."`` spectral-mode lists (the probes / forcing /
-transient-growth surfaces), also lives here.
+parser of ``"i2,i3;..."`` spectral-mode lists (the transient-growth
+surface, and any extension section taking a mode list), also lives
+here.
 
 The conventions match the storage layout: the Nyquist mode is always
 omitted, so a real-FFT axis carries `$n / 2$` modes and a full-complex

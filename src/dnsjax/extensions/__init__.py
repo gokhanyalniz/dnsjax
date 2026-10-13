@@ -66,8 +66,8 @@ class ParamExtension:
     Once it is, :func:`dnsjax.bootstrap.resolve_run_seeds` draws each
     unset field of ``seed_fields`` (and records it), unless
     ``seeds_at_start`` is false, when the owner resolves them itself
-    (``dnsjax-twin``, after its paired-resume decision) and startup
-    only records where a given value came from.  ``runtime``
+    (after a decision of its own, such as whether a resume is paired)
+    and startup only records where a given value came from.  ``runtime``
     (``"module:attr"``) names a factory ``(state, t) -> RunHooks``,
     the section's part in the solver's run loop (:class:`RunHooks`),
     in a module imported only once the section is configured, so it

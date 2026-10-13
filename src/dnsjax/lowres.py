@@ -1,12 +1,11 @@
 r"""Reduced-resolution snapshots (``[lowres]``), written during a run.
 
 Every ``lowres.it_lowres`` steps the solver writes
-``lowres/lowres_{it:010d}.tar``: the stored state -- the velocity, plus
-the conformation tensor of the viscoelastic flows -- at the reduced
-resolution ``[lowres]`` names, and, under ``lowres.pressure`` (plane
-Couette and plane Poiseuille), its static pressure as one more member.
-``dnsjax-twin`` writes the same files for its reference state and, on a
-cadence of its own, for the difference field (:mod:`dnsjax_lab.twin.driver`).
+``lowres/lowres_{it:010d}.tar``: the stored state -- every component
+the flow stores -- at the reduced resolution ``[lowres]`` names, and,
+under ``lowres.pressure`` (plane Couette and plane Poiseuille), its
+static pressure as one more member.  Another entry point may write the
+same files for its own fields, through :class:`LowResWriter`.
 The point is a cadence the full snapshots cannot afford on disk, which
 is also why this runs inside the solver rather than in a ``scripts/``
 tool: offline it would need full snapshots at that cadence, and the
@@ -105,8 +104,8 @@ def lowres_due(it: int, anchor: int = 0) -> bool:
     """Whether ``[lowres]`` writes the state the run holds at *it*.
 
     *anchor* is the step the cadence counts from: ``0`` for the solver
-    (the absolute count, like ``outs.it_snapshot``), the member's
-    ``parent_it`` for ``dnsjax-twin``.
+    (the absolute count, like ``outs.it_snapshot``), the step another
+    entry point's run started from.
     """
     cadence = params.lowres.it_lowres
     return cadence is not None and (it - anchor) % cadence == 0
@@ -162,9 +161,8 @@ class LowResWriter:
     Built once, when a consumer is enabled: the targets, the grids, the
     regrid matrix and -- under ``lowres.pressure`` -- the pressure
     operator are field-independent.  *pressure_op* lets a caller that
-    already holds one share it (``dnsjax-twin``'s
-    :class:`~dnsjax_lab.twin.pressure.DifferencePressure` is one); left
-    ``None`` it is built here when the pressure is on.
+    already holds one share it; left ``None`` it is built here when the
+    pressure is on.
     """
 
     def __init__(self, pressure_op=None) -> None:

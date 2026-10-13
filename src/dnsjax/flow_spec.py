@@ -208,9 +208,8 @@ class FlowSpec:
     ``total_field`` declares what the state -- and so every snapshot --
     holds: ``False`` (the default) for the perturbation `$u'$` about the
     flow's laminar profile, ``True`` for the total field, integrated
-    around ``base_flow = 0`` with a mean-mode body force (the
-    force-driven curved pipe, Dean and viscoelastic flows).  The
-    registry exposes it as
+    around ``base_flow = 0`` with a mean-mode body force (a
+    force-driven flow).  The registry exposes it as
     :data:`dnsjax.flows.registry.total_field_systems`; a total-field
     flow has no ``frozen_profile_flow`` hook and is outside the
     transient-growth and single-mode-perturbation scope.

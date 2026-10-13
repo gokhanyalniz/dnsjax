@@ -47,10 +47,9 @@ child and, unlike ``fork``, neither copies a large multithreaded
 process's page tables nor runs the fork handlers of the MPI and RPC
 libraries it has loaded.
 
-**Atomic sidecars.**  Every ``.bin`` stream writer --
-:mod:`dnsjax_lab.extensions.probes`, :mod:`dnsjax_lab.extensions.forcing`,
-:mod:`dnsjax_lab.twin._binstream` -- creates its JSON sidecar on the
-**main** process while **every** rank tests the same path's existence
+**Atomic sidecars.**  A ``.bin`` stream writer (an extension
+section's, say) creates its JSON sidecar on the **main** process while
+**every** rank tests the same path's existence
 to choose between "create" and "validate and append".  A plain
 ``open(path, "w")`` makes the path exist before its content does, so a
 rank whose test lands inside that window loads zero bytes and dies in
@@ -60,8 +59,8 @@ Committing by rename (:func:`write_sidecar_json`) makes the path appear
 only once complete, so the loser of the race sees either no file (and,
 not being the main process, does nothing) or the whole of it; the
 rename is atomic on any POSIX filesystem because the ``.partial``
-sibling shares the directory.  ``twin.json`` is written the same way:
-a later resume reads it back, where a truncated write would be just as
+sibling shares the directory.  A run record a later resume reads back
+is written the same way, where a truncated write would be just as
 fatal.
 """
 
@@ -106,9 +105,8 @@ PRESSURE_PREFIX = "pressure/c/"
 #: The ``kind`` of a tar that holds a solver state.  Every snapshot
 #: ever written is one and carries no ``kind`` key at all, so its
 #: absence means this; the writer records the key only for the other
-#: kinds -- the twin's 3-D spectra and budget cubes
-#: (:mod:`dnsjax_lab.twin.cubes`), which share the container and not its
-#: meaning.
+#: kinds (arrays such as 3-D spectra), which share the container and not
+#: its meaning.
 STATE_KIND = "state"
 
 
@@ -187,7 +185,7 @@ def write_sidecar_json(path: str | Path, payload: dict) -> None:
     onto *path*, so *path* appears only once complete, as
     :mod:`dnsjax.snapshot` does for the tar itself.  A crash mid-write
     leaves the ``.partial`` behind, which no reader globs for.  Every
-    ``.bin`` stream's sidecar and ``twin.json`` are written this way,
+    ``.bin`` stream's sidecar and run record are written this way,
     because other ranks test the path while the main process writes it
     (Design notes: "Atomic sidecars").
     """
@@ -218,7 +216,7 @@ def is_snapshot_file(path: str | Path) -> bool:
 #: Oldest readable snapshot ``format_version``.  Format 6 stores the
 #: state in the solver's native spectral layout, in physical
 #: components for every family (cylindrical/annular `$u_r$`,
-#: `$u_\theta$`, the physical conformation tensor), with the embedded
+#: `$u_\theta$`, and any further stored component), with the embedded
 #: ``params`` dump in the flow-relevant public-named surface
 #: representation.  A pre-6 file differs in at least one of those
 #: conventions and would be silently misread, so anything older is
@@ -271,7 +269,7 @@ def read_snapshot_stats(path: str | Path) -> dict | None:
 
 #: Bytes per element of the dtypes the archive writer emits: complex
 #: for a state (:func:`dnsjax.snapshot._zarr3_dtype_name`), real for
-#: the twin's cubes.  This module is deliberately numpy-free, so the
+#: a real array output.  This module is deliberately numpy-free, so the
 #: size is tabulated rather than looked up; an unrecognized name skips
 #: the size check below instead of inventing a number.
 _ITEMSIZE = {"complex64": 8, "complex128": 16, "float32": 4, "float64": 8}
@@ -349,9 +347,9 @@ def snapshot_component_offsets(path: str | Path) -> dict[int, int]:
     The returned offset is ``tarfile.TarInfo.offset_data`` -- the first
     byte of the component's raw chunk inside the archive -- used as the
     base for the raw offset I/O in :mod:`dnsjax.snapshot`.  The component
-    count is the number of chunks: 3 for the velocity-only systems, 9
-    for the viscoelastic ones (3 velocity + 6 conformation); the chunks
-    must be a contiguous range ``0..N-1``.
+    count is the number of chunks: 3 for the velocity-only systems,
+    the flow's ``n_components`` for one storing more; the chunks must
+    be a contiguous range ``0..N-1``.
 
     This is the one place that hands out byte positions to trust, so it
     is also where they are checked against the metadata that describes

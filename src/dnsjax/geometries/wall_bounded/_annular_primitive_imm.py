@@ -133,8 +133,8 @@ def _hk_bands(
     """
     m_s = fourier_.m[0, ..., None]
     kz2_s = fourier_.kz2[0, ..., None]
-    # Solvent viscosity ``derived_params.nu``: 1/re for Newtonian
-    # Taylor-Couette / Dean, beta/re for the viscoelastic subclass.
+    # The (solvent) viscosity ``derived_params.nu``: 1/re unless the
+    # flow's spec derives another (``FlowSpec.viscosity``).
     return [
         _build_Hk_band_gpu(
             flow_.A_base.dense,

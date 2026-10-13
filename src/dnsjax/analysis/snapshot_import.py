@@ -3,8 +3,9 @@ r"""Convert a native-layout velocity field into a dnsjax snapshot.
 This is a **library** (not a CLI): a converter for a particular
 simulator imports it to pack a velocity field -- already arranged in
 dnsjax's **native** component/axis structure -- into dnsjax's
-single-file (tar-wrapped zarr3) snapshot format.  Every velocity flow
-is accepted; the nine-component viscoelastic ones are refused.  Like
+single-file (tar-wrapped zarr3) snapshot format.  Every flow whose
+state is the three velocity components is accepted; one carrying more
+(``FlowSpec.n_components``) is refused.  Like
 :mod:`dnsjax.ic.random_field` it configures the global parameter
 singletons (one system per process) and calls
 ``snapshot.save_snapshot``, but instead of *generating* a field it
@@ -41,8 +42,8 @@ or `$k_y$` (periodic) slot.  **The cylindrical and annular flows share
 one native layout** ``(r, θ, z_ax)``: dnsjax maps the axial direction
 to the real-FFT (``nx``) slot and the azimuthal to the complex (``nz``)
 slot, so for the annular flows the spanwise (axial) resolution is
-``nx`` and the streamwise (azimuthal) ``nz``.  On the curved pipe
-component 0 is the streamwise `$u_s$` along the bent axis.
+``nx`` and the streamwise (azimuthal) ``nz``.  A flow's own component
+names, where they differ, are ``FlowSpec.components``.
 
 Physical input has shape ``(3, ny, nz, nx)`` and is **real** in every
 family (all native components are physical velocity components).
@@ -80,16 +81,16 @@ Parameter surface
 ``configure_target`` / ``convert_field_to_snapshot`` take the flow's
 **public-named** physics / geometry / resolution parameters as keyword
 arguments -- exactly the names the solver CLI documents
-(``dnsjax --help <system>``): ``nx``/``ny``/``nz``/``lx``/``lz``/ ``re`` for
-the Cartesian and periodic flows; ``nz`` (axial), ``nr`` (radial), ``ntheta``
-(azimuthal) and ``lz`` (axial length) for the cylindrical and annular flows,
-with ``re`` (pipe, Dean), ``re``/``curvature`` (curved pipe),
-``re1``/``re2``/``eta`` (Taylor-Couette), ``re1``/``r_omega``/``eta``
-(quasi-Keplerian) and ``eta`` (Dean), plus an optional ``m0`` (azimuthal wedge)
-wherever the flow's surface has one.  The three resolutions are required (they
-fix the input shape); anything omitted falls to the flow's defaults, and a name
-not on the flow's surface is a hard error, as on the CLI.  Resolutions count
-the physical modes / grid points *before* 3/2 dealiasing (the solver's nominal
+(``dnsjax --help <system>``): ``nx``/``ny``/``nz``/``lx``/``lz``/``re``
+for the Cartesian and periodic flows; ``nz`` (axial), ``nr``
+(radial), ``ntheta`` (azimuthal) and ``lz`` (axial length) for the
+cylindrical and annular flows, with ``re`` (pipe) or
+``re1``/``re2``/``eta`` (Taylor-Couette), plus an optional ``m0``
+(azimuthal wedge) wherever the flow's surface has one.  The three
+resolutions are required (they fix the input shape); anything omitted
+falls to the flow's defaults, and a name not on the flow's surface is
+a hard error, as on the CLI.  Resolutions count the physical modes /
+grid points *before* 3/2 dealiasing (the solver's nominal
 resolution); never include dealiasing padding.
 
 Algorithm
@@ -111,9 +112,9 @@ What a snapshot stores depends on the flow (``FlowSpec.total_field``):
 the perturbation `$\mathbf{u}'$` around the laminar base flow
 `$\mathbf{U}$` for the base-flow systems, where `$\mathbf{U}$` lives in
 the ``flow`` dataclass and is **not** part of the state; the **total**
-field for the force-driven ones this module accepts, Dean and the
-curved pipe.  It performs **no** base-flow subtraction: the input must
-already be the stored quantity for the chosen system.
+field for a force-driven one.  It performs **no** base-flow
+subtraction: the input must already be the stored quantity for the
+chosen system.
 
 Wall-normal grid
 ----------------

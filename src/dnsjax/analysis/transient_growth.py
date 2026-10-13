@@ -5,11 +5,10 @@ wall-bounded flow **linearized about an arbitrary wall-normal total
 profile** `$\mathbf{U}(y)$` -- not necessarily a laminar / stationary
 solution.  Supported systems: the wall-bounded base-flow flows
 (:data:`WALL_BOUNDED_TG_SYSTEMS`) -- ``plane-couette`` /
-``plane-poiseuille`` (Cartesian), ``pipe`` (cylindrical),
-``taylor-couette`` and ``quasi-keplerian`` (annular).  The total-field
-flows (``FlowSpec.total_field``: the curved pipe, Dean and the two
-viscoelastic flows) have no base flow to linearize about and are out
-of scope.
+``plane-poiseuille`` (Cartesian), ``pipe`` (cylindrical) and
+``taylor-couette`` (annular), with any base-flow flow a plugin adds on
+those geometries.  A total-field flow (``FlowSpec.total_field``) has
+no base flow to linearize about and is out of scope.
 
 Run as a CLI (single process, single device; GPU with
 ``--dist.platform cuda`` and ``CUDA_VISIBLE_DEVICES=0``)::
@@ -239,8 +238,9 @@ mode below is guarded per mode with an explicit error.
     early, mesh-dependent `$G$` spike that decays long before the
     physical optimum -- and, being a genuine property of `$\mathcal{A}
     _{\mathrm{res}}$`, no post-processing can subtract it.  Measured
-    (quasi-Keplerian `$Re_i = 10^4$`, `$m = 4$`, `$N_y = 128$`), the
-    numerical abscissa falls `$+162 \to +82 \to +57$` for `$\Delta t =
+    (the lab's quasi-Keplerian flow, `$Re_i = 10^4$`, `$m = 4$`,
+    `$N_y = 128$`), the numerical abscissa falls
+    `$+162 \to +82 \to +57$` for `$\Delta t =
     0.003 \to 0.01 \to 0.03$`, and the rank gap *widens* over the same
     range (`$1.3\times10^{3} \to 1.4\times10^{3} \to 3.7\times10^{3}$`).
 
@@ -268,9 +268,9 @@ mode below is guarded per mode with an explicit error.
   physical floor" is unreliable; read the printed tail rather than
   assuming a direction.
 - ``--tg.t_max`` (default `$0.25\,Re$`): covers the classic optima,
-  `$t_{\mathrm{opt}} \approx 0.05$`--`$0.15\,Re$`, of the five flows
-  (Taylor-Couette / quasi-Keplerian use the derived reference ``re``:
-  ``re1``, or ``re2`` when outer-driven).  Raise it when a mode prints the
+  `$t_{\mathrm{opt}} \approx 0.05$`--`$0.15\,Re$`, of these flows
+  (Taylor-Couette uses the derived reference ``re``: ``re1``, or
+  ``re2`` when outer-driven).  Raise it when a mode prints the
   "G still rising at t_max" warning.
 - ``--tg.nt`` (65): `$G(t)$`-grid density.  The golden-section
   refinement only polishes the bracket around the *grid* argmax, so
@@ -303,9 +303,8 @@ mode below is guarded per mode with an explicit error.
   probe-resolved eigenspace, in an orthonormal energy-coordinate
   basis), the bases `$V, F, Q$`, and the coordinate contract -- the
   input for controllability / growth-curve / identification
-  post-processing
-  (:mod:`dnsjax_lab.analysis.response.operator_tools`; the storage
-  layout: the ``_write_operator_npz`` docstring).
+  post-processing (the lab's response analysis consumes it; the
+  storage layout: the ``_write_operator_npz`` docstring).
 - ``--tg.export_amplitude`` (1e-4): volume-averaged energy `$E'$` of
   the exported seed (the solver's own measure).  The default keeps
   the seeded DNS initially linear; raise it for finite-amplitude
@@ -313,9 +312,9 @@ mode below is guarded per mode with an explicit error.
 
 Converging `$N_y$` (do this before trusting `$G_{\max}$`)
 ---------------------------------------------------------
-The physical `$G(t)$` converges *fast* in `$N_y$`; the artefact of
-step 5 converges *slowly*, so **`$N_y$` is set by the artefact, not by
-the physics**.  Measured for quasi-Keplerian `$Re_i = 10^4$`,
+The physical `$G(t)$` converges *fast* in `$N_y$`; the artefact of step
+5 converges *slowly*, so **`$N_y$` is set by the artefact, not by the
+physics**.  Measured on the lab's quasi-Keplerian flow, `$Re_i = 10^4$`,
 `$m = 4$`, `$\Delta t = 10^{-2}$` (`$G_{\max} = 13.04$` at
 `$t_{\mathrm{opt}} = 27$`):
 
@@ -775,9 +774,9 @@ def _configure_parameters(argv: list[str]) -> None:
     (``--tg.<field>``), passed as the entry point's own section: it is
     on every flow's surface, so an unsupported flow meets the system
     check below rather than an unrecognized flag.  The flow-relevant
-    *solver-run* extension sections (``[probes]``, ``[force]``) are
-    accepted too, so a ``parameters.toml`` shared with a probed
-    production run parses -- the driver ignores them (a note is
+    *solver-run* extension sections are accepted too, so a
+    ``parameters.toml`` shared with a production run parses -- the
+    driver ignores them (a note is
     printed when one is configured); bare ``--help`` shows only
     ``[tg]``.  It then forces the TG-required settings (single device,
     backward-Euler linear probe, no mean coupling, tight corrector, lab
@@ -1465,8 +1464,10 @@ def _write_operator_npz(
     ``mode_k_metric`` and the ``i3 = 0`` conjugate partner supply the
     same factor 2).
 
-    Consumers: :mod:`dnsjax_lab.analysis.response.operator_tools`
-    (controllability modes, growth curves, subspace restriction).
+    Consumers: the lab's response analysis
+    (``dnsjax_lab.analysis.response.operator_tools``: controllability
+    modes, growth curves, subspace restriction), which changes with
+    this layout.
     """
     results = sorted(results, key=lambda m: (m.i2, m.i3))
     out: dict[str, Any] = {
@@ -1593,8 +1594,8 @@ def _seed_metadata_params():
     parameter layer.  A seed is pure state plus its
     trajectory-defining ``phys``/``geo``/``res`` identity, so for the
     metadata dump the ``step`` section, the moving-frame speed, and
-    the solver-run extension sections (``probes``/``force``, possibly
-    configured by a shared production TOML this driver ignores) are
+    the solver-run extension sections (possibly configured by a shared
+    production TOML this driver ignores) are
     swapped to their production defaults, then restored.
     """
     from ..extensions import EXTENSIONS

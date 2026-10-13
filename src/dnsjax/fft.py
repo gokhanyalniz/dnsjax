@@ -48,13 +48,13 @@ Memory
 ------
 Beyond its input and output, each transform materializes one to two
 batch-sized intermediates per padded axis: the ``zeropad_*`` /
-``truncate_*`` concatenate output and the per-axis (i)FFT result,
-plus the reshard copies.  For the batched RHS transforms (6 fields
-Newtonian, ~36 viscoelastic) these stage buffers dominate the
-per-step working set.  The mitigation is chunking the batch
-(:func:`chunked_transform`, ``solver.rhs_transform_chunks``; default
-off -- a memory/throughput trade); fusing the zero-pad into the FFT
-is not one (Design notes).
+``truncate_*`` concatenate output and the per-axis (i)FFT result, plus
+the reshard copies.  For the batched RHS transforms (6 fields for the
+velocity alone, several times that for a flow carrying more) these stage
+buffers dominate the per-step working set.  The mitigation is chunking
+the batch (:func:`chunked_transform`, ``solver.rhs_transform_chunks``;
+default off -- a memory/throughput trade); fusing the zero-pad into the
+FFT is not one (Design notes).
 
 Normalization
 -------------

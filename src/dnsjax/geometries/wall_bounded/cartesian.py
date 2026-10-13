@@ -97,8 +97,8 @@ influence values -- leaves the one-step map at spectral radius
 `$(\varphi, v, \omega_y)$` as a second solver basis to keep the wall
 values exactly was shipped (2026-07-25) and removed (2026-07-27).  It
 cost a third representation of the state, field-wide basis
-conversions in ``extensions/probes``, ``extensions/forcing`` and
-``__main__``, an extra pair of `$\varphi$` influence columns as
+conversions in the probe and forcing extensions and ``__main__``, an
+extra pair of `$\varphi$` influence columns as
 `$\Delta t$` leaves, a state/RHS basis mismatch the stepper had to be
 careful around, and an entry projection that silently dropped a
 kick's non-solenoidal part -- for two wall rows the resume path threw
@@ -928,8 +928,9 @@ def build_poisson_operator(
     ``res.consistent_imm = False``; the default `$v$`-`$\omega_y$` scheme puts
     a **Dirichlet** Laplacian there instead and never forms a pressure.  This
     entry point exists for the consumers that want the pressure under either
-    flag -- :mod:`dnsjax_lab.twin.pressure`, which recovers the
-    difference-field pressure for the wall-normal-resolved budget.  The two
+    flag -- the lab's twin pressure (``dnsjax_lab.twin.pressure``), which
+    recovers the difference-field pressure for the wall-normal-resolved
+    budget.  The two
     Neumann builders stay in the legacy module: all three geometries name
     theirs identically there, and splitting one of the three would cost that
     symmetry for nothing (the import is the same deferred one the flag-off
@@ -1367,11 +1368,10 @@ def mean_driving_from_profile(
     already hold one: the collective is
     :func:`~dnsjax.geometries.wall_bounded._base.extract_mean_mode`,
     and it is latency-bound, so paying it twice for a profile already
-    in hand is pure cost.  The map is also **linear** in *mean_u* --
-    which is what lets the twin driver's `$y$`-resolved driving-work
-    density (``twin.diagnostics._driving_density``) get the driving
-    *difference* between two members by evaluating this on their
-    profile difference, with no collective of its own.
+    in hand is pure cost.  The map is also **linear** in *mean_u*, so
+    the driving *difference* between two states is this map of their
+    profile difference, with no collective of its own (the lab's twin
+    diagnostics take it so).
     """
     cbv = params.phys.driving == "constant_bulk_velocity"
     if not (cbv or params.phys.block_mean_spanwise_velocity):
@@ -1529,7 +1529,7 @@ def _imm_iteration_vw(
     (:func:`_to_solver`) and the exit reconstructs `$(u, w)$` back
     (:func:`_from_solver`), so the evolved scalars live inside this
     function and nothing outside it -- ``__main__``, snapshots,
-    diagnostics, probes, forcing, the analysis package -- needs to
+    diagnostics, extension streams, the analysis package -- needs to
     know they exist.  The two cylindrical geometries do the same
     (they carry `$u_\pm$` because the *implicit operators* need it,
     not this scheme).  What that costs is two wall rows per mode; see

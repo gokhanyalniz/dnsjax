@@ -1,14 +1,14 @@
-r"""Time stepping shared by the cylindrical (pipe) geometries.
+r"""Time stepping of the cylindrical (pipe) geometry and its variants.
 
 The straight pipe (:mod:`~dnsjax.geometries.wall_bounded.cylindrical`)
-and the curved, zero-torsion pipe
-(:mod:`~dnsjax_lab.geometries.wall_bounded.cylindrical_curved`) share one
-set of stepping functions: the pseudo-spectral RHS, the FFT-free
-base-flow coupling, the `$u_r$`-`$\omega_r$` influence-matrix pass, the
-predictor / corrector / norm and the stepper factory.  They are written
-once here and parametrized by the flow dataclass, whose operators,
-grids, parity classes and band families all stay in the geometry
-modules.
+and any flow a plugin builds on the cylindrical geometry (one with a
+metric, through the ``CylindricalFlow`` metric hooks, or carrying more
+components) share one set of stepping functions: the pseudo-spectral
+RHS, the FFT-free base-flow coupling, the `$u_r$`-`$\omega_r$`
+influence-matrix pass, the predictor / corrector / norm and the stepper
+factory.  They are written once here and parametrized by the flow
+dataclass, whose operators, grids, parity classes and band families all
+stay in the geometry modules.
 
 This module imports **neither** geometry: the type names in the
 signatures below exist only under ``TYPE_CHECKING`` (hence
@@ -120,10 +120,10 @@ and its boundary was crossed by **refinement** at fixed
 see neither; what catches it is a default-vs-legacy comparison at
 the intended `$(\mathrm{Re}, n_r)$`, read digit by digit.  It also
 had nothing to do with the polymer, though it was first found and
-misattributed there: ``viscoelastic-pipe`` reproduced every row,
-including at `$\beta = 1$` where the polymer stress is decoupled
-from the velocity entirely, and raising `$\kappa$` 200x changed
-nothing.
+misattributed on the lab's viscoelastic pipe: that flow reproduced
+every row, including at `$\beta = 1$` where the polymer stress is
+decoupled from the velocity entirely, and raising `$\kappa$` 200x
+changed nothing.
 
 Zeroing the differences instead of lagging them was also tried and
 is *worse* than the lag (non-finite at `$t \approx 0.35$` against
@@ -534,18 +534,18 @@ def kinematic_differences(
     solver-basis *velocity* `$(w_s, w_+, w_-)$`, through the same
     discrete operators :func:`_imm_iteration_vw` evolves them with --
     the spin pair of the vector Laplacian (less `$\nabla_0(\nabla_0
-    \cdot w)$` on the curved pipe) and the parity-reduced `$D_1$` in
+    \cdot w)$` under a flow's metric) and the parity-reduced `$D_1$` in
     `$\omega_\theta = ik_z w_r - D_1 w_s$` -- and zero on the mean
     plane, where the pass packs the mean momentum into those slots
     instead.
 
     The pass *carries* these two across steps rather than re-deriving
-    them, and this is the one place they come from a velocity: a
-    state entering the solver (``to_solver_basis``) and the columns of
-    a forcing kick.  *fourier_* is anything with the ``m``, ``kz``,
-    ``kz2``, ``m_is_even`` and ``mean_mask`` members the geometry's
-    ``Fourier`` has, broadcast against the trailing axes of
-    *velocity* -- the whole mode plane, or a set of mode columns.
+    them, and this is the one place they come from a velocity: a state
+    entering the solver (``to_solver_basis``) and mode columns injected
+    into one (:func:`column_differences`).  *fourier_* is anything with
+    the ``m``, ``kz``, ``kz2``, ``m_is_even`` and ``mean_mask`` members
+    the geometry's ``Fourier`` has, broadcast against the trailing axes
+    of *velocity* -- the whole mode plane, or a set of mode columns.
     """
     m = fourier_.m
     psp = fourier_.m_is_even * 2 - 1  # (-1)^m    (u_z)
@@ -593,8 +593,9 @@ def column_differences(
 ) -> Array:
     """:func:`kinematic_differences` of solver-basis mode columns.
 
-    ``(K, 3, N_r)`` in, ``(K, N_CARRIED, N_r)`` out: a forcing kick's
-    contribution to the carried slots (:mod:`dnsjax_lab.extensions.forcing`).
+    ``(K, 3, N_r)`` in, ``(K, N_CARRIED, N_r)`` out: the carried-slot
+    contribution of mode columns injected into a state (a forcing
+    kick's, say).
     """
     field_ = jnp.moveaxis(columns, 0, -1)[..., None]  # (3, N_r, K, 1)
     diff = kinematic_differences(field_, fourier_, flow_)
@@ -608,7 +609,7 @@ def with_carried(
 
     *state* is a solver-basis state without them -- the velocity
     `$(w_s, w_+, w_-)$`, optionally followed by other evolved
-    components (the viscoelastic conformation) -- and the slots are
+    components (a carried tensor) -- and the slots are
     :func:`kinematic_differences` of its velocity.  The flow modules'
     ``to_solver_basis`` ends here; on the legacy path it is the
     identity.
@@ -993,11 +994,11 @@ def _imm_iteration_vw(
     phi_arb = (phi_arb_pm[:, 0] + phi_arb_pm[:, 1]) / 2
     omega_new = (om_pm[:, 0] + om_pm[:, 1]) / 2
 
-    # The curved pipe's continuity rows below carry an O(kappa)
-    # defect, evaluated on the corrector ITERATE so the fixed point
-    # places it at t^{n+1} (the wall-data record above is why it may
-    # never be lagged across a step).  ``None`` on the straight pipe
-    # removes every dependent term at trace time.
+    # A metric flow's continuity rows below carry a defect
+    # (``flow_.divergence_defect``), evaluated on the corrector ITERATE
+    # so the fixed point places it at t^{n+1} (the wall-data record
+    # above is why it may never be lagged across a step).  ``None`` on
+    # the straight pipe removes every dependent term at trace time.
     defect = flow_.divergence_defect(velocity_j, fourier_)
 
     # Stage 5: exact recovery of u_r.  Lk_op holds L_v,mod here,
@@ -1011,17 +1012,18 @@ def _imm_iteration_vw(
         # L_v,mod was derived by eliminating u_theta through continuity
         # and Phi through the vector Laplacian, so a nonzero straight
         # divergence enters twice: once as grad(div w) (stage 2's
-        # partner) and once through the reconstruction's chi.
-        # Zeroed on the wall row, like every other source reaching
-        # this solve: ``Lk_op`` carries a Dirichlet identity row there,
-        # so whatever the RHS holds *is* `$u_r|_{\mathrm{wall}}$`.  The
-        # defect vanishes at the wall at the fixed point (no-slip makes
-        # the curved constraint read `$h_w(\partial_r w_r)|_w = 0$`),
-        # but the iterate's does not, and leaving it in imposes a
-        # nonzero wall velocity -- measured: the corrector stops
-        # converging above `$\kappa \approx 0.02$`, and diverges
-        # outright at 0.13.  Zeroing it costs nothing at the fixed
-        # point and is what keeps `$u_r|_w = 0$` exact throughout.
+        # partner) and once through the reconstruction's chi.  Zeroed on
+        # the wall row, like every other source reaching this solve:
+        # ``Lk_op`` carries a Dirichlet identity row there, so whatever
+        # the RHS holds *is* `$u_r|_{\mathrm{wall}}$`.  The defect
+        # vanishes at the wall at the fixed point (on the lab's toroidal
+        # pipe, no-slip makes the constraint read
+        # `$h_w(\partial_r w_r)|_w = 0$`), but the iterate's does not,
+        # and leaving it in imposes a nonzero wall velocity -- measured
+        # there: the corrector stops converging above
+        # `$\kappa \approx 0.02$`, and diverges outright at 0.13.
+        # Zeroing it costs nothing at the fixed point and is what keeps
+        # `$u_r|_w = 0$` exact throughout.
         psp = fourier_.m_is_even * 2 - 1
         lv_rhs = lv_rhs + (
             _parity_y_matvec(flow_.D1_pos, flow_.D1_ghost, defect, psp)

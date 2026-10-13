@@ -46,17 +46,15 @@ since that is a statement about *derivatives*.
 :func:`wall_normal_filter` supplies it, weighting the **energy** of
 wall-normal polynomial index `$j$` by `$(1 - s_w)^{j}$`, where `$s_w$`
 is the separate ``wall_smoothness`` argument
-(``init.random_wall_smoothness`` / ``twin.wall_smoothness``); why the
-two are separate knobs: Design notes, "Two knobs, not one".
+(``init.random_wall_smoothness`` for a solver run); why the two are
+separate knobs: Design notes, "Two knobs, not one".
 
-**Two defaults for one law.**  ``init.random_smoothness`` defaults to 0.4: it
-seeds a *laminar* state, where large scales are what trigger transition.  The
-twin partner perturbs a *turbulent* one, and ``twin.smoothness``
-(:class:`dnsjax_lab.twin.driver.TwinParams`) puts it below the minimal flow
-unit instead (the choice of `$\lambda^{*+}$` and its values per flow: the
-:mod:`dnsjax_lab.twin.driver` Design notes, "The smoothness default").
-Neither default is fitted to the `$(y, k)$` shape a turbulent difference
-field settles into (Design notes: "Shape is not growth").
+**One law, several uses.**  ``init.random_smoothness`` defaults to 0.4:
+it seeds a *laminar* state, where large scales are what trigger
+transition.  A caller perturbing a *turbulent* state passes a much
+smaller `$s$`, which puts the perturbation below the minimal flow unit
+instead.  Neither value is fitted to the `$(y, k)$` shape a turbulent
+difference field settles into (Design notes: "Shape is not growth").
 
 **The wall window is scale-dependent** (``random_wall_confinement``,
 the `$a$` of :func:`scaled_wall_window`): a mode's window peaks where
@@ -91,16 +89,15 @@ state to the perturbation.  The building blocks below (the per-mode
 draws, the wall window and filter, the mode normalization and the
 real products) are public for flows that build a state of their own.
 
-**The mean mode** `$(k_x, k_z) = (0, 0)$` is dropped unless the
-caller asks for it -- ``init.random_mean_flow`` for a solver run
-(**off** by default), ``twin.mean_flow`` for the ``dnsjax-twin``
-partner (**on** by default).  Only the Cartesian flows offer the knob
-at all: every other flow defers it, because only there are the
-mean-mode conservation laws established.  When it is on, the generator
-keeps that column and conditions it on those laws
-(:mod:`dnsjax.ic.mean_mode`): the perturbed field drives the flow at
-the same mean pressure gradient (equivalently, stays compatible with
-no-slip at both walls) and, under a held mean
+**The mean mode** `$(k_x, k_z) = (0, 0)$` is dropped unless the caller
+asks for it -- ``init.random_mean_flow`` for a solver run (**off** by
+default), or another entry point's own knob.  Only the Cartesian flows
+offer the knob at all: every other flow defers it, because only there
+are the mean-mode conservation laws established.  When it is on, the
+generator keeps that column and conditions it on those laws
+(:mod:`dnsjax.ic.mean_mode`): the perturbed field drives the flow at the
+same mean pressure gradient (equivalently, stays compatible with no-slip
+at both walls) and, under a held mean
 (``phys.driving = "constant_bulk_velocity"`` /
 ``phys.block_mean_spanwise_velocity``), carries an unchanged bulk
 velocity.  The wall-normal component's mean mode is identically zero by
@@ -124,9 +121,10 @@ truncation-level (projected by the first corrector step).
 **The seed** is the first element of every per-mode key, so the field
 is a function of ``(seed, global mode index)`` alone -- identical at any
 ``(np0, np1)``, *provided every process holds the same seed*.  That is
-the entry points' job: an unset ``init.random_seed`` / ``twin.seed`` is
-drawn once and agreed across processes before any generator here is
-called (:mod:`dnsjax.seeding`, ``bootstrap.resolve_seed``).  Per-rank
+the entry points' job: an unset ``init.random_seed`` (or an entry
+point's own seed) is drawn once and agreed across processes before any
+generator here is called (:mod:`dnsjax.seeding`,
+``bootstrap.resolve_seed``).  Per-rank
 draws would assemble one field out of unrelated streams -- still
 divergence-free, still correctly normalized, and reproducible from no
 recorded seed at all.
@@ -148,7 +146,7 @@ move at all.  In the plane-Poiseuille `$4\pi \times 2\pi$` box,
 ``init.random_smoothness = 0.4`` puts 92 % of a (mean-free, the
 ``init.random_mean_flow`` default) perturbation's energy inside
 `$|k_z| \le 2$`, and every mode beyond `$|k_z| = 36$` more than sixteen decades
-below the peak, while the twin partner's default ``twin.smoothness = 0.022``
+below the peak, while the lab's twin-partner default, `$s = 0.022$`,
 peaks at `$\lambda^+ \approx 50$`.  The wall-normal law must **not** follow
 `$s$` down: lowering `$s_w$` moves the wall-normal profile *away* from the wall
 rather than towards it (the wall window, not the filter, is what sets that
@@ -161,8 +159,8 @@ family has neither a filter nor a wall window: it carries `$|k_y|$` in `$A$`
 and takes `$s$` alone.
 
 **Shape is not growth.**  Neither smoothness default is fitted to the
-`$(y, k)$` shape a turbulent difference field settles into
-(``lab/scripts/random_ic_calibrate.py``), because that shape is not a
+`$(y, k)$` shape a turbulent difference field settles into (scored
+by the lab's ``random_ic_calibrate.py``), because that shape is not a
 growth predictor: at the minimal plane-Couette box of Hamilton, Kim &
 Waleffe (*J. Fluid Mech.* **287**, 317, 1995; `$Re_\tau \approx 34$`)
 the score peaks at `$s \approx 0.15$`, while over 60 advective units
@@ -171,8 +169,8 @@ and 0.09 at 0.04 (two seeds, both) -- a seed placed at
 `$\lambda^{*+} = 218, 69, 17$` in a box whose own span is 128 wall
 units.  An attractor's small-scale content is sustained by transfer
 from larger scales, and energy seeded well below the scales the box can
-sustain goes to `$k^2/Re$` first.  Hence the twin default's margin
-above the grid scale as well as below the minimal unit.
+sustain goes to `$k^2/Re$` first.  Hence a turbulent partner's `$s$`
+keeps a margin above the grid scale as well as below the minimal unit.
 
 **The scale-dependent window, measured.**  ``random_wall_confinement`` improves
 the `$(y, k)$` overlap at both `$Re_\tau = 178.6$` and 34, and at the minimal
@@ -289,8 +287,8 @@ def column_draw(
 ) -> np.ndarray:
     """Independent complex ``(rows, n)`` draw keyed by global ``(i2, i3)``.
 
-    *stream* extends the PRNG key to keep e.g. the viscoelastic
-    conformation draw distinct from the velocity draw.
+    *stream* extends the PRNG key to keep a further field's draw (a
+    flow's own components) distinct from the velocity draw.
     """
     rng = np.random.default_rng((seed, i2, i3, *stream))
     return rng.standard_normal((rows, n)) + 1j * rng.standard_normal((rows, n))
@@ -308,11 +306,11 @@ def hermitian_column(
     communication), and the unpaired mode (odd ``n2``) zeroed.
 
     Every component built here -- Cartesian `$(u_x, u_y, u_z)$`,
-    cylindrical / annular `$(u_z, u_r, u_\theta)$`, and the physical
-    conformation tensor -- is the transform of a real field, so each
-    row is made Hermitian individually.  (ICs are built in physical
-    components throughout; ``__main__`` converts the finished state
-    into the solver basis once.)
+    cylindrical / annular `$(u_z, u_r, u_\theta)$`, and any further
+    physical component a flow draws -- is the transform of a real
+    field, so each row is made Hermitian individually.  (ICs are built
+    in physical components throughout; ``__main__`` converts the
+    finished state into the solver basis once.)
     """
     n_pos = n2 // 2
     if i2 == 0:
@@ -1020,10 +1018,9 @@ def generate_random_state(
     the perturbation for a base-flow system, the laminar state plus the
     perturbation for a total-field one.
 
-    *mean_flow* (``init.random_mean_flow`` for the solver,
-    ``twin.mean_flow`` for the twin partner) reaches only the Cartesian
-    generator: every other flow defers the knob, so its mean mode is
-    zeroed unconditionally (module docstring).
+    *mean_flow* (``init.random_mean_flow`` for the solver) reaches
+    only the Cartesian generator: every other flow defers the knob, so
+    its mean mode is zeroed unconditionally (module docstring).
 
     *wall_smoothness* and *wall_confinement* reach only the wall-bounded
     generators, and their surfaces are the only ones offering them

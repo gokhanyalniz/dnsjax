@@ -10,6 +10,6 @@ JAX is configured, see their module docstrings):
   ("turbulent spot") IC generators (``init.localized_rolls``).
 - :mod:`dnsjax.ic.mean_mode` -- the conservation laws a perturbation
   of the ``(k_x, k_z) = (0, 0)`` mode must respect (Cartesian flows),
-  shared by the random IC, the twin partner and
-  ``scripts/snapshot_perturb.py``.
+  shared by every builder of such a perturbation (the random IC,
+  ``scripts/snapshot_perturb.py``).
 """

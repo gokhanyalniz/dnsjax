@@ -184,10 +184,10 @@ change rescales `$k = 2\pi q / L$` for the survivors too.
 
 The on-disk format is ``format_version: 6``: the solver's native
 spectral layout, physical components in every family
-(cylindrical/annular `$u_r$`, `$u_\theta$` and the physical
-conformation tensor; the solver's decoupled `$u_\pm$` / spin working
-basis is converted by the caller, so these functions stay
-basis-agnostic), and the public-named parameter dump.  Older
+(cylindrical/annular `$u_r$`, `$u_\theta$`, and any further component
+a flow stores; the solver's decoupled `$u_\pm$` / spin working basis
+is converted by the caller, so these functions stay basis-agnostic),
+and the public-named parameter dump.  Older
 snapshots are rejected at read
 (:func:`dnsjax.snapshot_meta.read_snapshot_meta`), never translated.
 
@@ -697,8 +697,8 @@ def apply_wall_normal_regrid(
     velocity (the first three components) is reset to zero: a
     downsampling is a projection and does not reproduce the wall
     values exactly, and an upsampling's wall rows are only zero to
-    rounding.  Nothing else is touched -- the conformation tensor has
-    no Dirichlet wall condition, nor has a pressure.
+    rounding.  Nothing else is touched -- a further stored component
+    has no Dirichlet wall condition, nor has a pressure.
 
     Pure and traceable: :mod:`dnsjax.lowres` runs it inside ``jit``
     with every array an argument, the resume regrid eagerly.
@@ -875,9 +875,9 @@ def _replicated_to_io_layout_core(array: Array) -> Array:
 def replicated_to_io_layout(array: Array) -> Array:
     r"""Place a replicated ``(C, A, ...)`` array on the I/O layout.
 
-    For an array every device already holds whole -- the twin's 3-D
-    cubes, which a ``psum`` leaves replicated (:mod:`dnsjax_lab.twin.cubes`)
-    -- the I/O layout is a local slice, not an exchange: each device
+    For an array every device already holds whole -- a reduction a
+    ``psum`` leaves replicated, such as a 3-D spectrum -- the I/O
+    layout is a local slice, not an exchange: each device
     keeps its slab of the leading axis, padded to a multiple of the
     device count exactly as for a state (:func:`_a_local`), and
     :func:`write_archive` writes it like any state slab.
@@ -926,7 +926,7 @@ def _n_components() -> int:
     """Number of stacked state components for the current system.
 
     The flow spec's ``n_components`` (3 velocity components unless
-    the flow carries more, e.g. the 9-component viscoelastic state).
+    the flow carries more).
     ``validate_snapshot_params`` enforces the ``phys.system`` match,
     so a resumed snapshot's component count always equals this -- the
     single source of truth for both save and load.
@@ -1073,8 +1073,8 @@ def _create_store(
                     "configuration": {"endian": "little"},
                 },
             ],
-            # A complex fill value is a [re, im] pair; the twin's
-            # real cubes take a scalar.
+            # A complex fill value is a [re, im] pair; a real array
+            # takes a scalar.
             "fill_value": [0, 0] if dtype.startswith("complex") else 0.0,
         },
     }
@@ -1205,13 +1205,12 @@ def _metadata(
     (provenance only -- never read back on load).  Additive keys like
     it need no ``format_version`` bump: readers use targeted lookups
     and ignore unknown keys.  Format 6 stores physical components
-    (cylindrical/annular `$u_r$`, `$u_\theta$`, the physical
-    conformation tensor) in the solver's native spectral layout, so
+    (cylindrical/annular `$u_r$`, `$u_\theta$`, and any further
+    stored component) in the solver's native spectral layout, so
     ``native_shape[1:]`` **is** the on-disk per-component chunk
     shape; ``params`` is the flow-relevant, **public-named**,
-    resolved dump plus the relevant extension sections (e.g.
-    ``force``, ``probes``;
-    :func:`dnsjax.param_surface.recorded_params_dump`), mapped back
+    resolved dump plus the relevant extension sections
+    (:func:`dnsjax.param_surface.recorded_params_dump`), mapped back
     by readers via :func:`dnsjax.flows.registry.internalize_stored` /
     ``stored_value``.  Pre-6 snapshots are rejected at
     :func:`dnsjax.snapshot_meta.read_snapshot_meta`.  *carried* names
@@ -1563,8 +1562,8 @@ def write_archive(
     r"""Write one dnsjax tar and commit it under *path*.
 
     The container every snapshot, reduced-resolution snapshot
-    (:mod:`dnsjax.lowres`) and twin cube (:mod:`dnsjax_lab.twin.cubes`) is
-    written in, so all of them share one I/O path: process 0 lays out
+    (:mod:`dnsjax.lowres`) and other array output is written in, so all
+    of them share one I/O path: process 0 lays out
     the archive under a ``.partial`` name, every device writes its
     disjoint byte ranges, and the rename commits it (module
     docstring).
@@ -1649,7 +1648,7 @@ def save_snapshot(
     r"""Save the spectral state to a single-file snapshot.
 
     The field is streamed to the per-component zarr3 chunks (one per
-    state component: 3, or 9 for the viscoelastic tensor state) inside
+    state component: 3, or the flow's ``n_components``) inside
     one uncompressed tar, in the solver's native spectral layout at
     true (unpadded) mode counts -- no transpose anywhere.  Process 0
     lays out the whole archive first; every device then writes its
@@ -1670,9 +1669,8 @@ def save_snapshot(
         Spectral state, shape ``(n_components, *spec_shape)``, complex
         dtype: the perturbation velocity for the base-flow systems,
         the **total** field for the force-driven ones
-        (``FlowSpec.total_field``: the curved pipe, dean and the two
-        viscoelastic systems, the latter 9 components -- velocity +
-        physical conformation components).
+        (``FlowSpec.total_field``), with any further component a flow
+        carries after the velocity (``FlowSpec.n_components``).
     t:
         Current simulation time.
     it:

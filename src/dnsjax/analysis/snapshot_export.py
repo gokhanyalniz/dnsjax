@@ -97,10 +97,9 @@ def read_state(
         Which components to read from disk (default the 3 velocity
         components).  Order is preserved and duplicates removed; each
         component reads exactly its own stored chunk (the stored
-        components are the physical components).  The **viscoelastic**
-        systems expose 9 components (velocity ``0..2`` plus the
-        physical conformation tensor ``c_zz, c_rz, c_θz, c_rr, c_θθ,
-        c_rθ`` = ``3..8``).
+        components are the physical components).  A flow storing more
+        than the velocity exposes its further components after it
+        (``FlowSpec.components`` names them).
     wall_normal_points:
         Optional list/array of wall-normal coordinate *values*.  The
         nearest unique grid points are selected (de-duplicated, sorted)
@@ -168,9 +167,10 @@ def read_pressure(
     state under ``lowres.pressure`` (plane Couette and plane
     Poiseuille): the periodic static pressure perturbation `$p'$` -- the
     mean pressure gradient is the driving, in ``stats.dat`` -- with the
-    `$(0, 0)$` mode's gauge set to zero at the upper wall, or the
-    difference `$\Delta p$` in a twin run's ``lowres_delta/`` file.  The
-    snapshot's metadata ``pressure`` entry says which.
+    `$(0, 0)$` mode's gauge set to zero at the upper wall, or a
+    pressure another writer stores in the same container (a difference
+    `$\Delta p$`).  The snapshot's metadata ``pressure`` entry says
+    which.
 
     Same arguments and same :class:`StateData` as :func:`read_state`,
     with the one scalar as the only component (``physical == (p,)``).

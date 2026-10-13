@@ -90,13 +90,10 @@ is identically zero -- but its DC bins are round-off rather than zero,
 so they are zeroed too.  Removing a roll factor's mean cannot disturb the
 discrete divergence: on the affected `$k = 0$` plane the component's own
 divergence contribution is `$\mathrm{i}\,0\,u = 0$` and its partner is
-already identically zero there.  The curved pipe is the one exception,
-because continuity is not straight there: it keeps the mean-free roll factors,
-so `$u_s$`, `$h u_r$` and `$h u_\theta$` stay mean-free, but the division by
-`$h$` gives `$u_\theta$` an `$O(\kappa)$` mean that continuity on the
-`$m = \pm 1$` modes needs (:func:`generate_curved_pipe_rolls`); `$u_s$` alone
-carries the flux and the wall shear, so neither moves.  Guard:
-``tests/test_localized_rolls.py``.
+already identically zero there.  A flow whose continuity is not
+straight (a metric geometry) maps these factors through its own
+``init_localized_rolls`` hook, and keeps whatever mean its continuity
+needs.  Guard: ``tests/test_localized_rolls.py``.
 
 **Separable, sharded construction (no replication).** Each component is
 an outer product `$(\text{wall-normal profile}) \otimes (\text{complex-}
@@ -285,8 +282,8 @@ def peak_velocity(
     one **lab-frame** velocity component (`$u_x, u_y, u_z$` Cartesian;
     `$u_z, u_r, u_\theta$` cyl/annular).  The component physical field is
     their outer product, times *weight* when given: a
-    ``(Ny, n_c)`` factor shared by every component (the curved pipe's
-    `$1/h$`).  So
+    ``(Ny, n_c)`` factor shared by every component (a metric's
+    `$1/h$`, say).  So
     `$\max|\mathbf{u}'| = \sqrt{\max_{\mathbf{x}} \sum_c u_c^2}$` is a
     tiny host-numpy reduction over the ``(Ny, n_c, n_r)`` grid (no JAX,
     no replication).  The wall-normal padding rows are absent from these
@@ -514,13 +511,13 @@ def pipe_rolls(
     return state, [(p_r, sin_m, x_sig), (p_theta, cos_m, x_sig)], rs_np
 
 
-# ── Annular (Taylor-Couette / Dean) rolls ────────────────────────
+# ── Annular rolls ────────────────────────────────────────────────
 
 
 def generate_annular_rolls(
     amplitude: float, width: float, wavelength: float
 ) -> Array:
-    r"""Localized-spot rolls for Taylor-Couette / Dean flow.
+    r"""Localized-spot rolls for the annular flows.
 
     Components `$(u_z, u_r, u_\theta)$`, axes `$[r, m, k_z]$`.  The
     streamwise/spanwise roles **swap** versus pipe: streamwise azimuthal

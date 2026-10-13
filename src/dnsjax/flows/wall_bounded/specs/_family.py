@@ -105,8 +105,7 @@ def cartesian_fields() -> tuple[FieldSpec, ...]:
         # flows have their (0, 0) conservation laws established
         # (:mod:`dnsjax.ic.mean_mode`).  Opt-in at the model default
         # (off), so every wall-bounded flow behaves the same out of the
-        # box; ``dnsjax-twin`` defaults it on through its own
-        # ``twin.mean_flow`` (:class:`dnsjax_lab.twin.driver.TwinParams`).
+        # box.
         FieldSpec("init", "random_mean_flow"),
         FieldSpec("lowres", "nx"),
         FieldSpec("lowres", "ny"),
@@ -127,8 +126,8 @@ def cyl_annular_fields(axial_default: Any = UNSET) -> tuple[FieldSpec, ...]:
     ``ntheta`` (azimuthal modes, internally ``res.nz``) -- while the
     code keeps its internal layout.  The azimuthal *extent* is not a
     free length: it is the wedge ``2*pi/m0`` (internal ``geo.lz``,
-    derived).  ``axial_default`` overrides the axial-period default
-    (the viscoelastic annulus defaults to ``2*pi``).
+    derived).  ``axial_default`` overrides the axial-period default,
+    for a flow whose natural period differs.
     """
     return (
         FieldSpec(
