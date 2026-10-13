@@ -1,0 +1,96 @@
+name: Release
+
+# Inert until a maintainer acts: pushing a v* tag publishes to PyPI and
+# drafts the GitHub release; running the workflow by hand rehearses on
+# TestPyPI.  Both go through trusted publishing, each behind its
+# environment's required reviewer.  Publishing the draft release is the
+# separate, manual step that has Zenodo archive it.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: build, check and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ github.event_name == 'push' && 'pypi' || 'testpypi' }}
+    permissions:
+      contents: write # the draft release
+      id-token: write # trusted publishing
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+
+      - name: The tag, pyproject.toml and CITATION.cff name one version
+        if: github.event_name == 'push'
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME#v}"
+          project=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          cff=$(sed -n 's/^version: *//p' CITATION.cff)
+          echo "tag ${tag}, pyproject.toml ${project}, CITATION.cff ${cff}"
+          [ "$tag" = "$project" ] && [ "$tag" = "$cff" ]
+
+      - run: uv build --package dnsjax --out-dir dist
+
+      - name: The sdist and the wheel hold no lab code
+        run: |
+          set -eu
+          ls dist
+          if tar -tzf dist/dnsjax-*.tar.gz | grep -E '(^|/)(lab|dnsjax_lab)(/|$)'; then
+            echo "the sdist carries lab files"
+            exit 1
+          fi
+          if python3 -m zipfile -l dist/dnsjax-*.whl | grep dnsjax_lab; then
+            echo "the wheel carries lab files"
+            exit 1
+          fi
+
+      # What Zenodo will archive: GitHub's zipball of the tag, which
+      # honours the .gitattributes export-ignore of lab/.
+      - name: The tag's zipball holds no lab code
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          curl -sSfL -H "Authorization: Bearer ${GH_TOKEN}" \
+            -o zipball.zip \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/zipball/${GITHUB_REF_NAME}"
+          if python3 -m zipfile -l zipball.zip | grep -E '/lab/'; then
+            echo "the release zipball carries lab/"
+            exit 1
+          fi
+
+      - name: The wheel alone installs and runs
+        run: |
+          set -eu
+          uv venv --python 3.12 /tmp/core
+          uv pip install --python /tmp/core/bin/python dist/dnsjax-*.whl
+          /tmp/core/bin/dnsjax --help > /dev/null
+          /tmp/core/bin/dnsjax --sample-toml pipe > /dev/null
+
+      - name: Publish to TestPyPI (rehearsal)
+        if: github.event_name == 'workflow_dispatch'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: github.event_name == 'push'
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Draft the GitHub release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* --draft \
+            --verify-tag --generate-notes \
+            --title "dnsjax ${GITHUB_REF_NAME}"
