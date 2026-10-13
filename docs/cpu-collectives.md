@@ -45,6 +45,31 @@ SIP stripping that variable from spawned processes — so set
 `MPITRAMPOLINE_LIB` explicitly there, and expect to find out whether the
 macOS wheel carries the MPI collectives at all, which is untested.
 
+## A distribution's Python
+
+Some interpreter builds abort a multi-process run inside `MPI_Init`,
+with `free(): invalid pointer` from Open MPI's `opal_setenv`: Ubuntu
+24.04's own `python3.12` with its Open MPI 4.1.6 does. Such a binary
+holds its own copy of the C library's `environ` (a copy relocation),
+and MPItrampoline opens the MPI wrapper deep-bound (`RTLD_DEEPBIND`),
+so Open MPI ends up reading two different environment arrays and frees
+a string it does not own. This shows which kind an interpreter is:
+
+```bash
+readelf -r "$(command -v python3)" | grep environ
+```
+
+`R_X86_64_COPY` is the affected kind; the interpreters uv manages read
+`environ` through the global offset table instead and are unaffected,
+as is every `gloo` run. Three ways round it:
+
+- an interpreter uv manages: `uv python install 3.12`, which uv then
+  prefers to the system's;
+- `JAX_CPU_COLLECTIVES_IMPLEMENTATION=gloo`;
+- Open MPI loaded before the interpreter starts, which leaves one
+  environment: `LD_PRELOAD=<path to>/libmpi.so.40`, exported to every
+  rank (`mpirun -x LD_PRELOAD ...`).
+
 ## Why the ordering matters
 
 All of this works because nothing in a `dnsjax` run touches MPI before
