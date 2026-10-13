@@ -388,7 +388,7 @@ def smoothing_kernel(window: ndarray, wn_filter: ndarray) -> ndarray:
 
     *window* is the wall window applied to a tangential component
     (`$1 - y^2$`) and *wn_filter* the wall-normal smoothness filter
-    `$F$` (``random_field._wall_normal_filter``), so that the generated
+    `$F$` (``random_field.wall_normal_filter``), so that the generated
     profile is `$\delta = \mathrm{diag}(\text{window})\,F z$` with
     `$z \sim N(0, I)$`.  A relative floor :data:`_KERNEL_FLOOR` is
     added to the filter's spectrum before the window is applied.

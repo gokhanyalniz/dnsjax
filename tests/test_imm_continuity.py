@@ -98,7 +98,7 @@ PIPE_STEPS = 10
 # to deliver.
 #
 # The legacy numbers depend on the IC's wall-normal smoothness:
-# ``random_field._wall_normal_filter`` keeps grid-white Nyquist
+# ``random_field.wall_normal_filter`` keeps grid-white Nyquist
 # content out of the boundary term's `$D_1[1,0] \sim N_y^2$`
 # amplification (without it they are 2-3 orders larger and *grow* as
 # `$N_y^2$`).  The :mod:`dnsjax.parameters` Design notes ("Consistent
