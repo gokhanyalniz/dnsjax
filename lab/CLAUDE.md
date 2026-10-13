@@ -108,3 +108,5 @@ fixed on purpose.
   `strip`, the same `pyproject.toml` edit for CI. Never push its tag.
 - `release/pypi_readme.py`: write `docs/pypi/README.md` from the root
   `README.md` (`--check`, in CI's lint job).
+- `release/ci_job.py`: run one CI workflow job's steps locally in a
+  throwaway clone (`core-only`: a release's checks; `--with pyyaml`).
