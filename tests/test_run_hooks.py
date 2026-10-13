@@ -17,7 +17,10 @@ random IC, a snapshot every two):
    ``finish`` once, after them, on the final ``it``; and a flush (the
    final snapshot's, then shutdown's) after it, ending the log.
 2. **inert**: a configured section whose ``modify`` returns its input
-   leaves ``stats.dat`` byte-identical to a run without it.
+   leaves ``stats.dat`` byte-identical to a run without it; that
+   stream also goes through the core's own reader
+   (:func:`dnsjax.analysis.read_dat`): the header's names, one value
+   per row for each, ``t`` increasing.
 3. **modify**: halving the state at ``it = 2`` leaves the snapshot of
    ``it = 2`` and the ``stats.dat`` rows up to it unchanged -- every
    saved state precedes a modification -- and changes every row after.
@@ -177,6 +180,7 @@ def run_checks(timeout: float) -> list[tuple[str, str | None]]:
             results.append(
                 ("inert", None if same else "stats.dat changed by the hooks")
             )
+            results.append(("read_dat", _check_read_dat(plain / "stats.dat")))
 
         scaled = tmp / "modify"
         res = _run(
@@ -226,6 +230,22 @@ def run_checks(timeout: float) -> list[tuple[str, str | None]]:
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return results
+
+
+def _check_read_dat(path: Path) -> str | None:
+    """The core's ``.dat`` reader on a stream the solver wrote."""
+    from dnsjax.analysis import read_dat
+
+    names = path.read_text().splitlines()[0].lstrip("#").split()
+    rows = np.loadtxt(path, ndmin=2)
+    cols = read_dat(path)
+    if list(cols) != names:
+        return f"read_dat names {list(cols)}, the header says {names}"
+    if any(c.shape != (rows.shape[0],) for c in cols.values()):
+        return f"read_dat shapes {[c.shape for c in cols.values()]}"
+    if rows.shape[0] < 2 or not np.all(np.diff(cols["t"]) > 0):
+        return f"read_dat t is {cols['t']}"
+    return None
 
 
 def _meta_it(path: Path) -> int:

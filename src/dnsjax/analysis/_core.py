@@ -382,7 +382,10 @@ def read_dat(path: str | Path) -> dict[str, ndarray]:
     written (including the duplicate a resume leaves at its seam);
     shape ``(n_rows,)`` per column.  The names come off the header line
     with its ``#`` stripped; the rows need no ``skiprows`` because
-    :func:`numpy.loadtxt` drops that line as a comment.
+    :func:`numpy.loadtxt` drops that line as a comment.  Values carry
+    the ``outs.stats_precision`` significant digits the solver wrote,
+    so ``t`` is never a key to align rows across streams on: count
+    steps instead.
     """
     path = Path(path)
     with open(path) as fh:
