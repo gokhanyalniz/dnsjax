@@ -24,6 +24,9 @@ commit).  Writes into *OUT*:
   the HLO fingerprints and the analysis views.
 
 The runs are CPU-only and small (about 12 minutes at ``--jobs 4``).
+``--only REGEX`` keeps the texts and runs whose names it matches; a
+resume, stream or twin run reads its parent run's final snapshot, so
+select the parent too, or ``--merge`` into a capture that holds it.
 Three exit nonzero by design: the curved pipe refuses ``cnab2`` (both
 its runs), and its regridding resume stops on a corrector failure at
 this resolution; a refactor keeps those exits as they are.  The run
