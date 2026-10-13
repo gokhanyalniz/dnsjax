@@ -36,6 +36,7 @@ Covers :mod:`dnsjax.seeding` and the resolution point that uses it
    failure this catches (per-rank draws) is silent otherwise: the
    field stays divergence-free and correctly normalized, and the
    snapshot records rank 0's seed for a trajectory no seed reproduces.
+
 Run as a script::
 
     uv run python tests/test_seeding.py             # units + CLI runs
@@ -438,9 +439,6 @@ def run_multiprocess_agreement(timeout: float) -> str | None:
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return None
-
-
-# ── 7. Twin adopt-or-draw ────────────────────────────────────────────
 
 
 # ── Runner ───────────────────────────────────────────────────────────

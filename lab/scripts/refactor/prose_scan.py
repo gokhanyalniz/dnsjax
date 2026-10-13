@@ -36,7 +36,8 @@ REPO = Path(__file__).resolve().parents[3]
 PATTERN = (
     r"curved|toroid|viscoelast|sptt|\bptt\b|conformation|polymer|rheolog|"
     r"weissenberg|keplerian|r_omega|\bdean\b|twin|\bprobes?\b|"
-    r"\[force\]|force\.|forcing\b|dnsjax_lab|analysis\.response|"
+    r"\[force\]|force\.|``force``|force_params|forcing\b|dnsjax_lab|"
+    r"analysis\.response|"
     r"response/|\bkick|\blab\b"
 )
 
