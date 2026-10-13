@@ -36,14 +36,15 @@ The registry lists such flows after the core's within each geometry,
 and refuses a system name registered twice. The repository's lab
 package ([`lab/`](../lab/README.md)) registers its five flows this way.
 
-That is the count for a flow that reuses an existing geometry. A flow
-that brings its own *metric* adds a geometry module as well: on the
-cylindrical geometry it overrides `CylindricalFlow`'s metric hooks
-(no-ops on the straight pipe), and its spec names the metric's analysis
-counterpart (`analysis_metric`) and, where they differ, its component
-and axis names (`components`, `axis_names`). The lab's toroidal pipe is
-the worked example, and its `cylindrical_curved.py` docstring is
-written to be read as one.
+That is the count for a flow that reuses an existing geometry, and
+every flow runs on one of the four geometries. A flow that brings its
+own *metric* adds a geometry module as well: on the cylindrical
+geometry it overrides `CylindricalFlow`'s metric hooks (no-ops on the
+straight pipe), and its spec names the metric's analysis counterpart
+(`analysis_metric`) and, where they differ, its component and axis
+names (`components`, `axis_names`). The lab's toroidal pipe is the
+worked example, and its `cylindrical_curved.py` docstring is written to
+be read as one.
 
 A spec declares which shared parameter fields apply to the flow, the
 public names of any aliased ones (`nr` for the internal `res.ny`, and
