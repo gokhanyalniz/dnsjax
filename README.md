@@ -282,7 +282,7 @@ flow by `dnsjax --help <system>` and `dnsjax --sample-toml <system>`.
 
 ## Testing
 
-39 standalone scripts under `tests/`, run directly
+41 standalone scripts under `tests/`, run directly
 (`uv run python tests/test_cartesian.py`) or through a pytest bridge that
 shells each one out as a subprocess. They pin the solvers and operators
 against independent constructions; the physics (laminar fixed points at
