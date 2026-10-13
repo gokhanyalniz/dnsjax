@@ -71,9 +71,17 @@ jobs:
             exit 1
           fi
 
+      - name: The sdist holds the archive's files, the archive adds uv.lock
+        run: |
+          set -eu
+          git archive -o "$RUNNER_TEMP/archive.tar" HEAD
+          uv run --no-project python lab/scripts/release/prepare_release.py \
+            files dist/dnsjax-*.tar.gz "$RUNNER_TEMP/archive.tar"
+
       # What Zenodo will archive: GitHub's zipball of the tag, which
-      # honours the .gitattributes export-ignore of lab/, the CLAUDE.md
-      # notes and .claude/.  It must install with its own uv.lock.
+      # honours the .gitattributes export-ignore of lab/, the agent
+      # notes and the development configuration: the sdist's files and
+      # uv.lock.  It must install with that uv.lock.
       - name: The tag's zipball holds no lab or agent files, and installs
         if: github.event_name == 'push'
         env:
@@ -87,6 +95,8 @@ jobs:
             echo "the release zipball carries lab or agent files"
             exit 1
           fi
+          uv run --no-project python lab/scripts/release/prepare_release.py \
+            files dist/dnsjax-*.tar.gz zipball.zip
           mkdir zipball && python3 -m zipfile -e zipball.zip zipball
           cd zipball/*/
           uv sync --locked
