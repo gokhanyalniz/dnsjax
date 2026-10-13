@@ -424,12 +424,10 @@ def _check_straight(_kappa: float, out: str = "", system: str = "") -> str:
     _configure(0.0, system=system)
     import importlib
 
+    from dnsjax.flows.registry import spec_for
     from dnsjax.ic.random_field import generate_random_state
 
-    mod = importlib.import_module(
-        "dnsjax.flows.wall_bounded."
-        + ("pipe" if system == "pipe" else "curved_pipe")
-    )
+    mod = importlib.import_module(spec_for(system).flow_module)
     state = generate_random_state(0.15, 0.4, 0.4, 0.14, 7)
     s, err, nc = _steps(mod, mod.to_solver_basis(state), 5)
     total = np.asarray(mod.from_solver_basis(s))
