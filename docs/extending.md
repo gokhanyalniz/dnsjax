@@ -63,7 +63,9 @@ Specs import nothing heavier than the standard library: no pydantic,
 no JAX, and never the parameter module itself, whose live objects the
 hooks receive as arguments. That is what lets `--help` render and a
 TOML validate without configuring JAX, and what keeps the import graph
-acyclic.
+acyclic. A flow module, by contrast, builds on the geometry modules'
+internals, as the core flows do, and before 1.0 those may change
+between releases.
 
 ## Parameter fields
 
