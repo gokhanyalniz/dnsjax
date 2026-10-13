@@ -33,8 +33,8 @@ Tests cover:
 8. ``to_solver_basis``/``from_solver_basis`` round-trip: the
    physical/solver component-basis boundary crossed once per state
    (``__main__``), where an inversion error would be silent.
-8b. A ``[force]`` kick's contribution to the carried spin-quad
-    differences, built column by column by the forcer, equals the
+8b. ``column_differences`` of single mode columns -- a kick's
+    contribution to the carried spin-quad differences -- equals the
     field map's at the same modes.
 9. Composite integration weights on the radial CGL grid.
 10. ``interpolate_to_axis``: polynomial exactness, parity paths,
@@ -893,23 +893,25 @@ def test_pm_basis_round_trip() -> None:
     )
 
 
-def test_kick_carried_contribution_matches_the_field_map() -> None:
-    r"""A kick moves the carried differences as the field map does.
+def test_column_differences_match_the_field_map() -> None:
+    r"""Single mode columns move the carried differences as the field does.
 
-    A ``[force]`` kick adds velocity columns to a pipe state, so it must
-    add their share of the two carried spin-quad differences as well,
-    which the forcer builds column by column
-    (``StochasticForcer._carried_kick``: ``column_differences`` over
-    ``ModeColumns`` holding each column's `$m$` and `$k_z$`).  The map
-    is linear, so per column it must equal
-    :func:`kinematic_differences` of the whole field at that mode --
-    a check on the forcer's own wavenumber arithmetic too.
+    Anything that adds velocity columns to a pipe state (a forcing kick)
+    must add their share of the two carried spin-quad differences as
+    well: :func:`column_differences` over ``ModeColumns`` holding each
+    column's `$m$` and `$k_z$`.  The map is linear, so per column it
+    must equal :func:`kinematic_differences` of the whole field at that
+    mode.
     """
-    from dnsjax_lab.extensions.forcing import StochasticForcer
+    from jax.sharding import NamedSharding
+    from jax.sharding import PartitionSpec as P
 
     from dnsjax.geometries.wall_bounded._cylindrical_stepping import (
+        ModeColumns,
+        column_differences,
         kinematic_differences,
     )
+    from dnsjax.harmonics import complex_harmonics, real_harmonics
 
     Nm = params.res.nz - 1
     Nkz = params.res.nx // 2
@@ -921,9 +923,25 @@ def test_kick_carried_contribution_matches_the_field_map() -> None:
     )
     whole = np.asarray(kinematic_differences(field, fourier, pipe_flow))
     pairs = [(1, 0), (2, 1), (0, 1), (Nm - 1, 1)]
-    carried_fn, carry_args = StochasticForcer._carried_kick(None, pairs, True)
+    q2 = complex_harmonics(params.res.nz) * params.geo.m0
+    q3 = real_harmonics(params.res.nx)
+    m = np.array([float(q2[i2]) for i2, _ in pairs])
+    kz = np.array([2.0 * np.pi * q3[i3] / params.geo.lx for _, i3 in pairs])
+    rep = NamedSharding(sharding.mesh, P(None, None, None))
+
+    def put(a: np.ndarray, dtype):
+        return sharding.distribute(a.reshape(1, -1, 1).astype(dtype), rep)
+
+    ftype = sharding.float_type
+    columns = ModeColumns(
+        m=put(m, ftype),
+        kz=put(kz, ftype),
+        kz2=put(kz**2, ftype),
+        m_is_even=put((np.mod(m, 2) == 0).astype(float), ftype),
+        mean_mask=put(np.zeros_like(m, dtype=bool), bool),
+    )
     cols = jnp.stack([field[:, :, i2, i3] for i2, i3 in pairs])
-    got = np.asarray(carried_fn(cols, *carry_args))
+    got = np.asarray(column_differences(cols, columns, pipe_flow))
     for k, (i2, i3) in enumerate(pairs):
         assert_allclose(
             got[k],

@@ -7,11 +7,11 @@ coordinate tuples, component and wall-normal subsetting, and
 object-like params/stats access) plus the field operators: the
 public ``derivative``/``gradient`` wrappers (axis wiring, ``ik``
 scaling, plain ``D1``, the pipe parity requirement), ``curl`` and
-``divergence`` against the solver's own operators node-for-node, the
-**viscoelastic** conformation read-back (components 3..8) against the
-solver's stored physical tensor slice, and ``integrate`` -- all
-**without importing JAX in the test process**, so the import-time
-JAX-free guarantee is asserted directly.
+``divergence`` against the solver's own operators node-for-node, and
+``integrate`` -- all **without importing JAX in the test process**, so
+the import-time JAX-free guarantee is asserted directly.  The machinery:
+``tests/_snapshot_export.py``; the lab's flows have cases of their own,
+``lab/tests/test_snapshot_export.py``.
 
 Fixtures are generated in JAX subprocesses (forced CPU devices, one per
 flow system, no MPI), mirroring ``tests/test_localized_rolls.py``: each
@@ -25,16 +25,6 @@ The pipe is generated twice, at azimuthal wedges ``m0 = 1`` and
 azimuthal wavenumber ``m = m0 * h``, which for every *odd* ``m0``
 (the full circle included) agrees with the harmonic index ``h`` -- so
 only an even wedge can catch a selector keyed on ``h``.
-
-The curved pipe is the row with a metric, `$h = 1 + \kappa r\cos\theta$`.
-Its references are the solver's own metric-weighted quantities with
-the weight divided out as ``get_stats`` does: the curl of the carried
-`$(h u_s, u_r, u_\theta)$`, and the continuity row
-`$h^2\nabla\cdot\mathbf{u}$` its corrector drives to zero.  They
-agree to roundoff because the fixture runs on the default
-``phys.curvature_padding`` grid; on the 3/2 rule alone the solver's
-collocation of `$1/h$` would show at about `$10^{-9}$` here.  Its
-``integrate`` checks pin where `$h$` enters the volume element.
 
 ``div_true.npy`` does the same for ``divergence``, with one wrinkle:
 operator *equality* is invisible on a solenoidal field, so the ground
@@ -53,556 +43,67 @@ Run directly::
 
 from __future__ import annotations
 
-import argparse
-import os
-import subprocess
 import sys
-import tempfile
-from pathlib import Path
 
-import numpy as np
+from _snapshot_export import main, solver_divergence
 
-sys.stdout.reconfigure(line_buffering=True)
 
-NX, NY, NZ = 8, 24, 8
-LX, LZ = 5.0, 5.0
-RE = 100.0
-#: Curved-pipe curvature: the straight-pipe forms miss it by 3-5e-2 in
-#: the curl and divergence checks below.
-KAPPA = 0.1
+def _cartesian(state, probe, outdir):
+    from dnsjax.flows.wall_bounded.plane_couette import flow, get_stats
+    from dnsjax.geometries.wall_bounded.cartesian import _curl_fn, fourier
 
-# (system, family, m0); families exercise both basis paths + parity
-# (pipe) + the 9-component conformation schema (both viscoelastic
-# geometries).
-#
-# The pipe runs twice.  The axis parity class is set by the *physical*
-# azimuthal wavenumber ``m = m0 * h``, so the full circle (m0 = 1)
-# cannot tell that selector apart from one keyed on the harmonic index
-# ``h`` alone -- the two agree for every odd m0.  The ``m0 = 2`` wedge
-# separates them.  ``viscoelastic-pipe`` runs at that wedge for the
-# same reason *and* carries 9 components, so it is the row where the
-# analysis package's tensor parity classes must be right.
-# ``curved-pipe`` is the one row with a metric (no wedge: curvature
-# breaks the symmetry).
-SYSTEMS = [
-    ("plane-couette", "cartesian", 1),
-    ("pipe", "cylindrical", 1),
-    ("pipe", "cylindrical", 2),
-    ("viscoelastic-pipe", "cylindrical", 2),
-    ("curved-pipe", "cylindrical", 1),
-    ("taylor-couette", "annular", 1),
-    ("viscoelastic-dean", "annular", 1),
-    ("kolmogorov", "triply_periodic", 1),
+    omega = _curl_fn(state, fourier, flow)
+    return get_stats, omega, solver_divergence(probe, flow, fourier)
+
+
+def _pipe(state, probe, outdir):
+    from dnsjax.flows.wall_bounded.pipe import flow, get_stats, to_solver_basis
+    from dnsjax.geometries.wall_bounded.cylindrical import _curl_fn, fourier
+
+    omega = _curl_fn(state, fourier, flow)
+    div = solver_divergence(to_solver_basis(probe), flow, fourier)
+    return get_stats, omega, div
+
+
+def _annular(state, probe, outdir):
+    from dnsjax.flows.wall_bounded.taylor_couette import (
+        flow,
+        get_stats,
+        to_solver_basis,
+    )
+    from dnsjax.geometries.wall_bounded.annular import _curl_fn, fourier
+
+    omega = _curl_fn(state, fourier, flow)
+    div = solver_divergence(to_solver_basis(probe), flow, fourier)
+    return get_stats, omega, div
+
+
+def _periodic(state, probe, outdir):
+    # Curl is pure Fourier: no ground-truth dump.
+    from dnsjax.flows.triply_periodic.monochromatic import get_stats
+
+    return get_stats, None, None
+
+
+# Families exercise both basis paths + the pipe's parity.  The pipe runs
+# twice: the axis parity class is set by the *physical* azimuthal
+# wavenumber ``m = m0 * h``, so the full circle (m0 = 1) cannot tell
+# that selector apart from one keyed on the harmonic index ``h`` alone
+# -- the two agree for every odd m0.  The ``m0 = 2`` wedge separates
+# them.
+CASES: list[dict] = [
+    {"system": "plane-couette", "fixtures": _cartesian},
+    {"system": "pipe", "fixtures": _pipe},
+    {"system": "pipe", "m0": 2, "fixtures": _pipe},
+    {
+        "system": "taylor-couette",
+        "phys": {"re1": 100.0, "re2": -100.0},  # re derives from re1
+        "geo": {"eta": 0.5},
+        "fixtures": _annular,
+    },
+    {"system": "kolmogorov", "fixtures": _periodic},
 ]
-
-CURL_TOL = 1e-10  # vs dnsjax _curl_fn (expect machine precision)
-DIV_TOL = 1e-8  # divergence of the divergence-free modes (k != 0)
-DIV_PARITY_TOL = 1e-12  # vs the solver's own divergence, on DIV_PROBE
-#: Per-component scaling that turns the solenoidal IC into a field
-#: with O(1) divergence.  Operator *equality* is only observable on a
-#: field that is not divergence-free -- on the IC both operators
-#: return zero whatever they are, which is why ``DIV_TOL`` above
-#: cannot catch a mismatch.
-DIV_PROBE = (1.0, 2.0, 3.0)
-RT_TOL = 1e-10  # transform round-trip (all families)
-VOL_TOL = 1e-10  # integrate(ones) vs analytic volume
-
-
-# ── fixture generation (JAX subprocess; forced CPU) ──────────────
-
-
-def _solver_divergence(state, system: str, flow, fourier):
-    r"""dnsjax's own discrete divergence of a **solver-basis** *state*.
-
-    Transcribed from stage 1 of each family's ``_imm_iteration`` (the
-    only place the solver forms `$\nabla\cdot\mathbf{u}$`), so the
-    check downstream compares the analysis operator against the
-    discretization the influence-matrix pass constrains -- including
-    the pipe's parity-reduced radial ``D1`` and the decoupled
-    `$(u_z, u_\pm)$` assembly, which no physical-component reference
-    could pin without restating the analysis formula itself.
-    """
-    import jax.numpy as jnp
-
-    from dnsjax.geometries.wall_bounded._base import apply_y_matrix
-
-    if system in ("plane-couette", "plane-poiseuille"):
-        u_n, v_n, w_n = state[0], state[1], state[2]
-        dy_v_n = apply_y_matrix(flow.D1, v_n)
-        return 1j * fourier.kx * u_n + dy_v_n + 1j * fourier.kz * w_n
-
-    uz_n, up_n, um_n = state[0], state[1], state[2]
-    m = fourier.m
-    stacked = jnp.stack([up_n, um_n], axis=1)
-    from dnsjax.flows.registry import cylindrical_systems
-
-    if system in cylindrical_systems:
-        # (-1)^{m+1} parity of u_pm: D1_pos +/- the folded ghost rows.
-        parity_sign_v = -(fourier.m_is_even * 2 - 1)
-        g, gc = flow.D1_ghost.shape
-        dy = apply_y_matrix(flow.D1_pos, stacked, component_axis=1)
-        dy_ghost = apply_y_matrix(
-            flow.D1_ghost, stacked[:gc], component_axis=1
-        )
-        dy_all = dy.at[:g].add(parity_sign_v * dy_ghost)
-    else:  # annular: no axis, plain D1
-        dy_all = apply_y_matrix(flow.D1, stacked, component_axis=1)
-    inv_r = flow.inv_r[:, None, None]
-    return (
-        (dy_all[:, 0] + (m + 1) * inv_r * up_n) / 2
-        + (dy_all[:, 1] + (1 - m) * inv_r * um_n) / 2
-        + 1j * fourier.kz * uz_n
-    )
-
-
-def _generate(system: str, outdir: str, m0: int = 1) -> None:
-    """Write ``state.tar`` (+ ``omega.tar``) for *system* at wedge *m0*.
-
-    Runs inside the ``--gen`` subprocess; this is the only code path
-    that imports JAX.
-    """
-    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
-    from dnsjax.parameters import (
-        Parameters,
-        padded_res,
-        params,
-        update_parameters,
-        validate_parameters,
-    )
-
-    phys: dict = {"system": system}
-    geo: dict = {"lx": LX, "lz": LZ}
-    if m0 != 1:
-        # Azimuthal wedge (cylindrical / annular surfaces only); the
-        # spec's derive then overwrites geo.lz with 2*pi/m0.
-        geo["m0"] = m0
-    init: dict = {}
-    if system == "taylor-couette":
-        phys.update(re1=RE, re2=-RE)  # re derives from re1
-        geo["eta"] = 0.5
-    elif system == "viscoelastic-dean":
-        phys.update(wi=5.0, el=5.0)  # re = wi/el = 1 (derived)
-        geo["eta"] = 0.5
-        init["random_conformation_amplitude"] = 10.0
-    elif system == "viscoelastic-pipe":
-        phys.update(wi=5.0, el=5.0)  # re = wi/el = 1 (derived)
-        init["random_conformation_amplitude"] = 10.0
-    else:
-        phys["re"] = RE
-    if system == "curved-pipe":
-        geo["curvature"] = KAPPA
-
-    update_parameters(
-        Parameters(
-            dist={"np0": 1, "np1": 1},
-            phys=phys,
-            geo=geo,
-            res={
-                "nx": NX,
-                "ny": NY,
-                "nz": NZ,
-                "fd_order": 4,
-                "double_precision": True,
-            },
-            init=init,
-            outs={},
-        )
-    )
-    padded_res.set_padded_resolution(params)
-    validate_parameters()
-    configure_jax_platform(platform_from_argv())
-
-    from dnsjax.ic.random_field import generate_random_state
-    from dnsjax.snapshot import save_snapshot
-
-    state = generate_random_state(0.2, 0.4, 0.4, 0.14, 1)
-    # The divergence ground truth is taken on a deliberately
-    # non-solenoidal probe (see DIV_PROBE); the checker rebuilds the
-    # same scaling from the stored state.
-    import jax.numpy as jnp
-
-    div_true = None
-    probe = state[:3] * jnp.asarray(DIV_PROBE)[:, None, None, None]
-
-    if system in ("plane-couette", "plane-poiseuille"):
-        from dnsjax.flows.wall_bounded.plane_couette import flow, get_stats
-        from dnsjax.geometries.wall_bounded.cartesian import _curl_fn, fourier
-
-        omega = _curl_fn(state, fourier, flow)
-        div_true = _solver_divergence(probe, system, flow, fourier)
-    elif system == "pipe":
-        from dnsjax.flows.wall_bounded.pipe import (
-            flow,
-            get_stats,
-            to_solver_basis,
-        )
-        from dnsjax.geometries.wall_bounded.cylindrical import (
-            _curl_fn,
-            fourier,
-        )
-
-        omega = _curl_fn(state, fourier, flow)
-        div_true = _solver_divergence(
-            to_solver_basis(probe), system, flow, fourier
-        )
-    elif system == "curved-pipe":
-        # The solver's metric-weighted quantities, with the weight
-        # divided out by its own dealiased collocation (as get_stats
-        # does): the curl of the carried (h u_s, u_r, u_th) is
-        # (om_s, h om_r, h om_th), and its continuity row -- the
-        # straight divergence of the carried state less
-        # divergence_defect -- is h^2 div u.
-        from dnsjax_lab.flows.wall_bounded import curved_pipe as cp
-        from dnsjax_lab.flows.wall_bounded.curved_pipe import flow, get_stats
-
-        from dnsjax.geometries.wall_bounded._base import from_pm_basis
-        from dnsjax.geometries.wall_bounded._cylindrical_stepping import (
-            _curl_fn,
-        )
-        from dnsjax.geometries.wall_bounded.cylindrical import fourier
-        from dnsjax.operators import phys_to_spec_2d, spec_to_phys_2d
-
-        def _over_h(f, power):
-            return phys_to_spec_2d(spec_to_phys_2d(f) * flow.inv_h_phys**power)
-
-        carried = from_pm_basis(cp.to_solver_basis(state))
-        omega_h = _curl_fn(carried, fourier, flow)
-        omega = jnp.concatenate([omega_h[:1], _over_h(omega_h[1:], 1)])
-        probe_w = cp.to_solver_basis(probe)
-        row = _solver_divergence(
-            probe_w, system, flow, fourier
-        ) - flow.divergence_defect(probe_w, fourier)
-        div_true = _over_h(row[None], 2)[0]
-    elif system == "taylor-couette":
-        from dnsjax.flows.wall_bounded.taylor_couette import (
-            flow,
-            get_stats,
-            to_solver_basis,
-        )
-        from dnsjax.geometries.wall_bounded.annular import _curl_fn, fourier
-
-        omega = _curl_fn(state, fourier, flow)
-        div_true = _solver_divergence(
-            to_solver_basis(probe), system, flow, fourier
-        )
-    elif system == "viscoelastic-pipe":
-        # 9-component state in the *cylindrical* family: the velocity
-        # divergence takes the pipe's parity-reduced path (on the [:3]
-        # slice), and the ground truth for the tensor is the stored
-        # conformation slice itself -- which on the m0 = 2 wedge is
-        # what pins the analysis package's tensor parity classes.
-        from dnsjax_lab.flows.wall_bounded.viscoelastic_pipe import (
-            flow,
-            get_stats,
-        )
-
-        from dnsjax.geometries.wall_bounded._base import to_pm_basis
-        from dnsjax.geometries.wall_bounded.cylindrical import fourier
-
-        # ``probe`` is already the physical velocity triad rescaled per
-        # component, so the 3-component velocity map is the right one
-        # (the 9-component ``to_solver_basis`` would need the tensor).
-        div_true = _solver_divergence(
-            to_pm_basis(probe), system, flow, fourier
-        )
-        np.save(os.path.join(outdir, "conf_true.npy"), np.asarray(state[3:]))
-        # No omega dump: ``save_snapshot`` writes this system's **9**
-        # components, and the velocity curl is already pinned
-        # node-for-node by the 3-component ``pipe`` rows (same
-        # ``_curl_fn``, same parity-reduced ``D1``).  What only this
-        # row can pin is the *tensor* read-back on an even wedge.
-        omega = None
-    elif system == "viscoelastic-dean":
-        # 9-component state; the velocity curl path is the annular one
-        # (pinned by the taylor-couette case).  The ground truth here
-        # is the stored conformation slice itself (format 6: the
-        # native components 3..8 are the physical tensor
-        # (c_zz, c_rz, c_thz, c_rr, c_thth, c_rth), read one-to-one).
-        from dnsjax_lab.flows.wall_bounded.viscoelastic_dean import get_stats
-
-        conf_true = state[3:]
-        # The solver state axes (r, m, k_ax) ARE the snapshot layout
-        # read_state returns (format 6: stored untransposed).
-        np.save(os.path.join(outdir, "conf_true.npy"), np.asarray(conf_true))
-        omega = None
-    else:  # triply-periodic: curl is pure Fourier, no ground-truth dump
-        from dnsjax.flows.triply_periodic.monochromatic import get_stats
-
-        omega = None
-
-    stats = {k: float(v) for k, v in get_stats(state).items()}
-    save_snapshot(
-        state, 0.0, 0, os.path.join(outdir, "state.tar"), stats=stats, isnap=0
-    )
-    if omega is not None:
-        save_snapshot(omega, 0.0, 0, os.path.join(outdir, "omega.tar"))
-    if div_true is not None:
-        np.save(os.path.join(outdir, "div_true.npy"), np.asarray(div_true))
-
-
-def _gen_subprocess(system: str, outdir: str, m0: int) -> None:
-    """Spawn the ``--gen`` generation subprocess (forced 1 CPU device)."""
-    env = dict(os.environ)
-    env["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1"
-    env["NPROC"] = "1"
-    subprocess.run(
-        [sys.executable, __file__, "--gen", system, outdir, str(m0)],
-        check=True,
-        env=env,
-    )
-
-
-# ── checks (NumPy only; JAX must NOT be imported here) ────────────
-
-
-def _relerr(a, b) -> float:
-    a, b = np.asarray(a), np.asarray(b)
-    denom = np.linalg.norm(b.ravel())
-    return float(np.linalg.norm((a - b).ravel()) / (denom if denom else 1.0))
-
-
-def _check_system(system: str, family: str, outdir: str) -> None:
-    from dnsjax.analysis import (
-        _core,
-        curl,
-        derivative,
-        divergence,
-        gradient,
-        integrate,
-        read_state,
-        to_physical,
-        to_spectral,
-    )
-
-    d = Path(outdir)
-    st = read_state(d / "state.tar", return_spectral=True)
-
-    # physical & spectral present, right arity, real / finite physical
-    assert st.physical is not None and len(st.physical) == 3
-    assert st.spectral is not None and len(st.spectral) == 3
-    for comp in st.physical:
-        a = np.asarray(comp)
-        assert np.isrealobj(a) and np.all(np.isfinite(a)), system
-    # coordinate tuples are axis-ordered and match the data shape
-    shape = np.asarray(st.spectral[0]).shape
-    assert tuple(len(c) for c in st.spectral_coords) == shape, system
-    pshape = np.asarray(st.physical[0]).shape
-    assert tuple(len(c) for c in st.physical_coords) == pshape, system
-
-    # params / stats object-like access (viscoelastic re = wi/el = 1,
-    # rehydrated by params_namespace from the derived internal field)
-    exp_re = (
-        1.0 if system in ("viscoelastic-dean", "viscoelastic-pipe") else RE
-    )
-    assert float(st.params.phys.re) == exp_re, system
-    assert st.params.phys.system == system, system
-    assert st.stats is not None, system
-    _ = st.stats[next(iter(st.stats.keys()))]  # item access works
-
-    # transform round-trip: machine-precision exact for every family.
-    # Every stored component is the transform of a real field (the IC
-    # draws the real-FFT-axis-0 plane per-component Hermitian), so the
-    # (u_z, u_r, u_theta) basis round-trips like cartesian/periodic.
-    back = to_spectral(to_physical(st.spectral, st.params), st.params)
-    rt = max(_relerr(back[i], st.spectral[i]) for i in range(3))
-    assert rt < RT_TOL, f"{system}: roundtrip {rt:.2e}"
-
-    # curl vs dnsjax _curl_fn (raw chunks, same basis/order)
-    omega_path = d / "omega.tar"
-    if omega_path.exists():
-        my_omega = curl(st.spectral, st.params, st.spectral_coords)
-        meta = _core.read_meta(omega_path)
-        raw = _core.read_chunks(omega_path, meta, [0, 1, 2])
-        cerr = max(_relerr(my_omega[i], raw[i]) for i in range(3))
-        assert cerr < CURL_TOL, f"{system}: curl vs dnsjax {cerr:.2e}"
-
-    # viscoelastic conformation read-back vs the stored physical
-    # tensor slice (components 3..8; ground truth from _generate)
-    conf_path = d / "conf_true.npy"
-    if conf_path.exists():
-        conf = read_state(
-            d / "state.tar",
-            return_physical=False,
-            return_spectral=True,
-            components=tuple(range(3, 9)),
-        )
-        truth = np.load(conf_path)
-        cerr = max(_relerr(conf.spectral[i], truth[i]) for i in range(6))
-        assert cerr < 1e-13, f"{system}: conformation recipes {cerr:.2e}"
-
-    # public derivative/gradient wrappers (wiring: axis mapping, the
-    # coord pairing, and the pipe parity requirement); u0 is u_x / u_z.
-    info = _core.geometry_info(st.params)
-    u0 = np.asarray(st.spectral[0])
-    par = {"cylindrical_parity": "u_z"} if info.family == "cylindrical" else {}
-    grad = gradient(u0, st.params, st.spectral_coords, **par)
-    for ax in range(3):
-        dax = derivative(
-            u0, info.name[ax], st.params, st.spectral_coords, **par
-        )
-        assert _relerr(grad[ax], dax) == 0.0, f"{system} grad[{ax}]"
-        if info.kind[ax] != "grid":
-            # Fourier axis: exact ik against the returned wavenumbers.
-            k = np.asarray(st.spectral_coords[ax])
-            kshape = [1, 1, 1]
-            kshape[ax] = len(k)
-            ref = 1j * k.reshape(kshape) * u0
-            assert _relerr(grad[ax], ref) < 1e-13, f"{system} d ax{ax}"
-    if info.walled and info.family != "cylindrical":
-        # Plain-D1 grid axis (the pipe's parity path is pinned by the
-        # curl-vs-solver check above).
-        from dnsjax.fd import build_diff_matrices
-
-        d1, _ = build_diff_matrices(
-            np.asarray(st.spectral_coords[0], dtype=float),
-            int(st.params.res.fd_order),
-        )
-        ref = np.einsum("ij,jkl->ikl", d1, u0)
-        assert _relerr(grad[0], ref) < 1e-12, f"{system} d1 axis"
-    if info.family == "cylindrical":
-        try:
-            derivative(u0, "r", st.params, st.spectral_coords)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("pipe radial derivative needs parity")
-
-    # divergence of the divergence-free modes (drop the real-axis DC
-    # plane: random_field solves continuity per real-axis mode via 1/k,
-    # so only its k=0 plane carries divergence -- left to the
-    # corrector).  The real-FFT axis is axis 2 in the native layout.
-    div = np.asarray(divergence(st.spectral, st.params, st.spectral_coords))
-    om = curl(st.spectral, st.params, st.spectral_coords)
-    scale = max(np.linalg.norm(np.asarray(o).ravel()) for o in om)
-    div_nz = div[:, :, 1:] if info.walled else div
-    rel_div = np.linalg.norm(div_nz.ravel()) / scale
-    assert rel_div < DIV_TOL, f"{system}: div {rel_div:.2e}"
-
-    # divergence vs the solver's own operator, node-for-node.  The
-    # check above cannot see an operator mismatch (both sides return
-    # zero on a solenoidal field), so this one runs on DIV_PROBE --
-    # the per-component rescaling of the same state, which carries
-    # O(1) divergence.  The ground truth came from the solver's
-    # decoupled basis, so this also pins the physical <-> u_pm
-    # equivalence the stored basis relies on.
-    div_path = d / "div_true.npy"
-    if div_path.exists():
-        probe = [
-            np.asarray(c) * s
-            for c, s in zip(st.spectral, DIV_PROBE, strict=True)
-        ]
-        mine = np.asarray(divergence(probe, st.params, st.spectral_coords))
-        derr = _relerr(mine, np.load(div_path))
-        assert derr < DIV_PARITY_TOL, (
-            f"{system}: divergence vs dnsjax {derr:.2e}"
-        )
-
-    # integrate(ones) == analytic volume (quadrature is exact here)
-    ones = np.ones_like(np.asarray(st.physical[0]).real)
-    vol = float(integrate(ones, st.params, st.physical_coords))
-    exp = 1.0
-    for ax in range(3):
-        if info.kind[ax] == "grid":
-            g = np.asarray(st.physical_coords[ax])
-            if info.family == "cartesian":
-                exp *= g[-1] - g[0]
-            elif info.family == "cylindrical":
-                exp *= 0.5 * g[-1] ** 2  # int_0^rmax r dr
-            else:
-                exp *= 0.5 * (g[-1] ** 2 - g[0] ** 2)
-        else:
-            exp *= info.length[ax]
-    assert abs(vol - exp) / exp < VOL_TOL, f"{system}: vol {vol} != {exp}"
-    if info.metric is not None:
-        # The metric h = 1 + kappa r cos(theta) rides with s: cos(theta)
-        # integrates to kappa pi L_s R^3 / 3 over the volume, and to
-        # zero over each cross-section, whose element carries no h.
-        r_max = float(np.asarray(st.physical_coords[0])[-1])
-        cos_th = np.cos(st.physical_coords[1])[None, :, None] * ones
-        got = float(integrate(cos_th, st.params, st.physical_coords))
-        want = info.metric.curvature * np.pi * info.length[2] * r_max**3 / 3
-        assert abs(got - want) / want < VOL_TOL, (
-            f"{system}: volume metric {got} != {want}"
-        )
-        section = integrate(
-            cos_th, st.params, st.physical_coords, directions=("r", "theta")
-        )
-        assert np.abs(section).max() < VOL_TOL, f"{system}: section metric"
-
-    _check_subsetting(system, family, d, st)
-    wedge = "" if info.azimuthal_m0 == 1 else f" (m0={info.azimuthal_m0})"
-    print(f"  {system}{wedge}: OK")
-
-
-def _check_subsetting(system, family, d, full) -> None:
-    """Component / wall-normal subsets equal the full read, sliced."""
-    from dnsjax.analysis import _core, read_state
-
-    # single-component read returns a 1-tuple equal to the full slice
-    # (each component reads exactly its own stored chunk).
-    one = read_state(d / "state.tar", return_spectral=True, components=(1,))
-    assert len(one.spectral) == 1 and len(one.physical) == 1, system
-    assert _relerr(one.spectral[0], full.spectral[1]) < 1e-14, system
-    assert _relerr(one.physical[0], full.physical[1]) < 1e-14, system
-
-    # wall-normal subset: nearest grid points, sliced field + grid.
-    info = _core.geometry_info(full.params)
-    yax = info.wall_normal_axis
-    ygrid = np.asarray(full.physical_coords[yax])
-    want = [float(ygrid[1]), float(ygrid[len(ygrid) // 2])]
-    sub = read_state(d / "state.tar", wall_normal_points=want)
-    idx = _core.nearest_unique_indices(ygrid, want)
-    sg = np.asarray(sub.physical_coords[yax])
-    assert np.allclose(sg, ygrid[idx]), system
-    for c in range(3):
-        ref = np.take(np.asarray(full.physical[c]), idx, axis=yax)
-        assert _relerr(sub.physical[c], ref) < 1e-12, f"{system} wn sub"
-
-
-# ── driver ───────────────────────────────────────────────────────
-
-
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--gen", nargs=3, metavar=("SYSTEM", "OUTDIR", "M0"))
-    ap.add_argument("--system", default=None)
-    args = ap.parse_args()
-
-    if args.gen is not None:
-        _generate(args.gen[0], args.gen[1], int(args.gen[2]))
-        return 0
-
-    print(
-        "Snapshot-export API tests: offline, 1 forced CPU device per "
-        "system (the analysis API is JAX-free; device-independent, no "
-        "GPU path).",
-        flush=True,
-    )
-
-    # The import-time JAX-free guarantee: importing the API in this
-    # process must not pull in JAX.
-    import dnsjax.analysis  # noqa: F401
-
-    assert "jax" not in sys.modules, "JAX leaked into dnsjax.analysis!"
-    print("JAX-free import: OK")
-
-    systems = SYSTEMS
-    if args.system is not None:
-        systems = [s for s in SYSTEMS if s[0] == args.system]
-        if not systems:
-            print(f"unknown system {args.system!r}")
-            return 1
-
-    with tempfile.TemporaryDirectory() as tmp:
-        for system, family, m0 in systems:
-            out = os.path.join(tmp, f"{system}-m0{m0}")
-            os.makedirs(out, exist_ok=True)
-            _gen_subprocess(system, out, m0)
-            _check_system(system, family, out)
-
-    print("\nAll snapshot-export tests passed.")
-    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(__file__, CASES))

@@ -5,7 +5,8 @@ Three test layers, run from the parent process:
 * **Host unit checks** (JAX-free): the profile reader / regridder /
   mode selector, exercised by importing the module directly (it keeps
   JAX out of module scope, like the rest of ``dnsjax.analysis``).
-* **In-process workers** (one forced-CPU subprocess per system): the
+* **In-process workers** (one forced-CPU subprocess per system; the
+  shared pieces: ``tests/_transient_growth.py``): the
   per-flow ``frozen_profile_flow`` hook reproduces the builtin laminar
   coupling, and the linear step is block-diagonal per Fourier mode (the
   property the propagator build relies on).
@@ -40,13 +41,14 @@ matched here on the solver's FD-in-``y`` discretization to ~2 %):
 ``Re(lambda) ~ +0.00374`` (a spectrum check -- FD-in-``y`` limits the
 precision, so it is matched loosely).
 
+The lab's flows have their own cases, ``lab/tests/test_transient_growth.py``.
+
 Run: ``uv run python tests/test_transient_growth.py`` (``--fast`` skips
 the published values; ``--slow`` adds Orszag; ``--system`` /
 ``--worker`` select one flow).
 """
 
 import argparse
-import json
 import subprocess
 import sys
 import tempfile
@@ -54,107 +56,99 @@ from pathlib import Path
 
 import numpy as np
 from _live import run_live
+from _transient_growth import (
+    EXTRA_ARGS,
+    MODULE,
+    REPO,
+    ccf_profile,
+    cli_smoke,
+    close,
+    load,
+    run_tg,
+    worker,
+    write_ccf_laminar,
+    write_profile,
+)
 
 sys.stdout.reconfigure(line_buffering=True)
-
-REPO = Path(__file__).resolve().parent.parent
-MODULE = "dnsjax.analysis.transient_growth"
-SYSTEMS = [
-    "plane-couette",
-    "plane-poiseuille",
-    "pipe",
-    "taylor-couette",
-    "quasi-keplerian",
-]
-
-
-# ── laminar profile files (top-wall-first / descending) ──────────
-
-
-def _ccf(re1: float, re2: float, eta: float) -> tuple[float, float]:
-    """Circular-Couette ``A0``, ``B0`` (``U_theta = A0 r + B0/r``)."""
-    re_ref = re1 if re1 > 0 else re2
-    a0 = (re2 - eta * re1) / ((1 + eta) * re_ref)
-    b0 = eta * (re1 - eta * re2) / ((1 + eta) * (1 - eta) ** 2 * re_ref)
-    return a0, b0
-
-
-def _qk_re2(re1: float, eta: float, r_omega: float) -> float:
-    """Quasi-Keplerian derived outer Reynolds number Re_o."""
-    return re1 * (1 - eta + r_omega) / (eta * r_omega - (1 - eta))
 
 
 def _write_laminar(system: str, path: Path, **kw) -> None:
     """Write the analytic laminar total profile for *system*."""
     if system in ("plane-couette", "plane-poiseuille"):
         y = np.linspace(1.0, -1.0, 401)
-        u = y if system == "plane-couette" else 1.0 - y**2
-        np.savetxt(path, np.column_stack([y, u]))
+        write_profile(path, y, y if system == "plane-couette" else 1.0 - y**2)
     elif system == "pipe":
         r = np.linspace(1.0, 1e-3, 401)
-        np.savetxt(path, np.column_stack([r, 1.0 - r**2]))
-    else:  # taylor-couette / quasi-keplerian (circular-Couette)
-        eta = kw["eta"]
-        re2 = (
-            _qk_re2(kw["re1"], eta, kw["r_omega"])
-            if system == "quasi-keplerian"
-            else kw["re2"]
-        )
-        a0, b0 = _ccf(kw["re1"], re2, eta)
-        r = np.linspace(1.0 / (1 - eta), eta / (1 - eta), 401)  # r2 -> r1
-        np.savetxt(path, np.column_stack([r, a0 * r + b0 / r]))
+        write_profile(path, r, 1.0 - r**2)
+    else:  # taylor-couette (circular-Couette)
+        write_ccf_laminar(path, kw["re1"], kw["re2"], kw["eta"])
 
 
-# ── CLI driver ───────────────────────────────────────────────────
+def _smoke(system: str, phys_args: list[str], **kw) -> dict:
+    return {
+        "write_laminar": lambda path: _write_laminar(system, path, **kw),
+        "phys_args": phys_args,
+    }
 
 
-#: Appended to every published-value run by ``--legacy-imm``, which
-#: selects the primitive `$(v, p)$` scheme (``res.consistent_imm =
-#: False``) in *every* wall-bounded geometry.  By default those runs
-#: use the shipped reconstruction scheme and check it against the
-#: published digits -- the strongest available statement that the
-#: reformulation did not perturb the linear physics (the eigenvalue
-#: content of the operator these runs measure is exactly what an
-#: Orr-Sommerfeld/Squire check would test).  Measured agreement between
-#: the two propagators: 4-6 significant figures on every case, so
-#: ``--legacy-imm`` must hit the same published digits too.
-EXTRA_ARGS: list[str] = []
-
-
-def _run_tg(profile: Path, out_dir: Path, args: list[str]) -> str:
-    """Invoke the CLI; raise on failure.
-
-    Runs in the profile's directory (always a temp dir here), not the
-    repo root: the CLI loads a ``./parameters.toml`` when present, and
-    the repo's flow-specific one must not leak into these runs.
-    """
-    cmd = [
-        sys.executable,
-        "-m",
-        MODULE,
-        "--tg.profile",
-        str(profile),
-        "--tg.out_dir",
-        str(out_dir),
-        *args,
-        *EXTRA_ARGS,
-    ]
-    res = run_live(cmd, cwd=profile.parent)
-    if res.returncode != 0 or "FAILED" in res.stdout:
-        raise SystemExit(f"tg run failed: {' '.join(args)}")
-    return res.stdout
-
-
-def _load(out_dir: Path, stem: str) -> dict:
-    return dict(np.load(out_dir / f"{stem}_tg.npz", allow_pickle=True))
-
-
-def _close(got: float, want: float, rtol: float, name: str) -> None:
-    if abs(got - want) > rtol * abs(want):
-        raise SystemExit(
-            f"{name}: got {got:.6g}, want {want:.6g} (rtol {rtol})"
-        )
-    print(f"    {name}: {got:.6g} (want ~{want:.6g})  OK")
+#: Per system: the in-process worker's parameters, laminar profile and
+#: curl bound (polynomial profiles are FD-exact; the circular-Couette
+#: ``B0/r`` curl carries FD error), and the CLI smoke's profile and
+#: flags.
+CASES: dict[str, dict] = {
+    "plane-couette": {
+        "worker": {
+            "phys": {"re": 100.0},
+            "geo": {},
+            "profile": lambda flow, d: np.asarray(flow.ys),
+            "curl_tol": 1e-12,
+        },
+        "smoke": _smoke("plane-couette", ["--phys.re", "100"]),
+    },
+    "plane-poiseuille": {
+        "worker": {
+            "phys": {"re": 100.0},
+            "geo": {},
+            "profile": lambda flow, d: 1.0 - np.asarray(flow.ys) ** 2,
+            "curl_tol": 1e-12,
+        },
+        "smoke": _smoke("plane-poiseuille", ["--phys.re", "100"]),
+    },
+    "pipe": {
+        "worker": {
+            "phys": {"re": 100.0},
+            "geo": {},
+            "profile": lambda flow, d: 1.0 - np.asarray(flow.rs) ** 2,
+            "curl_tol": 1e-12,
+        },
+        "smoke": _smoke("pipe", ["--phys.re", "100"]),
+    },
+    "taylor-couette": {
+        "worker": {
+            "phys": {"re1": 100.0, "re2": 0.0},
+            "geo": {"eta": 0.5},
+            "profile": ccf_profile,
+            "curl_tol": 3e-4,
+        },
+        "smoke": _smoke(
+            "taylor-couette",
+            [
+                "--phys.re1",
+                "50",
+                "--phys.re2",
+                "0",
+                "--geo.eta",
+                "0.5",
+                "--geo.lz",
+                "6.2832",
+            ],
+            re1=50.0,
+            re2=0.0,
+            eta=0.5,
+        ),
+    },
+}
 
 
 # ── host unit checks (JAX-free) ──────────────────────────────────
@@ -236,205 +230,7 @@ def _test_jax_free() -> None:
     print("  JAX-free import guarantee  OK")
 
 
-# ── in-process worker: hooks + block-diagonality ─────────────────
-
-
-def _worker(system: str) -> None:
-    """Per-system: hook == builtin coupling, and block-diagonality."""
-    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
-    from dnsjax.parameters import (
-        Parameters,
-        derived_params,
-        padded_res,
-        params,
-        update_parameters,
-        validate_parameters,
-    )
-
-    phys = {"system": system, "re": 100.0}
-    geo: dict = {}
-    if system == "taylor-couette":
-        phys = {"system": system, "re1": 100.0, "re2": 0.0}
-        geo = {"eta": 0.5}
-    elif system == "quasi-keplerian":
-        phys = {"system": system, "re1": 100.0, "r_omega": -1.2}
-        geo = {"eta": 0.71}
-    update_parameters(
-        Parameters(
-            phys=phys,
-            geo=geo,
-            res={
-                "nx": 8,
-                "ny": 17,
-                "nz": 8,
-                "fd_order": 4,
-                "double_precision": True,
-            },
-            step={
-                "dt": 0.01,
-                "implicitness": 1.0,
-                "implicit_mean_coupling": False,
-                "corrector_tolerance": 1e-12,
-                "max_corrector_iterations": 60,
-            },
-        )
-    )
-    validate_parameters()
-    padded_res.set_padded_resolution(params)
-    configure_jax_platform(platform_from_argv())
-
-    import importlib
-
-    import jax.numpy as jnp
-
-    from dnsjax.sharding import sharding
-    from dnsjax.timestep import make_stepper
-
-    fmod = importlib.import_module(
-        f"dnsjax.flows.wall_bounded.{system.replace('-', '_')}"
-    )
-    geo_name = {
-        "plane-couette": "cartesian",
-        "plane-poiseuille": "cartesian",
-        "pipe": "cylindrical",
-        "taylor-couette": "annular",
-        "quasi-keplerian": "annular",
-    }[system]
-    gmod = importlib.import_module(
-        f"dnsjax.geometries.wall_bounded.{geo_name}"
-    )
-    flow = fmod.flow
-
-    # Laminar total profile on the code grid (relevant component).
-    if system == "plane-couette":
-        prof = np.asarray(flow.ys)
-    elif system == "plane-poiseuille":
-        prof = 1.0 - np.asarray(flow.ys) ** 2
-    elif system == "pipe":
-        prof = 1.0 - np.asarray(flow.rs) ** 2
-    else:
-        a0, b0 = derived_params.ccf_A, derived_params.ccf_B
-        rs = np.asarray(flow.rs)
-        prof = a0 * rs + b0 / rs
-
-    frozen = fmod.frozen_profile_flow(
-        jnp.asarray(prof, dtype=sharding.float_type)
-    )
-    db = float(np.max(np.abs(np.asarray(frozen.base_flow - flow.base_flow))))
-    dc = float(
-        np.max(np.abs(np.asarray(frozen.curl_base_flow - flow.curl_base_flow)))
-    )
-    # Polynomial profiles are FD-exact; the circular-Couette B0/r curl
-    # (taylor-couette / quasi-keplerian) carries FD error.
-    ctol = 3e-4 if system in ("taylor-couette", "quasi-keplerian") else 1e-12
-    assert db < 1e-12, f"{system}: base_flow hook != builtin ({db:.2e})"
-    assert dc < ctol, f"{system}: curl hook != builtin ({dc:.2e})"
-
-    # Block-diagonality: a basis vector at all modes vs one mode gives
-    # the identical column at that mode.  Everything here stays in the
-    # geometry's solver basis (the property is about modes, not
-    # components, and both runs use the same stepper); the physical
-    # wrapper lives in ``transient_growth._linear_step``.
-    raw = make_stepper(
-        gmod._l_bf, gmod._predict, gmod._correct, gmod._norm, None, None
-    )
-    pfc = raw[0]
-    ny = params.res.ny
-    n2, n3 = sharding.spec_shape[1], sharding.spec_shape[2]
-    i2, i3 = 1, 0
-
-    # The raw stepper's own state shape: the velocity, plus the slots a
-    # pipe's pass carries across steps (``flow.n_carried``).
-    n_slots = 3 + getattr(flow, "n_carried", 0)
-
-    def _state(all_modes: bool):
-        st = jnp.zeros(
-            (n_slots, ny, n2, n3),
-            dtype=sharding.complex_type,
-            out_sharding=sharding.spec_vector_shard,
-        )
-        if all_modes:
-            st = st.at[0, ny // 2].set(1.0).at[:, :, 0, 0].set(0.0)
-        else:
-            st = st.at[0, ny // 2, i2, i3].set(1.0)
-        return st
-
-    col_all = np.asarray(pfc(_state(True), gmod.fourier, flow)[0])[
-        :, :, i2, i3
-    ]
-    col_one = np.asarray(pfc(_state(False), gmod.fourier, flow)[0])[
-        :, :, i2, i3
-    ]
-    bd = float(np.max(np.abs(col_all - col_one)))
-    assert bd < 1e-9, f"{system}: not block-diagonal ({bd:.2e})"
-    print(
-        f"  {system}: hook==builtin (base {db:.1e}, curl {dc:.1e}); "
-        f"block-diagonal ({bd:.1e})  OK"
-    )
-
-
 # ── CLI feature checks ───────────────────────────────────────────
-
-
-def _test_cli_smoke(system: str) -> None:
-    """A per-system tiny run: G(0)=1, stable, forced overrides applied."""
-    cyl_annular = system in ("pipe", "taylor-couette", "quasi-keplerian")
-    with tempfile.TemporaryDirectory() as d:
-        p = Path(d)
-        prof = p / "lam.txt"
-        res_flags = (
-            ["--res.nr", "20", "--res.nz", "8", "--res.ntheta", "8"]
-            if cyl_annular
-            else ["--res.ny", "20", "--res.nx", "8", "--res.nz", "8"]
-        )
-        extra = [
-            "--phys.system",
-            system,
-            *res_flags,
-            "--tg.t_max",
-            "40",
-            "--tg.nt",
-            "12",
-            "--tg.modes",
-            "1,1",
-        ]
-        if system == "taylor-couette":
-            _write_laminar(system, prof, re1=50.0, re2=0.0, eta=0.5)
-            extra += [
-                "--phys.re1",
-                "50",
-                "--phys.re2",
-                "0",
-                "--geo.eta",
-                "0.5",
-                "--geo.lz",
-                "6.2832",
-            ]
-        elif system == "quasi-keplerian":
-            _write_laminar(system, prof, re1=50.0, r_omega=-1.2, eta=0.71)
-            extra += [
-                "--phys.re1",
-                "50",
-                "--phys.r_omega",
-                "-1.2",
-                "--geo.eta",
-                "0.71",
-                "--geo.lz",
-                "6.2832",
-            ]
-        else:
-            _write_laminar(system, prof)
-            extra += ["--phys.re", "100"]
-        _run_tg(prof, p, extra)
-        z = _load(p, "lam")
-        assert abs(z["G"][0, 0] - 1.0) < 1e-9, "G(0) != 1"
-        assert np.all(np.isfinite(z["G"])), "non-finite G"
-        assert float(z["extraction_residual"][0]) < 1e-9, "eig residual"
-        assert float(z["G_max"][0]) >= 1.0 - 1e-9, "G_max < 1"
-        pj = json.loads(str(z["params_json"]))
-        assert pj["phys"]["u_grid"] == 0.0, "u_grid not zeroed"
-        assert pj["step"]["implicitness"] == 1.0, "theta != 1"
-    print(f"  {system}: CLI smoke (G(0)=1, u_grid=0, theta=1)  OK")
 
 
 def _test_wall_bc() -> None:
@@ -480,7 +276,7 @@ def _test_folder() -> None:
             np.column_stack([y, (1 - y**2) * (1 + 0.05 * np.cos(y))]),
         )
         out = p / "out"
-        _run_tg(
+        run_tg(
             src,
             out,
             [
@@ -517,7 +313,7 @@ def _test_export() -> None:
         p = Path(d)
         prof = p / "lam.txt"
         _write_laminar("plane-poiseuille", prof)
-        _run_tg(
+        run_tg(
             prof,
             p,
             [
@@ -559,7 +355,7 @@ def _test_export() -> None:
             )
         )
         e /= 2.0 * (2.0 * lx * lz)  # mean energy density
-        _close(e, 1e-4, 0.02, "seed E'")
+        close(e, 1e-4, 0.02, "seed E'")
     print("  snapshot export + JAX-free read-back  OK")
 
 
@@ -571,7 +367,7 @@ def _anchor_pp() -> None:
     with tempfile.TemporaryDirectory() as d:
         p = Path(d)
         _write_laminar("plane-poiseuille", p / "l.txt")
-        _run_tg(
+        run_tg(
             p / "l.txt",
             p,
             [
@@ -597,9 +393,9 @@ def _anchor_pp() -> None:
                 "60",
             ],
         )
-        z = _load(p, "l")
-        _close(float(z["G_max"][0]), 196.0, 0.02, "G_max")
-        _close(float(z["t_opt"][0]), 76.0, 0.04, "t_opt")
+        z = load(p, "l")
+        close(float(z["G_max"][0]), 196.0, 0.02, "G_max")
+        close(float(z["t_opt"][0]), 76.0, 0.04, "t_opt")
         assert float(z["spectral_abscissa"][0]) < 0, "PP should be stable"
 
 
@@ -608,7 +404,7 @@ def _anchor_pc() -> None:
     with tempfile.TemporaryDirectory() as d:
         p = Path(d)
         _write_laminar("plane-couette", p / "l.txt")
-        _run_tg(
+        run_tg(
             p / "l.txt",
             p,
             [
@@ -636,9 +432,9 @@ def _anchor_pc() -> None:
                 "70",
             ],
         )
-        z = _load(p, "l")
-        _close(float(z["G_max"][0]), 1185.0, 0.02, "G_max")
-        _close(float(z["t_opt"][0]), 117.0, 0.04, "t_opt")
+        z = load(p, "l")
+        close(float(z["G_max"][0]), 1185.0, 0.02, "G_max")
+        close(float(z["t_opt"][0]), 117.0, 0.04, "t_opt")
 
 
 def _anchor_pipe() -> None:
@@ -646,7 +442,7 @@ def _anchor_pipe() -> None:
     with tempfile.TemporaryDirectory() as d:
         p = Path(d)
         _write_laminar("pipe", p / "l.txt")
-        _run_tg(
+        run_tg(
             p / "l.txt",
             p,
             [
@@ -672,9 +468,9 @@ def _anchor_pipe() -> None:
                 "60",
             ],
         )
-        z = _load(p, "l")
-        _close(float(z["G_max"][0]), 649.0, 0.02, "G_max")
-        _close(float(z["t_opt"][0]), 147.0, 0.04, "t_opt")
+        z = load(p, "l")
+        close(float(z["G_max"][0]), 649.0, 0.02, "G_max")
+        close(float(z["t_opt"][0]), 147.0, 0.04, "t_opt")
         assert float(z["spectral_abscissa"][0]) < 0, "pipe should be stable"
 
 
@@ -687,7 +483,7 @@ def _anchor_tc() -> None:
         _write_laminar(
             "taylor-couette", p / "u.txt", re1=100.0, re2=0.0, eta=0.5
         )
-        _run_tg(
+        run_tg(
             p / "u.txt",
             p,
             [
@@ -717,7 +513,7 @@ def _anchor_tc() -> None:
                 "20",
             ],
         )
-        z = _load(p, "u")
+        z = load(p, "u")
         assert float(z["spectral_abscissa"][0]) > 0, (
             "Re_i=100 TC must be linearly unstable"
         )
@@ -734,7 +530,7 @@ def _anchor_tc() -> None:
         _write_laminar(
             "taylor-couette", p / "m.txt", re1=591.0, re2=-2588.0, eta=0.881
         )
-        _run_tg(
+        run_tg(
             p / "m.txt",
             p,
             [
@@ -764,59 +560,9 @@ def _anchor_tc() -> None:
                 "40",
             ],
         )
-        z = _load(p, "m")
+        z = load(p, "m")
         assert float(z["spectral_abscissa"][0]) < 0, "Maretzke case stable"
-        _close(float(z["G_max"][0]), 71.58, 0.01, "Maretzke G_max")
-
-
-def _anchor_qk() -> None:
-    print("  quasi-Keplerian (annular):")
-    with tempfile.TemporaryDirectory() as d:
-        p = Path(d)
-        # Axially-periodic quasi-Keplerian optimal transient growth,
-        # Shi et al., Phys. Fluids 29, 044107 (2017), Table III case I:
-        # eta = 0.71, R_Omega = -1.2, Re_i = 1e4, axial wavenumber
-        # k_z = 0, azimuthal m = 4 -> G_opt = 13.04 at t_opt/tau_d = 27.
-        # The regime is linearly stable (negative spectral abscissa); the
-        # growth is purely non-modal.  Code time == tau_d, so t_opt is in
-        # the paper's units.  m = 4 sits at index i2 = 4 for ntheta = 10.
-        _write_laminar(
-            "quasi-keplerian", p / "k.txt", re1=1.0e4, r_omega=-1.2, eta=0.71
-        )
-        _run_tg(
-            p / "k.txt",
-            p,
-            [
-                "--phys.system",
-                "quasi-keplerian",
-                "--phys.re1",
-                "10000",
-                "--phys.r_omega",
-                "-1.2",
-                "--geo.eta",
-                "0.71",
-                "--res.nr",
-                "128",
-                "--res.nz",
-                "4",
-                "--res.ntheta",
-                "10",
-                "--res.fd_order",
-                "8",
-                "--geo.lz",
-                "0.5",
-                "--tg.modes",
-                "4,0",
-                "--tg.t_max",
-                "60",
-                "--tg.nt",
-                "60",
-            ],
-        )
-        z = _load(p, "k")
-        assert float(z["spectral_abscissa"][0]) < 0, "QK must be stable"
-        _close(float(z["G_max"][0]), 13.04, 0.01, "QK G_opt")
-        _close(float(z["t_opt"][0]), 27.0, 0.02, "QK t_opt")
+        close(float(z["G_max"][0]), 71.58, 0.01, "Maretzke G_max")
 
 
 def _test_wedge_equivalence() -> None:
@@ -828,18 +574,20 @@ def _test_wedge_equivalence() -> None:
     i2 = 1 on the quarter-annulus wedge (m0 = 4).  G(t) must agree.
     """
     print("  wedge equivalence (m0 = 4 vs full circle, m = 4):")
-    # Re-independent structural check; a mild Re_i (with non-trivial
-    # transient growth G_max ~ 1.47) keeps the linear step well
-    # conditioned at coarse resolution.
+    # Re-independent structural check; a co-rotating, linearly stable
+    # circular-Couette flow (eta = 0.71, Re_o/Re_i = 0.797, with
+    # non-trivial transient growth G_max ~ 1.47) keeps the linear step
+    # well conditioned at coarse resolution.
+    re1, re2, eta = 1000.0, 796.8476357267952, 0.71
     common = [
         "--phys.system",
-        "quasi-keplerian",
+        "taylor-couette",
         "--phys.re1",
-        "1000",
-        "--phys.r_omega",
-        "-1.2",
+        str(re1),
+        "--phys.re2",
+        str(re2),
         "--geo.eta",
-        "0.71",
+        str(eta),
         "--res.nr",
         "48",
         "--res.nz",
@@ -855,16 +603,14 @@ def _test_wedge_equivalence() -> None:
     ]
     with tempfile.TemporaryDirectory() as d:
         p = Path(d)
-        _write_laminar(
-            "quasi-keplerian", p / "w.txt", re1=1000.0, r_omega=-1.2, eta=0.71
-        )
-        _run_tg(
+        write_ccf_laminar(p / "w.txt", re1, re2, eta)
+        run_tg(
             p / "w.txt",
             p,
             [*common, "--res.ntheta", "10", "--tg.modes", "4,0"],
         )
-        full = _load(p, "w")
-        _run_tg(
+        full = load(p, "w")
+        run_tg(
             p / "w.txt",
             p,
             [
@@ -877,7 +623,7 @@ def _test_wedge_equivalence() -> None:
                 "1,0",
             ],
         )
-        wedge = _load(p, "w")
+        wedge = load(p, "w")
     gf, gw = float(full["G_max"][0]), float(wedge["G_max"][0])
     assert abs(gf - gw) <= 1e-9 * max(1.0, abs(gf)), (
         f"wedge G_max {gw} != full-circle {gf}"
@@ -896,7 +642,7 @@ def _anchor_orszag() -> None:
     with tempfile.TemporaryDirectory() as d:
         p = Path(d)
         _write_laminar("plane-poiseuille", p / "l.txt")
-        _run_tg(
+        run_tg(
             p / "l.txt",
             p,
             [
@@ -924,10 +670,10 @@ def _anchor_orszag() -> None:
                 "6",
             ],
         )
-        z = _load(p, "l")
+        z = load(p, "l")
         lead = float(z["spectral_abscissa"][0])
         # Orszag: c = 0.23752649 + 0.00373967 i, growth = alpha*c_i.
-        _close(lead, 0.00373967, 0.15, "Re(lambda_max)")
+        close(lead, 0.00373967, 0.15, "Re(lambda_max)")
         assert lead > 0, "unstable OS mode not found"
 
 
@@ -942,8 +688,8 @@ def main() -> None:
         help="run the published values on the legacy "
         "res.consistent_imm=False path",
     )
-    ap.add_argument("--worker", choices=SYSTEMS, default=None)
-    ap.add_argument("--system", choices=SYSTEMS, default=None)
+    ap.add_argument("--worker", choices=list(CASES), default=None)
+    ap.add_argument("--system", choices=list(CASES), default=None)
     ap.add_argument(
         "--fast",
         action="store_true",
@@ -957,10 +703,10 @@ def main() -> None:
         EXTRA_ARGS.extend(["--res.consistent_imm", "False"])
 
     if args.worker:
-        _worker(args.worker)
+        worker(args.worker, **CASES[args.worker]["worker"])
         return
 
-    systems = [args.system] if args.system else SYSTEMS
+    systems = [args.system] if args.system else list(CASES)
 
     print(
         "transient-growth tests (single CPU device; CLI subprocesses "
@@ -982,8 +728,8 @@ def main() -> None:
 
     print("[CLI features]", flush=True)
     for system in systems:
-        _test_cli_smoke(system)
-    if "quasi-keplerian" in systems:
+        cli_smoke(system, **CASES[system]["smoke"])
+    if "taylor-couette" in systems:
         _test_wedge_equivalence()
     _test_wall_bc()
     _test_folder()
@@ -996,7 +742,6 @@ def main() -> None:
             "plane-couette": _anchor_pc,
             "pipe": _anchor_pipe,
             "taylor-couette": _anchor_tc,
-            "quasi-keplerian": _anchor_qk,
         }
         for system in systems:
             anchors[system]()

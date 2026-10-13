@@ -44,6 +44,8 @@ from pathlib import Path
 
 import numpy as np
 
+from dnsjax.analysis import read_dat  # re-exported
+
 #: Oldest ``twin.json`` schema this reader understands
 #: (``dnsjax_lab.twin.driver.TWIN_FORMAT_VERSION`` is the writer's).
 MIN_FORMAT_VERSION: int = 1
@@ -55,29 +57,6 @@ MIN_FORMAT_VERSION: int = 1
 #: rounding: rounding recovers the step while that stays under half a
 #: step, and a quarter keeps a factor of two in hand.
 _SNAP_TOLERANCE: float = 0.25
-
-
-def read_dat(path: str | Path) -> dict[str, np.ndarray]:
-    """Read one ``.dat`` stream into ``{column name: values}``.
-
-    The first column is always ``t``.  Rows are returned as written
-    (including any resume-seam duplicates); shape ``(n_rows,)`` per
-    column.  The names come off the header line with its ``#``
-    stripped; the rows need no ``skiprows`` because
-    :func:`numpy.loadtxt` drops that line as a comment.
-    """
-    path = Path(path)
-    with open(path) as fh:
-        header = fh.readline().lstrip("#").split()
-    data = np.loadtxt(path, ndmin=2)
-    if data.size == 0:
-        return {name: np.empty(0) for name in header}
-    if data.shape[1] != len(header):
-        raise ValueError(
-            f"{path}: {data.shape[1]} columns but {len(header)} header "
-            "names; the file is truncated or not a dnsjax .dat stream."
-        )
-    return {name: data[:, i] for i, name in enumerate(header)}
 
 
 def _drop_seam_duplicates(

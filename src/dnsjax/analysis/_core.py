@@ -369,6 +369,35 @@ def read_stats(path: str | Path) -> dict | None:
     return read_snapshot_stats(path)
 
 
+# ── Diagnostic streams (.dat) ────────────────────────────────
+
+
+def read_dat(path: str | Path) -> dict[str, ndarray]:
+    """Read one ``.dat`` stream into ``{column name: values}``.
+
+    The ``.dat`` streams (``stats.dat``, ``steps.dat``, ...) are
+    whitespace-aligned text: a ``#``-commented header row of column
+    names, then one row per sample, so parse by **name**, never by
+    position.  The first column is always ``t``.  Rows are returned as
+    written (including the duplicate a resume leaves at its seam);
+    shape ``(n_rows,)`` per column.  The names come off the header line
+    with its ``#`` stripped; the rows need no ``skiprows`` because
+    :func:`numpy.loadtxt` drops that line as a comment.
+    """
+    path = Path(path)
+    with open(path) as fh:
+        header = fh.readline().lstrip("#").split()
+    data = np.loadtxt(path, ndmin=2)
+    if data.size == 0:
+        return {name: np.empty(0) for name in header}
+    if data.shape[1] != len(header):
+        raise ValueError(
+            f"{path}: {data.shape[1]} columns but {len(header)} header "
+            "names; the file is truncated or not a dnsjax .dat stream."
+        )
+    return {name: data[:, i] for i, name in enumerate(header)}
+
+
 # ── Raw chunk reading (no transpose, minimal I/O) ────────────
 
 

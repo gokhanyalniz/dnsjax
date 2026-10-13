@@ -19,7 +19,9 @@ verifies against the reloaded arrays:
    laminar profile produces ``<stem>_tg.npz``; ``--perturb.tg_npz``
    injects a field collinear with its ``opt_input`` row at the
    requested energy -- pinning the npz key contract against the
-   actual writer.
+   actual writer.  Its ``--tg.save_operator`` bundle keeps the
+   coordinate contract it documents, and full-state profiles built
+   from it inject through ``--perturb.modes_npz``.
 5. **Error paths**: out-of-range mode, complex ``(0,0)`` profile,
    mode missing from the TG bundle, wrong-system bundle.
 6. **Mean mode** ``(0,0)``: a profile that satisfies the conservation
@@ -35,89 +37,28 @@ Usage::
 
 from __future__ import annotations
 
-from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
-from dnsjax.parameters import (
-    Parameters,
-    padded_res,
-    params,
-    update_parameters,
-    validate_parameters,
+from _snapshot_perturb import (
+    N2,
+    NY,
+    configure,
+    make_snapshot,
+    run_perturb,
+    tg_bundle,
 )
 
-NX, NY, NZ = 8, 25, 8
-# ``update_parameters`` (not direct ``params.*`` assignment): the
-# energy checks below need the derived parameters -- ``volume_fac``
-# enters ``get_norm2`` -- which only ``update_parameters`` computes.
-update_parameters(
-    Parameters(
-        phys={"system": "plane-poiseuille"},
-        res={
-            "nx": NX,
-            "ny": NY,
-            "nz": NZ,
-            "fd_order": 4,
-            "double_precision": True,
-        },
-    )
-)
-validate_parameters()
-padded_res.set_padded_resolution(params)
-configure_jax_platform(platform_from_argv())
+configure()
 
-import subprocess  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import numpy as np  # noqa: E402
-from _live import run_live  # noqa: E402
 from numpy.testing import assert_allclose, assert_array_equal  # noqa: E402
 
 import dnsjax.flows.wall_bounded.plane_poiseuille as fmod  # noqa: E402
-from dnsjax.snapshot import (  # noqa: E402
-    assemble_local_shards,
-    load_snapshot,
-    save_snapshot,
-)
+from dnsjax.snapshot import load_snapshot  # noqa: E402
 
 sys.stdout.reconfigure(line_buffering=True)
-
-_REPO = Path(__file__).resolve().parent.parent
-_SCRIPT = _REPO / "scripts" / "snapshot_perturb.py"
-N2 = NZ - 1  # true complex-axis mode count
-
-
-def _make_snapshot(path: Path, zero: bool = False, seed: int = 0):
-    """Write a synthetic snapshot; return its spectral array."""
-    rng = np.random.default_rng(seed)
-
-    def fill_local(buf, kz_start, nkz, kx_start, nkx):
-        if zero:
-            return
-        shape = (3, NY, nkz, nkx)
-        buf[:, :, :nkz, :nkx] = rng.standard_normal(
-            shape
-        ) + 1j * rng.standard_normal(shape)
-
-    state = assemble_local_shards(fill_local)
-    save_snapshot(state, 1.25, 50, path, isnap=0)
-    return np.asarray(state)
-
-
-def _run_perturb(args: list[str], expect_fail: str | None = None) -> str:
-    """Run the injection CLI; assert success (or the failure text)."""
-    result = subprocess.run(
-        [sys.executable, str(_SCRIPT), *args],
-        capture_output=True,
-        text=True,
-    )
-    output = result.stdout + result.stderr
-    if expect_fail is None:
-        assert result.returncode == 0, output[-2000:]
-    else:
-        assert result.returncode != 0, output[-2000:]
-        assert expect_fail in output, output[-2000:]
-    return output
 
 
 def test_npy_injection_exact() -> None:
@@ -125,9 +66,9 @@ def test_npy_injection_exact() -> None:
     vec = rng.standard_normal((3, NY)) + 1j * rng.standard_normal((3, NY))
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        base = _make_snapshot(tmp / "base.tar")
+        base = make_snapshot(tmp / "base.tar")
         np.save(tmp / "vec.npy", vec)
-        _run_perturb(
+        run_perturb(
             [
                 "--init.snapshot",
                 str(tmp / "base.tar"),
@@ -155,9 +96,9 @@ def test_amplitude_energy_convention() -> None:
     vec = rng.standard_normal((3, NY)) + 1j * rng.standard_normal((3, NY))
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        _make_snapshot(tmp / "zero.tar", zero=True)
+        make_snapshot(tmp / "zero.tar", zero=True)
         np.save(tmp / "vec.npy", vec)
-        _run_perturb(
+        run_perturb(
             [
                 "--init.snapshot",
                 str(tmp / "zero.tar"),
@@ -181,7 +122,7 @@ def test_negate_antithetic() -> None:
     vec = rng.standard_normal((3, NY)) + 1j * rng.standard_normal((3, NY))
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        base = _make_snapshot(tmp / "base.tar")
+        base = make_snapshot(tmp / "base.tar")
         np.save(tmp / "vec.npy", vec)
         common = [
             "--init.snapshot",
@@ -193,8 +134,8 @@ def test_negate_antithetic() -> None:
             "--perturb.amplitude_energy",
             "1e-6",
         ]
-        _run_perturb([*common, "--perturb.out", str(tmp / "plus.tar")])
-        _run_perturb(
+        run_perturb([*common, "--perturb.out", str(tmp / "plus.tar")])
+        run_perturb(
             [
                 *common,
                 "--perturb.out",
@@ -209,50 +150,47 @@ def test_negate_antithetic() -> None:
         assert np.abs(plus - base).max() > 0
 
 
+def _check_operator_bundle(path: Path) -> np.ndarray:
+    r"""The export's coordinate contract; its basis as full states.
+
+    ``q = V F^{-1} Q a`` and ``a = Q^H F V^H q`` invert each other,
+    ``||a||^2 = q^H diag(energy_weights) q``, and ``lam = eig(A)``
+    (the bundle's ``readme``).  Returns ``V F^{-1} Q`` column by column
+    as ``(r_res, 3, NY)`` profiles.
+    """
+    with np.load(path) as z:
+        A, Q, F, V = (np.asarray(z[f"{k}_3_0"]) for k in "AQFV")
+        lam = np.asarray(z["lam_3_0"])
+        w = np.asarray(z["energy_weights"])
+    r_res = A.shape[0]
+    assert Q.shape[1] == r_res and V.shape == (3 * NY, F.shape[0])
+    assert_allclose(Q.conj().T @ Q, np.eye(r_res), atol=1e-12)
+    assert_allclose(V.conj().T @ V, np.eye(V.shape[1]), atol=1e-12)
+    assert_allclose(np.triu(F), F, atol=0.0)
+    metric = V.conj().T @ (w[:, None] * V)
+    assert_allclose(F.conj().T @ F, metric, atol=1e-12 * np.abs(metric).max())
+    basis = V @ np.linalg.solve(F, Q)  # columns: q of each unit a
+    rng = np.random.default_rng(3)
+    a = rng.standard_normal(r_res) + 1j * rng.standard_normal(r_res)
+    q = basis @ a
+    assert_allclose(Q.conj().T @ (F @ (V.conj().T @ q)), a, atol=1e-10)
+    assert_allclose(np.vdot(q, w * q).real, np.vdot(a, a).real, rtol=1e-10)
+    got = np.sort_complex(np.linalg.eigvals(A))
+    assert_allclose(got, np.sort_complex(lam), atol=1e-9 * np.abs(lam).max())
+    return basis.T.reshape(r_res, 3, NY)
+
+
 def test_tg_npz_source() -> None:
-    """End-to-end against the real transient-growth npz writer."""
+    """End-to-end against the real transient-growth npz writers."""
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        # Laminar total profile on the snapshot's own CGL grid.
-        y = np.cos(np.pi * np.arange(NY) / (NY - 1))
-        with open(tmp / "lam.txt", "w") as f:
-            for yi, ui in zip(y, 1.0 - y**2, strict=True):
-                f.write(f"{yi:+.17e} {ui:+.17e}\n")
-        result = run_live(
-            [
-                sys.executable,
-                "-m",
-                "dnsjax.analysis.transient_growth",
-                "--tg.profile",
-                str(tmp / "lam.txt"),
-                "--tg.out_dir",
-                str(tmp),
-                "--tg.modes",
-                "3,0",
-                "--tg.nt",
-                "9",
-                "--tg.save_operator",
-                "True",
-                "--phys.system",
-                "plane-poiseuille",
-                "--res.nx",
-                str(NX),
-                "--res.ny",
-                str(NY),
-                "--res.nz",
-                str(NZ),
-                "--res.fd_order",
-                "4",
-            ],
-            cwd=tmp,
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
+        tg_bundle(tmp)
         npz_path = tmp / "lam_tg.npz"
         with np.load(npz_path) as npz:
             opt_input = np.asarray(npz["opt_input"][0])
 
-        _make_snapshot(tmp / "zero.tar", zero=True)
-        _run_perturb(
+        make_snapshot(tmp / "zero.tar", zero=True)
+        run_perturb(
             [
                 "--init.snapshot",
                 str(tmp / "zero.tar"),
@@ -280,7 +218,7 @@ def test_tg_npz_source() -> None:
         assert_allclose(e_prime, 1e-4, rtol=1e-12)
 
         # Error: a mode the bundle does not contain.
-        _run_perturb(
+        run_perturb(
             [
                 "--init.snapshot",
                 str(tmp / "zero.tar"),
@@ -296,24 +234,17 @@ def test_tg_npz_source() -> None:
             expect_fail="is not in",
         )
 
-        # Controllability-mode source: operator_tools CLI on the
-        # --tg.save_operator bundle, then --perturb.modes_npz
-        # injection.
-        result = run_live(
-            [
-                sys.executable,
-                "-m",
-                "dnsjax_lab.analysis.response.operator_tools",
-                "--operator",
-                str(tmp / "lam_tg_op.npz"),
-                "--n-modes",
-                "3",
-                "--out",
-                str(tmp / "cont.npz"),
-            ]
+        # A modes bundle (--perturb.modes_npz) built from the operator
+        # export's own coordinate directions, q = V F^-1 Q e_j: unit
+        # energy, solenoidal full-state profiles.
+        profiles = _check_operator_bundle(tmp / "lam_tg_op.npz")
+        np.savez(
+            tmp / "cont.npz",
+            system="plane-poiseuille",
+            code_grid=np.load(npz_path)["code_grid"],
+            profiles_3_0=profiles[:3],
         )
-        assert result.returncode == 0, result.stdout + result.stderr
-        _run_perturb(
+        run_perturb(
             [
                 "--init.snapshot",
                 str(tmp / "zero.tar"),
@@ -340,7 +271,7 @@ def test_tg_npz_source() -> None:
         assert_allclose(e_prime, 1e-4, rtol=1e-12)
 
         # --index out of range against the real bundle.
-        _run_perturb(
+        run_perturb(
             [
                 "--init.snapshot",
                 str(tmp / "zero.tar"),
@@ -364,7 +295,7 @@ def test_error_paths() -> None:
     vec = rng.standard_normal((3, NY)) + 1j * rng.standard_normal((3, NY))
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        _make_snapshot(tmp / "base.tar")
+        make_snapshot(tmp / "base.tar")
         np.save(tmp / "vec.npy", vec)
         common = [
             "--init.snapshot",
@@ -376,17 +307,17 @@ def test_error_paths() -> None:
             "--perturb.amplitude_scale",
             "1.0",
         ]
-        _run_perturb(
+        run_perturb(
             [*common, "--perturb.mode", f"{N2},0"], expect_fail="out of range"
         )
-        _run_perturb(
+        run_perturb(
             [*common, "--perturb.mode", "0,0"], expect_fail="must be real"
         )
 
         # Wrong-system bundle (only the "system" key is read before
         # the rejection fires).
         np.savez(tmp / "wrong.npz", system="plane-couette")
-        _run_perturb(
+        run_perturb(
             [
                 "--init.snapshot",
                 str(tmp / "base.tar"),
@@ -433,9 +364,9 @@ def test_mean_mode_injection_under_constant_bulk() -> None:
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        base = _make_snapshot(tmp / "base.tar")
+        base = make_snapshot(tmp / "base.tar")
         np.save(tmp / "vec.npy", _mean_profiles(True))
-        _run_perturb(
+        run_perturb(
             [
                 "--init.snapshot",
                 str(tmp / "base.tar"),
@@ -469,11 +400,11 @@ def test_mean_mode_error_paths() -> None:
     y = np.asarray(fmod.flow.ys)
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        _make_snapshot(tmp / "base.tar")
+        make_snapshot(tmp / "base.tar")
 
         def _try(vec, expect, extra=()):
             np.save(tmp / "v.npy", vec)
-            return _run_perturb(
+            return run_perturb(
                 [
                     "--init.snapshot",
                     str(tmp / "base.tar"),
@@ -520,8 +451,8 @@ def test_mean_mode_error_paths() -> None:
             "--perturb.amplitude_scale",
             "1.0",
         ]
-        _run_perturb(common)
-        _run_perturb(
+        run_perturb(common)
+        run_perturb(
             [*common, "--phys.driving", "constant_bulk_velocity"],
             expect_fail="bulk velocity held",
         )

@@ -10,14 +10,16 @@ deferred-feature messages, ``externalize``/``internalize_stored``
 mapping, the annotated sample-TOML rendering, and ``--help`` listing
 every field of the bare and of each flow's surface.  The entry-point
 smoke cases additionally shell out ``python -m dnsjax --help`` /
-``--help <system>`` / ``--sample-toml``, and the ``dnsjax-twin`` and
-transient-growth help (no ``mpirun``: help exits at the parser).
+``--help <system>`` / ``--sample-toml``, and the transient-growth help
+(no ``mpirun``: help exits at the parser).
 
 Cases mutate the ``params`` singleton and restore it via ``_reset``
 (fresh section models + cleared explicit-set tracking + reset
-extension singletons), so ordering is free.  The extension cases
-cover the ``probes``/``force`` sections end to end: surface split,
-layering, validation dispatch, and the metadata dump.
+extension singletons), so ordering is free.  The extension case covers
+the extension mechanism end to end on a section of its own: surface
+split, layering, validation dispatch, and the metadata dump.  The
+shared pieces: ``tests/_param_surface.py``; the lab's flows and
+sections: ``lab/tests/test_param_surface.py``.
 
 Run as a script::
 
@@ -33,28 +35,10 @@ import subprocess
 import sys
 import tomllib
 
+from _param_surface import check, core_systems, finish
+from _param_surface import reset as _reset
+
 sys.stdout.reconfigure(line_buffering=True)
-
-FAILURES: list[str] = []
-
-
-def check(cond: bool, label: str, detail: object = "") -> None:
-    status = "ok" if cond else "FAIL"
-    print(f"[{status}] {label}" + (f" -- {detail}" if not cond else ""))
-    if not cond:
-        FAILURES.append(label)
-
-
-def _reset() -> None:
-    import dnsjax.parameters as P
-    from dnsjax.extensions import reset_extensions
-
-    fresh = P.Parameters()
-    for section in P.Parameters.model_fields:
-        setattr(P.params, section, getattr(fresh, section))
-    P._user_set_fields.clear()
-    P._materialized_defaults.clear()
-    reset_extensions()
 
 
 # ── Case A: registry / internal-model coherence (JAX-free) ───────────
@@ -129,23 +113,21 @@ def case_total_field() -> None:
     from dnsjax.analysis._core import TOTAL_FIELD_SYSTEMS
     from dnsjax.flows import registry as R
 
-    total = {"curved-pipe", "dean", "viscoelastic-dean", "viscoelastic-pipe"}
     check(
-        set(R.total_field_systems) == total,
-        "total-field systems are the four force-driven flows",
+        not set(R.total_field_systems) & core_systems(),
+        "no core flow is total-field",
         R.total_field_systems,
     )
     check(
-        set(TOTAL_FIELD_SYSTEMS) == total,
+        set(TOTAL_FIELD_SYSTEMS) == set(R.total_field_systems),
         "analysis mirrors the registry's total-field set",
         sorted(TOTAL_FIELD_SYSTEMS),
     )
     # The transient-growth scope (shared by scripts/snapshot_perturb.py)
     # is derived from the flag: the walled systems minus the
-    # total-field ones.  It must be the five base-flow flows it was when
-    # it was listed by hand, in the same order.  In a subprocess,
-    # because importing the driver registers its ``[tg]`` section, which
-    # would leak into the other cases.
+    # total-field ones -- every walled core flow, in order.  In a
+    # subprocess, because importing the driver registers its ``[tg]``
+    # section, which would leak into the other cases.
     r = subprocess.run(
         [
             sys.executable,
@@ -157,12 +139,12 @@ def case_total_field() -> None:
         text=True,
         timeout=120,
     )
+    core = [x for x in r.stdout.strip().split(",") if x in core_systems()]
     check(
         r.returncode == 0
-        and r.stdout.strip()
-        == "plane-couette,plane-poiseuille,pipe,taylor-couette,"
-        "quasi-keplerian",
-        "transient-growth scope unchanged by its derivation",
+        and core
+        == ["plane-couette", "plane-poiseuille", "pipe", "taylor-couette"],
+        "transient-growth scope holds the walled core flows",
         r.stdout.strip() or r.stderr[-300:],
     )
 
@@ -190,7 +172,7 @@ def case_surface_strictness() -> None:
         core,
     )
     for bad in (
-        {"phys": {"el": 80.0}},  # viscoelastic-only field
+        {"geo": {"eta": 0.5}},  # another flow's field
         {"geo": {"lx": 4.0}},  # internal name of an aliased field
         {"res": {"ny": 48}},  # internal name of an aliased field
         {"phys": {"block_mean_spanwise_velocity": True}},  # not pipe
@@ -210,42 +192,6 @@ def case_surface_strictness() -> None:
         check(False, "couette rejects driving")
     except ValidationError:
         check(True, "couette rejects driving")
-
-    # viscoelastic-dean: m0 and block_mean are on the surface now.
-    from dnsjax.extensions import relevant_extensions
-
-    ve = spec_for("viscoelastic-dean")
-    ve_exts = tuple(relevant_extensions("viscoelastic-dean").values())
-    ve_model = PS.build_surface_model(ve, settings=False, extensions=ve_exts)
-    v = ve_model.model_validate(
-        {
-            "geo": {"m0": 2},
-            "phys": {"block_mean_spanwise_velocity": True},
-        }
-    )
-    core, _ = PS.split_extensions(v.model_dump(exclude_unset=True), ve_exts)
-    core = PS.internalize(core, ve)
-    check(
-        core["geo"] == {"m0": 2}
-        and core["phys"] == {"block_mean_spanwise_velocity": True},
-        "viscoelastic m0/block_mean accepted",
-        core,
-    )
-    # The [probes] extension is on the viscoelastic surface; [force]
-    # is not (its relevance excludes viscoelastic systems) -- even
-    # with the flow-relevant extensions attached.
-    check(
-        [e.name for e in ve_exts] == ["probes"],
-        "viscoelastic relevant extensions",
-        [e.name for e in ve_exts],
-    )
-    ve_model.model_validate({"probes": {"modes": "3,0", "it_probes": 5}})
-    check(True, "viscoelastic accepts [probes]")
-    try:
-        ve_model.model_validate({"force": {"modes": "3,0"}})
-        check(False, "viscoelastic rejects [force]")
-    except ValidationError:
-        check(True, "viscoelastic rejects [force]")
 
     # The wall-normal derivative knob is on every wall-bounded surface
     # (and, below, on no periodic one).
@@ -316,13 +262,13 @@ def case_cli_parse() -> None:
 
     # An irrelevant flag exits with argparse code 2 and the flow-aware
     # message (the source parses eagerly at construction).
-    bad = ["--phys.el", "80"]
+    bad = ["--geo.eta", "0.5"]
     try:
         src = PS.make_cli_source(cli_model, system="pipe", cli_args=bad)
         CliApp.run(cli_model, cli_args=bad, cli_settings_source=src)
-        check(False, "pipe CLI rejects --phys.el")
+        check(False, "pipe CLI rejects --geo.eta")
     except SystemExit as ex:
-        check(ex.code == 2, "pipe CLI rejects --phys.el", ex.code)
+        check(ex.code == 2, "pipe CLI rejects --geo.eta", ex.code)
 
 
 # ── Case C: deferred-feature messages ────────────────────────────────
@@ -497,51 +443,28 @@ def case_derive_and_defaults() -> None:
     )
     P.validate_parameters()
 
-    # quasi-keplerian: re2 derived; a direct assignment is overwritten.
+    # taylor-couette: re derived from re1; a direct assignment is
+    # overwritten.
     _reset()
-    P.params.phys.re2 = 123.0  # direct assignment, silently overwritten
+    P.params.phys.re = 123.0  # direct assignment, silently overwritten
     P.update_parameters(
         P.Parameters(
-            phys={"system": "quasi-keplerian", "re1": 500.0, "r_omega": -1.2},
+            phys={"system": "taylor-couette", "re1": 500.0, "re2": -200.0},
             geo={"eta": 0.71},
         )
     )
-    re2 = P.params.phys.re2
-    check(
-        re2 is not None and abs(re2 - 398.4238178633975) < 1e-9,
-        "quasi-keplerian re2 derived",
-        re2,
-    )
-    check(P.params.phys.re == 500.0, "quasi-keplerian re = re1")
+    check(P.params.phys.re == 500.0, "taylor-couette re = re1")
     P.validate_parameters()
 
-    # viscoelastic-dean: reference defaults materialized, wedge lz,
-    # re := wi/el.
+    # A wedge sets the azimuthal length.
     _reset()
-    P.update_parameters(
-        P.Parameters(phys={"system": "viscoelastic-dean"}, geo={"m0": 2})
-    )
-    check(P.params.phys.el == 80.0, "viscoelastic el default")
-    check(P.params.phys.wi == 105.0, "viscoelastic wi default")
-    check(P.params.geo.delta == 11.0, "viscoelastic delta default")
-    check(
-        math.isclose(P.params.geo.lx, 2 * math.pi),
-        "viscoelastic axial default 2*pi",
-    )
+    P.update_parameters(P.Parameters(phys={"system": "pipe"}, geo={"m0": 2}))
     check(
         math.isclose(P.params.geo.lz, math.pi),
-        "viscoelastic wedge lz = 2*pi/m0",
+        "pipe wedge lz = 2*pi/m0",
         P.params.geo.lz,
     )
-    check(
-        math.isclose(P.params.phys.re, 105.0 / 80.0),
-        "viscoelastic re = wi/el",
-    )
-    check(
-        P.derived_params.r_inner == 11.0 and P.derived_params.r_outer == 13.0,
-        "viscoelastic radii",
-    )
-    P.validate_parameters()  # m0 = 2 is allowed for viscoelastic now
+    P.validate_parameters()
 
     # taylor-couette still validates its control parameters.
     _reset()
@@ -711,7 +634,7 @@ def case_externalize() -> None:
         "externalize alias values",
         out["res"],
     )
-    check("el" not in out["phys"], "externalize filters el")
+    check("re1" not in out["phys"], "externalize filters re1")
     check(
         "lz" in out["geo"] and "lx" not in out["geo"], "externalize geo public"
     )
@@ -738,39 +661,79 @@ def case_externalize() -> None:
         back["geo"].get("lz"),
     )
 
-    # Rehydrate matches derive for the hidden-derived QK fields.
+    # Rehydrate matches derive for the hidden-derived Taylor-Couette re.
     _reset()
     P.update_parameters(
         P.Parameters(
-            phys={"system": "quasi-keplerian", "re1": 500.0, "r_omega": -1.2},
+            phys={"system": "taylor-couette", "re1": 500.0, "re2": -200.0},
             geo={"eta": 0.71},
         )
     )
     P.validate_parameters()
-    qk = spec_for("quasi-keplerian")
-    stored = PS.externalize(P.params, qk)
+    tc = spec_for("taylor-couette")
+    stored = PS.externalize(P.params, tc)
     check(
-        "re2" not in stored["phys"] and "re" not in stored["phys"],
-        "QK hides derived re/re2",
+        "re" not in stored["phys"],
+        "Taylor-Couette hides derived re",
         sorted(stored["phys"]),
     )
-    back = internalize_stored(stored, "quasi-keplerian", rehydrate=True)
-    check(
-        math.isclose(back["phys"]["re2"], P.params.phys.re2),
-        "QK rehydrate matches derive (re2)",
-        (back["phys"].get("re2"), P.params.phys.re2),
-    )
+    back = internalize_stored(stored, "taylor-couette", rehydrate=True)
     check(
         math.isclose(back["phys"]["re"], P.params.phys.re),
-        "QK rehydrate matches derive (re)",
+        "Taylor-Couette rehydrate matches derive (re)",
+        (back["phys"].get("re"), P.params.phys.re),
     )
 
 
-# ── Case E2: extension sections (probes / force) ─────────────────────
+# ── Case E2: extension sections ──────────────────────────────────────
+
+
+class _Example:
+    """The model of a test extension section, made on first use."""
+
+    model = None
+
+
+def _example_extension():
+    """Register (once) and return ``[example]``, a wall-bounded section.
+
+    All-or-none ``modes`` with ``it_example``; its validate refuses a
+    configured section on a flow without walls, as a section that only
+    makes sense there must (validate hooks dispatch unconditionally).
+    """
+    from pydantic import BaseModel
+
+    from dnsjax.extensions import ParamExtension, register_extension
+    from dnsjax.flows.registry import walled_systems
+
+    if _Example.model is None:
+
+        class ExampleSection(BaseModel):
+            modes: str | None = None
+            it_example: int | None = None
+
+        _Example.model = ExampleSection
+
+    def validate(values, params) -> None:
+        if values.modes is not None and (
+            params.phys.system not in walled_systems
+        ):
+            raise ValueError("example.modes: wall-bounded systems only")
+
+    return register_extension(
+        ParamExtension(
+            name="example",
+            model=_Example.model,
+            relevant=lambda system: system in walled_systems,
+            summary="A test section.",
+            validate=validate,
+            off_cadences=("it_example",),
+            configured=lambda values: values.modes is not None,
+        )
+    )
 
 
 def case_extensions() -> None:
-    from dnsjax_lab.extensions import force_params, probes_params
     from pydantic_settings import CliApp
 
     import dnsjax.param_surface as PS
@@ -784,12 +747,13 @@ def case_extensions() -> None:
     from dnsjax.param_surface import recorded_params_dump
 
     check("jax" not in sys.modules, "extensions stay JAX-free")
+    example = _example_extension()
 
     # CLI parse: extension flags land in the overlays, not the core.
     pp = spec_for("plane-poiseuille")
     exts = tuple(relevant_extensions("plane-poiseuille").values())
     check(
-        [e.name for e in exts] == ["probes", "force"],
+        "example" in [e.name for e in exts],
         "plane-poiseuille relevant extensions",
         [e.name for e in exts],
     )
@@ -797,9 +761,9 @@ def case_extensions() -> None:
     args = [
         "--phys.re",
         "500",
-        "--probes.modes",
+        "--example.modes",
         "3,0",
-        "--probes.it_probes",
+        "--example.it_example",
         "10",
     ]
     src = PS.make_cli_source(
@@ -810,12 +774,12 @@ def case_extensions() -> None:
         parsed.model_dump(exclude_unset=True), exts
     )
     check(
-        core.get("phys") == {"re": 500.0} and "probes" not in core,
+        core.get("phys") == {"re": 500.0} and "example" not in core,
         "extension flags split from core",
         core,
     )
     check(
-        overlays == {"probes": {"modes": "3,0", "it_probes": 10}},
+        overlays == {"example": {"modes": "3,0", "it_example": 10}},
         "extension overlay contents",
         overlays,
     )
@@ -824,7 +788,7 @@ def case_extensions() -> None:
     try:
         apply_extension_layer(overlays)
         check(
-            probes_params.modes == "3,0" and probes_params.it_probes == 10,
+            example.values.modes == "3,0" and example.values.it_example == 10,
             "apply_extension_layer mutates singleton",
         )
 
@@ -835,46 +799,43 @@ def case_extensions() -> None:
         P.update_parameters(P.Parameters(phys={"system": "plane-poiseuille"}))
         dump = recorded_params_dump(P.params)
         check(
-            dump.get("probes") == {"modes": "3,0", "it_probes": 10}
-            and "force" in dump,
+            dump.get("example") == {"modes": "3,0", "it_example": 10},
             "recorded_params_dump embeds extensions",
-            {k: dump.get(k) for k in ("probes", "force")},
+            dump.get("example"),
         )
         check(
-            "el" not in dump["phys"]
+            "re1" not in dump["phys"]
             and dump["phys"]["system"] == "plane-poiseuille",
             "recorded_params_dump is the filtered public surface",
             sorted(dump["phys"]),
         )
 
-        # Irrelevant system: the sections leave the metadata dump...
+        # Irrelevant system: the section leaves the metadata dump...
         _reset()
         P.update_parameters(P.Parameters(phys={"system": "kolmogorov"}))
         dump = recorded_params_dump(P.params)
         check(
-            "probes" not in dump and "force" not in dump,
+            "example" not in dump,
             "recorded_params_dump filters irrelevant extensions",
         )
         # ... but a *configured* section on an unsupported system is
         # still rejected (direct assignment bypasses the strict
         # surface; the validate hooks dispatch unconditionally).
-        force_params.modes = "3,0"
-        force_params.profiles = "prof.npz"
-        force_params.amplitude = 1e-3
-        force_params.it_force = 2
+        example.values.modes = "3,0"
+        example.values.it_example = 2
         try:
             P.validate_parameters()
-            check(False, "force on periodic rejected")
+            check(False, "a walled-only section on periodic rejected")
         except ValueError as ex:
             check(
                 "wall-bounded" in str(ex),
-                "force on periodic rejected",
+                "a walled-only section on periodic rejected",
                 ex,
             )
     finally:
         reset_extensions()
     check(
-        probes_params.modes is None and force_params.modes is None,
+        example.values.modes is None and example.values.it_example is None,
         "reset_extensions restores defaults",
     )
 
@@ -995,7 +956,7 @@ def case_entry_smoke() -> None:
         "--help lists flows",
     )
     check(
-        "--phys.el" not in r.stdout and "--geo.eta" not in r.stdout,
+        "--phys.re1" not in r.stdout and "--geo.eta" not in r.stdout,
         "--help hides flow-specific fields",
     )
     check(
@@ -1009,7 +970,7 @@ def case_entry_smoke() -> None:
         "--res.nr" in r.stdout and "--res.ntheta" in r.stdout,
         "--help pipe shows aliases",
     )
-    check("--phys.el" not in r.stdout, "--help pipe hides el")
+    check("--geo.eta" not in r.stdout, "--help pipe hides eta")
     check("rigged-cgl" in r.stdout, "--help pipe shows grid choices")
 
     r = run("--phys.system", "taylor-couette", "--help")
@@ -1030,49 +991,23 @@ def case_entry_smoke() -> None:
     except tomllib.TOMLDecodeError as ex:
         check(False, "--sample-toml output parses clean", ex)
 
-    r = run("--phys.system", "pipe", "--phys.el", "80")
+    r = run("--phys.system", "pipe", "--geo.eta", "0.5")
     check(r.returncode == 2, "irrelevant CLI flag exits 2", r.returncode)
     check(
-        "pipe" in r.stderr and "--phys.el" in r.stderr,
+        "pipe" in r.stderr and "--geo.eta" in r.stderr,
         "irrelevant CLI flag names flow",
         r.stderr[-300:],
     )
 
-    # An entry point's own section is on its bare --help, and its flow
-    # help carries only the built-in sections that flow accepts.  In
-    # subprocesses: importing either driver registers its section.
-    r = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from dnsjax_lab.twin.driver import TwinParams as m; "
-            "print(' '.join(m.model_fields))",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    twin_flags = {f"--twin.{name}" for name in r.stdout.split()}
-    r = run("--help", module="dnsjax_lab.twin")
-    missing = sorted(f for f in twin_flags if f not in r.stdout)
-    check(
-        r.returncode == 0 and twin_flags and not missing,
-        "dnsjax-twin --help lists every [twin] field",
-        missing or r.stderr[-300:],
-    )
+    # An entry point's own section is on its bare --help and on each
+    # flow's.  In subprocesses: importing the driver registers its
+    # section.
     tg = "dnsjax.analysis.transient_growth"
-    for args, shown, hidden in (
-        ((), ("--tg.",), ("--probes.", "--force.")),
-        (("kolmogorov",), ("--tg.",), ("--probes.", "--force.")),
-        (("viscoelastic-pipe",), ("--tg.", "--probes."), ("--force.",)),
-    ):
+    for args in ((), ("kolmogorov",), ("pipe",)):
         r = run("--help", *args, module=tg)
         check(
-            r.returncode == 0
-            and all(s in r.stdout for s in shown)
-            and not any(h in r.stdout for h in hidden),
-            f"transient-growth --help {' '.join(args)}: "
-            f"shows {shown}, hides {hidden}",
+            r.returncode == 0 and "--tg." in r.stdout,
+            f"transient-growth --help {' '.join(args)}: shows --tg.",
             r.stderr[-300:],
         )
 
@@ -1104,13 +1039,7 @@ def main() -> int:
     if not args.skip_entry_smoke:
         case_entry_smoke()
 
-    if FAILURES:
-        print(f"\n{len(FAILURES)} failure(s):")
-        for f in FAILURES:
-            print(f"  - {f}")
-        return 1
-    print("\nAll parameter-surface tests passed.")
-    return 0
+    return finish("parameter-surface")
 
 
 if __name__ == "__main__":

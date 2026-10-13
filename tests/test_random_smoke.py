@@ -1,18 +1,17 @@
-r"""Random-IC smoke tests: exercise time integration for all flows.
+r"""Random-IC smoke tests: exercise time integration for the core flows.
 
-Starts every distinct stepping machinery (kolmogorov, plane-couette,
-pipe, viscoelastic-pipe, taylor-couette, dean, viscoelastic-dean) from
-a random
+Starts every distinct stepping machinery of the core flows
+(kolmogorov, plane-couette, pipe, taylor-couette) from a random
 divergence-free perturbation of its base flow (the in-process
 ``init.random_field`` start mode, no snapshot file), at a Reynolds
 number above the onset of transition, on a small domain at low
 resolution, and integrates a short time -- verifying the run
-completes with no error, NaN, or blow-up.  ``plane-poiseuille`` and
-``quasi-keplerian`` need no entries of their own: they bind the
-plane-couette / taylor-couette machinery respectively (see the SYSTEMS
-comments), with their flow-specific pieces covered by
-``test_laminar_smoke.py``, ``test_quasi_keplerian.py``, and the
-published transient-growth values.
+completes with no error, NaN, or blow-up.  ``plane-poiseuille`` needs
+no entries of its own: it binds the plane-couette machinery (see the
+SYSTEMS comments), with its flow-specific pieces covered by
+``test_laminar_smoke.py`` and the published transient-growth values.
+The runner and the per-row keys: ``tests/_random_smoke.py``; the lab's
+flows have a table of their own, ``lab/tests/test_random_smoke.py``.
 
 Unlike ``tests/test_laminar_smoke.py`` (which starts from ``u' = 0``, so
 all `$\omega'$`/`$u'$`-proportional terms -- including the rotational
@@ -30,24 +29,18 @@ it passes ``--solver.rhs_transform_chunks 2`` to drive the chunked
 RHS inverse transform of ``rhs.get_nonlin`` (``fft.chunked_transform``)
 through the jitted stepper -- every other entry runs the default
 fused 6-field batch, and the chunk-vs-fused bit-parity is
-unit-covered by ``test_padding.py`` and
-``test_viscoelastic.py::test_rhs_transform_chunks_parity``.
+unit-covered by ``test_padding.py``.
 Three ``*-gemm`` entries (``plane-couette-gemm``, ``pipe-gemm``,
 ``taylor-couette-gemm``) pass ``--solver.wall_normal_matvec dense``:
 on CPU the wall-normal derivatives default to the stencil, so these
 keep the dense GEMM -- the GPU path, and the reference -- stepping
 here, one per geometry (the two paths' agreement:
 ``test_wall_normal_matvec.py``).
-Seven entries (``plane-couette-cnab2``,
-``pipe-cnab2``, ``viscoelastic-pipe-cnab2``, ``taylor-couette-cnab2``,
-``dean-cnab2``, ``viscoelastic-dean-cnab2``, ``kolmogorov-cnab2``) pass
+Four entries (``plane-couette-cnab2``,
+``pipe-cnab2``, ``taylor-couette-cnab2``, ``kolmogorov-cnab2``) pass
 ``--step.scheme cnab2`` to drive the alternative CN/AB2 time-stepping
 scheme -- Crank-Nicolson viscous + explicit 2nd-order Adams-Bashforth
-nonlinear, one FFT eval per step -- across all four geometry families
-(``dean-cnab2`` additionally covers the total-field ``_l_bf == 0``
-corrector path; the two viscoelastic entries the 9-component tensor
-coupling -- the pipe's also with a nonzero moving frame, which the
-annular twin's ``u_grid = 0`` default never exercises).
+nonlinear, one FFT eval per step -- across all four geometry families.
 For the wall-bounded families this exercises the fix that makes the
 stiff base-flow coupling implicit (an FFT-free corrector; see ``_l_bf``
 / ``step_cnab2``) plus the iterative-CN self-start, so cnab2 stays
@@ -64,26 +57,22 @@ coupling bug).
 
 The wall-bounded iterative-cn entries run the **unsplit** corrector
 (``step.split_corrector`` defaults off).  A trailing
-``dean-split-corrector`` entry passes ``--step.split_corrector True``
-to cover the opt-in split corrector (linear coupling iterated FFT-free
-between full-RHS refreshes; see ``_split_core`` in ``timestep.py``) on
-the force-driven Dean flow, where the coupling is the pure
-instantaneous mean-flow term (``l_bf == L_mf``) -- the regime where the
-two corrector structures most differ.
+``taylor-couette-split-corrector`` entry passes
+``--step.split_corrector True`` to cover the opt-in split corrector
+(linear coupling iterated FFT-free between full-RHS refreshes; see
+``_split_core`` in ``timestep.py``) on the annular machinery.
 
 Every entry above runs the **default** ``res.consistent_imm``
 reconstruction scheme, so the nonlinear stability gate the one-step
 ``test_imm_continuity.py`` guard cannot provide is covered for the
 whole table (the rejected state-side projection passed every linear
 gate yet went non-finite within ~6 steps of exactly the plane-couette
-configuration here).  Seven ``*-legacy-imm`` entries then drive the
+configuration here).  Five ``*-legacy-imm`` entries then drive the
 retired primitive `$(v, p)$` path
 (``--res.consistent_imm False``) through the same nonlinear runs, so
 the kept-but-not-recommended formulation keeps its own coverage:
-plane-couette and taylor-couette under both schemes, plus the pipe and
-both 9-component viscoelastic compositions (viscoelastic-dean
-inheriting the annular pass, viscoelastic-pipe the cylindrical one,
-each exercised nowhere else) under iterative-cn.  None of the pipe
+plane-couette and taylor-couette under both schemes, plus the pipe
+under iterative-cn.  None of the pipe
 entries can see the cylindrical default scheme's low-``Re`` limit --
 they run decades above its threshold, deliberately (that limit and its
 measurements: the ``_cylindrical_stepping`` Design notes).
@@ -93,28 +82,22 @@ A trailing forced multi-device, padding-inducing entry (``mpi-pad``:
 divisible by ``np1``) is the regression guard for the per-device
 (no-replication) random-IC build with spectral padding -- and, since
 ``solver.backend`` defaults to pallas, it also runs the *cartesian*
-banded operator build/solve on that sharded padded axis.  Three
-``*-pallas-mpi-pad`` entries repeat the sharded/padded shape for the
-banded-operator variants that entry does not reach (the CPU pure-JAX
-banded path; the Triton kernel itself is GPU-only): ``pipe``
-(parity-selected base band), ``viscoelastic-dean`` (the annular
-stacked ``Hk`` plus the conformation Helmholtz operator ``Hc``,
-`$\kappa > 0$`) and ``viscoelastic-pipe`` (both of those at once --
-every ``Hc`` band and every per-slot ghost sign is a mode-sharded
-stacked array there); single-device band-vs-dense parity per geometry is
-unit-covered by ``test_cartesian.py`` / ``test_cylindrical.py`` /
-``test_annular.py``, the shard_map-local solve by
-``test_banded_solver_sharded.py``.  A ``curved-pipe-mpi-pad`` entry
-adds the toroidal metric on that shape.  ``plane-couette-mpi-pad`` and
+banded operator build/solve on that sharded padded axis.  A
+``pipe-pallas-mpi-pad`` entry repeats the sharded/padded shape for the
+banded-operator variant that entry does not reach (the CPU pure-JAX
+banded path; the Triton kernel itself is GPU-only): the pipe's
+parity-selected base band; single-device band-vs-dense parity per
+geometry is unit-covered by ``test_cartesian.py`` /
+``test_cylindrical.py`` / ``test_annular.py``, the shard_map-local
+solve by ``test_banded_solver_sharded.py``.  ``plane-couette-mpi-pad`` and
 ``pipe-pallas-mpi-pad`` also write ``[lowres]`` snapshots (the static
 pressure in the first, the radial parity regrid in the second) and
 read them back (``_check_lowres``).  The multi-process entries are
 also the only ones that keep ``stop.check_laminarization`` on (their
 `$E'$` stays decades above its threshold): a flow's global arrays must
 reach every jitted program as arguments, a closed-over one traces on
-one process and is refused on two, and the laminarization read, the
-basis crossing and the curved pipe's metric diagnostics are all such
-programs.
+one process and is refused on two, and the laminarization read and
+the basis crossing are such programs.
 
 A ``plane-couette-error-max`` entry pins that the corrector-error
 check judges every step since the previous host sync, not only the one
@@ -141,21 +124,10 @@ global singletons at import time) in its own temporary directory, so
 ``parameters.toml`` is not loaded (model defaults + CLI args only) and
 the per-system ``stats.dat`` does not collide.
 
-Success criteria per system:
-
-1. subprocess exit code 0 (catches hard crashes / exceptions);
-2. the run reached the end (final ``t`` `$\geq$`
-   ``max_sim_time - dt``): it was not cut short by corrector
-   divergence (the main loop stops once ``err`` reaches
-   ``corrector_tolerance``);
-3. ``"Corrector failed to converge"`` absent from stdout;
-4. the final corrector error is finite and below ``corrector_tolerance``
-   (catches a late divergence in the last ``it_error_check`` steps);
-5. every numeric value on the final summary line is finite (NaN/Inf
-   print as ``nan``/``inf``);
-6. on CPU, the closing ``Peak host memory`` and ``Resident host
-   memory`` lines are there and count every rank (their all-gather is
-   a collective each rank must reach).
+Success criteria per system: exit code 0, the shared criteria of
+``tests/_smoke.py`` (reached the end, no corrector failure, a finite
+converged final error, a finite summary line), and on CPU the closing
+memory lines over every rank (``tests/_random_smoke.py``).
 
 Usage (single device)::
 
@@ -173,26 +145,15 @@ Two devices via MPI::
 
 from __future__ import annotations
 
-import argparse
-import math
-import re
-import subprocess
-import sys
-import tempfile
-from pathlib import Path
-
-from _live import report, run_live
-
-sys.stdout.reconfigure(line_buffering=True)
+from _random_smoke import main
 
 # ── configuration ────────────────────────────────────────────────────
 
 # Reynolds numbers above the onset of (subcritical) transition.  TC is
-# counter-rotating (re1 = 400 > 0 so update_parameters sets Re_ref = re1);
-# Dean is force-driven at re = 1000.  eta = 0.5 for the annular family.
-# For pipe / TC / Dean the azimuthal extent is forced to 2*pi by the
-# code and the radius / gap is fixed by geometry, so only the axial lx
-# is set; Cartesian / periodic set both lx and lz (periodic ly is
+# counter-rotating (re1 = 400 > 0 so update_parameters sets Re_ref = re1),
+# eta = 0.5.  For pipe / TC the azimuthal extent is forced to 2*pi by
+# the code and the radius / gap is fixed by geometry, so only the axial
+# lx is set; Cartesian / periodic set both lx and lz (periodic ly is
 # hardwired to 4 in update_parameters).
 SYSTEMS: list[dict] = [
     {
@@ -219,8 +180,7 @@ SYSTEMS: list[dict] = [
         # inverse transform of rhs.get_nonlin (fft.chunked_transform)
         # end to end through the jitted stepper -- every other entry
         # runs the default fused 6-field batch, and chunk-vs-fused
-        # bit-parity is unit-guarded (test_padding.py,
-        # test_viscoelastic.py::test_rhs_transform_chunks_parity).
+        # bit-parity is unit-guarded (test_padding.py).
         # plane-poiseuille needs no entry of its own: it shares this
         # entry's Cartesian nonlinear machinery, and its
         # driving/base-flow specifics are covered by the laminar
@@ -252,36 +212,6 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # The toroidal pipe: the same cylindrical stepping with a
-        # metric, driving the full curvature path -- the pointwise
-        # metric factors in the RHS and the O(kappa) defect in the
-        # continuity rows -- through the CLI on a nonlinear field.  A
-        # *total*-field flow, so its ``E'`` is the k_s != 0 energy and
-        # the run starts from the straight-pipe profile plus the random
-        # perturbation.  Curvature 0.3 rather than the shipped 0.037:
-        # the terms under test scale with it, and the corrector's
-        # contraction (~kappa) is worth exercising away from zero.
-        # Correctness lives in test_curved_pipe.py; this is the
-        # integration gate.
-        "name": "curved-pipe",
-        "args": [
-            "--phys.system",
-            "curved-pipe",
-            "--phys.re",
-            "1800",
-            "--geo.curvature",
-            "0.3",
-            "--geo.lz",
-            "5",
-        ],
-    },
-    {
-        # Also stands in for quasi-keplerian: since the TC/QK dedup
-        # (_circular_couette.py) the two share the stepping machinery;
-        # the QK-specific parameter derivation and the wedge Fourier +
-        # in-process nonlinear wedge step live in
-        # test_quasi_keplerian.py, the laminar fixed point in
-        # test_laminar_smoke.py.
         "name": "taylor-couette",
         "args": [
             "--phys.system",
@@ -347,130 +277,6 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        "name": "dean",
-        "args": [
-            "--phys.system",
-            "dean",
-            "--phys.re",
-            "1000",
-            "--geo.eta",
-            "0.5",
-            "--geo.lz",
-            "5",
-        ],
-    },
-    {
-        # Viscoelastic (sPTT) pipe flow: the axially driven 9-component
-        # twin of viscoelastic-dean, and the only flow that drives the
-        # coupled tensor path through the pipe's **parity-reduced**
-        # radial operators -- so this is where a wrong per-slot
-        # conformation parity sign would show up nonlinearly (the
-        # laminar smoke's axisymmetric state cannot see it: the
-        # near-axis ghost correction only bites on m != 0 content).
-        # Total-field IC = analytical laminar pair + windowed,
-        # axis-enveloped tensor noise.  Re = wi/el is derived; the
-        # kappa > 0 default builds the conformation Helmholtz operator.
-        # Wi = 20, El = 0.02 => Re = 1000 -- the flow's own default
-        # regime, and close to the Newtonian ``pipe`` entry's Re = 1800,
-        # so the two are comparable.  (The annular entries below run at
-        # Wi = El = 20, Re = 1: that flow's subject is the inertialess
-        # limit, not this one's.)
-        "name": "viscoelastic-pipe",
-        "args": [
-            "--phys.system",
-            "viscoelastic-pipe",
-            "--phys.wi",
-            "20",
-            "--phys.el",
-            "0.02",
-            "--init.random_conformation_amplitude",
-            "10",
-            "--geo.lz",
-            "5",
-        ],
-    },
-    {
-        # The pipe spin quad carrying the 9-component total field.
-        # This composition was briefly rejected on a flag-on blow-up
-        # measured while porting the flow -- at the Re ~ 1 the flow
-        # then inherited from the annulus.  The blow-up is real but
-        # is *not* viscoelastic: it reproduces at beta = 1 (polymer
-        # decoupled from the velocity) and in the Newtonian pipe, and
-        # was a defect in the cylindrical reconstruction pass -- its
-        # two free wall differences were lagged to t^n -- since fixed
-        # (the measurements: the ``_cylindrical_stepping`` Design
-        # notes).  This entry
-        # runs the flow's own default Re = 1000, alongside the
-        # Newtonian ``pipe-legacy-imm`` entry's 1800.  Note what an
-        # entry of this shape does NOT guard -- and the warning now
-        # applies to the *shipped* formulation, since it is the
-        # default: that defect agreed with its control to six
-        # significant figures for 600 steps before departing, and its
-        # boundary was crossed by *refinement* at fixed Re, which a
-        # resolution-pinned smoke entry cannot follow.  The guard for
-        # that class is a default-vs-legacy comparison at the intended
-        # (Re, nr), read digit by digit.
-        "name": "viscoelastic-pipe-legacy-imm",
-        "args": [
-            "--phys.system",
-            "viscoelastic-pipe",
-            "--res.consistent_imm",
-            "False",
-            "--phys.wi",
-            "20",
-            "--phys.el",
-            "0.02",
-            "--init.random_conformation_amplitude",
-            "10",
-            "--geo.lz",
-            "5",
-        ],
-    },
-    {
-        # Viscoelastic (sPTT) Dean flow: the 9-component state (3 velocity
-        # + 6 conformation-tensor) driven through the full coupled
-        # nonlinear path (advection Christoffels, stretching, relaxation,
-        # polymer-stress divergence).  Total-field IC = analytical laminar
-        # pair + windowed tensor noise (``random_conformation_amplitude``).
-        # Re = wi/el is derived (no --phys.re).  The kappa > 0 default
-        # also builds the conformation Helmholtz operator (``Hc_op``).
-        # wi = el = 20 (Re = 1) and a reduced conformation-noise amplitude
-        # (10, against the default 700) keep the coupled system robust at
-        # the coarse smoke resolution -- the default wi = 105 with the
-        # full noise is a genuinely stiff elastic instability on a 32^3
-        # grid, not a solver defect.
-        "name": "viscoelastic-dean",
-        "args": [
-            "--phys.system",
-            "viscoelastic-dean",
-            "--phys.wi",
-            "20",
-            "--phys.el",
-            "20",
-            "--init.random_conformation_amplitude",
-            "10",
-            "--geo.lz",
-            "5",
-        ],
-    },
-    {
-        "name": "viscoelastic-dean-legacy-imm",
-        "args": [
-            "--phys.system",
-            "viscoelastic-dean",
-            "--res.consistent_imm",
-            "False",
-            "--phys.wi",
-            "20",
-            "--phys.el",
-            "20",
-            "--init.random_conformation_amplitude",
-            "10",
-            "--geo.lz",
-            "5",
-        ],
-    },
-    {
         # Regression guard for the per-device (no-replication) random
         # build with spectral padding: always multi-device on the kx axis
         # (np1 = 2), with nx // 2 = 17 not divisible by np1 (padded to
@@ -532,99 +338,6 @@ SYSTEMS: list[dict] = [
             "5",
             "--solver.backend",
             "pallas",
-        ],
-    },
-    {
-        # No dedicated cartesian / plain-annular pallas-pad entries:
-        # solver.backend already *defaults* to pallas, so
-        # plane-couette-mpi-pad above runs the cartesian banded
-        # build/solve on the sharded padded axis at 32^3, and the
-        # viscoelastic entry below covers the annular stacked-Hk (+
-        # Hc) sharded build; single-device band-vs-dense parity is
-        # unit-covered per geometry (test_cartesian / test_annular)
-        # and the shard_map-local solve by test_banded_solver_sharded.
-        # Pallas banded backend on the viscoelastic annular
-        # (viscoelastic-dean) geometry, same sharded/padded mode-axis
-        # guard (np1 = 2, nx // 2 = 3 padded to 4): builds the annular Lk
-        # / 2x2-IMM Hk operators **and** the 6-component stacked
-        # conformation Helmholtz operator ``Hc_op`` (kappa > 0) in banded
-        # storage on the sharded axis, and solves the 9-component coupled
-        # nonlinear path.  CPU runs the pure-JAX banded sweep (the Triton
-        # kernel is GPU-only).  Same robust reduced parameters as the
-        # single-device ``viscoelastic-dean`` entry.
-        "name": "viscoelastic-dean-pallas-mpi-pad",
-        "force_np": 2,
-        "force_np0": 1,
-        "oversubscribe": True,
-        "check_laminarization": True,
-        "res": {"nx": 6, "ny": 24, "nz": 8},
-        "args": [
-            "--phys.system",
-            "viscoelastic-dean",
-            "--phys.wi",
-            "20",
-            "--phys.el",
-            "20",
-            "--init.random_conformation_amplitude",
-            "10",
-            "--geo.lz",
-            "5",
-            "--solver.backend",
-            "pallas",
-        ],
-    },
-    {
-        # The same multi-device 9-component guard for the *pipe*, where
-        # the per-slot parity masks additionally ride the sharded
-        # azimuthal axis: every ``m_is_even``-selected band and every
-        # per-slot ghost sign is a stacked, mode-sharded array here, so
-        # this is the entry that would catch a cross-spec stack in the
-        # conformation operators or the fused radial GEMM.
-        "name": "viscoelastic-pipe-pallas-mpi-pad",
-        "force_np": 2,
-        "force_np0": 1,
-        "oversubscribe": True,
-        "check_laminarization": True,
-        "res": {"nx": 6, "ny": 24, "nz": 8},
-        "args": [
-            "--phys.system",
-            "viscoelastic-pipe",
-            "--phys.wi",
-            "20",
-            "--phys.el",
-            "0.02",
-            "--init.random_conformation_amplitude",
-            "10",
-            "--geo.lz",
-            "5",
-            "--solver.backend",
-            "pallas",
-        ],
-    },
-    {
-        # The curved pipe on the same sharded, padded shape: its basis
-        # maps and diagnostics carry the metric `h`, a global array
-        # that a jitted function must take as an argument -- closed
-        # over, it traces on one process and is refused on two.  Under
-        # constant bulk velocity, so the t = t0 driving inference runs
-        # too.
-        "name": "curved-pipe-mpi-pad",
-        "force_np": 2,
-        "force_np0": 1,
-        "oversubscribe": True,
-        "check_laminarization": True,
-        "res": {"nx": 6, "ny": 24, "nz": 8},
-        "args": [
-            "--phys.system",
-            "curved-pipe",
-            "--phys.re",
-            "1800",
-            "--geo.curvature",
-            "0.3",
-            "--phys.driving",
-            "constant_bulk_velocity",
-            "--geo.lz",
-            "5",
         ],
     },
     {
@@ -855,82 +568,6 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # CN/AB2 on Dean flow (annular, force-driven): the one
-        # **total-field** flow (``base_flow = curl_base_flow = 0``, driven
-        # by the azimuthal body force), so its ``_l_bf`` is identically
-        # zero and the base-flow-coupling corrector is trivial -- a
-        # distinct cnab2 code path exercised by no other entry.  Both
-        # walls are stationary (``U -> 0`` at each), so the total-field
-        # advection is not wall-stiff and cnab2 is bounded only by the
-        # ordinary self-advection CFL (fine at ny=32, this Re).
-        "name": "dean-cnab2",
-        "res": {"nx": 32, "ny": 32, "nz": 32},
-        "args": [
-            "--phys.system",
-            "dean",
-            "--phys.re",
-            "1000",
-            "--geo.eta",
-            "0.5",
-            "--geo.lz",
-            "5",
-            "--step.scheme",
-            "cnab2",
-        ],
-    },
-    {
-        # CN/AB2 on the viscoelastic (sPTT) Dean flow: the 9-component
-        # total-field tensor path.  Its ``_l_bf`` is the viscoelastic
-        # coupling (velocity mean-flow + polymer-stress divergence;
-        # conformation mean advection / stretching + linear relaxation),
-        # all FFT-free, so the explicit AB2 remainder is the pure
-        # fluctuation-fluctuation nonlinearity -- a distinct cnab2 code
-        # path (9 components, elastic coupling) exercised by no other
-        # entry.  Same robust reduced parameters as the iterative-cn
-        # ``viscoelastic-dean`` entry; cnab2 matches iterative-cn to
-        # O(dt^2) at ~1 FFT/step vs its ~4.
-        # CN/AB2 on the viscoelastic pipe: the FFT-free ``_l_bf``
-        # here carries the pipe's mean-flow coupling, the polymer
-        # divergence through the parity-reduced radial operators, and
-        # the moving-frame term (u_grid = 1/2 by default, unlike the
-        # annular twin) -- and the AB2 remainder must stay the pure
-        # fluctuation-fluctuation nonlinearity.
-        "name": "viscoelastic-pipe-cnab2",
-        "res": {"nx": 32, "ny": 32, "nz": 32},
-        "args": [
-            "--phys.system",
-            "viscoelastic-pipe",
-            "--phys.wi",
-            "20",
-            "--phys.el",
-            "0.02",
-            "--init.random_conformation_amplitude",
-            "10",
-            "--geo.lz",
-            "5",
-            "--step.scheme",
-            "cnab2",
-        ],
-    },
-    {
-        "name": "viscoelastic-dean-cnab2",
-        "res": {"nx": 32, "ny": 32, "nz": 32},
-        "args": [
-            "--phys.system",
-            "viscoelastic-dean",
-            "--phys.wi",
-            "20",
-            "--phys.el",
-            "20",
-            "--init.random_conformation_amplitude",
-            "10",
-            "--geo.lz",
-            "5",
-            "--step.scheme",
-            "cnab2",
-        ],
-    },
-    {
         # CN/AB2 on the triply-periodic (Kolmogorov) geometry: the plain
         # no-corrector explicit-AB2 path (l_bf_fn is None -- the uniform
         # Fourier grid has no wall clustering and no base-flow-coupling
@@ -955,17 +592,16 @@ SYSTEMS: list[dict] = [
         # Split iterative-cn corrector (step.split_corrector=True):
         # every other iterative-cn entry runs the unsplit corrector
         # (the default), so this opt-in override keeps the split
-        # corrector integration-covered.  Dean, because its coupling is
-        # the pure instantaneous mean-flow term (l_bf == L_mf) -- the
-        # regime where the two corrector structures most differ.  Same
-        # config as the iterative-cn ``dean`` entry.
-        "name": "dean-split-corrector",
-        "res": {"nx": 32, "ny": 32, "nz": 32},
+        # corrector integration-covered, on the annular machinery.
+        # Same config as the iterative-cn ``taylor-couette`` entry.
+        "name": "taylor-couette-split-corrector",
         "args": [
             "--phys.system",
-            "dean",
-            "--phys.re",
-            "1000",
+            "taylor-couette",
+            "--phys.re1",
+            "400",
+            "--phys.re2",
+            "-400",
             "--geo.eta",
             "0.5",
             "--geo.lz",
@@ -1125,447 +761,6 @@ SYSTEMS: list[dict] = [
     },
 ]
 
-# Default time-stepping ``corrector_tolerance`` (TimeStepping model
-# default; the subprocesses run in temp dirs, so no parameters.toml).
-CORRECTOR_TOLERANCE = 1e-5
-
-# A signed float, or ``nan`` / ``inf`` (how non-finite values print).
-_NUM = r"[-+]?(?:nan|inf|\d+(?:\.\d*)?(?:[eE][-+]?\d+)?)"
-# ``\bt`` avoids matching the ``t`` in ``c/it =`` ('i' is a word char, so
-# there is no word boundary before that ``t``).
-T_PATTERN = re.compile(rf"\bt\s*=\s*({_NUM})")
-ERR_PATTERN = re.compile(rf"\berr\s*=\s*({_NUM})")
-VALUE_PATTERN = re.compile(rf"=\s*({_NUM})")
-
-# ── helpers ──────────────────────────────────────────────────────────
-
-
-def _build_command(
-    system: dict, args: argparse.Namespace, dt: float
-) -> list[str]:
-    """Build the ``mpirun ... -m dnsjax`` command for one system.
-
-    Per-system ``force_np`` / ``force_np0`` / ``res`` /
-    ``oversubscribe`` / ``max_sim_time`` / ``it_stats`` /
-    ``check_laminarization`` override the suite defaults (used by the
-    multi-device padded entries and the nan-guard entry); ``lowres``
-    adds the ``[lowres]`` flags (:func:`_check_lowres`).
-    """
-    np_count = system.get("force_np", args.np)
-    np0 = system.get("force_np0", args.np0)
-    res = system.get("res", {})
-    nx = str(res.get("nx", args.res))
-    ny = str(res.get("ny", args.res))
-    nz = str(res.get("nz", args.res))
-    # Cylindrical/annular flows take the aliased public resolution
-    # names (axial nz, radial nr, azimuthal ntheta); the internal
-    # meaning (nx = axial, ny = radial, nz = azimuthal) is unchanged.
-    cyl_annular = any(
-        s in system["args"]
-        for s in (
-            "pipe",
-            "curved-pipe",
-            "viscoelastic-pipe",
-            "taylor-couette",
-            "quasi-keplerian",
-            "dean",
-            "viscoelastic-dean",
-        )
-    )
-    res_flags = (
-        ["--res.nz", nx, "--res.nr", ny, "--res.ntheta", nz]
-        if cyl_annular
-        else ["--res.nx", nx, "--res.ny", ny, "--res.nz", nz]
-    )
-    max_sim_time = system.get("max_sim_time", args.max_sim_time)
-    it_stats = system.get("it_stats", args.it_stats)
-
-    base = ["mpirun"]
-    if system.get("oversubscribe"):
-        base.append("--oversubscribe")
-    base += [
-        "-np",
-        str(np_count),
-        sys.executable,
-        "-m",
-        "dnsjax",
-        "--dist.platform",
-        args.platform,
-        "--dist.np0",
-        str(np0),
-        "--dist.np1",
-        str(np_count // np0),
-    ]
-    # In-process random divergence-free IC (no snapshot file).  The
-    # default-IC entry omits this flag to verify that random is the
-    # default start mode when nothing else is selected.
-    if not system.get("omit_random_flag"):
-        base += ["--init.random_field", "True"]
-    base += [
-        "--init.random_amplitude",
-        str(args.amplitude),
-        "--init.random_smoothness",
-        str(args.smoothness),
-        "--init.random_seed",
-        str(args.seed),
-        *res_flags,
-        "--step.dt",
-        str(dt),
-        "--stop.max_sim_time",
-        str(max_sim_time),
-        "--outs.it_stats",
-        str(it_stats),
-        # Laminarization check off unless the entry keeps it on: a
-        # decaying transient must not cut the run short before
-        # max_sim_time.  The multi-process entries keep it on (their
-        # E' stays decades above the threshold), because its E' read
-        # is a jitted program only a real multi-process run can fail
-        # to trace.
-        "--stop.check_laminarization",
-        str(system.get("check_laminarization", False)),
-    ]
-    lowres = system.get("lowres")
-    if lowres:
-        base += ["--lowres.it_lowres", str(lowres["it_lowres"])]
-        for axis, value in lowres["res"].items():
-            base += [f"--lowres.{axis}", str(value)]
-    return base + system["args"]
-
-
-def _check_lowres(
-    workdir: Path, system: dict, max_sim_time: float, dt: float
-) -> str:
-    """Read a run's ``[lowres]`` files back (the entry's ``lowres``).
-
-    One file per aligned step, the initial condition included; each
-    with the reduced resolution recorded under the flow's public names,
-    the reduced stored shape, finite and non-zero, and a ``pressure/``
-    member exactly when the entry expects one.  Written by a
-    multi-process run, so a global array baked into one of the
-    writer's jitted programs fails here.
-    """
-    import numpy as np
-
-    from dnsjax.analysis import read_pressure, read_state
-    from dnsjax.snapshot_meta import read_snapshot_meta
-
-    name, spec = system["name"], system["lowres"]
-    files = sorted((workdir / "lowres").glob("lowres_*.tar"))
-    its = [int(f.stem.rsplit("_", 1)[1]) for f in files]
-    expected = list(range(0, round(max_sim_time / dt) + 1, spec["it_lowres"]))
-    if its != expected:
-        raise AssertionError(
-            f"{name}: lowres files at steps {its}, expected {expected}"
-        )
-    for f in files:
-        meta = read_snapshot_meta(f)
-        stored = {k: meta["params"]["res"][k] for k in spec["res"]}
-        if stored != spec["res"]:
-            raise AssertionError(f"{name}: {f.name} records res {stored}")
-        fields = np.stack(
-            read_state(f, return_physical=False, return_spectral=True).spectral
-        )
-        if fields.shape != spec["shape"]:
-            raise AssertionError(
-                f"{name}: {f.name} holds {fields.shape}, "
-                f"expected {spec['shape']}"
-            )
-        if not np.isfinite(fields).all() or not np.abs(fields).max() > 0:
-            raise AssertionError(f"{name}: {f.name} is non-finite or zero")
-        if bool(meta.get("pressure")) != spec["pressure"]:
-            raise AssertionError(
-                f"{name}: {f.name} pressure member "
-                f"{bool(meta.get('pressure'))}, expected {spec['pressure']}"
-            )
-        if spec["pressure"]:
-            p = read_pressure(
-                f, return_physical=False, return_spectral=True
-            ).spectral[0]
-            if p.shape != spec["shape"][1:] or not np.isfinite(p).all():
-                raise AssertionError(
-                    f"{name}: {f.name} pressure {p.shape} or non-finite"
-                )
-    return f"{len(files)} lowres files"
-
-
-def _final_summary_line(stdout: str) -> str | None:
-    """Return the final ``t = ... err = ...`` summary line, if any.
-
-    The per-step error appears only on the end-of-run summary line, so
-    the last line carrying ``err =`` is that summary (the initial
-    warm-up ``t = 0.00 ...`` print has no ``err``).
-    """
-    summary: str | None = None
-    for line in stdout.splitlines():
-        if ERR_PATTERN.search(line):
-            summary = line
-    return summary
-
-
-def _check_run(stdout: str, name: str, max_sim_time: float, dt: float) -> str:
-    """Validate one completed run; return the summary line for the PASS.
-
-    Raises ``AssertionError`` on any failed criterion.
-    """
-    if "failed to converge" in stdout:
-        raise AssertionError(f"{name}: corrector failed to converge")
-
-    summary = _final_summary_line(stdout)
-    if summary is None:
-        raise AssertionError(
-            f"{name}: no end-of-run summary line found\n{stdout[-2000:]}"
-        )
-
-    t_match = T_PATTERN.search(summary)
-    err_match = ERR_PATTERN.search(summary)
-    if t_match is None or err_match is None:
-        raise AssertionError(f"{name}: cannot parse summary line: {summary!r}")
-
-    t_final = float(t_match.group(1))
-    err = float(err_match.group(1))
-
-    # Reached the end (not cut short by corrector divergence).  The last
-    # step lands t on (or just past) max_sim_time; allow one dt of slack.
-    if not (t_final >= max_sim_time - dt):
-        raise AssertionError(
-            f"{name}: run ended early at t={t_final} (< {max_sim_time}); "
-            "integration did not complete"
-        )
-
-    # Final corrector error finite and converged (catches a divergence
-    # in the last it_error_check steps that the loop did not stop on).
-    if not (math.isfinite(err) and err < CORRECTOR_TOLERANCE):
-        raise AssertionError(
-            f"{name}: final corrector error {err:.3e} not in "
-            f"[0, {CORRECTOR_TOLERANCE:.0e})"
-        )
-
-    # No NaN / Inf anywhere on the summary line (every diagnostic finite).
-    values = [float(v) for v in VALUE_PATTERN.findall(summary)]
-    if not all(math.isfinite(v) for v in values):
-        raise AssertionError(
-            f"{name}: non-finite value on summary line: {summary!r}"
-        )
-
-    return summary
-
-
-def _check_error_max(corrector_dat: Path, summary: str, name: str) -> None:
-    """The closing ``err =`` covers every step since the last check.
-
-    Compared at the summary's printed precision: the first
-    ``corrector.dat`` row (step 1's error) rounded the same way must not
-    exceed it.
-    """
-    rows = [
-        ln.split()
-        for ln in corrector_dat.read_text().splitlines()
-        if ln.strip() and not ln.lstrip().startswith("#")
-    ]
-    if not rows:
-        raise AssertionError(f"{name}: corrector.dat has no rows")
-    first = float(f"{float(rows[0][2]):.3e}")
-    err_match = ERR_PATTERN.search(summary)
-    if err_match is None:
-        raise AssertionError(f"{name}: no err on the summary line")
-    closing = float(err_match.group(1))
-    if closing < first:
-        raise AssertionError(
-            f"{name}: closing err {closing:.3e} below step 1's "
-            f"{first:.3e} -- the check dropped an earlier step's error"
-        )
-
-
-# ── test runner ──────────────────────────────────────────────────────
-
-
-def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
-    """Run a single random-IC smoke test (in a fresh directory).
-
-    Further per-entry keys: ``expect_pattern`` (regex that must match
-    the run's stdout, e.g. the adaptive-dt "[adaptive]" change line)
-    and ``slack_dt`` (the end-of-run ``t`` slack for runs whose step
-    grows -- the adaptive entries pass their ``dt_max``).
-    """
-    name = system["name"]
-    # ``force_dt`` overrides the global --dt outright (the adaptive
-    # entries start from their own dt; the nan-guard entry needs a dt
-    # *larger* than any sane default).
-    dt = system.get("force_dt", args.dt)
-    cmd = _build_command(system, args, dt)
-
-    with tempfile.TemporaryDirectory(prefix=f"rand_{name}_") as workdir:
-        result = run_live(cmd, timeout=args.timeout, cwd=workdir)
-
-        if system.get("expect_nonfinite_abort"):
-            # Inverted criteria: the run must have aborted itself via
-            # the non-finite guard -- exit code 3 (mpirun -np 1
-            # propagates the child's code) and the FATAL diagnostic.
-            fatal_lines = [
-                line
-                for line in result.stdout.splitlines()
-                if "FATAL: non-finite" in line
-            ]
-            if result.returncode != 3 or not fatal_lines:
-                print(f"  FAIL  {name}: exit code {result.returncode}")
-                print(
-                    result.stdout[-2000:] if result.stdout else "(no stdout)"
-                )
-                print(
-                    result.stderr[-2000:] if result.stderr else "(no stderr)"
-                )
-                raise AssertionError(
-                    f"{name}: expected the non-finite guard abort (exit 3 "
-                    f"+ 'FATAL: non-finite ...'), got exit "
-                    f"{result.returncode} with {len(fatal_lines)} FATAL "
-                    "line(s)"
-                )
-            print(f"  PASS  {name}  ({fatal_lines[0].strip()})")
-            return
-
-        if result.returncode != 0:
-            print(f"  FAIL  {name}: exit code {result.returncode}")
-            print(result.stdout[-2000:] if result.stdout else "(no stdout)")
-            print(result.stderr[-2000:] if result.stderr else "(no stderr)")
-            raise AssertionError(
-                f"{name} exited with code {result.returncode}"
-            )
-
-        # Default-IC entry: confirm the run actually took the random
-        # branch (no snapshot, no explicit mode => random default).
-        if system.get("omit_random_flag") and (
-            "Started from an in-process random IC" not in result.stdout
-        ):
-            raise AssertionError(
-                f"{name}: default start mode did not select the random IC "
-                "('Started from an in-process random IC' missing from stdout)"
-            )
-
-        summary = _check_run(
-            result.stdout,
-            name,
-            system.get("max_sim_time", args.max_sim_time),
-            system.get("slack_dt", dt),
-        )
-
-        if args.platform == "cpu":
-            n_ranks = system.get("force_np", args.np)
-            for line in (
-                "Peak host memory",
-                "Resident host memory at the end",
-            ):
-                mem = re.search(
-                    rf"{line}: [\d.]+ GiB per rank \(max of (\d+)[,)]",
-                    result.stdout,
-                )
-                if mem is None or int(mem.group(1)) != n_ranks:
-                    raise AssertionError(
-                        f"{name}: no '{line}' line over {n_ranks} "
-                        "rank(s) in stdout"
-                    )
-
-        pattern = system.get("expect_pattern")
-        if pattern and re.search(pattern, result.stdout) is None:
-            raise AssertionError(
-                f"{name}: expected pattern {pattern!r} not found in stdout"
-            )
-        if system.get("check_error_max"):
-            _check_error_max(Path(workdir) / "corrector.dat", summary, name)
-        if system.get("lowres"):
-            read_back = _check_lowres(
-                Path(workdir),
-                system,
-                system.get("max_sim_time", args.max_sim_time),
-                dt,
-            )
-            summary = f"{summary.strip()}; {read_back}"
-
-    print(f"  PASS  {name}  ({summary.strip()})")
-
-
-# ── main ─────────────────────────────────────────────────────────────
-
-
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Random-IC smoke tests for all flows",
-    )
-    parser.add_argument(
-        "--np", type=int, default=1, help="Number of devices (mpirun -np)"
-    )
-    parser.add_argument(
-        "--np0",
-        type=int,
-        default=1,
-        help="np0 mesh axis (wall-normal / kz split)",
-    )
-    parser.add_argument(
-        "--dist.platform",
-        dest="platform",
-        default="cpu",
-        choices=["cpu", "cuda", "rocm", "tpu"],
-        help="JAX backend forwarded to each `python -m dnsjax` child "
-        "(default cpu).  Use cuda to run the suite on GPU(s).",
-    )
-    parser.add_argument(
-        "--res", type=int, default=32, help="Cubic resolution nx=ny=nz"
-    )
-    parser.add_argument("--max-sim-time", type=float, default=1.0)
-    parser.add_argument("--dt", type=float, default=0.01)
-    parser.add_argument("--amplitude", type=float, default=0.1)
-    # The shipped default, so the smoke test drives the initial
-    # condition users actually get.  The random IC's *wall-normal*
-    # shaping (``init.random_wall_smoothness`` /
-    # ``random_wall_confinement``) is not a flag here: it is
-    # wall-bounded-only, so a shared flag would have to be withheld
-    # from the kolmogorov row, and taking the model default covers
-    # every row at once.
-    parser.add_argument("--smoothness", type=float, default=0.4)
-    parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--it-stats", type=int, default=10)
-    parser.add_argument(
-        "--systems",
-        nargs="*",
-        default=None,
-        help="Subset of system names to run (default: all)",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=600.0,
-        help="Per-system subprocess timeout in seconds",
-    )
-    return parser.parse_args()
-
 
 if __name__ == "__main__":
-    args = _parse_args()
-
-    systems = SYSTEMS
-    if args.systems:
-        wanted = set(args.systems)
-        systems = [s for s in SYSTEMS if s["name"] in wanted]
-        unknown = wanted - {s["name"] for s in SYSTEMS}
-        if unknown:
-            print(f"Unknown system(s): {sorted(unknown)}")
-            sys.exit(2)
-
-    print(
-        f"Random-IC smoke tests on platform '{args.platform}' via "
-        f"mpirun (default -np {args.np}, np0={args.np0}; some entries "
-        "force their own device count).  Each child prints its own "
-        "device banner.",
-        flush=True,
-    )
-
-    passed = 0
-    failures: list[tuple[str, str]] = []
-    for system in systems:
-        try:
-            run_smoke_test(system, args)
-            passed += 1
-        except (AssertionError, subprocess.TimeoutExpired) as exc:
-            print(f"  FAIL  {system['name']}: {exc}")
-            failures.append((system["name"], str(exc)))
-
-    sys.exit(report(passed, failures))
+    main(SYSTEMS)

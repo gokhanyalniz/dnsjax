@@ -13,8 +13,9 @@ per sample, so the record survives the kill it explains:
   (cgroup v1 or v2; the level above the job's step directories when
   ``SLURM_JOB_ID`` is set, else the sampler's own cgroup) -- the figure
   an out-of-memory kill is decided on;
-- the solver processes on the node -- ``dnsjax`` / ``dnsjax-twin``
-  console scripts and ``python -m dnsjax`` -- with the sum and maximum
+- the solver processes on the node -- the ``dnsjax`` console script,
+  any ``dnsjax-*`` one a plugin installs, and ``python -m dnsjax...``
+  -- with the sum and maximum
   of their resident set, and the sum of their proportional set
   (``Pss``, shared pages split between their users, read every
   ``--pss-every`` samples since it costs more).
@@ -83,9 +84,6 @@ COLUMNS = (
     "pss_sum",
 )
 
-#: Executables whose processes count as the solver's.
-SOLVERS = ("dnsjax", "dnsjax-twin")
-
 
 def _meminfo() -> tuple[int, int]:
     """``(MemTotal, MemAvailable)`` in bytes."""
@@ -148,9 +146,9 @@ def _read_int(path: Path | None) -> int | str:
 
 
 def _is_solver(argv: list[str]) -> bool:
-    """A ``dnsjax`` console script or ``python -m dnsjax[.twin]``."""
+    """A ``dnsjax`` / ``dnsjax-*`` script or ``python -m dnsjax...``."""
     names = [os.path.basename(a) for a in argv[:3]]
-    if any(n in SOLVERS for n in names):
+    if any(n == "dnsjax" or n.startswith("dnsjax-") for n in names):
         return True
     return len(argv) > 2 and argv[1] == "-m" and argv[2].startswith("dnsjax")
 

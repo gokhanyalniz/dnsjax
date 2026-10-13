@@ -1,10 +1,9 @@
 r"""Localized-rolls IC smoke tests: nonlinear integration.
 
-Starts each rolls-builder variant (kolmogorov for the triply-periodic
-builder, plane-couette for the Cartesian one, pipe, curved-pipe,
-taylor-couette, dean) from the deterministic localized-rolls IC (the
-in-process
-``init.localized_rolls`` start mode, no snapshot file) at a
+Starts each core rolls-builder variant (kolmogorov for the
+triply-periodic builder, plane-couette for the Cartesian one, pipe,
+taylor-couette) from the deterministic localized-rolls IC (the
+in-process ``init.localized_rolls`` start mode, no snapshot file) at a
 transitional Reynolds number on a small domain, and integrates a short
 time (``t = 0.25``; the long-horizon integration of the same flows is
 ``test_random_smoke.py``'s job at ``t = 1``) -- verifying the run
@@ -13,9 +12,11 @@ completes with no error, NaN, or blow-up.  The rolls drive the full
 there), like ``tests/test_random_smoke.py`` but with a deterministic
 IC.
 
-Reuses ``test_random_smoke``'s ``_check_run`` (the five success criteria:
-exit 0, reached the end, no ``"Corrector failed"``, finite + converged
-final error, all summary values finite).  The ``kolmogorov`` entry
+The runner: ``tests/_rolls_smoke.py``; the criteria, shared with the
+random smoke: exit 0 and ``tests/_smoke.py``'s (reached the end, no
+corrector failure, a finite converged final error, a finite summary
+line).  The lab's flows have a table of their own,
+``lab/tests/test_rolls_smoke.py``.  The ``kolmogorov`` entry
 drives the triply-periodic builder, whose `$y$` factor is a
 localization rather than a wall profile (``ic/localized_rolls.py``);
 it runs the same default ``iterative-cn`` corrector as the rest, so
@@ -43,16 +44,7 @@ The whole standard suite at two devices via MPI::
 
 from __future__ import annotations
 
-import argparse
-import re
-import subprocess
-import sys
-import tempfile
-
-from _live import report, run_live
-from test_random_smoke import _check_run
-
-sys.stdout.reconfigure(line_buffering=True)
+from _rolls_smoke import main
 
 # ── configuration ────────────────────────────────────────────────────
 
@@ -125,24 +117,6 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # A total-field flow: the builder adds its laminar profile, so
-        # the first stats line (t = 0, before any step) must already
-        # carry the laminar flux -- a bare-rolls start would print 0
-        # there and leave the first bulk correction to supply it.
-        "name": "curved-pipe",
-        "expect_pattern": r"t = 0\.00 .*Ub_s=5\.000e-01",
-        "args": [
-            "--phys.system",
-            "curved-pipe",
-            "--phys.re",
-            "1800",
-            "--geo.curvature",
-            "0.3",
-            "--geo.lz",
-            "5",
-        ],
-    },
-    {
         "name": "taylor-couette",
         "args": [
             "--phys.system",
@@ -151,19 +125,6 @@ SYSTEMS: list[dict] = [
             "400",
             "--phys.re2",
             "-400",
-            "--geo.eta",
-            "0.5",
-            "--geo.lz",
-            "5",
-        ],
-    },
-    {
-        "name": "dean",
-        "args": [
-            "--phys.system",
-            "dean",
-            "--phys.re",
-            "1000",
             "--geo.eta",
             "0.5",
             "--geo.lz",
@@ -192,197 +153,6 @@ SYSTEMS: list[dict] = [
     },
 ]
 
-CORRECTOR_TOLERANCE = 1e-5
-
-# ── helpers ──────────────────────────────────────────────────────────
-
-
-def _build_command(
-    system: dict, args: argparse.Namespace, dt: float
-) -> list[str]:
-    """Build the ``mpirun ... -m dnsjax`` command for one system.
-
-    Per-system ``force_np`` / ``force_np0`` / ``res`` / ``oversubscribe``
-    override the suite defaults (used by the multi-device padded entry).
-    """
-    np_count = system.get("force_np", args.np)
-    np0 = system.get("force_np0", args.np0)
-    res = system.get("res", {})
-    nx = str(res.get("nx", args.res))
-    ny = str(res.get("ny", args.res))
-    nz = str(res.get("nz", args.res))
-    # Cylindrical/annular flows take the aliased public resolution
-    # names (axial nz, radial nr, azimuthal ntheta); the internal
-    # meaning (nx = axial, ny = radial, nz = azimuthal) is unchanged.
-    cyl_annular = any(
-        s in system["args"]
-        for s in (
-            "pipe",
-            "curved-pipe",
-            "viscoelastic-pipe",
-            "taylor-couette",
-            "quasi-keplerian",
-            "dean",
-            "viscoelastic-dean",
-        )
-    )
-    res_flags = (
-        ["--res.nz", nx, "--res.nr", ny, "--res.ntheta", nz]
-        if cyl_annular
-        else ["--res.nx", nx, "--res.ny", ny, "--res.nz", nz]
-    )
-
-    base = ["mpirun"]
-    if system.get("oversubscribe"):
-        base.append("--oversubscribe")
-    base += [
-        "-np",
-        str(np_count),
-        sys.executable,
-        "-m",
-        "dnsjax",
-        "--dist.platform",
-        args.platform,
-        "--dist.np0",
-        str(np0),
-        "--dist.np1",
-        str(np_count // np0),
-        # In-process deterministic localized-rolls IC (no snapshot file).
-        "--init.localized_rolls",
-        "True",
-        "--init.localized_rolls_amplitude",
-        str(args.amplitude),
-        "--init.localized_rolls_width",
-        str(args.width),
-        "--init.localized_rolls_wavelength",
-        str(args.wavelength),
-        *res_flags,
-        "--step.dt",
-        str(dt),
-        "--stop.max_sim_time",
-        str(args.max_sim_time),
-        "--outs.it_stats",
-        str(args.it_stats),
-        # Laminarization check off: a decaying transient must not cut
-        # the run short before max_sim_time.
-        "--stop.check_laminarization",
-        "False",
-    ]
-    return base + system["args"]
-
-
-# ── test runner ──────────────────────────────────────────────────────
-
-
-def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
-    """Run a single localized-rolls smoke test (in a fresh directory).
-
-    An entry's optional ``expect_pattern`` is a regex the run's stdout
-    must match (the curved pipe's ``t = 0`` flux).
-    """
-    name = system["name"]
-    dt = args.dt
-    cmd = _build_command(system, args, dt)
-
-    with tempfile.TemporaryDirectory(prefix=f"rolls_{name}_") as workdir:
-        result = run_live(cmd, timeout=args.timeout, cwd=workdir)
-
-        if result.returncode != 0:
-            print(f"  FAIL  {name}: exit code {result.returncode}")
-            print(result.stdout[-2000:] if result.stdout else "(no stdout)")
-            print(result.stderr[-2000:] if result.stderr else "(no stderr)")
-            raise AssertionError(
-                f"{name} exited with code {result.returncode}"
-            )
-
-        summary = _check_run(result.stdout, name, args.max_sim_time, dt)
-        pattern = system.get("expect_pattern")
-        if pattern is not None and re.search(pattern, result.stdout) is None:
-            raise AssertionError(f"{name}: no match for {pattern!r}")
-
-    print(f"  PASS  {name}  ({summary.strip()})")
-
-
-# ── main ─────────────────────────────────────────────────────────────
-
-
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Localized-rolls IC smoke tests (wall-bounded flows)",
-    )
-    parser.add_argument(
-        "--np", type=int, default=1, help="Number of devices (mpirun -np)"
-    )
-    parser.add_argument(
-        "--np0",
-        type=int,
-        default=1,
-        help="np0 mesh axis (wall-normal / kz split)",
-    )
-    parser.add_argument(
-        "--dist.platform",
-        dest="platform",
-        default="cpu",
-        choices=["cpu", "cuda", "rocm", "tpu"],
-        help="JAX backend forwarded to each `python -m dnsjax` child "
-        "(default cpu).  Use cuda to run the suite on GPU(s).",
-    )
-    parser.add_argument(
-        "--res", type=int, default=32, help="Cubic resolution nx=ny=nz"
-    )
-    # Shorter than test_random_smoke's t = 1.0 on purpose: the unique
-    # content here is the rolls IC *through* the solver (construction
-    # + the first stretch of nonlinear evolution); the long-horizon
-    # integration of the same flows is the random smoke's job.
-    parser.add_argument("--max-sim-time", type=float, default=0.25)
-    parser.add_argument("--dt", type=float, default=0.01)
-    parser.add_argument("--amplitude", type=float, default=0.1)
-    parser.add_argument("--width", type=float, default=1.5)
-    parser.add_argument("--wavelength", type=float, default=4.0)
-    parser.add_argument("--it_stats", type=int, default=10)
-    parser.add_argument(
-        "--systems",
-        nargs="*",
-        default=None,
-        help="Subset of system names to run (default: all)",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=600.0,
-        help="Per-system subprocess timeout in seconds",
-    )
-    return parser.parse_args()
-
 
 if __name__ == "__main__":
-    args = _parse_args()
-
-    systems = SYSTEMS
-    if args.systems:
-        wanted = set(args.systems)
-        systems = [s for s in SYSTEMS if s["name"] in wanted]
-        unknown = wanted - {s["name"] for s in SYSTEMS}
-        if unknown:
-            print(f"Unknown system(s): {sorted(unknown)}")
-            sys.exit(2)
-
-    print(
-        f"Localized-rolls smoke tests on platform '{args.platform}' via "
-        f"mpirun (default -np {args.np}, np0={args.np0}; the mpi-pad "
-        "entry forces its own device count).  Each child prints its own "
-        "device banner.",
-        flush=True,
-    )
-
-    passed = 0
-    failures: list[tuple[str, str]] = []
-    for system in systems:
-        try:
-            run_smoke_test(system, args)
-            passed += 1
-        except (AssertionError, subprocess.TimeoutExpired) as exc:
-            print(f"  FAIL  {system['name']}: {exc}")
-            failures.append((system["name"], str(exc)))
-
-    sys.exit(report(passed, failures))
+    main(SYSTEMS)
