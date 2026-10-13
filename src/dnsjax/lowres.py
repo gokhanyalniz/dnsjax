@@ -68,14 +68,18 @@ the Poisson factors (its module's Design notes, "Cost").
 from __future__ import annotations
 
 import copy
-import importlib
 from functools import partial
 from pathlib import Path
 
 from jax import Array, jit
 from jax import numpy as jnp
 
-from .flows.registry import cartesian_systems, periodic_systems, spec_for
+from .flows.registry import (
+    cartesian_systems,
+    flow_hook,
+    periodic_systems,
+    spec_for,
+)
 from .parameters import derived_params, params
 from .snapshot import (
     StoredLayout,
@@ -213,7 +217,7 @@ class LowResWriter:
             )
             from .geometries.wall_bounded.cartesian import fourier
 
-            self._flow = importlib.import_module(self.spec.flow_module).flow
+            self._flow = flow_hook(self.system, "flow")
             self._fourier = fourier
             self.pressure = (
                 pressure_op

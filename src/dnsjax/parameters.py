@@ -262,6 +262,7 @@ decimated over the full azimuth would evaluate the pseudo-spectral
 product on an ``m0``-times too coarse grid and fail it outright.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
 from importlib.metadata import entry_points
@@ -270,6 +271,7 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, create_model
+from pydantic.fields import FieldInfo
 
 from .flow_spec import UNSET
 
@@ -281,6 +283,8 @@ from .flow_spec import UNSET
 # spec hooks receive ``params``/``derived_params`` as arguments), so
 # no cycle exists.
 from .flows.registry import (
+    GLOBAL_FIELDS,
+    SPECS,
     periodic_systems,
     spec_for,
     walled_systems,
@@ -1930,9 +1934,11 @@ def _plugin_fields() -> dict[str, dict[str, tuple]]:
 
     Each entry point under :data:`PARAMETERS_ENTRY_POINT_GROUP` names a
     mapping ``{section: {name: (annotation, FieldInfo)}}``, in a module
-    that imports neither JAX nor this one.  A field two plugins add is
-    an error.  A flow reaches such a field through its spec's
-    ``FieldSpec``, exactly as a core field.
+    that imports neither JAX nor this one.  Anything of another shape,
+    and a field two plugins add, is refused naming the plugin.  A flow
+    reaches such a field through its spec's ``FieldSpec``, exactly as a
+    core field.  The owner of each field is kept in
+    :data:`_PLUGIN_FIELD_OWNERS` for the refusals that follow.
     """
     out: dict[str, dict[str, tuple]] = {}
     found = entry_points(group=PARAMETERS_ENTRY_POINT_GROUP)
@@ -1944,15 +1950,41 @@ def _plugin_fields() -> dict[str, dict[str, tuple]]:
                 f"parameter plugin {ep.name!r} ({ep.value}) failed to "
                 f"load: {exc}"
             ) from exc
+        if not isinstance(fields, Mapping) or not all(
+            isinstance(defs, Mapping) for defs in fields.values()
+        ):
+            raise TypeError(
+                f"parameter plugin {ep.name!r} ({ep.value}) names "
+                f"{fields!r}, not a {{section: {{name: (annotation, "
+                "FieldInfo)}} mapping"
+            )
         for section, defs in fields.items():
             sec = out.setdefault(section, {})
+            owners = _PLUGIN_FIELD_OWNERS.setdefault(section, {})
             for name, definition in defs.items():
+                if not (
+                    isinstance(definition, tuple)
+                    and len(definition) == 2
+                    and isinstance(definition[1], FieldInfo)
+                ):
+                    raise TypeError(
+                        f"parameter plugin {ep.name!r} ({ep.value}) defines "
+                        f"{section}.{name} as {definition!r}, not "
+                        "(annotation, FieldInfo)"
+                    )
                 if name in sec:
                     raise ValueError(
-                        f"{section}.{name} is added by two parameter plugins"
+                        f"{section}.{name} is added by two parameter "
+                        f"plugins ({owners[name]!r} and {ep.name!r})"
                     )
                 sec[name] = definition
+                owners[name] = ep.name
     return out
+
+
+#: ``section -> {name: entry-point name}`` of the plugin fields, for
+#: the refusals that name the plugin.
+_PLUGIN_FIELD_OWNERS: dict[str, dict[str, str]] = {}
 
 
 def _with_plugin_fields(
@@ -1961,8 +1993,12 @@ def _with_plugin_fields(
     """*model* extended by the plugin *fields* (after its own)."""
     clash = sorted(set(fields) & set(model.model_fields))
     if clash:
+        owners = _PLUGIN_FIELD_OWNERS[section]
+        who = sorted({owners[name] for name in clash})
         raise ValueError(
-            f"a parameter plugin redefines core field(s) of [{section}]: "
+            f"parameter plugin{'s' if len(who) > 1 else ''} "
+            f"{', '.join(repr(w) for w in who)} redefine"
+            f"{'' if len(who) > 1 else 's'} core field(s) of [{section}]: "
             f"{', '.join(clash)}"
         )
     return create_model(
@@ -1975,27 +2011,6 @@ def _with_plugin_fields(
 
 
 _PLUGIN_FIELDS = _plugin_fields()
-_unknown_sections = sorted(
-    set(_PLUGIN_FIELDS)
-    - {
-        "dist",
-        "phys",
-        "geo",
-        "res",
-        "init",
-        "outs",
-        "lowres",
-        "step",
-        "stop",
-        "solver",
-    }
-)
-if _unknown_sections:
-    raise ValueError(
-        "parameter plugins add fields to unknown section(s) "
-        f"{_unknown_sections}; a section of its own is an extension "
-        "(dnsjax.extensions)"
-    )
 if "dist" in _PLUGIN_FIELDS:
     Distribution = _with_plugin_fields(
         Distribution, "dist", _PLUGIN_FIELDS["dist"]
@@ -2039,6 +2054,48 @@ class Parameters(BaseModel):
     step: TimeStepping = TimeStepping()
     stop: Termination = Termination()
     solver: Solver = Solver()
+
+
+def _check_surface_names() -> None:
+    """Every surface entry names a field a section model defines.
+
+    Checked once the models are composed (plugin fields included), over
+    :data:`~dnsjax.flows.registry.GLOBAL_FIELDS` and every spec's
+    ``fields`` and ``deferred``: a name no section defines would
+    otherwise vanish from every surface (``--help``, the CLI, TOML,
+    the metadata dump) without a word, or fail far from its cause when
+    its default is materialized.  Plugin fields in a section the core
+    does not have are refused the same way: a section of its own is an
+    extension (:mod:`dnsjax.extensions`).
+    """
+    sections = {
+        name: info.annotation.model_fields
+        for name, info in Parameters.model_fields.items()
+    }
+    unknown = sorted(set(_PLUGIN_FIELDS) - set(sections))
+    if unknown:
+        raise ValueError(
+            "parameter plugins add fields to unknown section(s) "
+            f"{unknown}; a section of its own is an extension "
+            "(dnsjax.extensions)"
+        )
+    for section, name in GLOBAL_FIELDS:
+        if name not in sections.get(section, {}):
+            raise ValueError(
+                f"GLOBAL_FIELDS names {section}.{name}, which no parameter "
+                "section defines"
+            )
+    for spec in SPECS.values():
+        for section, name in (*spec.field_map, *spec.deferred_map):
+            if name not in sections.get(section, {}):
+                raise ValueError(
+                    f"{spec.system!r} spec names {section}.{name}, which no "
+                    "parameter section defines (a plugin adds a field "
+                    "under the dnsjax.parameters entry point)"
+                )
+
+
+_check_surface_names()
 
 
 @dataclass

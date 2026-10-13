@@ -388,6 +388,7 @@ from ..bootstrap import (
 from ..extensions import ParamExtension, register_extension
 from ..fd import local_interpolation_matrix
 from ..flows.registry import (
+    import_flow_module,
     spec_for,
     total_field_systems,
     walled_systems,
@@ -895,7 +896,7 @@ def _dispatch(system: str) -> tuple[Any, Any, str]:
     import importlib
 
     spec = spec_for(system)
-    fmod = importlib.import_module(spec.flow_module)
+    fmod = import_flow_module(system)
     gmod = importlib.import_module(
         f"dnsjax.geometries.wall_bounded.{spec.geometry}"
     )
