@@ -681,7 +681,7 @@ def build_twin(args: argparse.Namespace) -> int:
                 "it_stats": args.it_stats,
                 "it_steps": args.it_steps,
                 "it_corrector": args.it_corrector,
-                "bins": bool(args.bins or args.it_budget is not None),
+                "bins": bool(args.bins or args.it_budget),
                 "it_budget": args.it_budget,
                 "it_spectra": args.it_spectra,
                 "it_yspectra": args.it_yspectra,
@@ -858,7 +858,7 @@ def main(argv: list[str] | None = None) -> int:
         "--bins",
         action="store_true",
         help="also record the Delta-U / Delta-u1 / Delta-u2 three-bin "
-        "energies in twin.dat (twin.bins; implied by --it-budget)",
+        "energies in twin.dat (twin.bins; implied by a positive --it-budget)",
     )
     pt.add_argument("--it-budget", type=int, default=None)
     pt.add_argument("--it-spectra", type=int, default=None)
