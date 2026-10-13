@@ -63,6 +63,8 @@ _SCRIPTS: list[Row] = [
     # ~2 min: the units plus six one-process solver launches (no
     # launcher); the mpirun tier is its own row below.
     ("test_run_status.py", ("--no-mpi",), (), 1800),
+    # ~25 s: four one-process solver launches of four steps each.
+    ("test_run_hooks.py", (), (), 1800),
     ("test_snapshot.py", (), (), 1800),
     ("test_snapshot_export.py", (), (), 1800),
     ("test_snapshot_import.py", (), (), 1800),
