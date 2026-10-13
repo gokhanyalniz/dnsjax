@@ -1645,12 +1645,21 @@ class CylindricalFlow:
         """
         return phi_sum
 
-    def mean_radial(self, defect: Array) -> None:
+    def mean_radial(self, defect: Array | None) -> None:
         r"""The `$(m, k) = (0, 0)$` radial velocity.
 
         ``None`` (i.e. zero) here: with no defect, continuity forces
-        the mean-mode `$u_r$` to vanish identically.
+        the mean-mode `$u_r$` to vanish identically.  A flow whose
+        :meth:`divergence_defect` is not ``None`` overrides this too:
+        the default refuses a defect rather than zero the mean radial
+        velocity its continuity implies.
         """
+        if defect is not None:
+            raise NotImplementedError(
+                f"{type(self).__name__} overrides divergence_defect but "
+                "not mean_radial: the mean-mode u_r its defect implies "
+                "is undefined"
+            )
         return None
 
     def _build_metric(self) -> None:

@@ -156,7 +156,7 @@ class _SurfaceBase(BaseSettings):
     ):
         # CLI and TOML are the only user-facing configuration channels:
         # drop the env/dotenv/secrets sources, which would otherwise map
-        # environment variables named like sections (``FORCE``, ``RES``,
+        # environment variables named like sections (``INIT``, ``RES``,
         # ``STEP``, ...) onto the surface -- crashing the parse or
         # silently injecting parameters.  The explicit
         # ``CliSettingsSource`` passed by ``make_cli_source`` is

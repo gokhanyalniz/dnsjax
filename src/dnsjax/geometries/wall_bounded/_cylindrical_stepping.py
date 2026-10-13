@@ -1,9 +1,11 @@
 r"""Time stepping of the cylindrical (pipe) geometry and its variants.
 
 The straight pipe (:mod:`~dnsjax.geometries.wall_bounded.cylindrical`)
-and any flow a plugin builds on the cylindrical geometry (one with a
-metric, through the ``CylindricalFlow`` metric hooks, or carrying more
-components) share one set of stepping functions: the pseudo-spectral
+and any flow a plugin builds on the cylindrical geometry with a metric
+(through the ``CylindricalFlow`` metric hooks) share one set of
+stepping functions, written for the three velocity components in the
+leading slots of the state and the carried slots after them (a flow
+evolving more components brings its own stepping): the pseudo-spectral
 RHS, the FFT-free base-flow coupling, the `$u_r$`-`$\omega_r$`
 influence-matrix pass, the predictor / corrector / norm and the stepper
 factory.  They are written once here and parametrized by the flow
@@ -514,7 +516,7 @@ def _parity_y_matvec(
 
 
 #: Number of trailing slots the default (``res.consistent_imm``) pass
-#: carries in the solver-basis state after `$(w_s, w_+, w_-)$`
+#: carries in the solver-basis state after `$(u_z, u_+, u_-)$`
 #: (:func:`kinematic_differences`); the legacy primitive pass carries
 #: none.
 N_CARRIED = 2
@@ -531,11 +533,12 @@ def kinematic_differences(
 
     ``(2, N_r, ...)``: `$d_\Phi = (\Phi_+ - \Phi_-)/2 = i\,\Phi_\theta$`
     and `$d_\omega = (\omega_+ - \omega_-)/2 = i\,\omega_\theta$` of a
-    solver-basis *velocity* `$(w_s, w_+, w_-)$`, through the same
+    solver-basis *velocity* `$(u_z, u_+, u_-)$`, through the same
     discrete operators :func:`_imm_iteration_vw` evolves them with --
     the spin pair of the vector Laplacian (less `$\nabla_0(\nabla_0
-    \cdot w)$` under a flow's metric) and the parity-reduced `$D_1$` in
-    `$\omega_\theta = ik_z w_r - D_1 w_s$` -- and zero on the mean
+    \cdot u)$` under a flow's metric, whose carried components are
+    metric-weighted) and the parity-reduced `$D_1$` in
+    `$\omega_\theta = ik_z u_r - D_1 u_z$` -- and zero on the mean
     plane, where the pass packs the mean momentum into those slots
     instead.
 
@@ -608,7 +611,7 @@ def with_carried(
     """*state* followed by its carried slots, if the pass carries any.
 
     *state* is a solver-basis state without them -- the velocity
-    `$(w_s, w_+, w_-)$`, optionally followed by other evolved
+    `$(u_z, u_+, u_-)$`, optionally followed by other evolved
     components (a carried tensor) -- and the slots are
     :func:`kinematic_differences` of its velocity.  The flow modules'
     ``to_solver_basis`` ends here; on the legacy path it is the

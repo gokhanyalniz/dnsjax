@@ -287,7 +287,8 @@ def internalize_stored(
     With ``rehydrate=True`` the spec's
     :attr:`~dnsjax.flow_spec.FlowSpec.rehydrate` hook then fills the
     hidden-derived internal keys (e.g. the wedge ``geo.lz``, the
-    derived ``phys.re``/``re2``), so offline consumers see the same
+    circular-Couette ``phys.re`` from ``re1``/``re2``), so offline
+    consumers see the same
     internal values a live ``update_parameters`` would produce.
     Extension sections (any section outside the core models) are
     passed through unchanged; their relevance/ownership is the

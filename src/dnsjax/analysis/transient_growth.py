@@ -412,7 +412,7 @@ if TYPE_CHECKING:
 # total-field flow (``FlowSpec.total_field``) integrates around
 # ``base_flow = 0`` and has no profile to linearize about, so it is
 # out of scope; the modules and geometry come from the registry
-# (``FlowSpec.flow_module`` / ``family``) in :func:`_dispatch`.
+# (``FlowSpec.flow_module`` / ``geometry``) in :func:`_dispatch`.
 WALL_BOUNDED_TG_SYSTEMS = tuple(
     s for s in walled_systems if s not in total_field_systems
 )

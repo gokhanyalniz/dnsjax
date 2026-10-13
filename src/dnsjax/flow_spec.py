@@ -134,7 +134,7 @@ class FlowSpec:
     ``rehydrate(sections)``
         Offline mirror of ``derive`` for JAX-free metadata consumers:
         fills the hidden-derived *internal* keys (e.g. ``geo.lz``,
-        the derived ``phys.re``/``re2``) into a nested
+        the circular-Couette ``phys.re`` from ``re1``/``re2``) into a nested
         ``{section: {name: value}}`` dict of internal-named parameters
         read back from snapshot metadata.
 
@@ -180,6 +180,13 @@ class FlowSpec:
       re-exported), which ``__main__`` requires there: a state that
       enters the stepper in the wrong basis steps without error, only
       wrongly;
+    - on the cylindrical geometry, the core ``cylindrical.fourier``
+      singleton, whose parity classes the resume regrid and ``[lowres]``
+      read for every cylindrical flow, and the velocity components in
+      the leading three slots of the solver state, the carried slots
+      after them (``CARRIED_FIELDS``): the pipe's ``build_stepper`` is
+      written for that layout, and a flow evolving more components
+      brings its own stepping (the lab's viscoelastic pipe does);
     - on a wall-bounded base-flow flow (``total_field`` false),
       ``frozen_profile_flow(profile)``, the flow frozen about a given
       profile, which the transient-growth driver linearizes about.
