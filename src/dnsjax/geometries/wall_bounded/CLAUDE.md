@@ -86,7 +86,7 @@ modules import neither geometry (guard: `test_no_cross_geometry_import`).
   the pipe's parity `m_is_even` follows the physical `m = m0·h`, and
   `analysis/_core.radial_derivative` must use exactly that selector
   (guards: the `m0 = 2` rows of `test_snapshot_export.py`,
-  `test_quasi_keplerian.py`, `test_transient_growth.py`).
+  `test_wedge.py`, `test_transient_growth.py`).
 
 ## Optimization patterns
 

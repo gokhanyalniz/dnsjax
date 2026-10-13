@@ -1,8 +1,7 @@
 r"""Seed-resolution tests: the ``unset means draw one`` contract.
 
-Covers :mod:`dnsjax.seeding` and the two resolution points that use it
-(``bootstrap.resolve_seed`` / ``resolve_run_seeds``, and the twin
-driver's late adopt-or-draw):
+Covers :mod:`dnsjax.seeding` and the resolution point that uses it
+(``bootstrap.resolve_seed`` / ``resolve_run_seeds``):
 
 1. **Units** (offline, no JAX): :func:`draw_seed` stays inside the
    62-bit range and does not repeat; :func:`split_seed` /
@@ -16,10 +15,11 @@ driver's late adopt-or-draw):
    draw, not to the run.
 3. **Gating**: ``resolve_run_seeds`` resolves ``init.random_seed`` only
    when the start mode is the random IC (a laminar / rolls /
-   snapshot-resume run needs no entropy at all) and ``force.seed``
-   only when the enabling ``[force]`` quartet is configured.  Both are
-   checked with the entropy source disabled, so a spurious draw
-   *fails* rather than passing silently.
+   snapshot-resume run needs no entropy at all), and an extension
+   section's ``seed_fields`` only once the section is configured
+   (``ParamExtension.configured``, on a section of the test's own).
+   Both are checked with the entropy source disabled, so a spurious
+   draw *fails* rather than passing silently.
 4. **Provenance**: the layer -> label mapping, and that a seed a layer
    supplied is used unchanged and reported with that layer's label,
    never re-drawn.  Writing a drawn seed back is also checked to touch
@@ -36,13 +36,6 @@ driver's late adopt-or-draw):
    failure this catches (per-rank draws) is silent otherwise: the
    field stays divergence-free and correctly normalized, and the
    snapshot records rank 0's seed for a trajectory no seed reproduces.
-7. **Twin adopt-or-draw** (subprocess): a fresh ``dnsjax-twin`` start
-   with no ``--twin.seed`` draws and records it, and the paired resume
-   then adopts it from ``twin.json`` instead of drawing -- without
-   which every un-pinned twin run would fail its first resume on the
-   ``_TWIN_MATCH_KEYS`` seed check.  The mismatch guard itself is
-   still exercised by ``lab/tests/test_twin_driver.py``.
-
 Run as a script::
 
     uv run python tests/test_seeding.py             # units + CLI runs
@@ -52,10 +45,7 @@ Run as a script::
 from __future__ import annotations
 
 import argparse
-import contextlib
 import dataclasses
-import json
-import os
 import re
 import shutil
 import sys
@@ -64,7 +54,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _live import report, run_live  # noqa: E402
+from _live import report  # noqa: E402
+from _seeding import BIN, RUN_ARGS, no_entropy, run  # noqa: E402
 
 from dnsjax.seeding import (  # noqa: E402
     SEED_BITS,
@@ -81,63 +72,7 @@ from dnsjax.seeding import (  # noqa: E402
 )
 
 _MAX_SEED = (1 << SEED_BITS) - 1
-_BIN = Path(sys.executable).parent
 _SEED_RE = re.compile(r"^init\.random_seed = (\d+) \((.+)\)$", re.M)
-_TWIN_SEED_RE = re.compile(r"^twin\.seed = (\d+) \((.+)\)$", re.M)
-
-# Smallest plane-Couette box that still exercises the random IC on both
-# mesh axes; two steps is enough for stats.dat to differ between seeds.
-_RUN_ARGS = [
-    "--phys.system",
-    "plane-couette",
-    "--res.nx",
-    "8",
-    "--res.nz",
-    "8",
-    "--res.ny",
-    "27",
-    "--step.dt",
-    "0.005",
-    "--stop.max_sim_time",
-    "0.015",
-    "--outs.it_stats",
-    "1",
-]
-
-
-@contextlib.contextmanager
-def _no_entropy():
-    """``os.urandom`` unavailable, the way a stripped platform reports it.
-
-    ``draw_seed`` catches ``OSError`` and ``NotImplementedError``; this
-    raises the former, which is what a sandbox denying ``/dev/urandom``
-    produces.
-    """
-    original = os.urandom
-
-    def fail(_n):
-        raise OSError("Function not implemented")
-
-    os.urandom = fail
-    try:
-        yield
-    finally:
-        os.urandom = original
-
-
-def _run(cmd, cwd, timeout):
-    """A solver/twin child with the startup dump *kept*.
-
-    ``run_live`` sets ``DNSJAX_QUIET_STARTUP=1`` by default, which
-    suppresses the resolved-parameter dump -- but not the seed line,
-    which is deliberately outside that gate.  Pinning it to ``0`` here
-    would hide a regression that moved the line inside it, so leave the
-    default and parse what a quiet run prints.
-    """
-    env = {k: v for k, v in os.environ.items() if k != "XLA_FLAGS"}
-    env["NO_COLOR"] = "1"
-    return run_live(cmd, cwd=cwd, env=env, timeout=timeout)
-
 
 # ── 1. Units ─────────────────────────────────────────────────────────
 
@@ -216,7 +151,11 @@ def run_resolution_checks() -> str | None:
         # else sees them), so both halves of each layer are exercised.
         from pydantic import BaseModel
 
-        from dnsjax.extensions import ParamExtension, register_extension
+        from dnsjax.extensions import (
+            ParamExtension,
+            apply_extension_layer,
+            register_extension,
+        )
 
         class _Seeded(BaseModel):
             seed: int | None = None
@@ -254,7 +193,7 @@ def run_resolution_checks() -> str | None:
         if _seed_layers((SOURCE_CLI, {"init": {"random_amplitude": 1.0}}, {})):
             return "a layer with no seed reported one"
 
-        with _no_entropy():
+        with no_entropy():
             # A supplied seed never reaches the entropy pool.
             got = resolve_seed("init.random_seed", "--init.random_seed", 42)
             if got != 42:
@@ -264,7 +203,7 @@ def run_resolution_checks() -> str | None:
             except NoEntropySource:
                 pass
             else:
-                return "the _no_entropy() fixture did not disable the source"
+                return "the no_entropy() fixture did not disable the source"
             # An unset seed refuses, naming the flag.
             try:
                 resolve_seed("init.random_seed", "--init.random_seed", None)
@@ -290,7 +229,7 @@ def run_resolution_checks() -> str | None:
         )
         validate_parameters()
 
-        with _no_entropy():
+        with no_entropy():
             # (a) The random IC is the start mode but the seed is set:
             #     used unchanged, reported with the layer's label.
             update_parameters(Parameters(init={"random_seed": 4242}))
@@ -306,15 +245,40 @@ def run_resolution_checks() -> str | None:
             if notes:
                 return f"a laminar start resolved seeds: {notes!r}"
 
-            # (c) An unconfigured [force] likewise.
-            from dnsjax_lab.extensions import force_params
+            # (c) A section's seeds wait for the section: unconfigured,
+            #     it resolves none; configured with its seed set, it
+            #     reports it; configured with it unset, it would draw,
+            #     so here it refuses, naming its flag.
+            class _Gated(BaseModel):
+                on: bool = False
+                seed: int | None = None
 
-            if force_params.modes is not None:  # pragma: no cover
-                return "the [force] section leaked in from another test"
+            gated = register_extension(
+                ParamExtension(
+                    name="gated",
+                    model=_Gated,
+                    relevant=lambda system: True,
+                    seed_fields=("seed",),
+                    configured=lambda values: values.on,
+                )
+            )
             update_parameters(Parameters(init={"start_from_laminar": False}))
             update_parameters(Parameters(init={"random_seed": 4242}))
             if len(resolve_run_seeds(setup)) != 1:
-                return "an unconfigured [force] resolved a seed"
+                return "an unconfigured section resolved a seed"
+            apply_extension_layer({"gated": {"on": True, "seed": 77}})
+            notes = resolve_run_seeds(setup)
+            if seed_note("gated.seed", 77, SOURCE_CLI) not in notes:
+                return f"a configured section's seed reported as {notes!r}"
+            gated.values.seed = None
+            try:
+                resolve_run_seeds(setup)
+            except SystemExit as exc:
+                if "--gated.seed" not in str(exc):
+                    return f"refusal does not name the flag: {exc}"
+            else:
+                return "a configured section's unset seed resolved"
+            gated.values = _Gated()
 
         # (d) With entropy available, an unset seed is drawn, lands in
         #     ``params`` (so the snapshot records what ran) and is
@@ -375,7 +339,7 @@ def run_reproducibility(timeout: float) -> str | None:
         drawn, rerun = tmp / "drawn", tmp / "rerun"
         drawn.mkdir()
         rerun.mkdir()
-        res = _run([str(_BIN / "dnsjax"), *_RUN_ARGS], drawn, timeout)
+        res = run([str(BIN / "dnsjax"), *RUN_ARGS], drawn, timeout)
         if res.returncode != 0:
             return f"the unseeded run exited {res.returncode}"
         match = _SEED_RE.search(res.stdout)
@@ -385,10 +349,10 @@ def run_reproducibility(timeout: float) -> str | None:
         if source != SOURCE_DRAWN:
             return f"an unset seed was reported as {source!r}"
 
-        res = _run(
+        res = run(
             [
-                str(_BIN / "dnsjax"),
-                *_RUN_ARGS,
+                str(BIN / "dnsjax"),
+                *RUN_ARGS,
                 "--init.random_seed",
                 seed,
             ],
@@ -427,15 +391,15 @@ def run_multiprocess_agreement(timeout: float) -> str | None:
         multi, single = tmp / "np2", tmp / "np1"
         multi.mkdir()
         single.mkdir()
-        res = _run(
+        res = run(
             [
                 "mpirun",
                 "-np",
                 "2",
-                str(_BIN / "dnsjax"),
+                str(BIN / "dnsjax"),
                 "--dist.np1",
                 "2",
-                *_RUN_ARGS,
+                *RUN_ARGS,
             ],
             multi,
             timeout,
@@ -447,8 +411,8 @@ def run_multiprocess_agreement(timeout: float) -> str | None:
             return f"the ranks reported {len(seeds)} distinct seeds: {seeds}"
         seed = seeds.pop()
 
-        res = _run(
-            [str(_BIN / "dnsjax"), *_RUN_ARGS, "--init.random_seed", seed],
+        res = run(
+            [str(BIN / "dnsjax"), *RUN_ARGS, "--init.random_seed", seed],
             single,
             timeout,
         )
@@ -479,90 +443,6 @@ def run_multiprocess_agreement(timeout: float) -> str | None:
 # ── 7. Twin adopt-or-draw ────────────────────────────────────────────
 
 
-def run_twin_adoption(timeout: float) -> str | None:
-    """A fresh twin draws; its paired resume adopts, and so proceeds."""
-    tmp = Path(tempfile.mkdtemp(prefix="dnsjax_seed_twin_"))
-    try:
-        parent, member = tmp / "parent", tmp / "m0"
-        parent.mkdir()
-        member.mkdir()
-        res = _run(
-            [
-                str(_BIN / "dnsjax"),
-                *_RUN_ARGS,
-                "--init.random_seed",
-                "1",
-                "--outs.it_snapshot",
-                "2",
-            ],
-            parent,
-            timeout,
-        )
-        if res.returncode != 0:
-            return f"the parent run exited {res.returncode}"
-        snaps = sorted(parent.glob("state*.tar"))
-        if not snaps:
-            return "the parent run wrote no snapshot"
-        shutil.copy(snaps[-1], member / snaps[-1].name)
-
-        def twin_args(snapshot: str, horizon: str) -> list[str]:
-            # ``max_sim_time`` is the horizon past the snapshot the
-            # launch starts from, not an absolute stop time.
-            return [
-                str(_BIN / "dnsjax-twin"),
-                *_RUN_ARGS,
-                "--init.snapshot",
-                snapshot,
-                "--stop.max_sim_time",
-                horizon,
-                "--twin.e0",
-                "1e-6",
-                "--twin.it_energy",
-                "1",
-            ]
-
-        # Fresh start: draws, prints, records.
-        res = _run(twin_args(snaps[-1].name, "0.005"), member, timeout)
-        if res.returncode != 0:
-            return f"the fresh twin start exited {res.returncode}"
-        match = _TWIN_SEED_RE.search(res.stdout)
-        if match is None or match.group(2) != SOURCE_DRAWN:
-            got = None if match is None else match.group(2)
-            return f"an unset twin.seed was reported as {got!r}"
-        seed = int(match.group(1))
-        recorded = json.loads((member / "twin.json").read_text())["seed"]
-        if recorded != seed:
-            return f"twin.json recorded {recorded}, the run drew {seed}"
-
-        # Paired resume, still unset: adopts rather than re-drawing --
-        # a fresh draw would fail the _TWIN_MATCH_KEYS seed check.  A
-        # resume points at the newest pair the member wrote, as the
-        # driver's own "no partner snapshot" diagnostic instructs.
-        pairs = sorted(
-            q
-            for q in member.glob("state*.tar")
-            if not q.name.endswith("_twin.tar")
-            and q.with_name(f"{q.stem}_twin.tar").exists()
-        )
-        if not pairs:
-            return "the fresh twin start wrote no reference/partner pair"
-        res = _run(twin_args(pairs[-1].name, "0.01"), member, timeout)
-        if res.returncode != 0:
-            return (
-                f"the paired resume exited {res.returncode}; an unset "
-                "twin.seed did not adopt the recorded one"
-            )
-        match = _TWIN_SEED_RE.search(res.stdout)
-        if match is None or int(match.group(1)) != seed:
-            got = None if match is None else match.group(1)
-            return f"the resume reported seed {got}, expected {seed}"
-    except Exception as exc:  # noqa: BLE001
-        return f"{type(exc).__name__}: {exc}"
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-    return None
-
-
 # ── Runner ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -570,7 +450,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--unit-only",
         action="store_true",
-        help="Run only the offline units (skip the solver/twin runs)",
+        help="Run only the offline units (skip the solver runs)",
     )
     parser.add_argument(
         "--timeout",
@@ -593,7 +473,6 @@ if __name__ == "__main__":
                 "cross-process agreement",
                 run_multiprocess_agreement(cli.timeout),
             ),
-            ("twin adopt-or-draw", run_twin_adoption(cli.timeout)),
         ]
 
     failures = [(n, r) for n, r in results if r is not None]

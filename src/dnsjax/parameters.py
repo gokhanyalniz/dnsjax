@@ -257,7 +257,7 @@ physical wavenumber (``Fourier.m``) or length (``lz``) is needed, and
 every ``geo.lz`` consumer follows automatically (the CFL azimuthal
 spacing ``nz/lz``, the random-field and localized-rolls generators,
 the ``analysis._core`` lengths).  Pinned end to end by the
-``wedge_nonlinear`` case in ``tests/test_quasi_keplerian.py``: a wedge
+``wedge_nonlinear`` case in ``tests/test_wedge.py``: a wedge
 decimated over the full azimuth would evaluate the pseudo-spectral
 product on an ``m0``-times too coarse grid and fail it outright.
 """

@@ -5,8 +5,9 @@ Layout (one module per concern; none is imported by the top-level
 
 - :mod:`.series` -- readers for the ``.dat`` scalar streams
   (``twin.dat`` / ``twin_budget.dat``) and the ``twin.json`` member
-  record; the column-generic :func:`~.series.read_dat`, which also
-  loads the per-state ``stats.dat`` / ``stats_twin.dat`` pair;
+  record; the column-generic :func:`~.series.read_dat` (the core's
+  :func:`dnsjax.analysis.read_dat`), which also loads the per-state
+  ``stats.dat`` / ``stats_twin.dat`` pair;
   per-component budget sums and the budget-closure residuals;
   :func:`~.series.relative_time`, which reads a member's sample times
   as whole steps since its perturbation; and

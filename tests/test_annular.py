@@ -174,8 +174,7 @@ def test_fd_matrices_stencil_matches_gemm() -> None:
 
     ``D1``, ``D2`` and the fused ``A_base`` are ``YMatrix``; their
     stencil product equals the dense GEMM for a 3-d field and both 4-d
-    layouts -- the component-leading one being the viscoelastic
-    annulus's 9-, 6- and 3-field stacks.
+    layouts (component-leading and component-second).
     """
     Nr, Nm, Nkz = params.res.ny, params.res.nz - 1, params.res.nx // 2
     rng = np.random.default_rng(12)

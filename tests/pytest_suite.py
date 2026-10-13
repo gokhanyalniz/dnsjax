@@ -57,17 +57,17 @@ _SCRIPTS: list[Row] = [
     ("test_device_grid.py", ("--unit-only",), NO_MPI_ONLY, 1800),
     ("test_driving.py", ("--unit-only",), (), 1800),
     ("test_seeding.py", ("--unit-only",), NO_MPI_ONLY, 1800),
-    ("test_quasi_keplerian.py", (), (), 1800),
     ("test_resume.py", ("--unit-only",), (), 1800),
-    # ~2 min: the units plus seven one-process solver and twin launches
-    # (no launcher); the mpirun tier is its own row below.
+    # ~2 min: the units plus six one-process solver launches (no
+    # launcher); the mpirun tier is its own row below.
     ("test_run_status.py", ("--no-mpi",), (), 1800),
     ("test_snapshot.py", (), (), 1800),
     ("test_snapshot_export.py", (), (), 1800),
     ("test_snapshot_import.py", (), (), 1800),
     ("test_snapshot_perturb.py", (), (), 1800),
     ("test_transient_growth.py", ("--fast",), (), 1800),
-    # Nine in-process (forced CPU device) workers, one per case, each
+    ("test_wedge.py", (), (), 1800),
+    # Six in-process (forced CPU device) workers, one per case, each
     # compiling one step twice; no mpirun.
     ("test_wall_normal_matvec.py", (), (), 1800),
     ("test_temporal_order.py", (), SLOW, 3600),
@@ -76,9 +76,9 @@ _SCRIPTS: list[Row] = [
     # second host; about a minute.
     ("test_device_grid.py", (), MPI, 1800),
     ("test_driving.py", (), SLOW, 2400),
-    # ~4 min: sixteen 2-rank launches of a few steps each (every flow
-    # family, [force], [lowres], adaptive dt, cnab2, single precision,
-    # a twin member, a regrid resume) -- not a SLOW row.
+    # ~2.5 min: nine 2-rank launches of a few steps each (every core
+    # flow family, [lowres], adaptive dt, cnab2, single precision, a
+    # wedge, a regrid resume) -- not a SLOW row.
     ("test_host_placement.py", (), MPI, 1800),
     ("test_laminar_smoke.py", (), MPI + SLOW, 3600),
     # Under 10 s: two 4-rank launches, the second over a faked second
@@ -92,17 +92,16 @@ _SCRIPTS: list[Row] = [
     # axis, so a spec mismatch there is invisible single-device.
     ("test_laminar_smoke.py", ("--np", "2"), MPI + SLOW, 3600),
     ("test_random_smoke.py", (), MPI + SLOW, 3600),
-    # MPI for the cross-process seed-agreement row alone; the seven
-    # solver/twin launches are all a handful of steps each.
+    # MPI for the cross-process seed-agreement row alone; the solver
+    # launches are all a handful of steps each.
     ("test_seeding.py", (), MPI, 1800),
     ("test_resume.py", (), MPI + SLOW, 3600),
     ("test_rolls_smoke.py", (), MPI + SLOW, 3600),
     ("test_transient_growth.py", (), SLOW, 3600),
-    # ~2.5 min: one solver and one twin run, each to its 60 s wall-clock
-    # budget on two ranks -- not a SLOW row.
+    # ~1.5 min: one solver run to its 60 s wall-clock budget on two
+    # ranks -- not a SLOW row.
     ("test_wall_time_stop.py", (), MPI, 1800),
-    # ~2 min: one solver run for the twin's parent, then four short
-    # two-rank runs, each stopped on request.
+    # ~1.5 min: three short two-rank runs, each stopped on request.
     ("test_run_status.py", ("--mpi-only",), MPI, 1800),
 ]
 

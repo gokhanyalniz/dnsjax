@@ -20,7 +20,11 @@ Operate on fields::
     div = divergence(st.spectral, st.params, st.spectral_coords)
 
 A reduced-resolution snapshot (``lowres/``, :mod:`dnsjax.lowres`) reads
-the same way, and its static pressure with :func:`read_pressure`.
+the same way, and its static pressure with :func:`read_pressure`.  A
+``.dat`` diagnostic stream reads by column name::
+
+    from dnsjax.analysis import read_dat
+    stats = read_dat("stats.dat")       # {"t": ..., "E'": ..., ...}
 
 See :func:`read_state` and :mod:`dnsjax.analysis.snapshot_ops`.
 """
@@ -31,6 +35,7 @@ from ._core import (
     GeometryInfo,
     Namespace,
     geometry_info,
+    read_dat,
     read_meta,
     read_stats,
 )
@@ -58,6 +63,7 @@ __all__ = [
     "to_spectral",
     "read_meta",
     "read_stats",
+    "read_dat",
     "geometry_info",
     "GeometryInfo",
     "AxialMetric",

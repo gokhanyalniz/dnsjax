@@ -13,9 +13,9 @@ Two layers:
    ``[solver]`` section is exempt (and dropped wholesale before
    validation, so a snapshot embedding retired solver knobs still
    resumes); switching ``geo.grid_type`` (rigged <-> half-CGL) *is* a
-   trajectory change; the trajectory-defining ``force`` extension
-   section is compared alongside; a pre-v6 ``format_version`` is
-   rejected.  Plus
+   trajectory change; a trajectory-defining extension section (one the
+   test registers) is compared alongside; a pre-v6 ``format_version``
+   is rejected.  Plus
    ``run_grid_validation_checks`` (the half-CGL rules: rejected for
    non-cylindrical systems and with ``cnab2``, accepted on the pipe
    with ``iterative-cn``) and ``run_grid_default_resolution_checks``
@@ -77,6 +77,7 @@ import sys
 import tempfile
 
 from _live import report, run_live
+from _resume import write_meta_tar
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -120,6 +121,54 @@ RUN1_ARGS: list[str] = [
 ]
 
 _SNAP_RE = re.compile(r"^state(\d+)\.tar$")
+
+
+# ── a test extension section ─────────────────────────────────────────
+
+
+class _Example:
+    """The model of a test extension section, made on first use.
+
+    All-or-none (``modes`` with ``it_example``), trajectory-defining,
+    and switched off by ``it_example = 0``: what the seams under test
+    need of a section, with no flow's own.
+    """
+
+    model = None
+
+
+def _example_extension():
+    """Register (once) and return the test section ``[example]``."""
+    from pydantic import BaseModel
+
+    from dnsjax.extensions import ParamExtension, register_extension
+
+    if _Example.model is None:
+
+        class ExampleSection(BaseModel):
+            modes: str | None = None
+            it_example: int | None = None
+
+        _Example.model = ExampleSection
+
+    def validate(values, params) -> None:
+        if (values.modes is None) != (values.it_example is None):
+            raise ValueError("example.modes and it_example go together")
+
+    return register_extension(
+        ParamExtension(
+            name="example",
+            model=_Example.model,
+            relevant=lambda system: True,
+            summary="A test section.",
+            validate=validate,
+            trajectory_defining=True,
+            off_cadences=("it_example",),
+            reset_when_off=True,
+            configured=lambda values: values.modes is not None,
+        )
+    )
+
 
 # A short pipe run for the carried-field checks: ten steps from a
 # random IC, a snapshot every five.
@@ -240,28 +289,28 @@ def run_unit_checks() -> str | None:
             changes,
         )
 
-        # The trajectory-defining ``force`` extension: turning kicks
-        # on over a kick-free snapshot is a trajectory change; a
-        # stored section matching the live singleton is not.
-        from dnsjax_lab.extensions import force_params
-
-        force_params.amplitude = 0.5
+        # A trajectory-defining extension section: turning it on over
+        # a snapshot without it is a trajectory change; a stored
+        # section matching the live singleton is not.
+        example = _example_extension()
+        snap = recorded_params_dump(params)  # embeds [example], unset
+        example.values.modes = "1,1"
         changes = trajectory_defining_changes(snap)
-        assert any(c.startswith("force.amplitude:") for c in changes), (
-            "force extension change",
+        assert any(c.startswith("example.modes:") for c in changes), (
+            "extension change",
             changes,
         )
-        snap_forced = recorded_params_dump(params)  # embeds [force]
-        changes = trajectory_defining_changes(snap_forced)
-        force_params.amplitude = None
-        assert changes == [], ("force extension match", changes)
+        snap_on = recorded_params_dump(params)  # embeds it, configured
+        changes = trajectory_defining_changes(snap_on)
+        example.values = example.model()
+        assert changes == [], ("extension match", changes)
 
         # A snapshot embedding solver params the current model no
         # longer defines (a retired backend name and its knobs) must
         # still resume: ``read_snapshot_params`` drops the
         # execution-only [solver] section before validation.  The
-        # stored [probes]/[force] sections come back as extension
-        # overlays (pure defaults here: nothing was configured).
+        # stored extension sections come back as extension overlays
+        # (pure defaults here: nothing was configured).
         import io
         import json
         import tarfile
@@ -291,8 +340,10 @@ def run_unit_checks() -> str | None:
             "retired solver params inherited",
             loaded.solver,
         )
-        assert set(ext_overlays) == {"probes", "force"}, ext_overlays
-        from dnsjax.extensions import EXTENSIONS
+        from dnsjax.extensions import EXTENSIONS, extension_metadata
+
+        recorded = set(extension_metadata("plane-couette"))
+        assert set(ext_overlays) == recorded, (ext_overlays, recorded)
 
         for sec_name, sec in ext_overlays.items():
             defaults = EXTENSIONS[sec_name].model().model_dump(mode="json")
@@ -421,7 +472,10 @@ def run_grid_default_resolution_checks() -> str | None:
         # Cartesian / annular -> full CGL under either scheme.
         got = resolve(phys={"system": "plane-couette"})
         assert got == "cgl", ("cartesian", got)
-        got = resolve(phys={"system": "dean"}, geo={"eta": 0.5})
+        got = resolve(
+            phys={"system": "taylor-couette", "re1": 100.0, "re2": 0.0},
+            geo={"eta": 0.5},
+        )
         assert got == "cgl", ("annular", got)
 
         # A user-set value survives system / scheme flips.
@@ -455,28 +509,15 @@ def run_grid_default_resolution_checks() -> str | None:
     return None
 
 
-def _write_meta_tar(path, meta: dict) -> None:
-    """A metadata-only tar: all the parameter layer reads of a snapshot."""
-    import io
-    import json
-    import tarfile
-
-    from dnsjax.snapshot_meta import META_MEMBER
-
-    payload = json.dumps(meta).encode()
-    with tarfile.open(path, "w") as tf:
-        info = tarfile.TarInfo(META_MEMBER)
-        info.size = len(payload)
-        tf.addfile(info, io.BytesIO(payload))
-
-
 def run_refusal_message_checks() -> str | None:
     """Offline unit: a non-checkpoint ``--init.snapshot`` fails in one line.
 
-    A reduced-resolution snapshot (a ``lowres`` entry) or a twin cube (a
-    ``kind``), with no layer naming the system -- the ordinary resume --
-    is refused while the run context is peeked, before any layer is
-    read: one ``<prog>: error:`` line naming the file, not a traceback.
+    A reduced-resolution snapshot (a ``lowres`` entry) or an output of
+    another kind (a ``kind``), with no layer naming the system -- the
+    ordinary resume -- is refused while the run context is peeked,
+    before any layer is read: one ``<prog>: error:`` line naming the
+    file, not a traceback, under the solver's name or another entry
+    point's own.
     """
     from pathlib import Path
 
@@ -492,14 +533,14 @@ def run_refusal_message_checks() -> str | None:
     }
     cases = {
         "lowres": {"lowres": {"field": "state", "source_res": {}}},
-        "cube": {"kind": "twin_spectra3d"},
+        "cube": {"kind": "example_cube"},
     }
     try:
         with tempfile.TemporaryDirectory() as tmp:
             for label, extra in cases.items():
                 path = Path(tmp) / f"{label}.tar"
-                _write_meta_tar(path, base | extra)
-                for prog in ("dnsjax", "dnsjax-twin"):
+                write_meta_tar(path, base | extra)
+                for prog in ("dnsjax", "dnsjax-plugin"):
                     try:
                         resolve_parameters(
                             ["--init.snapshot", str(path)],
@@ -532,12 +573,9 @@ def run_off_cadence_checks() -> str | None:
     asserted here as the reason ``0`` exists.  ``0`` turns it back into
     unset (:data:`dnsjax.parameters.OFF_CADENCES`), the recorded dump
     then says unset, and a configured all-or-none extension section
-    (``[probes]``, ``[force]``) whose cadence is ``0`` returns to its
-    defaults instead of failing its "set together" check on what it
-    inherited.
+    whose cadence is ``0`` returns to its defaults instead of failing
+    its "set together" check on what it inherited.
     """
-    from dnsjax_lab.extensions import force_params, probes_params
-
     import dnsjax.parameters as P
     from dnsjax.bootstrap import resolve_parameters
     from dnsjax.extensions import reset_extensions
@@ -550,17 +588,8 @@ def run_off_cadence_checks() -> str | None:
     stored = recorded_params_dump(params)
     stored["outs"] |= {"it_stats": 10, "it_snapshot": 10}
     stored["lowres"] = {"it_lowres": 10}
-    configured = dict(
-        stored,
-        probes={"modes": "1,1", "it_probes": 5},
-        force={
-            "modes": "1,1",
-            "profiles": "profiles.npz",
-            "amplitude": 0.1,
-            "it_force": 5,
-            "seed": 7,
-        },
-    )
+    example = _example_extension()
+    configured = dict(stored, example={"modes": "1,1", "it_example": 5})
     meta = {"format_version": 6, "system": "plane-couette"}
 
     def resolve(path, *cli: str) -> None:
@@ -573,7 +602,7 @@ def run_off_cadence_checks() -> str | None:
             from pathlib import Path
 
             plain = Path(tmp) / "plain.tar"
-            _write_meta_tar(plain, meta | {"params": stored})
+            write_meta_tar(plain, meta | {"params": stored})
             resolve(plain, "--outs.it_stats", "None")
             assert params.outs.it_stats == 10, ("None unset", params.outs)
 
@@ -586,14 +615,12 @@ def run_off_cadence_checks() -> str | None:
             assert dump["lowres"]["it_lowres"] is None, dump["lowres"]
 
             forced = Path(tmp) / "forced.tar"
-            _write_meta_tar(forced, meta | {"params": configured})
-            resolve(forced, "--probes.it_probes", "0", "--force.it_force", "0")
-            for values in (probes_params, force_params):
-                fresh = type(values)()
-                assert values == fresh, ("section not reset", values)
+            write_meta_tar(forced, meta | {"params": configured})
+            resolve(forced, "--example.it_example", "0")
+            fresh = example.model()
+            assert example.values == fresh, ("not reset", example.values)
             dump = recorded_params_dump(params)
-            assert not any(dump["probes"].values()), dump["probes"]
-            assert not any(dump["force"].values()), dump["force"]
+            assert not any(dump["example"].values()), dump["example"]
     except AssertionError as exc:
         print(f"  FAIL  {name}: {exc}")
         return str(exc)

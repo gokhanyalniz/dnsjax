@@ -1,54 +1,38 @@
-r"""Quasi-Keplerian control-parameter and azimuthal-wedge tests.
+r"""Azimuthal-wedge tests (``geo.m0``).
 
-Offline (no solver run) checks for the ``quasi-keplerian`` flow system
-and the annular / cylindrical azimuthal wedge (``geo.m0``), added
-alongside ``flows.wall_bounded.quasi_keplerian`` and the ``geo.m0``
-support in the annular / cylindrical ``Fourier`` classes.  Each case
-runs in its own subprocess (the ``test_*`` subprocess-per-config idiom:
-``dnsjax.parameters`` -- and, for the wedge-Fourier cases, the
-sharding / geometry singletons -- capture the global ``params`` once).
+Offline checks of the annular / cylindrical azimuthal wedge, the
+``geo.m0`` support in the annular / cylindrical ``Fourier`` classes.
+Each case runs in its own subprocess (the ``test_*``
+subprocess-per-config idiom: ``dnsjax.parameters`` -- and, for the
+wedge-Fourier cases, the sharding / geometry singletons -- capture the
+global ``params`` once).
 
 Cases:
 
-1. ``derive``: the (Re_i, R_Omega, eta) -> Re_o inversion at the
-   literature line eta = 0.71, R_Omega = -1.2 -- Re_o/Re_i, the round
-   trip R_Omega(Re_i, Re_o), Re_s, mu, the circular-Couette wall values
-   U_theta(r1) = 1 / U_theta(r2) = Re_o/Re_i, and the local exponent
-   q(r1), q(r2) in (0, 2) (pinned against Table II of the reproduced
-   axially-periodic quasi-Keplerian study, Shi et al., Phys. Fluids
-   2017: Re_s = 5078.8 at Re_i = 1e4).
-2. ``resume``: a consistent externally-supplied ``phys.re2`` (the
-   snapshot-resume replay path) is accepted and left unchanged.
-3. ``err_romega``: a missing ``r_omega`` and the Rayleigh-line /
-   co-rotating rejections (R_Omega >= -1).
-4. ``err_re1``: the ``re1`` sign-convention rejections (None, 0, < 0).
-5. ``override_re2``: a conflicting externally-supplied ``phys.re2``
-   is silently overwritten by the (re1, r_omega, eta) derivation
-   (``re2`` is not a quasi-Keplerian parameter).
-6. ``err_m0``: the wedge rejected on a non-annular / non-cylindrical
+1. ``err_m0``: the wedge rejected on a non-annular / non-cylindrical
    system.
-7. ``wedge_annular``: m0 = 2 annular Fourier -- lz = pi, the m0-scaled
-   integer azimuthal wavenumbers, the lz-based CFL azimuthal spacing,
-   and the unique mean mode.
-8. ``wedge_cylindrical``: m0 = 3 pipe Fourier -- the m0-scaled
+2. ``wedge_annular``: m0 = 2 annular Fourier (Taylor-Couette) -- lz =
+   pi, the m0-scaled integer azimuthal wavenumbers, the lz-based CFL
+   azimuthal spacing, and the unique mean mode.
+3. ``wedge_cylindrical``: m0 = 3 pipe Fourier -- the m0-scaled
    wavenumbers and the parity mask ``m_is_even`` tracking the *physical*
    wavenumber parity (the r = 0 axis-regularity condition).
-9. ``wedge_nonlinear``: the wedge's **physical-space / nonlinear**
+4. ``wedge_nonlinear``: the wedge's **physical-space / nonlinear**
    path, which no other wedge check reaches (the laminar smoke test has
    u' = 0; the transient-growth wedge equivalence is FFT-free).  Steps
-   one physical field two ways -- as an m0 = 3 wedge at nz = 8 and as
-   the full circle at nz = 24 with the coefficients re-indexed onto the
-   m0-multiples -- through a full nonlinear step, and requires (a) the
-   m0-multiples agree and (b) nothing leaks to the other m.  This pins
-   that the inverse FFT of the m = m0*j coefficients yields ``nz``
-   points spanning the *wedge* [0, 2*pi/m0) rather than the whole
-   azimuth: were it the latter, the pseudo-spectral product would be
-   evaluated on an m0-times too coarse theta grid and (a) would fail
-   outright.  Runs two subprocess arms sharing a state file.
+   one physical Taylor-Couette field two ways -- as an m0 = 3 wedge at
+   nz = 8 and as the full circle at nz = 24 with the coefficients
+   re-indexed onto the m0-multiples -- through a full nonlinear step,
+   and requires (a) the m0-multiples agree and (b) nothing leaks to the
+   other m.  This pins that the inverse FFT of the m = m0*j coefficients
+   yields ``nz`` points spanning the *wedge* [0, 2*pi/m0) rather than
+   the whole azimuth: were it the latter, the pseudo-spectral product
+   would be evaluated on an m0-times too coarse theta grid and (a)
+   would fail outright.  Runs two subprocess arms sharing a state file.
 
 Usage::
 
-    uv run python tests/test_quasi_keplerian.py
+    uv run python tests/test_wedge.py
 """
 
 from __future__ import annotations
@@ -62,94 +46,6 @@ from _live import run_live
 sys.stdout.reconfigure(line_buffering=True)
 
 ETA = 0.71
-R_OMEGA = -1.2
-# Reference values on the eta = 0.71, R_Omega = -1.2 half-line.
-RE_O_RATIO = 0.7968476357267952  # Re_o / Re_i
-MU = 0.5657618213660247  # eta * Re_o / Re_i
-RE_S_RATIO = 0.5078809106830124  # Re_s / Re_i (-> 5078.8 at Re_i = 1e4)
-Q_INNER = 1.7513  # q(r1)
-Q_OUTER = 1.5604  # q(r2)
-
-
-def _re2(re_i: float, eta: float, r_om: float) -> float:
-    """Derived outer Reynolds number Re_o (the branch's inversion)."""
-    return re_i * (1 - eta + r_om) / (eta * r_om - (1 - eta))
-
-
-# ── individual cases (each in its own subprocess) ──────────────────
-
-
-def case_derive() -> None:
-    """Pin the (Re_i, R_Omega, eta) -> circular-Couette derivation."""
-    from dnsjax.parameters import (
-        Parameters,
-        derived_params,
-        params,
-        update_parameters,
-        validate_parameters,
-    )
-
-    re_i = 1.0e4
-    qk = {"system": "quasi-keplerian", "re1": re_i, "r_omega": R_OMEGA}
-    update_parameters(
-        Parameters(
-            phys=qk,
-            geo={"eta": ETA},
-        )
-    )
-    validate_parameters()
-
-    re_o = params.phys.re2
-    assert params.phys.re == re_i, "re must equal the inner Re_i"
-    # Round-trip R_Omega(Re_i, Re_o).
-    r_om_back = (1 - ETA) * (re_i + re_o) / (ETA * re_o - re_i)
-    assert math.isclose(r_om_back, R_OMEGA, rel_tol=1e-12), r_om_back
-    assert math.isclose(re_o / re_i, RE_O_RATIO, rel_tol=1e-9), re_o / re_i
-    mu = ETA * re_o / re_i
-    assert math.isclose(mu, MU, rel_tol=1e-9), mu
-    re_s = 2 * abs(ETA * re_o - re_i) / (1 + ETA)
-    assert math.isclose(re_s, RE_S_RATIO * re_i, rel_tol=1e-9), re_s
-
-    # Circular-Couette wall values: U_theta(r1) = 1, U_theta(r2) = ratio.
-    a0, b0 = derived_params.ccf_A, derived_params.ccf_B
-    r1, r2 = derived_params.r_inner, derived_params.r_outer
-    assert math.isclose(a0 * r1 + b0 / r1, 1.0, rel_tol=1e-12)
-    assert math.isclose(a0 * r2 + b0 / r2, RE_O_RATIO, rel_tol=1e-9)
-
-    # Local exponent q(r) = 2 B0 / (A0 r^2 + B0), monotone in (0, 2).
-    q1 = 2 * b0 / (a0 * r1**2 + b0)
-    q2 = 2 * b0 / (a0 * r2**2 + b0)
-    assert math.isclose(q1, Q_INNER, rel_tol=1e-3), q1
-    assert math.isclose(q2, Q_OUTER, rel_tol=1e-3), q2
-    assert 0 < q2 < q1 < 2, (q2, q1)
-    print("case-ok")
-
-
-def case_resume() -> None:
-    """A consistent externally-supplied re2 is accepted, unchanged."""
-    from dnsjax.parameters import (
-        Parameters,
-        params,
-        update_parameters,
-        validate_parameters,
-    )
-
-    re_i = 1.0e4
-    re_o = _re2(re_i, ETA, R_OMEGA)
-    update_parameters(
-        Parameters(
-            phys={
-                "system": "quasi-keplerian",
-                "re1": re_i,
-                "r_omega": R_OMEGA,
-                "re2": re_o,  # the snapshot-resume replay path
-            },
-            geo={"eta": ETA},
-        )
-    )
-    validate_parameters()
-    assert params.phys.re2 == re_o, "consistent re2 must be preserved"
-    print("case-ok")
 
 
 def _expect_valueerror(phys: dict, geo: dict, needle: str) -> None:
@@ -167,73 +63,6 @@ def _expect_valueerror(phys: dict, geo: dict, needle: str) -> None:
         assert needle in str(exc), f"{needle!r} not in: {exc}"
         return
     raise AssertionError(f"expected ValueError mentioning {needle!r}")
-
-
-def case_err_romega() -> None:
-    """Missing r_omega and the R_Omega >= -1 (non-quasi-Keplerian)."""
-    # Missing r_omega (re1 set, so the r_omega check is the one to fire).
-    _expect_valueerror(
-        {"system": "quasi-keplerian", "re1": 1.0e4}, {"eta": ETA}, "r_omega"
-    )
-    # Rayleigh line and co-rotating side both rejected.
-    for r_om in (-1.0, -0.5, 0.5):
-        _expect_valueerror(
-            {"system": "quasi-keplerian", "re1": 1.0e4, "r_omega": r_om},
-            {"eta": ETA},
-            "Rayleigh",
-        )
-    print("case-ok")
-
-
-def case_err_re1() -> None:
-    """The re1 sign-convention rejections (None, 0, negative)."""
-    # re1 = None (omitted): fresh params, so genuinely unset.
-    _expect_valueerror(
-        {"system": "quasi-keplerian", "r_omega": R_OMEGA}, {"eta": ETA}, "re1"
-    )
-    for re_i in (0.0, -5.0):
-        _expect_valueerror(
-            {"system": "quasi-keplerian", "re1": re_i, "r_omega": R_OMEGA},
-            {"eta": ETA},
-            "re1",
-        )
-    print("case-ok")
-
-
-def case_override_re2() -> None:
-    """A conflicting externally-supplied re2 is silently overwritten.
-
-    ``re2`` is not a quasi-Keplerian parameter (the CLI/TOML surfaces
-    reject it outright); a directly-assigned or layered value is
-    replaced by the (re1, r_omega, eta) derivation.
-    """
-    from dnsjax.parameters import (
-        Parameters,
-        params,
-        update_parameters,
-        validate_parameters,
-    )
-
-    re_i = 1.0e4
-    update_parameters(
-        Parameters(
-            phys={
-                "system": "quasi-keplerian",
-                "re1": re_i,
-                "r_omega": R_OMEGA,
-                "re2": 123.0,  # conflicting; the derivation wins
-            },
-            geo={"eta": ETA},
-        )
-    )
-    validate_parameters()
-    expected = _re2(re_i, ETA, R_OMEGA)
-    assert params.phys.re2 == expected, (
-        "conflicting re2 must be overwritten by the derivation",
-        params.phys.re2,
-        expected,
-    )
-    print("case-ok")
 
 
 def case_err_m0() -> None:
@@ -255,10 +84,10 @@ def case_wedge_annular() -> None:
         validate_parameters,
     )
 
-    qk = {"system": "quasi-keplerian", "re1": 100.0, "r_omega": R_OMEGA}
+    tc = {"system": "taylor-couette", "re1": 100.0, "re2": 80.0}
     update_parameters(
         Parameters(
-            phys=qk,
+            phys=tc,
             geo={"eta": ETA, "m0": 2},
             res={"nx": 4, "nz": 8, "ny": 11},
         )
@@ -344,16 +173,12 @@ WEDGE_TOL = 1e-11
 
 
 def _wedge_common(m0: int, nz: int) -> None:
-    """Configure the shared quasi-Keplerian wedge/full-circle run."""
+    """Configure the shared Taylor-Couette wedge/full-circle run."""
     from dnsjax.parameters import Parameters, update_parameters
 
     update_parameters(
         Parameters(
-            phys={
-                "system": "quasi-keplerian",
-                "re1": 200.0,
-                "r_omega": R_OMEGA,
-            },
+            phys={"system": "taylor-couette", "re1": 200.0, "re2": 160.0},
             geo={"eta": ETA, "m0": m0, "lx": 2.0},
             res={"nx": WEDGE_NX, "nz": nz, "ny": WEDGE_NY},
             # A tight corrector: the fixed point is only pinned to
@@ -389,13 +214,13 @@ def _azimuthal_index_map(m0: int, nz_wedge: int, nz_full: int):
 
 
 def _wedge_step(state):
-    """One full nonlinear step of the configured quasi-Keplerian flow.
+    """One full nonlinear step of the configured Taylor-Couette flow.
 
     *state* is physical, as the IC builders produce it; the crossing
     into and out of the solver basis mirrors ``__main__``'s, so both
     arms of the comparison stay in physical components.
     """
-    from dnsjax_lab.flows.wall_bounded.quasi_keplerian import (
+    from dnsjax.flows.wall_bounded.taylor_couette import (
         from_solver_basis,
         predict_and_fully_correct,
         to_solver_basis,
@@ -508,11 +333,6 @@ def case_wedge_nonlinear() -> None:
 
 
 CASES = {
-    "derive": case_derive,
-    "resume": case_resume,
-    "err_romega": case_err_romega,
-    "err_re1": case_err_re1,
-    "override_re2": case_override_re2,
     "err_m0": case_err_m0,
     "wedge_annular": case_wedge_annular,
     "wedge_cylindrical": case_wedge_cylindrical,
@@ -562,4 +382,4 @@ if __name__ == "__main__":
     if failed:
         print(f"\n{failed} case(s) FAILED")
         sys.exit(1)
-    print("\nAll quasi-keplerian cases passed.")
+    print("\nAll wedge cases passed.")

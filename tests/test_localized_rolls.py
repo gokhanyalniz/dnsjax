@@ -2,22 +2,21 @@
 r"""Construction self-test for the in-process IC builders.
 
 Builds the deterministic streamwise-localized-rolls IC
-(``dnsjax.ic.localized_rolls``) for each flow and checks the
+(``dnsjax.ic.localized_rolls``) for each core flow and checks the
 *construction* properties the smoke test (``tests/test_rolls_smoke.py``)
 cannot -- without time-stepping -- plus, in the same subprocess (no
 extra launch), the divergence guard on the random-field IC
-(``dnsjax.ic.random_field``, the default start mode).  Flows in
-``RANDOM_ONLY`` run the random half only, and their random state
-carries the checks the rolls state carries elsewhere:
+(``dnsjax.ic.random_field``, the default start mode).  The workers:
+``tests/_localized_rolls.py``, which the lab's flows share
+(``lab/tests/test_localized_rolls.py``).  The checks:
 
 - **finiteness** of the built spectral state;
 - **exact no-slip** at the wall nodes (the wall ``y`` / ``r`` slice of
   the *velocity* block is identically zero, never transformed): both
   walls for Cartesian / annular, the outer wall ``r = 1`` for the
-  cylindrical family (the inner end is the axis); for the total-field
-  flows (Dean, viscoelastic) the *total* velocity still vanishes,
-  while their conformation block does not -- its wall condition is
-  ``grad^2 c = 0``, not a Dirichlet zero;
+  cylindrical family (the inner end is the axis); for a total-field
+  flow the *total* velocity still vanishes, and a state carrying more
+  than the velocity is checked on its velocity block;
 - **bit-identical determinism** (two builds in one process agree) and
   **device-count independence** (the true modes are identical at
   ``(np0, np1) = (1, 1)``, ``(1, 2)`` and ``(2, 1)``) -- the
@@ -28,10 +27,7 @@ carries the checks the rolls state carries elsewhere:
   spot leaves the field's bulk velocity and wall shear untouched (the
   "Mean-free by construction" note in :mod:`dnsjax.ic.localized_rolls`);
   checked at a box whose ``L / wavelength`` is not an integer, the only
-  regime in which the roll factors have a DC bin to leak.  The curved
-  pipe's toroidal map gives `$u_\theta$` the `$O(\kappa)$` mean its
-  continuity needs, so there the mode is exactly zero on `$u_s$` and
-  zero to roundoff on `$(h u_r, h u_\theta)$` (``MEAN_TOL_CURVED``);
+  regime in which the roll factors have a DC bin to leak;
 - a **loose truncation-level discrete-divergence bound** (the analytic
   profiles are continuously divergence-free; the discrete divergence is
   only FD-truncation-sized and is projected out by the first corrector
@@ -44,10 +40,7 @@ carries the checks the rolls state carries elsewhere:
   against, `$G'$` is the exact `$\mathrm{i}k_y\hat G$`, and the two
   divergence terms are the same product of the same factors with
   opposite sign -- so a truncation-level bound there would pass on a
-  construction that had stopped cancelling.  **The curved pipe is held
-  to roundoff on its toroidal continuity row** (``DIV_TOL_CURVED``),
-  for the same reason: the straight rolls miss that row by `$O(\kappa)$`,
-  well inside the truncation bound;
+  construction that had stopped cancelling;
 - **reality**, Kolmogorov only: the periodic family's joint
   `$f(k_y,k_z,0) = \overline{f(-k_y,-k_z,0)}$` condition on the
   `$k_x = 0$` plane, which the rolls get free from separability while
@@ -58,10 +51,6 @@ carries the checks the rolls state carries elsewhere:
   domain-independent -- guarding against a regression to the old
   single-mode rolls whose amplitude grew in proportion to the box
   length.
-
-The curved pipe's divergence, rolls and random field alike, is its
-solver's continuity row: the straight divergence of
-`$(u_s, h u_r, h u_\theta)$` (``_metric_weighted``).
 
 Each ``(system, np0, np1)`` configuration runs in its own subprocess with
 forced CPU devices
@@ -81,105 +70,33 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import numpy as np
 from _live import report, run_live
+from _localized_rolls import run_case, run_worker
 
 sys.stdout.reconfigure(line_buffering=True)
 
-# Small resolutions chosen so the multi-device cases exercise spectral
-# padding: nx // 2 = 5 (odd -> k_x padded for np1 = 2); nz - 1 = 11 (odd
-# -> k_z / m padded for np0 = 2).
-NX, NY, NZ = 10, 15, 12
-# Kolmogorov's ``ny`` is a *Fourier* mode count, not a wall-normal grid
-# size, so it must be even -- ``validate_parameters`` refuses an odd
-# one, and ``NY = 15`` above is a grid size (see ``dnsjax.harmonics``).
-NY_PERIODIC = 16
-LX, LZ = 5.0, 5.0
-# ``L / WAVELENGTH = 5/3`` is deliberately **not** an integer: that is
-# the only regime in which a roll factor has a nonzero DC bin, so it is
-# what makes the mean-mode check below a real guard.  At an integral
-# ratio (the shipped defaults, and the old 2.5 here) the leak this
-# checks for is machine-zero by coincidence and every build passes.
-AMP, WIDTH, WAVELENGTH = 0.1, 1.5, 3.0  # physical width / cross-roll wave
-
-SYSTEMS = [
-    "kolmogorov",
-    "plane-couette",
-    "plane-poiseuille",
-    "pipe",
-    "pipe-wedge",
-    "curved-pipe",
-    "taylor-couette",
-    "dean",
-    "viscoelastic-dean",
-    "viscoelastic-pipe",
-]
-
-# Flows that run the random-field half of the worker only, with the
-# cross-device comparison riding the random state instead of the rolls
-# one.  Both 9-component flows exercise the builders'
-# component-count-agnostic path (the conformation block is carried
-# along; the velocity block is what continuity is solved on) -- and
-# ``viscoelastic-pipe`` additionally runs the full rolls half, so the
-# 9-component rolls path is covered there.
-RANDOM_ONLY = ["viscoelastic-dean"]
-
-# Cases that are a flow at a non-default azimuthal wedge (``geo.m0``),
-# ``name -> (system, m0)``: the pipe rolls' azimuthal factor is one
-# period over the wedge, i.e. the physical ``m = m0``, and their radial
-# profiles must follow it for the field to stay solenoidal and
-# axis-regular (``generate_cylindrical_rolls``) -- which the divergence
-# check below measures with the physical ``m``.
-WEDGE_CASES = {"pipe-wedge": ("pipe", 2)}
-
-# Configurations (np0, np1) to build at; (1, 1) is the reference.
-CONFIGS = [(1, 1), (1, 2), (2, 1)]
-
-DIV_TOL = 5e-2  # loose truncation-level discrete-divergence bound
-# Triply-periodic: every direction is spectral, so the divergence
-# cancels analytically rather than to FD truncation order -- bound it
-# *relative to the field scale* at machine precision (measured ~8e-17).
-DIV_TOL_SPECTRAL = 1e-13
-# Curved pipe: its rolls are the pipe's mapped exactly onto toroidal
-# continuity, and ``fd_order = 4`` differentiates the ``m0 = 1`` quartic
-# profile exactly, so they meet the continuity row to roundoff -- bound
-# it relative to the transverse pair (measured 9.9e-15 here, flat in
-# kappa to 0.9, growing with the radial operator to 1.3e-13 at
-# nr = 41).  The truncation bound above would pass the straight rolls,
-# which miss the row by 1.9e-2 of the pair.
-DIV_TOL_CURVED = 1e-12
-# ... and the (0, 0) mode of its (h u_r, h u_theta), relative to the
-# same pair: measured <= 1.9e-16 up to kappa = 0.9 (4e-18 at the
-# default).
-MEAN_TOL_CURVED = 2e-15
-
-# Random-field IC guard: amplitude / smoothness / seed, and the
-# *relative* divergence bound over the whole field, k_z = 0 included
-# (the builders solve continuity on every mode, so this is machine-zero).
-RAND_AMP, RAND_SMOOTH, RAND_SEED = 0.2, 0.4, 7
-# The wall-normal pair, at the shipped defaults: the divergence bound
-# below is what proves the scale-dependent wall window is structurally
-# inert (it reshapes a column, it does not touch the closure).
-RAND_WALL_SMOOTH, RAND_WALL_CONF = 0.4, 0.14
-RAND_DIV_TOL = 1e-11
-
-# Cross-device-count comparison tolerance for the random state
-# (``RANDOM_ONLY`` flows; the rolls state is compared bit-exactly).
-# The random builders draw per column in host NumPy -- bit-exact by
-# construction -- but their final rescaling divides by a *device-side
-# global reduction* (``get_norm2_*`` over the sharded mode axes),
-# whose summation order, and so whose last ulp, depends on the mesh.
-# That single factor multiplies the whole block: measured <= 2 ulp
-# relative, with the laminar mean-mode column -- added after the
-# scaling -- bit-identical.  The structural property, exact discrete
-# continuity, is bit-exact at every configuration and is checked as
-# such above.
-RAND_CROSS_TOL = 1e-13
+#: ``name -> case`` (the keys: ``tests/_localized_rolls.py``).  A wedge
+#: case is a flow at a non-default azimuthal wedge (``geo.m0``): the
+#: pipe rolls' azimuthal factor is one period over the wedge, i.e. the
+#: physical ``m = m0``, and their radial profiles must follow it for the
+#: field to stay solenoidal and axis-regular
+#: (``generate_cylindrical_rolls``) -- which the divergence check
+#: measures with the physical ``m``.
+CASES: dict[str, dict] = {
+    "kolmogorov": {},
+    "plane-couette": {},
+    "plane-poiseuille": {},
+    "pipe": {},
+    "pipe-wedge": {"system": "pipe", "geo": {"m0": 2}},
+    "taylor-couette": {
+        "phys": {"re1": 100.0, "re2": -100.0},
+        "geo": {"eta": 0.5},
+    },
+}
 
 # Peak-velocity / domain-scaling guard.  The spot is peak-normalized so
 # max|u'| = amplitude and is domain-independent (the old single-mode
@@ -193,454 +110,7 @@ PEAK_BOXES = ((20.0, 48), (40.0, 96))  # (box length, resolution)
 PEAK_TOL = 0.12  # |peak/amp - 1| and cross-box agreement bound
 
 
-# ── parameter / JAX setup (forced CPU devices) ───────────────────
-
-
-def _configure(system: str, np0: int, np1: int) -> None:
-    """Configure JAX and the parameter singletons on forced CPU devices.
-
-    *np0* x *np1* devices.  Must run before importing ``sharding`` / the
-    geometry modules.
-    """
-    os.environ["XLA_FLAGS"] = (
-        f"--xla_force_host_platform_device_count={np0 * np1}"
-    )
-    os.environ["NPROC"] = "1"
-
-    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
-    from dnsjax.parameters import (
-        Parameters,
-        padded_res,
-        params,
-        update_parameters,
-    )
-
-    system, m0 = WEDGE_CASES.get(system, (system, 1))
-    phys: dict = {"system": system, "re": 100.0}
-    geo: dict = {"lx": LX, "lz": LZ}
-    if m0 != 1:
-        geo["m0"] = m0
-    if system == "taylor-couette":
-        phys.update(re1=100.0, re2=-100.0)
-        geo["eta"] = 0.5
-    elif system == "dean":
-        geo["eta"] = 0.5
-    elif system == "kolmogorov":
-        # Periodic in every direction: no eta, no wall grid, and
-        # ``res.fd_order`` is not on its surface (nothing reads it).
-        pass
-    elif system in ("viscoelastic-dean", "viscoelastic-pipe"):
-        # Re := Wi/El is derived (the annulus additionally takes its
-        # geometry from ``geo.delta``); the rheology defaults (spec)
-        # are left alone.
-        phys.pop("re")
-
-    update_parameters(
-        Parameters(
-            dist={"np0": np0, "np1": np1},
-            phys=phys,
-            geo=geo,
-            res={
-                "nx": NX,
-                "ny": NY_PERIODIC if system == "kolmogorov" else NY,
-                "nz": NZ,
-                "fd_order": 4,
-                "double_precision": True,
-            },
-            outs={},
-        )
-    )
-    padded_res.set_padded_resolution(params)
-    configure_jax_platform(platform_from_argv())
-
-
-# ── per-geometry discrete divergence (host numpy) ────────────────
-
-
-def _metric_weighted(true: np.ndarray) -> np.ndarray:
-    r"""Curved pipe: `$(u_s, h u_r, h u_\theta)$` of a true-mode state.
-
-    The variables whose *straight* divergence is the solver's toroidal
-    continuity row (``CurvedCylindricalFlow.divergence_defect``), with
-    the exact truncating `$h$` product the solver applies.
-    """
-    from dnsjax.analysis._core import geometry_info
-    from dnsjax.geometries.wall_bounded.cylindrical import (
-        build_cylindrical_grid,
-    )
-    from dnsjax.parameters import params
-
-    rs, *_ = build_cylindrical_grid(
-        params.res.ny,
-        params.res.fd_order,
-        params.geo.wall_grid,
-        params.geo.grid_type,
-        params.geo.grid_stretch,
-    )
-    info = geometry_info(params)
-    out = true.copy()
-    for c in (1, 2):
-        out[c] = info.metric.product(true[c], np.asarray(rs), info, 1)
-    return out
-
-
-def _max_divergence(true: np.ndarray, system: str) -> float:
-    r"""Max |discrete divergence| of the true-mode state (host numpy).
-
-    The FD matrices are built with the run's **resolved** wall-normal
-    grid selection (``geo.grid_type`` etc.), not the builder defaults
-    -- pipe resolves to ``half-cgl``, whose `$D_1$` differs from the
-    default grid's, and a mismatched reference would silently measure
-    the wrong operator.  The whole field is measured, including the
-    `$k_z = 0$` plane: the random-field builders now solve continuity
-    on every mode (see :mod:`dnsjax.ic.random_field`).
-
-    The curved pipe is measured on its own continuity row, the
-    straight divergence of `$(u_s, h u_r, h u_\theta)$` that its
-    corrector drives to zero, with the exact truncating product of its
-    analysis metric (``GeometryInfo.metric``): the straight divergence
-    of a toroidally solenoidal field is `$O(\kappa)$`.
-    """
-    from dnsjax.flows.registry import cylindrical_systems
-    from dnsjax.operators import complex_harmonics, real_harmonics
-    from dnsjax.parameters import derived_params, params
-
-    nx, ny, nz = params.res.nx, params.res.ny, params.res.nz
-    fd = params.res.fd_order
-    grid_args = (
-        params.geo.wall_grid,
-        params.geo.grid_type,
-        params.geo.grid_stretch,
-    )
-    kx_real = np.asarray(real_harmonics(nx)) * (2 * np.pi / params.geo.lx)
-    if system == "kolmogorov":
-        # Triply-periodic: components (u_x, u_y, u_z) over
-        # [k_y, k_z, k_x], every derivative a multiply.  ``ly`` is the
-        # geometry's own fixed shear-direction period, not a parameter.
-        from dnsjax.geometries.triply_periodic.triply_periodic import ly
-
-        ky = np.asarray(complex_harmonics(ny)) * (2 * np.pi / ly)
-        kz = np.asarray(complex_harmonics(nz)) * (2 * np.pi / params.geo.lz)
-        div = 1j * (
-            kx_real[None, None, :] * true[0]
-            + ky[:, None, None] * true[1]
-            + kz[None, :, None] * true[2]
-        )
-        return float(np.max(np.abs(div)))
-
-    if system in ("plane-couette", "plane-poiseuille"):
-        from dnsjax.geometries.wall_bounded.cartesian import (
-            build_cartesian_grid,
-        )
-
-        _, d1, _, _ = build_cartesian_grid(ny, fd, *grid_args)
-        d1 = np.asarray(d1)
-        kz = np.asarray(complex_harmonics(nz)) * (2 * np.pi / params.geo.lz)
-        duy = np.einsum("ij,jzx->izx", d1, true[1])
-        div = (
-            duy
-            + 1j * kz[None, :, None] * true[2]
-            + 1j * kx_real[None, None, :] * true[0]
-        )
-        return float(np.max(np.abs(div)))
-
-    # pipe / annular: native (u_z, u_r, u_theta) over (r, m, k_z,ax).
-    # Keyed on the *geometry* list, which spans each geometry's
-    # viscoelastic member too (``dnsjax.flows.registry``).
-    m = params.geo.m0 * np.asarray(complex_harmonics(nz))
-    if system in cylindrical_systems:
-        from dnsjax.geometries.wall_bounded.cylindrical import (
-            build_cylindrical_grid,
-        )
-
-        _, d1_even, d1_odd, _, _, _, inv_r = build_cylindrical_grid(
-            ny, fd, *grid_args
-        )
-        d1_even, d1_odd = np.asarray(d1_even), np.asarray(d1_odd)
-        inv_r = np.asarray(inv_r)
-    else:  # taylor-couette / dean / viscoelastic-dean
-        from dnsjax.geometries.wall_bounded.annular import build_annular_grid
-
-        r1, r2 = derived_params.r_inner, derived_params.r_outer
-        _, d1, _, _, inv_r = build_annular_grid(
-            ny, fd, *grid_args, r_inner=r1, r_outer=r2
-        )
-        d1, inv_r = np.asarray(d1), np.asarray(inv_r)
-
-    if system == "curved-pipe":
-        true = _metric_weighted(true)
-    div = np.zeros_like(true[0])
-    for im, mv in enumerate(m):
-        if system in cylindrical_systems:
-            d1v = d1_even if (mv + 1) % 2 == 0 else d1_odd
-        else:
-            d1v = d1
-        ur, uth, uz = true[1][:, im, :], true[2][:, im, :], true[0][:, im, :]
-        div_perp = (
-            d1v @ ur + inv_r[:, None] * ur + 1j * mv * inv_r[:, None] * uth
-        )
-        div[:, im, :] = div_perp + 1j * kx_real[None, :] * uz
-    return float(np.max(np.abs(div)))
-
-
-# ── worker ───────────────────────────────────────────────────────
-
-
-def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
-    _configure(system, np0, np1)
-
-    from dnsjax.parameters import params
-
-    # A ``WEDGE_CASES`` name resolves to its flow for every check below.
-    system = params.phys.system
-    nx, ny, nz = params.res.nx, params.res.ny, params.res.nz
-    passed = failed = 0
-
-    def check(name: str, ok: bool, detail: str = "") -> None:
-        nonlocal passed, failed
-        print(f"  {'PASS' if ok else 'FAIL'}: {name}  {detail}")
-        if ok:
-            passed += 1
-        else:
-            failed += 1
-
-    # Strip mesh padding -> true modes (padding is at the global axis end).
-    def _true(state: np.ndarray) -> np.ndarray:
-        return state[:3, :, : nz - 1, : nx // 2]
-
-    true: np.ndarray | None = None
-    if system not in RANDOM_ONLY:
-        from dnsjax.flows.registry import cylindrical_systems
-        from dnsjax.ic.localized_rolls import generate_localized_rolls
-
-        state1 = np.asarray(generate_localized_rolls(AMP, WIDTH, WAVELENGTH))
-        state2 = np.asarray(generate_localized_rolls(AMP, WIDTH, WAVELENGTH))
-        true = _true(state1)
-
-        check("finite", bool(np.all(np.isfinite(state1))))
-        check("determinism (build twice)", np.array_equal(state1, state2))
-
-        # Exact no-slip at the wall nodes (axis 1 = y / r), on the
-        # **velocity** block: a viscoelastic total-field state also
-        # carries the laminar conformation there, whose wall values are
-        # O(1)-to-O(Wi^2) by construction (its BC is grad^2 c = 0, not
-        # a Dirichlet zero).  ``[:3]`` is the whole state for every
-        # velocity-only flow.  Kolmogorov has no wall node to check:
-        # its axis 1 is ``k_y``, and the spot is periodic there.
-        if system != "kolmogorov":
-            vel1 = state1[:3]
-            if system in cylindrical_systems:
-                wall = float(np.max(np.abs(vel1[:, -1])))  # outer r = 1
-            else:
-                wall = max(
-                    float(np.max(np.abs(vel1[:, 0]))),
-                    float(np.max(np.abs(vel1[:, -1]))),
-                )
-            check(
-                "exact no-slip at walls",
-                wall < 1e-12,
-                f"max|u|_wall={wall:.2e}",
-            )
-
-        div = _max_divergence(true, system)
-        if system == "kolmogorov":
-            # Fully spectral: the cancellation is analytic, so this is
-            # a machine-precision statement, not a truncation bound.
-            tscale = float(np.max(np.abs(true)))
-            check(
-                "divergence at machine precision",
-                div < DIV_TOL_SPECTRAL * tscale,
-                f"max|div|={div:.2e} scale={tscale:.2e}",
-            )
-        elif system == "curved-pipe":
-            pscale = float(np.max(np.abs(true[1:3])))
-            check(
-                "toroidal divergence at roundoff",
-                div < DIV_TOL_CURVED * pscale,
-                f"max|div|={div:.2e} scale={pscale:.2e}",
-            )
-        else:
-            check(
-                "divergence truncation-level",
-                div < DIV_TOL,
-                f"max|div|={div:.2e}",
-            )
-
-        # Reality (Kolmogorov only): the periodic family stores the
-        # ``k_x = 0`` plane under the *joint* conjugate symmetry
-        # ``f(k_y, k_z, 0) = conj(f(-k_y, -k_z, 0))``.  The rolls get it
-        # from separability -- every 1-D factor is the transform of a
-        # real signal -- where the random-field builder needs
-        # ``_periodic_hermitian_raw``; this is what would catch a factor
-        # that stopped being real.  The index flip below pairs
-        # `$q \leftrightarrow -q$`, which every stored Fourier axis
-        # supports because its mode count is even (``NY_PERIODIC``).
-        if system == "kolmogorov":
-            nky, nkz = ny - 1, nz - 1
-            fy = np.array([0] + [nky - i for i in range(1, nky)])
-            fz = np.array([0] + [nkz - i for i in range(1, nkz)])
-            plane = true[:, :, :, 0]
-            defect = float(
-                np.max(np.abs(plane - np.conj(plane[:, fy][:, :, fz])))
-            )
-            check(
-                "reality on the k_x = 0 plane",
-                defect < DIV_TOL_SPECTRAL * float(np.max(np.abs(plane))),
-                f"max defect={defect:.2e}",
-            )
-
-        # The spot contributes **nothing** to the (0, 0) mean mode, so
-        # it moves neither the bulk velocity nor the wall shear.  Stated
-        # against an ``amplitude = 0`` build so it reads the same for
-        # the perturbation flows (whose mean column is then identically
-        # zero) and the total-field ones (whose mean column carries the
-        # analytical laminar profile).  Bit-exact, not a tolerance --
-        # the roll factors' DC bins are hard zeros (``_zero_dc``).
-        zero_amp = np.asarray(generate_localized_rolls(0.0, WIDTH, WAVELENGTH))
-        if system == "curved-pipe":
-            # The map onto toroidal continuity gives u_theta the
-            # O(kappa) mean its m = +-1 modes need
-            # (``generate_curved_pipe_rolls``).  u_s, which alone
-            # carries the flux and the wall shear, is held bit-exactly;
-            # the pair continuity is straight in, to roundoff.
-            same_s = np.array_equal(state1[0, :, 0, 0], zero_amp[0, :, 0, 0])
-            spot = _true(state1 - zero_amp)
-            hmean = float(np.max(np.abs(_metric_weighted(spot)[1:3, :, 0, 0])))
-            pscale = float(np.max(np.abs(spot[1:3])))
-            check("spot adds nothing to the (0, 0) mode of u_s", same_s)
-            check(
-                "spot's (h u_r, h u_theta) (0, 0) mode at roundoff",
-                hmean < MEAN_TOL_CURVED * pscale,
-                f"max|h u(0,0)|={hmean:.2e} scale={pscale:.2e}",
-            )
-        else:
-            same_mean = np.array_equal(
-                state1[:, :, 0, 0], zero_amp[:, :, 0, 0]
-            )
-            moved = float(
-                np.max(np.abs(state1[:, :, 0, 0] - zero_amp[:, :, 0, 0]))
-            )
-            check(
-                "spot adds nothing to the (0, 0) mean mode",
-                same_mean,
-                f"max|delta u(0,0)|={moved:.2e}",
-            )
-
-    # ── random-field IC: exact discrete continuity on the *whole*
-    # field, k_z = 0 plane included.  Unlike the analytic rolls
-    # (truncation-level), the random builders *solve* continuity per mode
-    # -- u_z for k_z != 0, u_theta for k_z = 0 (m != 0), u_r = 0 at the
-    # mean -- so the residual is machine-zero, a sharp guard on the
-    # per-geometry divergence expression each builder inverts.
-    from dnsjax.ic.random_field import generate_random_state
-
-    rand = np.asarray(
-        generate_random_state(
-            RAND_AMP, RAND_SMOOTH, RAND_WALL_SMOOTH, RAND_WALL_CONF, RAND_SEED
-        )
-    )
-    rand_true = _true(rand)
-    scale = float(np.max(np.abs(rand_true)))
-    rdiv = _max_divergence(rand_true, system)
-    check(
-        "random IC divergence-free (full field)",
-        rdiv < RAND_DIV_TOL * scale,
-        f"max|div|={rdiv:.2e} scale={scale:.2e}",
-    )
-
-    if true is None:
-        # Rolls-less flow: the random state carries the finiteness,
-        # determinism and cross-device checks instead -- and it carries
-        # them for *all* its components (the conformation block
-        # included), not just the velocity block continuity is solved
-        # on.
-        check("finite", bool(np.all(np.isfinite(rand))))
-        rand2 = np.asarray(
-            generate_random_state(
-                RAND_AMP,
-                RAND_SMOOTH,
-                RAND_WALL_SMOOTH,
-                RAND_WALL_CONF,
-                RAND_SEED,
-            )
-        )
-        check("determinism (build twice)", np.array_equal(rand, rand2))
-        true = rand[:, :, : nz - 1, : nx // 2]
-    np.save(out_npy, true)
-
-    print(f"\n[{system} {np0}x{np1}] {passed} passed, {failed} failed.")
-    return 1 if failed else 0
-
-
-# ── driver ───────────────────────────────────────────────────────
-
-
-def _run_config(
-    system: str, np0: int, np1: int, out_npy: str
-) -> subprocess.CompletedProcess:
-    cmd = [
-        sys.executable,
-        str(Path(__file__).resolve()),
-        "--system",
-        system,
-        "--np0",
-        str(np0),
-        "--np1",
-        str(np1),
-        "--out",
-        out_npy,
-    ]
-    return run_live(cmd, timeout=300)
-
-
-def _run_system(system: str) -> str | None:
-    """Run all configs for one system; ``None`` on a full pass.
-
-    On failure returns the one-line reason for the summary, quoting
-    the worker's own first ``FAIL:`` line where it has one -- the
-    parent otherwise only knows the exit code.
-    """
-    print(f"=== {system} ===")
-    bad: list[str] = []
-    ref: np.ndarray | None = None
-    with tempfile.TemporaryDirectory() as tmp:
-        for np0, np1 in CONFIGS:
-            out = str(Path(tmp) / f"true_{np0}x{np1}.npy")
-            proc = _run_config(system, np0, np1, out)
-            tag = f"np0={np0} np1={np1}"
-            if proc.returncode != 0:
-                print(f"  FAIL: {tag} worker exit {proc.returncode}")
-                print(proc.stdout[-1500:])
-                print(proc.stderr[-1500:])
-                inner = next(
-                    (
-                        ln.strip()
-                        for ln in proc.stdout.splitlines()
-                        if ln.strip().startswith("FAIL:")
-                    ),
-                    "",
-                )
-                bad.append(
-                    f"{tag} worker exit {proc.returncode}"
-                    + (f" ({inner})" if inner else "")
-                )
-                continue
-            arr = np.load(out)
-            if ref is None:
-                ref = arr
-            else:
-                same = arr.shape == ref.shape and (
-                    np.allclose(arr, ref, rtol=RAND_CROSS_TOL, atol=0.0)
-                    if system in RANDOM_ONLY
-                    else np.array_equal(arr, ref)
-                )
-                print(
-                    f"  {'PASS' if same else 'FAIL'}: {tag} matches (1, 1) "
-                    "true modes"
-                )
-                if not same:
-                    bad.append(f"{tag} differs from the (1, 1) true modes")
-    return "; ".join(bad) if bad else None
+# ── peak scaling ─────────────────────────────────────────────────
 
 
 def _peak_build(system: str, box: float, n: int) -> int:
@@ -767,7 +237,7 @@ def main() -> None:
         p.add_argument("--np1", type=int, default=1)
         p.add_argument("--out", required=True)
         a = p.parse_args()
-        sys.exit(_run_worker(a.system, a.np0, a.np1, a.out))
+        sys.exit(run_worker(CASES[a.system], a.system, a.np0, a.np1, a.out))
 
     print(
         "Localized-rolls construction self-test: offline, forced CPU "
@@ -778,7 +248,7 @@ def main() -> None:
     # Each check returns None when it passes, else its one-line reason;
     # ``report`` repeats the failures after the counts (see _live).
     results: list[tuple[str, str | None]] = [
-        (system, _run_system(system)) for system in SYSTEMS
+        (name, run_case(__file__, case, name)) for name, case in CASES.items()
     ]
     results.append(("peak |u'| scaling", _check_peak_scaling()))
     failures = [(n, r) for n, r in results if r is not None]
