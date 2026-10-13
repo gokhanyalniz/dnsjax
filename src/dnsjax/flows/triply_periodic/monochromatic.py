@@ -234,13 +234,18 @@ def get_dissipation(
 def get_input(
     state: Array, fourier_: Fourier, flow_: MonochromaticFlow
 ) -> Array:
-    """Power input `$I$` of the forcing, the laminar part included."""
+    r"""Power input `$I$` of the forcing, the laminar part included.
+
+    The sum runs over the forced modes `$k_y = \pm q_f$` on the
+    `$k_x = 0$` plane, a conjugate pair with conjugate coefficients, so
+    it is real up to roundoff: the real part is taken explicitly rather
+    than by a cast (which JAX warns about).
+    """
     return (
         jnp.sum(
             jnp.conj(flow_.unit_force * flow_.force_amplitude)
-            * state.at[flow_.forced_modes].get(out_sharding=sharding.no_shard),
-            dtype=sharding.float_type,
-        )
+            * state.at[flow_.forced_modes].get(out_sharding=sharding.no_shard)
+        ).real
         + flow_.input_lam
     )
 
