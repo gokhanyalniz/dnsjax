@@ -137,6 +137,20 @@ made per rank against that rank's own filesystem and reported by rank
 everywhere: a node that cannot see it picks gloo while its peers pick
 MPI, and the run hangs with nothing said.  Exporting
 ``MPITRAMPOLINE_LIB`` in the job script is what guarantees that.
+
+**A distribution's Python.**  Some interpreter builds abort a
+multi-process run inside ``MPI_Init`` with ``free(): invalid pointer``
+from Open MPI's ``opal_setenv`` (Ubuntu 24.04's ``python3.12`` with
+its Open MPI 4.1.6 does).  Such a binary holds its own copy of the C
+library's ``environ`` (a copy relocation: ``R_X86_64_COPY`` in
+``readelf -r`` of the interpreter), and MPItrampoline opens the MPI
+wrapper deep-bound (``RTLD_DEEPBIND``), so Open MPI reads two
+environment arrays and frees a string it does not own.  The
+interpreters uv manages read ``environ`` through the global offset
+table and are unaffected, as is every gloo run; loading Open MPI
+before the interpreter starts (``LD_PRELOAD`` of ``libmpi.so.40``,
+exported to every rank) leaves one environment.  The user-facing check
+and the ways round it: ``docs/cpu-collectives.md``.
 """
 
 import os

@@ -129,7 +129,9 @@ divergence-free field. The random builder takes
 `--init.random_amplitude` / `_smoothness` / `_seed`, the wall-normal
 pair `_wall_smoothness` / `_wall_confinement`; the roll builder adds
 `--init.localized_rolls_wavelength` to the amplitude and width shown
-above. On the two plane channels the random field can also perturb the
+above (accepted but ignored by the pipe, whose cross-section is the
+lowest azimuthal mode). On the two plane channels the random field can
+also perturb the
 $(k_x, k_z) = (0, 0)$ mean profile (`--init.random_mean_flow`, off by
 default), conditioned on that mode's conservation laws — an unchanged
 mean pressure gradient, which under no-slip is compatibility at both
@@ -220,7 +222,8 @@ details are in the
 ### The diagnostic streams
 
 Each `.dat` stream opens with a `#`-commented header row naming its
-columns (`t` first) — so `np.loadtxt` reads one directly — and is
+columns (`t` first) — so `np.loadtxt` reads one directly, and
+`dnsjax.analysis.read_dat` returns it by column name — and is
 appended to across resumes. `stats.dat` carries the
 flow's physical diagnostics: the perturbation and total kinetic
 energies `E'` and `E`, and the energy input rate `I` against the

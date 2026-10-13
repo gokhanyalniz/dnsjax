@@ -33,9 +33,10 @@ static-trip-count loop, which lowers to a scan and differentiates. It is
 a *different integrator* unless *n* covers what the dynamic corrector
 actually used — `corrector.dat` is where that number comes from, and the
 `TimeStepping` docstring in `src/dnsjax/parameters.py` carries the rest
-of the trade-off, including the two things that change with it (the
-iteration cap goes inert, and the reported corrector error becomes a
-diagnostic rather than a stop condition).
+of the trade-off, including the three things that change with it (the
+iteration cap goes inert, the reported corrector error becomes a
+diagnostic rather than a stop condition, and `cnab2`'s automatic redo
+of a non-contracting step is dropped).
 
 **`solver.pallas_kernel`** (default unset) pins which sweep reads the
 banded factors. It is not needed for differentiability — the Triton

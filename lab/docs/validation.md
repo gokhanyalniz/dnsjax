@@ -31,7 +31,7 @@ uv run python lab/tests/test_transient_growth.py
 | The toroidal equation set reproduces its published reference, and $\kappa = 0$ reproduces the straight pipe | `lab/tests/test_curved_pipe.py` |
 | Curvature produces Dean vortices: the streamwise maximum moves to the outer wall and the flux drops under a fixed pressure gradient | `lab/tests/test_curved_pipe.py` |
 | On the toroidal pipe the applied mean-mode driving column agrees with the whole mean-momentum balance | `lab/tests/test_curved_pipe.py` |
-| Laminar states step at machine precision, every lab flow with a closed-form laminar state (all but the curved pipe) | `lab/tests/test_laminar_smoke.py` |
+| Laminar states step at machine precision, every lab flow with a closed-form laminar state (all but the curved pipe; the sPTT rows at $\epsilon = \kappa = 0$, where that state is exact) | `lab/tests/test_laminar_smoke.py` |
 | The viscoelastic operators and matvecs match independent NumPy constructions | `lab/tests/test_viscoelastic.py`, `lab/tests/test_viscoelastic_pipe.py` |
 | Host-built arrays reach the devices without JAX's cross-process gather, at every forcing kick and in the twin driver | `lab/tests/test_host_placement.py` |
 | A zero-energy twin perturbation reproduces the reference bit-for-bit, every stream included | `lab/tests/test_twin_driver.py` |

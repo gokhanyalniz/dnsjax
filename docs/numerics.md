@@ -72,12 +72,13 @@ same influence-matrix implicit solve:
 
 - **`iterative-cn`** (default) — a semi-implicit Euler predictor followed
   by an iterative Crank–Nicolson corrector that makes the nonlinear term
-  implicit through its fixed point. This costs $2 + n_c \approx 3$ FFT
-  evaluations per step ($n_c$ the corrector's iteration count) and is
-  stable well past the advective CFL limit.
+  implicit through its fixed point. This costs $2 + c$ FFT evaluations
+  per step, $c$ the corrections past the first (the `c` column of
+  `corrector.dat`; two to three evaluations at the usual $c = 0$ or
+  $1$), and is stable well past the advective CFL limit.
 - **`cnab2`** — Crank–Nicolson viscous term with an explicit second-order
   Adams–Bashforth nonlinear term, costing a **single** FFT evaluation per
-  step, a third of what `iterative-cn` needs, at the price of an
+  step, a half to a third of what `iterative-cn` needs, at the price of an
   advective-CFL step restriction; it pays on turbulent runs whose step
   is CFL-limited anyway. The wall-bounded systems keep the wall-stiff
   coupling implicit through an FFT-free corrector whose implicit solves
@@ -100,7 +101,8 @@ wall-stiff linear coupling FFT-free between full right-hand-side refreshes;
 it only helps when the step is pushed near the corrector iteration cap and is
 otherwise slower, hence the default. A related `implicit_mean_coupling` (on
 by default) folds the instantaneous mean-flow coupling into the implicit
-term.
+term of the two FFT-free correctors, the wall-bounded `cnab2` one and the
+split `iterative-cn` one; the default unsplit corrector has no such term.
 
 A second opt-in, `corrector_iterations` (0 by default), runs a **fixed**
 number of corrections instead of iterating to tolerance. Its purpose is

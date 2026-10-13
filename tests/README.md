@@ -87,15 +87,15 @@ variants; the claims the scripts back are mapped in
 | Area | Scripts (`test_` prefix dropped) |
 |---|---|
 | Banded solve and Pallas kernel | `banded_solver`, `banded_solver_sharded` |
-| Geometry operators and grids | `cartesian`, `cylindrical`, `annular`, `integration`, `mean_mask`, `padding` |
-| Stepping | `laminar_smoke`, `random_smoke`, `cnab2`, `temporal_order`, `adaptive`, `imm_continuity`, `energy_budget`, `autodiff`, `monochromatic`, `wall_normal_matvec`, `wall_time_stop`, `run_status` |
+| Geometry operators and grids | `cartesian`, `cylindrical`, `annular`, `wedge`, `integration`, `mean_mask`, `padding` |
+| Stepping | `laminar_smoke`, `random_smoke`, `cnab2`, `temporal_order`, `adaptive`, `imm_continuity`, `energy_budget`, `autodiff`, `wall_normal_matvec` |
 | Parameters, bootstrap, device mesh, seeds | `param_surface`, `bootstrap`, `seeding`, `device_grid`, `host_placement`, `mpi_communicators` |
 | Initial conditions | `localized_rolls`, `rolls_smoke`, `mean_mode`, `snapshot_perturb` |
-| Snapshots, resume, analysis | `snapshot`, `resume`, `snapshot_import`, `snapshot_export`, `transient_growth`, `wedge`, `lowres` |
-| Diagnostic streams and run-loop hooks | `driving`, `run_hooks` |
+| Snapshots, resume, analysis | `snapshot`, `resume`, `snapshot_import`, `snapshot_export`, `transient_growth`, `lowres` |
+| Diagnostic streams, status files and run-loop hooks | `driving`, `monochromatic`, `run_hooks`, `run_status`, `wall_time_stop` |
 | Plugins, and the solver without the lab | `plugins`, `layering` |
 
-The lab's suite adds its flows' halves of the split scripts, the curved
-and viscoelastic flows' own operator tests, the probe and forcing
+The lab's suite adds its flows' halves of the split scripts, the curved,
+quasi-Keplerian and viscoelastic flows' own tests, the probe and forcing
 streams, the twin runs and the response analysis
 ([`lab/README.md`](../lab/README.md)).

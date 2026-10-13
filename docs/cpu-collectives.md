@@ -49,11 +49,10 @@ macOS wheel carries the MPI collectives at all, which is untested.
 
 Some interpreter builds abort a multi-process run inside `MPI_Init`,
 with `free(): invalid pointer` from Open MPI's `opal_setenv`: Ubuntu
-24.04's own `python3.12` with its Open MPI 4.1.6 does. Such a binary
-holds its own copy of the C library's `environ` (a copy relocation),
-and MPItrampoline opens the MPI wrapper deep-bound (`RTLD_DEEPBIND`),
-so Open MPI ends up reading two different environment arrays and frees
-a string it does not own. This shows which kind an interpreter is:
+24.04's own `python3.12` with its Open MPI 4.1.6 does (the mechanism:
+the "A distribution's Python" Design note of
+[`src/dnsjax/bootstrap.py`](../src/dnsjax/bootstrap.py)). This shows
+which kind an interpreter is:
 
 ```bash
 readelf -r "$(command -v python3)" | grep environ
