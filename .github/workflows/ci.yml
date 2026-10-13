@@ -113,6 +113,83 @@ jobs:
             exit 1
           fi
 
+  # What a release ships: the root package alone, built and installed
+  # into an environment that has never seen the lab.
+  core-only:
+    name: core release artefacts (no lab)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      - run: uv build --package dnsjax --out-dir dist
+
+      - name: The sdist and the wheel hold no lab code
+        run: |
+          set -eu
+          ls dist
+          if tar -tzf dist/dnsjax-*.tar.gz | grep -E '(^|/)(lab|dnsjax_lab)(/|$)'; then
+            echo "the sdist carries lab files"
+            exit 1
+          fi
+          if python3 -m zipfile -l dist/dnsjax-*.whl | grep dnsjax_lab; then
+            echo "the wheel carries lab files"
+            exit 1
+          fi
+
+      # The floor Python, the wheel and its dependencies only.
+      - name: The wheel alone renders every flow's surface
+        run: |
+          set -eu
+          uv venv --python 3.12 /tmp/core
+          uv pip install --python /tmp/core/bin/python dist/dnsjax-*.whl
+          for s in plane-couette plane-poiseuille pipe taylor-couette kolmogorov; do
+            /tmp/core/bin/dnsjax --help "$s" > /dev/null
+            /tmp/core/bin/dnsjax --sample-toml "$s" > /dev/null
+          done
+          /tmp/core/bin/python - <<'PY'
+          import sys
+          from importlib.metadata import entry_points
+
+          import dnsjax.analysis
+
+          assert "jax" not in sys.modules, "dnsjax.analysis pulled in JAX"
+          for group in ("dnsjax.flows", "dnsjax.parameters", "dnsjax.extensions"):
+              assert not entry_points(group=group), f"{group} is not empty"
+          from dnsjax.flows.registry import all_systems
+
+          print("systems:", ", ".join(all_systems()))
+          PY
+
+      # Run from the checkout, but importing the installed wheel: the
+      # scripts put tests/ on the path, never src/.
+      - name: Fast core scripts against the installed wheel
+        run: |
+          set -u
+          failed=""
+          for t in \
+            tests/test_layering \
+            tests/test_bootstrap \
+            tests/test_param_surface \
+            tests/test_padding \
+            tests/test_mean_mask \
+            tests/test_integration \
+            tests/test_snapshot_export
+          do
+            echo "::group::$t.py"
+            if ! /tmp/core/bin/python "$t.py"; then
+              failed="$failed $t"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "failed:$failed"
+            exit 1
+          fi
+
   full-cpu:
     name: full offline suite (CPU)
     # Weekly and on demand only: the whole offline suite is far too long

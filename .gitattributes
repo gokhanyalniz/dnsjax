@@ -1,0 +1,4 @@
+# The lab (lab/, the dnsjax-lab package) is developed here but never
+# released: keep it out of `git archive` and so out of GitHub's release
+# zipball, which Zenodo archives.
+/lab export-ignore
