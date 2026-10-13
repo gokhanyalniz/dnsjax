@@ -79,6 +79,20 @@ Functionality checks, in [`scripts/diagnostics/`](scripts/diagnostics/):
 | `pallas_tiling_diagnostic.py` | GPU harness that bisects the partial-tile Triton miscompile the kernel's whole-tile padding avoids |
 | `gds_probe.py` | cluster diagnostic for the snapshot write path through GPUDirect Storage |
 
+The gate for a refactor that must change nothing, in
+[`scripts/refactor/`](scripts/refactor/) (it proved each step of the
+core/lab split):
+
+| Script | What it does |
+|---|---|
+| `verify.py` | checks a commit out into a throwaway worktree, captures it, and compares the capture with a reference |
+| `capture.py` | the behavioural fingerprint of a tree, through its public command lines only: every flow's `--help` and `--sample-toml`, short fixed-seed runs of every flow, scheme and start mode with variants, resumes, streams, a twin member and transient growth, their outputs and HLO fingerprints |
+| `compare.py` | diffs two captures, bitwise for arrays and streams, structurally for metadata; reviewed differences are allowed by pattern |
+| `refingerprint.py` | recomputes a capture's HLO fingerprints from its kept dumps |
+| `analysis_fp.py` | fingerprints the JAX-free analysis API on a capture's snapshots, and compares two fingerprints bitwise |
+| `check_imports.py` | checks, without importing, that every `dnsjax` / `dnsjax_lab` import in the repository resolves |
+| `prose_scan.py` | lists the lab's vocabulary in the core's prose, for review |
+
 ## Tests
 
 36 standalone scripts in [`tests/`](tests/), laid out like the
