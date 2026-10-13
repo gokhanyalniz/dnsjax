@@ -71,4 +71,4 @@ paths:
   `complex_harmonics` times `2π/L`, never `np.asarray`.
 - Memory and throughput levers and the per-rank memory model:
   `docs/scaling.md` and the `parameters.PaddedResolution` docstring;
-  measure a layout offline with `scripts/memory_budget.py`.
+  measure a layout offline with `lab/scripts/performance/memory_budget.py`.

@@ -24,14 +24,15 @@ all and so differentiates unconditionally.  See
 jitted steppers capture their configuration at import and trace time,
 so a sweep cannot run in one process; the script re-executes itself
 with ``--child`` per row and parses one ``@@RESULT`` line back, the
-same idiom as ``scripts/solver_benchmark.py``.  It imports nothing from
-``tests/``.
+same idiom as ``lab/scripts/performance/solver_benchmark.py``.  It
+imports nothing from ``tests/``.
 
 Usage::
 
-    uv run python scripts/grad_probe.py                  # 12 rows, CPU
-    uv run python scripts/grad_probe.py --full           # cross product
-    uv run python scripts/grad_probe.py --dist.platform cuda
+    uv run python lab/scripts/diagnostics/grad_probe.py  # 12 rows, CPU
+    uv run python lab/scripts/diagnostics/grad_probe.py --full
+    uv run python lab/scripts/diagnostics/grad_probe.py \
+        --dist.platform cuda
 
 The default is CPU in double precision.  ``--dist.platform cuda`` is
 the run a machine without a GPU cannot do: it exercises the real Triton
@@ -49,7 +50,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[3]
 PY = REPO / ".venv" / "bin" / "python3"
 SELF = Path(__file__).resolve()
 RESULT_TAG = "@@RESULT "

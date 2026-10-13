@@ -288,8 +288,9 @@ back to `gloo` otherwise. The same docstring covers when raising
 The rules above fix a run's shape. What they leave open — the rank
 count on a CPU node, the grid axis and the Pallas tile on a GPU node,
 the precision, how far the step scales across nodes — is measured on
-the machine itself by
-[`scripts/node_benchmark.py`](../scripts/node_benchmark.py). It launches
+the machine itself by the repository lab's
+[`lab/scripts/performance/node_benchmark.py`](../lab/scripts/performance/node_benchmark.py)
+(the lab's performance tools are kept beside it). It launches
 the ordinary solver on one fixed problem (the production configuration
 with a short horizon) across every candidate layout, on one node or
 several, and tabulates the seconds per time unit, the parallel
@@ -366,13 +367,13 @@ there, a rank held about 1.1 GiB besides its share of the problem's
 16 nodes, and more beyond: 1.2 GiB at 32 nodes and 1.3 at 64. One
 process on the first node held some 70 KiB more per rank of the job on
 top (0.57 GiB more at 8192 ranks). Three tools separate the two:
-[`scripts/memory_budget.py`](../scripts/memory_budget.py) predicts the
+[`lab/scripts/performance/memory_budget.py`](../lab/scripts/performance/memory_budget.py) predicts the
 problem's share per rank for any layout from XLA's own buffer
 assignment, without the machine; the `Peak host memory` line of a run
 reports what the operating system saw at the high-water mark, start-up
 included, and the `Resident host memory` line under it what the run
 still holds at the end; and
-[`scripts/memory_watch.py`](../scripts/memory_watch.py) samples each
+[`lab/scripts/performance/memory_watch.py`](../lab/scripts/performance/memory_watch.py) samples each
 node's total during a job, so an out-of-memory kill is placed against
 its layout and start-up phase. A layout that does not fit is helped, in
 order, by less padding, by `solver.rhs_transform_chunks`, and by fewer
@@ -444,7 +445,7 @@ all four GPUs, no launcher:
   has the same 132 streaming multiprocessors as an H200 but less memory
   bandwidth (3.35 against 4.8 TB/s), so they are where a `--tiles` sweep
   starts rather than a result for the H200.
-  [`scripts/pallas_solve_profile.py`](../scripts/pallas_solve_profile.py)
+  [`lab/scripts/performance/pallas_solve_profile.py`](../lab/scripts/performance/pallas_solve_profile.py)
   breaks a solve down against the device's own peak bandwidth.
 - **Precision.** Single precision halves every figure under
   [Memory footprint](#memory-footprint);
@@ -454,7 +455,7 @@ all four GPUs, no launcher:
 ## Strong scaling on ARCHER2
 
 One production-sized run, timed on 1 to 64 nodes of a CPU cluster with
-[`scripts/node_benchmark.py`](../scripts/node_benchmark.py).
+[`lab/scripts/performance/node_benchmark.py`](../lab/scripts/performance/node_benchmark.py).
 
 **The machine.** A standard compute node of
 [ARCHER2](https://docs.archer2.ac.uk/user-guide/hardware/), an HPE Cray
@@ -509,7 +510,7 @@ run's to round-off.
 
 Speed-up and efficiency are against the fastest one-node run,
 `(128, 1)`; the figure's bars span the runs behind each point
-([`scripts/scaling_figure.py`](../scripts/scaling_figure.py) draws it,
+([`lab/scripts/performance/scaling_figure.py`](../lab/scripts/performance/scaling_figure.py) draws it,
 and these tables, from
 [`figures/archer2-scaling.csv`](figures/archer2-scaling.csv)).
 
@@ -575,8 +576,8 @@ names no `[init] snapshot` (a smaller `nx` starts a new trajectory
 anyway), inside a one-node allocation:
 
 ```bash
-.venv/bin/python scripts/node_benchmark.py --target cpu \
-  --launcher srun --nodes 1 --tasks-per-node 128 --np0 128 \
+.venv/bin/python lab/scripts/performance/node_benchmark.py \
+  --target cpu --launcher srun --nodes 1 --tasks-per-node 128 --np0 128 \
   --toml parameters.toml \
   --variant n16="--res.nx 80" --variant n32="--res.nx 40" \
   --solver-args "--init.random_seed 1 --stop.max_wall_time PT3M30S"

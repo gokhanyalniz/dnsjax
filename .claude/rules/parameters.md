@@ -12,7 +12,7 @@ paths:
   - "tests/**/*.py"
   - "lab/tests/**/*.py"
   - "scripts/*.py"
-  - "lab/scripts/*.py"
+  - "lab/scripts/**/*.py"
 ---
 
 # Parameters

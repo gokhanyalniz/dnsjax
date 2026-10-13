@@ -30,9 +30,12 @@ A.  **Single-device matrix** (one subprocess per config x backend --
     either way -- a count the ``res.consistent_imm`` formulation
     moves, so read it against the formulation the row was run with);
     the split's FFT-refresh savings show only where ``dt`` drives the
-    unsplit corrector towards its cap (the :mod:`dnsjax.parameters`
-    Design notes), an entry of :data:`EXTRA_ENTRIES` with its own
-    ``dt``.
+    unsplit corrector towards its cap, which the coupling-stressed
+    ``dean-split-stress`` entry does: total-field Dean at ``nz = 64``,
+    ``dt = 0.15``, the regime of the :mod:`dnsjax.parameters` Design
+    notes ("The split corrector stays opt-in"), where the corrector
+    cost is dominated by the instantaneous mean-flow coupling
+    (``l_bf == L_mf``).
 B.  **Multi-GPU section** (``mpirun ... -m dnsjax`` production runs
     from scratch dirs): multi-GPU execution of the Pallas Triton
     kernel -- correctness via JAX-free ``dnsjax.analysis`` snapshot
@@ -59,11 +62,8 @@ mpirun stdout is logged under ``{workdir}/logs``, results stream as
 run ends in summary tables plus a ``VERDICT`` section (parity,
 multi-GPU health, stability notices).
 
-The module tables name the systems and what is measured on each
-(:data:`SYS_ARGS` to :data:`OP_GROUPS`).  A plugin's flows join by
-extending them and pointing :data:`SELF` at a script of its own, which
-the children re-enter: ``lab/scripts/solver_benchmark.py`` does that
-for the lab's flows.
+The module tables name the systems, the solver's and the lab's, and
+what is measured on each (:data:`SYS_ARGS` to :data:`OP_GROUPS`).
 
 Run **on the GPU cluster** from inside a single-node allocation with
 >= 1 GPU (4 for the full mesh cases) and generous **host** memory --
@@ -73,8 +73,9 @@ request e.g. ``--mem 64G`` or more.  Then **paste the full stdout
 back**::
 
     salloc -N1 --gpus=4 --mem=64G ...        # or an sbatch wrapper
-    .venv/bin/python scripts/solver_benchmark.py --max-gpus 4
-    .venv/bin/python scripts/solver_benchmark.py --skip-mpi-timing
+    .venv/bin/python lab/scripts/performance/solver_benchmark.py --max-gpus 4
+    .venv/bin/python lab/scripts/performance/solver_benchmark.py \
+        --skip-mpi-timing
 
 The driver is a **single process**: do not fan it out
 (``srun -n 4 python ...`` runs four interleaved drivers fighting over
@@ -87,8 +88,9 @@ site-specific step flags go through ``--srun-args``, e.g.
 
 On a CPU node::
 
-    .venv/bin/python scripts/solver_benchmark.py --cpu-bench
-    .venv/bin/python scripts/solver_benchmark.py --cpu-smoke  # harness
+    .venv/bin/python lab/scripts/performance/solver_benchmark.py --cpu-bench
+    .venv/bin/python lab/scripts/performance/solver_benchmark.py \
+        --cpu-smoke  # harness
 
 Without a GPU and without a ``--cpu-*`` flag it prints the environment
 banner and the planned matrix (with dense-size estimates) and exits.
@@ -111,10 +113,9 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[3]
 PY = REPO / ".venv" / "bin" / "python"
-#: The script the children run (``--child``): a script extending the
-#: tables below points it at itself, so that its children see them too.
+#: The script the children re-enter (``--child``).
 SELF = Path(__file__).resolve()
 RESULT_TAG = "@@RESULT "
 
@@ -131,6 +132,19 @@ SYS_ARGS: dict[str, dict[str, float]] = {
         "geo.eta": 0.5,
         "geo.lx": 5.0,
     },
+    "dean": {"phys.re": 1000.0, "geo.eta": 0.5, "geo.lx": 5.0},
+    "viscoelastic-dean": {
+        "phys.wi": 20.0,
+        "phys.el": 20.0,
+        "init.random_conformation_amplitude": 10.0,
+        "geo.lx": 5.0,
+    },
+    "viscoelastic-pipe": {
+        "phys.wi": 20.0,
+        "phys.el": 0.02,
+        "init.random_conformation_amplitude": 10.0,
+        "geo.lx": 5.0,
+    },
 }
 
 # (nx, ny, nz) per system and size class: the single-device matrix.
@@ -138,6 +152,8 @@ SIZES: dict[str, dict[str, tuple[int, int, int]]] = {
     "plane-couette": {"small": (64, 64, 64), "prod": (256, 192, 256)},
     "pipe": {"small": (64, 48, 64), "prod": (256, 192, 256)},
     "taylor-couette": {"small": (64, 48, 64), "prod": (256, 192, 256)},
+    "viscoelastic-dean": {"small": (32, 48, 32), "prod": (128, 96, 128)},
+    "viscoelastic-pipe": {"small": (32, 48, 32), "prod": (128, 96, 128)},
 }
 
 
@@ -159,20 +175,40 @@ EXTRA_ENTRIES: list[tuple[str, dict]] = [
             "fd_order": 8,
         },
     ),
+    (
+        "small",
+        {
+            "name": "dean-split-stress",
+            "system": "dean",
+            "nx": 64,
+            "ny": 48,
+            "nz": 64,
+            "fd_order": 4,
+            "dt": 0.15,
+        },
+    ),
 ]
 
-# Dense-backend operator count: Lk + the Hk components (+ a flow's
-# further groups, :data:`OP_GROUPS`).  The default reconstruction
-# scheme's curvilinear Hk is the spin pair (2 families), the legacy
-# primitive one's the three velocity components; the Cartesian count is
-# 2 under both.
+# Dense-backend operator count: Lk + the Hk components (+ the 6 Hc of
+# the sPTT flows).  The default reconstruction scheme's curvilinear Hk
+# is the spin pair (2 families), the legacy primitive one's the three
+# velocity components; the Cartesian count is 2 under both.
 N_OPS = {
     "plane-couette": 2,
     "plane-poiseuille": 2,
     "pipe": 3,
     "taylor-couette": 3,
+    "dean": 3,
+    "viscoelastic-dean": 9,
+    "viscoelastic-pipe": 9,
 }
-N_OPS_LEGACY = N_OPS | {"pipe": 4, "taylor-couette": 4}
+N_OPS_LEGACY = N_OPS | {
+    "pipe": 4,
+    "taylor-couette": 4,
+    "dean": 4,
+    "viscoelastic-dean": 10,
+    "viscoelastic-pipe": 10,
+}
 
 #: ``system -> "module:builder"``: the stepper factory its flow module
 #: builds with, which the split-corrector A/B re-runs on the same flow.
@@ -189,11 +225,25 @@ STEPPERS: dict[str, str] = {
     "taylor-couette": (
         "dnsjax.geometries.wall_bounded.annular:build_annular_stepper"
     ),
+    "dean": "dnsjax.geometries.wall_bounded.annular:build_annular_stepper",
+    "viscoelastic-dean": (
+        "dnsjax_lab.geometries.wall_bounded.annular_viscoelastic"
+        ":build_viscoelastic_stepper"
+    ),
+    "viscoelastic-pipe": (
+        "dnsjax_lab.geometries.wall_bounded.cylindrical_viscoelastic"
+        ":build_viscoelastic_stepper"
+    ),
 }
 
 #: The systems of the multi-device correctness matrix, in run order
 #: (each one when ``--systems`` selects it).
-MPI_SYSTEMS: list[str] = ["plane-couette", "pipe", "taylor-couette"]
+MPI_SYSTEMS: list[str] = [
+    "plane-couette",
+    "pipe",
+    "taylor-couette",
+    "viscoelastic-dean",
+]
 
 
 def _imm_operand(params) -> int:
@@ -211,10 +261,12 @@ def _imm_operand(params) -> int:
 #: a shared one takes *operand* components, ``None`` for a scalar field,
 #: or a function of ``params`` for a count the formulation sets.  A
 #: group the flow leaves unbuilt (absent or ``None``) reports no
-#: operator class and no time.
+#: operator class and no time: the sPTT conformation solve ``Hc`` at
+#: ``kappa = 0`` and in every Newtonian flow.
 OP_GROUPS: dict[str, tuple[str, int | Callable | None]] = {
     "Lk": ("Lk_op", None),
     "Hk": ("Hk_op", _imm_operand),
+    "Hc": ("Hc_op", 6),
 }
 
 BACKENDS = ("pallas", "dense")

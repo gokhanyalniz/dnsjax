@@ -90,4 +90,6 @@ Python, the MPI wrapper of [CPU collectives](../docs/cpu-collectives.md),
 Spindle), and which defaults it applies. Every simulation parameter
 stays in `parameters.toml`. By default the job also samples each node's
 memory into `memwatch/<job id>/` and prints the peak and typical use per
-node at the end. It was tested on ARCHER2, an HPE Cray EX system.
+node at the end, with the sampler of the repository's lab
+(`lab/scripts/performance/memory_watch.py`; a checkout without it skips
+the record). It was tested on ARCHER2, an HPE Cray EX system.

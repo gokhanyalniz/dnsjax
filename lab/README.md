@@ -49,13 +49,35 @@ Their equations and conventions:
 
 ## Scripts
 
+Analysis and ensembles, in [`scripts/`](scripts/):
+
 | Script | What it does |
 |---|---|
-| `scripts/twin_spectral_maps.py` | premultiplied $(\lambda, y)$ maps, histories, moment budgets, decorrelation fronts and growth laws of the twin $(y, k)$ streams over an ensemble (needs the `plots` group) |
-| `scripts/ensemble_setup.py` | harvests statistically independent parents from a run and builds member trees for response ensembles (`build`) or twin ensembles (`build-twin`), JAX-free |
-| `scripts/random_ic_calibrate.py` | scores and sweeps the random initial condition's $(y, k)$ shape against a recorded twin ensemble (`[calib]`) |
-| `scripts/twin_postprocess.py` | rebuilds a twin member's difference-field streams from its snapshot pairs (`[recon]`) |
-| `scripts/solver_benchmark.py` | the solver's Pallas-against-dense benchmark with the lab's flows added |
+| `twin_spectral_maps.py` | premultiplied $(\lambda, y)$ maps, histories, moment budgets, decorrelation fronts and growth laws of the twin $(y, k)$ streams over an ensemble (needs the `plots` group) |
+| `ensemble_setup.py` | harvests statistically independent parents from a run and builds member trees for response ensembles (`build`) or twin ensembles (`build-twin`), JAX-free |
+| `random_ic_calibrate.py` | scores and sweeps the random initial condition's $(y, k)$ shape against a recorded twin ensemble (`[calib]`) |
+| `twin_postprocess.py` | rebuilds a twin member's difference-field streams from its snapshot pairs (`[recon]`) |
+
+Performance, in [`scripts/performance/`](scripts/performance/), kept
+apart from the analysis scripts; none of them changes how a simulation
+runs:
+
+| Script | What it does |
+|---|---|
+| `solver_benchmark.py` | the Pallas banded backend against the dense reference solver, every flow: validation and timing |
+| `node_benchmark.py` | a layout and strong-scaling sweep of one production problem under `mpirun` or `srun`, each row's `stats.dat` checked against a reference; JAX-free driver |
+| `pallas_solve_profile.py` | GPU profile of the banded solve and its share of a step |
+| `memory_budget.py` | per-rank memory of the step as run, on any layout, from XLA's buffer assignment, offline |
+| `memory_watch.py` | per-node memory sampler for multi-process runs, with a summary of each node's peak and typical use, JAX-free |
+| `scaling_figure.py` | the strong-scaling figure and tables of [`docs/scaling.md`](../docs/scaling.md), from the committed CSV of measured runs (needs the `plots` group) |
+
+Functionality checks, in [`scripts/diagnostics/`](scripts/diagnostics/):
+
+| Script | What it does |
+|---|---|
+| `grad_probe.py` | which stepping configurations differentiate in forward and reverse mode, each gradient checked against a finite difference ([`docs/differentiability.md`](../docs/differentiability.md)) |
+| `pallas_tiling_diagnostic.py` | GPU harness that bisects the partial-tile Triton miscompile the kernel's whole-tile padding avoids |
+| `gds_probe.py` | cluster diagnostic for the snapshot write path through GPUDirect Storage |
 
 ## Tests
 

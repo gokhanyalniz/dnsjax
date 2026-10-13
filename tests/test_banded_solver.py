@@ -40,8 +40,9 @@ region, where arrays are local by construction) and clear the
 Explicit mesh (``jax.set_mesh(None)``): the kernel's indexed ref
 stores discharge to a sharding-checked ``dynamic_update_slice`` only
 in interpret mode.  Real-GPU execution and perf (tile tuning) are
-outside this suite: they are what ``scripts/solver_benchmark.py`` and
-``scripts/pallas_solve_profile.py`` measure on a GPU node.
+outside this suite: they are what the lab's
+``lab/scripts/performance/solver_benchmark.py`` and
+``pallas_solve_profile.py`` measure on a GPU node.
 Multi-device solve coverage (per-shard factor padding on a
 (2, 2) mesh) lives in ``test_banded_solver_sharded.py``.
 
@@ -644,8 +645,8 @@ def test_pallas_adjoint_composes_in_solve() -> None:
     (``test_pallas_cuda_lowering_sharded_solve``) and the transposed
     kernel's (``test_pallas_cuda_lowering``) are checked separately;
     what stays unverified until a GPU runs
-    ``scripts/grad_probe.py --dist.platform cuda`` is Triton's real
-    lowering of the two together.
+    ``lab/scripts/diagnostics/grad_probe.py --dist.platform cuda`` is
+    Triton's real lowering of the two together.
     """
     import dnsjax.solvers as solvers_mod
 

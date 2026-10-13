@@ -28,9 +28,10 @@ byte.
 Usage (from the repository root; matplotlib comes with the ``plots``
 group)::
 
-    uv run --group plots python scripts/scaling_figure.py
+    uv run --group plots python lab/scripts/performance/scaling_figure.py
     # PNG previews beside the SVGs' names, to look at both schemes
-    uv run --group plots python scripts/scaling_figure.py --png /tmp/fig
+    uv run --group plots python lab/scripts/performance/scaling_figure.py \
+        --png /tmp/fig
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[3]
 FIGURES = REPO / "docs" / "figures"
 
 #: The README's font stack, as ``docs/figures/step-pipeline-*.svg`` set

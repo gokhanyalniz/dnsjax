@@ -61,10 +61,13 @@ to lose, is in `_pallas_banded_solve_t` in `src/dnsjax/solvers.py`.
 
 ## Running the probe
 
+The probe is a functionality check of the repository's lab:
+
 ```bash
-uv run python scripts/grad_probe.py                 # 12 configurations
-uv run python scripts/grad_probe.py --full          # the cross product
-uv run python scripts/grad_probe.py --dist.platform cuda
+# 12 configurations, then the cross product, then on a GPU
+uv run python lab/scripts/diagnostics/grad_probe.py
+uv run python lab/scripts/diagnostics/grad_probe.py --full
+uv run python lab/scripts/diagnostics/grad_probe.py --dist.platform cuda
 ```
 
 One subprocess per configuration — the parameter singletons and the

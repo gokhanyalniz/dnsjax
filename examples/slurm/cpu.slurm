@@ -131,11 +131,13 @@ SRUN_EXTRA=""
 PLATFORM=cpu
 
 # Each node's memory, sampled every MEMWATCH_INTERVAL seconds into
-# memwatch/<job id>/ (scripts/memory_watch.py), summarized at the end:
-# peak and typical use per node.  The record survives an out-of-memory
-# kill, which the solver's own closing memory lines do not.  A peak
-# between two samples still shows in the summary's cgroup column (the
-# kernel's high-water mark, where it keeps one).  0: off.
+# memwatch/<job id>/, summarized at the end: peak and typical use per
+# node.  The record survives an out-of-memory kill, which the solver's
+# own closing memory lines do not.  A peak between two samples still
+# shows in the summary's cgroup column (the kernel's high-water mark,
+# where it keeps one).  0: off.  The sampler is the repository lab's
+# lab/scripts/performance/memory_watch.py; without it (a release
+# archive holds the solver alone) the record is skipped with a note.
 MEMWATCH=1
 MEMWATCH_INTERVAL=10
 
@@ -266,6 +268,11 @@ if [ "$LUSTRE_STRIPE" = 1 ] && [ "$(stat -f -c %T .)" = lustre ]; then
 fi
 
 memdir=memwatch/$SLURM_JOB_ID
+memwatch="$DNSJAX_DIR/lab/scripts/performance/memory_watch.py"
+if [ "$MEMWATCH" = 1 ] && [ ! -f "$memwatch" ]; then
+    echo "note: no $memwatch; the memory record is off"
+    MEMWATCH=0
+fi
 start=$("$PYTHON" -c 'import tomllib
 print(tomllib.load(open("parameters.toml", "rb")).get("init", {})
       .get("snapshot", ""))')
@@ -291,7 +298,7 @@ fi
 if [ "$MEMWATCH" = 1 ]; then
     srun --overlap --nodes="$SLURM_NNODES" --ntasks="$SLURM_NNODES" \
         --ntasks-per-node=1 --cpus-per-task=1 \
-        "$PYTHON" "$DNSJAX_DIR/scripts/memory_watch.py" sample \
+        "$PYTHON" "$memwatch" sample \
         --out "$memdir" --interval "$MEMWATCH_INTERVAL" &
     memwatch_pid=$!
     for _ in $(seq 30); do
@@ -333,7 +340,7 @@ if [ "$MEMWATCH" = 1 ]; then
     touch "$memdir/stop"
     wait "$memwatch_pid"
     echo "== memory, from $memdir:"
-    "$PYTHON" "$DNSJAX_DIR/scripts/memory_watch.py" summary "$memdir" |
+    "$PYTHON" "$memwatch" summary "$memdir" |
         tee "$memdir/summary.txt"
 fi
 

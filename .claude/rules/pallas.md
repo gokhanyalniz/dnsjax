@@ -2,7 +2,8 @@
 paths:
   - "src/dnsjax/solvers.py"
   - "tests/test_banded_solver*.py"
-  - "scripts/{pallas_solve_profile,pallas_tiling_diagnostic,solver_benchmark,grad_probe}.py"
+  - "lab/scripts/performance/{pallas_solve_profile,solver_benchmark}.py"
+  - "lab/scripts/diagnostics/{pallas_tiling_diagnostic,grad_probe}.py"
 ---
 
 # The banded solve and its Pallas/Triton kernel

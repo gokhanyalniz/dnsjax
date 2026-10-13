@@ -400,7 +400,7 @@ class Distribution(BaseModel):
 
     What these rules leave open on a given node -- the rank count, the
     grid axis, the Pallas tile, the precision -- is measured there by
-    ``scripts/node_benchmark.py``, one fixed problem over every
+    ``lab/scripts/performance/node_benchmark.py``, one fixed problem over every
     candidate layout; ``docs/scaling.md`` ("Target nodes") gives the
     starting configuration for a two-socket CPU node and a four-GPU
     one.
@@ -434,7 +434,7 @@ class Distribution(BaseModel):
     --dist.np1 2``.  Both topologies produce identical
     global meshes, trajectories, and snapshots (resume is
     np-agnostic), and both are validated on real multi-GPU
-    hardware (``scripts/solver_benchmark.py``).
+    hardware (``lab/scripts/performance/solver_benchmark.py``).
     The single-process form avoids cross-process NCCL
     entirely -- the reliable choice on single-node
     allocations whose multi-process collective stack is

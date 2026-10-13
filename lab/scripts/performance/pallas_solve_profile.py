@@ -53,16 +53,17 @@ per-mode solve count and its own stage transcription.
 
 Run **on a GPU** (single device, no mpirun)::
 
-    .venv/bin/python scripts/pallas_solve_profile.py
-    .venv/bin/python scripts/pallas_solve_profile.py --system pipe \
-        --ny 128 --nx 192 --nz 192 --trace /tmp/dnsjax_trace \
+    .venv/bin/python lab/scripts/performance/pallas_solve_profile.py
+    .venv/bin/python lab/scripts/performance/pallas_solve_profile.py \
+        --system pipe --ny 128 --nx 192 --nz 192 --trace /tmp/dnsjax_trace \
         --hlo-out /tmp/dnsjax_hlo.txt
 
 Solve-kernel tile sweep (each config is a fresh process -- the tile is
 baked into the operator at construction, so it cannot vary in-process)::
 
     for m0 in 1 2 4; do for m1 in 16 32; do \
-      .venv/bin/python scripts/pallas_solve_profile.py --dist.platform cuda \
+      .venv/bin/python lab/scripts/performance/pallas_solve_profile.py \
+        --dist.platform cuda \
         --pallas-block-m0 $m0 --pallas-block-m1 $m1 --steps 40; done; done
 
 Resolution x tile sweep to pick sane tile defaults across a range.
@@ -73,7 +74,8 @@ with ``grep '^SUMMARY'`` instead of pasting full dumps::
 
     for ny in 48 96 128; do for nz in 64 128 256 512; do \
       for m0 in 1 2; do \
-        .venv/bin/python scripts/pallas_solve_profile.py --solve-only \
+        .venv/bin/python lab/scripts/performance/pallas_solve_profile.py \
+          --solve-only \
           --dist.platform cuda --ny $ny --nx $nz --nz $nz \
           --pallas-block-m0 $m0; \
       done; done; done | grep '^SUMMARY'
@@ -130,9 +132,9 @@ SYS_ARGS: dict[str, dict[str, float]] = {
     "taylor-couette": {"phys.re1": 100.0, "phys.re2": 0.0, "geo.eta": 0.5},
 }
 
-#: The random IC's seed.  Fixed on purpose, like every diagnostic
-#: seed in ``scripts/``: each profile of one configuration steps the
-#: same field (``init.random_seed`` itself defaults to drawing one).
+#: The random IC's seed.  Fixed on purpose, like every seed in the
+#: benchmarks and diagnostics: each profile of one configuration steps
+#: the same field (``init.random_seed`` itself defaults to drawing one).
 IC_SEED = 1
 
 
