@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+r"""Plugin discovery: the flows, fields and sections a package adds.
+
+A package extends dnsjax through three entry-point groups
+(``docs/extending.md``): ``dnsjax.flows`` (read by
+:mod:`dnsjax.flows.registry`), ``dnsjax.parameters`` (by
+:mod:`dnsjax.parameters`) and ``dnsjax.extensions`` (by
+:mod:`dnsjax.extensions`), each once, when its module is imported.  The
+repository's lab is such a package, but a release ships without it, so
+this script stands in for one.  Each case runs a child whose
+``importlib.metadata.entry_points`` returns the case's own entry points
+alone (an installed lab's are hidden), naming modules the case writes
+to a scratch directory, and imports the core under them.  Offline, no
+JAX, a few seconds.
+
+1. ``discovery``: a plugin's flows are listed after the core flows of
+   their geometry, in the plugin's order; a field a plugin adds to
+   ``[phys]`` is on the composed model, and with the plugin's section,
+   on its flow's ``--help`` and among the ``phys.system`` choices.
+2. The refusals, each naming its cause:
+
+   - ``flow-load``: a flow plugin whose module fails to import;
+   - ``flow-type``: one naming something other than ``FlowSpec``
+     objects;
+   - ``flow-twice``: a plugin flow with a core flow's system name;
+   - ``flow-geometry``: a plugin flow on a geometry the core lacks;
+   - ``field-core``: a field that redefines a core field;
+   - ``field-twice``: a field two plugins add;
+   - ``field-section``: a field in a section the core does not have;
+   - ``section-core``: an extension section named like a core section.
+
+Run::
+
+    uv run python tests/test_plugins.py
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _live import report  # noqa: E402
+
+#: The child: replace ``entry_points`` before anything imports it, with
+#: one returning the case's entry points (argv[1], JSON
+#: ``{group: [[name, value], ...]}``), then run the case's body
+#: (argv[2]), which prints one JSON line.
+CHILD = r"""
+import importlib.metadata as md, json, sys
+EPS = json.loads(sys.argv[1])
+def entry_points(**kwargs):
+    group = kwargs.get("group")
+    return [
+        md.EntryPoint(name=n, value=v, group=group)
+        for n, v in EPS.get(group, [])
+    ]
+md.entry_points = entry_points
+exec(sys.argv[2])
+"""
+
+#: The plugin modules a case may name, written to its scratch directory
+#: (the child's working directory, so first on its ``sys.path``).
+MODULES = {
+    "plugflows": """
+from dnsjax.flow_spec import FieldSpec, FlowSpec
+
+SPECS = (
+    FlowSpec(
+        system="plug-cartesian",
+        geometry="cartesian",
+        summary="A plugin flow on a core geometry.",
+        fields=(FieldSpec("phys", "plug_knob"),),
+    ),
+    FlowSpec(
+        system="plug-annular",
+        geometry="annular",
+        summary="A plugin flow on another core geometry.",
+        fields=(),
+    ),
+)
+NOT_SPECS = ("plug-cartesian",)
+TWICE = (
+    FlowSpec(
+        system="pipe",
+        geometry="cylindrical",
+        summary="A plugin flow named like a core one.",
+        fields=(),
+    ),
+)
+""",
+    "plugfields": """
+from pydantic import Field
+
+FIELDS = {"phys": {"plug_knob": (float, Field(1.5, description="Knob."))}}
+CORE = {"phys": {"re": (float, Field(1.0, description="Clash."))}}
+SECTION = {"plugsec": {"level": (int, Field(0, description="Where."))}}
+""",
+    "plugsections": """
+from pydantic import BaseModel
+
+from dnsjax.extensions import ParamExtension, register_extension
+
+
+class PlugSection(BaseModel):
+    level: int = 0
+
+
+register_extension(
+    ParamExtension(
+        name="plugsec",
+        model=PlugSection,
+        relevant=lambda system: system == "plug-cartesian",
+        summary="A plugin's section.",
+    )
+)
+""",
+    "plugsections_core": """
+from pydantic import BaseModel
+
+from dnsjax.extensions import ParamExtension, register_extension
+
+
+class Phys(BaseModel):
+    level: int = 0
+
+
+register_extension(
+    ParamExtension(name="phys", model=Phys, relevant=lambda system: True)
+)
+""",
+    "plugbroken": """
+raise ImportError("plugbroken is broken on purpose")
+""",
+    "plugelsewhere": """
+from dnsjax.flow_spec import FlowSpec
+
+SPECS = (
+    FlowSpec(
+        system="plug-elsewhere",
+        geometry="plug-geometry",
+        summary="A plugin flow on a geometry the core lacks.",
+        fields=(),
+    ),
+)
+""",
+}
+
+#: The child body of every refusal: import the three loaders, report
+#: the first exception.
+IMPORT_ALL = """
+try:
+    import dnsjax.parameters
+    import dnsjax.extensions
+except Exception as exc:
+    print(json.dumps({"error": type(exc).__name__, "message": str(exc)}))
+else:
+    print(json.dumps({"error": None}))
+"""
+
+DISCOVERY = """
+import contextlib, io
+from dnsjax.flows import registry
+from dnsjax import parameters
+from dnsjax.bootstrap import resolve_parameters
+from dnsjax.extensions import EXTENSIONS
+text = io.StringIO()
+with contextlib.redirect_stdout(text):
+    try:
+        resolve_parameters(["--help", "plug-cartesian"])
+    except SystemExit:
+        pass
+print(json.dumps({
+    "order": [[s.system, s.geometry] for s in registry.SPECS.values()],
+    "knob": parameters.params.phys.plug_knob,
+    "sections": sorted(EXTENSIONS),
+    "help": text.getvalue(),
+}))
+"""
+
+#: ``(entry points, child body)`` per case.
+FLOWS, FIELDS, SECTIONS = (
+    "dnsjax.flows",
+    "dnsjax.parameters",
+    "dnsjax.extensions",
+)
+CASES: dict[str, tuple[dict, str]] = {
+    "discovery": (
+        {
+            FLOWS: [["plug", "plugflows:SPECS"]],
+            FIELDS: [["plug", "plugfields:FIELDS"]],
+            SECTIONS: [["plug", "plugsections"]],
+        },
+        DISCOVERY,
+    ),
+    "flow-load": ({FLOWS: [["broken", "plugbroken:SPECS"]]}, IMPORT_ALL),
+    "flow-type": ({FLOWS: [["plug", "plugflows:NOT_SPECS"]]}, IMPORT_ALL),
+    "flow-twice": ({FLOWS: [["plug", "plugflows:TWICE"]]}, IMPORT_ALL),
+    "flow-geometry": ({FLOWS: [["plug", "plugelsewhere:SPECS"]]}, IMPORT_ALL),
+    "field-core": ({FIELDS: [["plug", "plugfields:CORE"]]}, IMPORT_ALL),
+    "field-twice": (
+        {FIELDS: [["a", "plugfields:FIELDS"], ["b", "plugfields:FIELDS"]]},
+        IMPORT_ALL,
+    ),
+    "field-section": ({FIELDS: [["plug", "plugfields:SECTION"]]}, IMPORT_ALL),
+    "section-core": ({SECTIONS: [["plug", "plugsections_core"]]}, IMPORT_ALL),
+}
+
+#: The error each refusal raises: its type and a fragment of its text.
+REFUSALS: dict[str, tuple[str, str]] = {
+    "flow-load": ("RuntimeError", "flow plugin 'broken'"),
+    "flow-type": ("TypeError", "not FlowSpec objects"),
+    "flow-twice": ("ValueError", "'pipe' is registered twice"),
+    "flow-geometry": ("RuntimeError", "names geometry 'plug-geometry'"),
+    "field-core": ("ValueError", "redefines core field(s) of [phys]: re"),
+    "field-twice": ("ValueError", "phys.plug_knob is added by two"),
+    "field-section": ("ValueError", "unknown section(s) ['plugsec']"),
+    "section-core": ("RuntimeError", "'phys' clashes with a core"),
+}
+
+
+def run_case(name: str, timeout: float) -> dict:
+    """Run *name*'s child in a scratch directory; its JSON report."""
+    eps, body = CASES[name]
+    scratch = Path(tempfile.mkdtemp(prefix="dnsjax_plugins_"))
+    try:
+        for module, source in MODULES.items():
+            (scratch / f"{module}.py").write_text(source)
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        env.update(NO_COLOR="1", COLUMNS="100")
+        proc = subprocess.run(
+            [sys.executable, "-c", CHILD, json.dumps(eps), body],
+            cwd=scratch,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    lines = proc.stdout.strip().splitlines()
+    if proc.returncode != 0 or not lines:
+        tail = (proc.stderr.strip().splitlines() or ["(no stderr)"])[-1]
+        raise RuntimeError(f"child exited {proc.returncode}: {tail}")
+    return json.loads(lines[-1])
+
+
+def check_discovery(got: dict) -> str | None:
+    """Where the plugin's flows, field and section landed."""
+    order = [system for system, _ in got["order"]]
+    for plug, geometry in (
+        ("plug-cartesian", "cartesian"),
+        ("plug-annular", "annular"),
+    ):
+        own = [s for s, g in got["order"] if g == geometry]
+        if own[-1] != plug or len(own) < 2:
+            return f"{plug} is not after the core {geometry} flows: {order}"
+    choices = re.search(r"--phys\.system \{([^}]*)\}", got["help"])
+    if choices is None or not {"plug-cartesian", "plug-annular"} <= set(
+        choices.group(1).split(",")
+    ):
+        return "the plugin's flows are not phys.system choices"
+    if got["knob"] != 1.5:
+        return f"phys.plug_knob is {got['knob']!r}, not its default 1.5"
+    if "plugsec" not in got["sections"]:
+        return f"the plugin's section is not registered: {got['sections']}"
+    for what in ("--phys.plug_knob", "--plugsec.level"):
+        if what not in got["help"]:
+            return f"--help plug-cartesian does not show {what}"
+    return None
+
+
+def main() -> int:
+    failures: list[tuple[str, str]] = []
+    passed = 0
+    for name in CASES:
+        try:
+            got = run_case(name, timeout=300.0)
+            if name == "discovery":
+                reason = check_discovery(got)
+            else:
+                kind, fragment = REFUSALS[name]
+                if got["error"] != kind or fragment not in got["message"]:
+                    reason = (
+                        f"expected {kind} with {fragment!r}, got "
+                        f"{got['error']}: {got.get('message', '')[:120]}"
+                    )
+                else:
+                    reason = None
+        except Exception as exc:  # noqa: BLE001
+            reason = f"{type(exc).__name__}: {exc}"
+        print(f"  {'PASS' if reason is None else 'FAIL'}  {name}")
+        if reason is None:
+            passed += 1
+        else:
+            print(f"        {reason}")
+            failures.append((name, reason))
+    return report(passed, failures)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
