@@ -30,9 +30,10 @@ paths:
   keeps them, restored on an unchanged trajectory
   (`snapshot.load_snapshot_carry`).
 - The embedded params dump is the public-named surface
-  (`param_surface.recorded_params_dump`); read it back with
-  `flows.registry.internalize_stored` / `stored_value`, which raise on
-  a core-section key this version does not define.
+  (`param_surface.recorded_params_dump`), with an extension section
+  only while it is configured (`extensions.extension_metadata`); read
+  it back with `flows.registry.internalize_stored` / `stored_value`,
+  which raise on a core-section key this version does not define.
 - A resume is np-agnostic, needs matching precision, and regrids every
   changed axis at load (`__main__._interpolate_if_needed`,
   `snapshot._from_io_layout_core`). `t`/`it`/`isnap` continue only

@@ -269,8 +269,8 @@ def case_extensions() -> None:
         dump = recorded_params_dump(P.params)
         check(
             dump.get("probes") == {"modes": "3,0", "it_probes": 10}
-            and "force" in dump,
-            "recorded_params_dump embeds extensions",
+            and "force" not in dump,
+            "recorded_params_dump embeds the configured extensions only",
             {k: dump.get(k) for k in ("probes", "force")},
         )
         check(

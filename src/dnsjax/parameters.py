@@ -934,7 +934,11 @@ class Initiation(BaseModel):
     such change starts a NEW trajectory by default
     (``it = t = isnap = 0``); ``force_resume`` keeps the run continuous
     instead.  See
-    :func:`trajectory_defining_changes`.
+    :func:`trajectory_defining_changes`.  A snapshot recording a
+    parameter section this installation does not register (a plugin's
+    that was in use when it was written) refuses to resume unless
+    ``force_resume`` is set, since the section may define the
+    trajectory (:func:`unregistered_sections`).
 
     Seeds (``random_seed`` here, and any an extension section
     declares) default to **unset**, meaning "draw one
@@ -980,8 +984,10 @@ class Initiation(BaseModel):
         default=False,
         description=(
             "Continue the resumed trajectory (inherit t/it/isnap) even "
-            "when trajectory-defining parameters changed; hard "
-            "resolution/system mismatches still reject."
+            "when trajectory-defining parameters changed, and resume "
+            "without a recorded parameter section nothing installed "
+            "here registers; hard resolution/system mismatches still "
+            "reject."
         ),
     )
     random_field: bool = Field(
@@ -2185,8 +2191,10 @@ def read_snapshot_params(
     :data:`_SNAPSHOT_SKIP_FIELDS`, the resume-decision fields in
     :data:`_SNAPSHOT_LINEAGE_FIELDS`, and the whole ``solver`` section
     removed so they are not inherited -- plus the stored extension
-    sections keyed by section name, for
-    :func:`dnsjax.extensions.apply_extension_layer`.
+    sections this installation registers, keyed by section name, for
+    :func:`dnsjax.extensions.apply_extension_layer`.  A stored section
+    nothing registers is not an overlay; the caller decides what it
+    means (:func:`unregistered_sections`).
 
     Returns ``None`` when *snapshot_path* is not a dnsjax snapshot file
     (a laminar start, or a missing path), so the caller skips
@@ -2240,6 +2248,30 @@ def read_snapshot_params(
         if name in EXTENSIONS and isinstance(snap[name], dict)
     }
     return Parameters.model_validate(snap), overlays
+
+
+def unregistered_sections(stored: dict) -> list[str]:
+    """The sections of a stored params dump nothing here registers.
+
+    *stored* is the ``params`` dump of snapshot metadata or a sidecar.
+    A section neither of :class:`Parameters` nor a registered
+    extension (:data:`dnsjax.extensions.EXTENSIONS`) is a plugin's this
+    installation lacks.  A dump records an extension section only
+    while it is configured (:func:`dnsjax.extensions.extension_metadata`),
+    so such a section was in use when the dump was written, possibly
+    defining its trajectory: a resume without it is not a continuation
+    it can vouch for, which is why :func:`dnsjax.bootstrap.resolve_parameters`
+    refuses one unless ``init.force_resume`` is set.
+    """
+    from .extensions import EXTENSIONS
+
+    return sorted(
+        name
+        for name, value in stored.items()
+        if isinstance(value, dict)
+        and name not in Parameters.model_fields
+        and name not in EXTENSIONS
+    )
 
 
 # Core parameter sections that *define* the trajectory: on resume, a

@@ -33,7 +33,10 @@ JAX, a few seconds.
    - ``field-object`` and ``field-shape``: a parameter plugin naming
      no mapping, or a definition that is not ``(annotation,
      FieldInfo)``;
-   - ``section-core``: an extension section named like a core section.
+   - ``section-core``: an extension section named like a core section;
+   - ``section-absent``: a resume from a snapshot recording a section
+     no installed package registers (a plugin's, in use when it was
+     written) refuses, naming the section and ``init.force_resume``.
 
 3. The flow-module hook lookup (:func:`dnsjax.flows.registry.flow_hook`):
    ``hook-none``, a spec naming no ``flow_module``, is refused by
@@ -212,6 +215,33 @@ else:
     print(json.dumps({"error": None}))
 """
 
+#: The child body of ``section-absent``: resolve a resume from a
+#: metadata-only snapshot that records a plugin's section, with no
+#: plugin installed; report the refusal (a ``SystemExit`` message).
+RESUME = """
+import io, tarfile, tempfile
+from pathlib import Path
+from dnsjax.bootstrap import resolve_parameters
+from dnsjax.param_surface import recorded_params_dump
+from dnsjax.parameters import params
+from dnsjax.snapshot_meta import META_MEMBER
+stored = recorded_params_dump(params) | {"plugsec": {"level": 1}}
+payload = json.dumps(
+    {"format_version": 6, "system": "plane-couette", "params": stored}
+).encode()
+path = Path(tempfile.mkdtemp()) / "plugged.tar"
+with tarfile.open(path, "w") as tf:
+    info = tarfile.TarInfo(META_MEMBER)
+    info.size = len(payload)
+    tf.addfile(info, io.BytesIO(payload))
+try:
+    resolve_parameters(["--init.snapshot", str(path)], toml_path=False)
+except SystemExit as exc:
+    print(json.dumps({"error": "SystemExit", "message": str(exc.code)}))
+else:
+    print(json.dumps({"error": None}))
+"""
+
 DISCOVERY = """
 import contextlib, io
 from dnsjax.flows import registry
@@ -266,6 +296,7 @@ CASES: dict[str, tuple[dict, str]] = {
     "field-object": ({FIELDS: [["plug", "plugfields:TUPLE"]]}, IMPORT_ALL),
     "field-shape": ({FIELDS: [["plug", "plugfields:SHAPE"]]}, IMPORT_ALL),
     "section-core": ({SECTIONS: [["plug", "plugsections_core"]]}, IMPORT_ALL),
+    "section-absent": ({}, RESUME),
     "hook-none": (
         {FLOWS: [["plug", "plugflows:SPECS"]]},
         HOOK.replace("SYSTEM", "'plug-cartesian'"),
@@ -313,6 +344,10 @@ REFUSALS: dict[str, tuple[str, str]] = {
         "parameter plugin 'plug' (plugfields:SHAPE) defines phys.knob as 1.5",
     ),
     "section-core": ("RuntimeError", "'phys' clashes with a core"),
+    "section-absent": (
+        "SystemExit",
+        "records the parameter section(s) [plugsec], which nothing",
+    ),
     "hook-none": ("ValueError", "'plug-cartesian' names no flow module"),
     "hook-masked": ("AttributeError", "raised inside the flow module import"),
 }

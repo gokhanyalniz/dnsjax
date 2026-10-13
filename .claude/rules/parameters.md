@@ -57,7 +57,9 @@ paths:
 - What a resume never inherits from a snapshot (the JAX-setup fields,
   `res.double_precision`, `[solver]`, `init.snapshot` /
   `init.force_resume`): the `parameters.py` module docstring and
-  `read_snapshot_params`.
+  `read_snapshot_params`. A recorded section nothing registers refuses
+  the resume unless `init.force_resume` (`bootstrap.resolve_parameters`,
+  `parameters.unregistered_sections`).
 - Extension sections: the core builds none in; the lab's `[probes]`
   and `[force]` register through the `dnsjax.extensions` entry point
   (`dnsjax_lab.extensions`). `[twin]` belongs to `dnsjax-twin`, `[tg]`

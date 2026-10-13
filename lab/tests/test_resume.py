@@ -9,7 +9,8 @@ The lab's part of ``tests/test_resume.py`` (the shared fixtures:
 2. An inherited ``[probes]`` / ``[force]`` configuration switched off
    by its cadence's ``0`` returns to its defaults instead of failing
    its "set together" check on what it inherited, and the recorded
-   dump then says unset.
+   dump then leaves both sections out (a section is recorded only
+   while it is configured).
 
 Run as a script::
 
@@ -38,18 +39,25 @@ def run_force_trajectory() -> str | None:
 
     snap = recorded_params_dump(params)
     try:
+        assert "force" not in snap, ("unconfigured [force] recorded", snap)
+        force_params.modes = "1,1"
         force_params.amplitude = 0.5
         changes = trajectory_defining_changes(snap)
         assert any(c.startswith("force.amplitude:") for c in changes), (
             "force extension change",
             changes,
         )
-        snap_forced = recorded_params_dump(params)  # embeds [force]
+        snap_forced = recorded_params_dump(params)
+        assert snap_forced.get("force", {}).get("amplitude") == 0.5, (
+            "configured [force] not recorded",
+            snap_forced.get("force"),
+        )
         changes = trajectory_defining_changes(snap_forced)
         assert changes == [], ("force extension match", changes)
     except AssertionError as exc:
         return str(exc)
     finally:
+        force_params.modes = None
         force_params.amplitude = None
     return None
 
@@ -97,8 +105,10 @@ def run_off_cadences() -> str | None:
                 fresh = type(values)()
                 assert values == fresh, ("section not reset", values)
             dump = recorded_params_dump(params)
-            assert not any(dump["probes"].values()), dump["probes"]
-            assert not any(dump["force"].values()), dump["force"]
+            assert "probes" not in dump and "force" not in dump, (
+                "switched-off sections recorded",
+                {k: dump.get(k) for k in ("probes", "force")},
+            )
     except AssertionError as exc:
         return str(exc)
     finally:

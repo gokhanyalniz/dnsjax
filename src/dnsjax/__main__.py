@@ -170,6 +170,10 @@ trajectory-defining extension section, was overridden to a value
 different from the snapshot's.
 Any such change starts a NEW trajectory (``t = it = isnap = 0``, IC
 re-saved as ``state00000.tar``) unless ``init.force_resume`` is set.
+A snapshot recording a parameter section nothing installed here
+registers (a plugin's, in use when it was written) is refused at
+startup unless ``init.force_resume`` is set, and the banner then names
+what is left out (:func:`dnsjax.parameters.unregistered_sections`).
 When the current wall-normal grid differs from the snapshot's,
 ``_interpolate_if_needed`` interpolates the state at load time (see
 :mod:`dnsjax.fd` for the interpolation methods).
@@ -1844,6 +1848,13 @@ def _print_banner(setup: ResolvedSetup, seed_notes: list[str]) -> None:
             f"'{setup.snapshot_path}' (except np0/np1/platform/"
             "double_precision); parameters.toml and command-line "
             "arguments override them.",
+            flush=True,
+        )
+    if setup.ignored_sections:
+        print(
+            "Ignoring the recorded parameter section(s) "
+            f"[{', '.join(setup.ignored_sections)}]: nothing installed "
+            "here registers them (init.force_resume is set).",
             flush=True,
         )
     if setup.params_from_disk:

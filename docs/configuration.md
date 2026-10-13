@@ -23,7 +23,11 @@ parameters that must be known before JAX initializes — `dist.np0`,
 `dist.np1`, `dist.platform`, and `res.double_precision` — are never
 inherited from a snapshot, nor are the resume-decision fields
 `init.snapshot` and `init.force_resume` (recorded for lineage only),
-and the entire `solver` section is execution-only.
+and the entire `solver` section is execution-only. A snapshot that
+records a parameter section nothing installed here registers (a
+plugin's, in use when the snapshot was written) refuses to resume
+unless `init.force_resume` is set, since that section may define the
+trajectory; the startup banner then names what is left out.
 
 A layer can set a field but never unset it: a `None` (`--outs.it_stats
 None`) is indistinguishable from not setting the field at all. So every
@@ -44,7 +48,7 @@ Not every section is owned by the core parameter model. An
 `--<name>.<field>` and `[<name>]`, shown in `--help` and
 `--sample-toml`, validated strictly per flow (a section on a flow it
 does not apply to is an error like any other irrelevant key),
-optionally recorded into snapshot metadata, and optionally
+recorded into snapshot metadata while it is configured, and optionally
 trajectory-defining. A plugin package registers its sections through
 the `dnsjax.extensions` entry point, as the repository's lab does
 (see [`extending.md`](extending.md)); the analysis and preprocessing
