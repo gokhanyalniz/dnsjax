@@ -18,6 +18,9 @@ Python file (never importing it):
   ``<x>.<section>.<field>``, a ``("<section>", "<field>")`` pair (a
   tuple, or a call's first two arguments), or a
   ``"[--]<section>.<field>"`` string.
+- ``sections``: no use of a parameter section the lab registers: a
+  ``"[--]<section>.<field>"`` or ``"[<section>]"`` string, or a
+  ``[...]`` / ``.get(...)`` lookup keyed by the section's name.
 - ``registry``: the flows the entry points add to the registry are
   exactly the lab's, and the core's own specs are disjoint from them.
 - ``self``: each pattern above is found in a source written to break
@@ -30,8 +33,8 @@ are skipped.  Strings are compared whole, never searched: prose may
 point at the lab (a docstring naming ``lab/tests/...``), code may not.
 The lab's section and field names alone are too generic to compare
 that way (``force``, ``beta``), hence the access patterns of
-``fields``.  This file names ``dnsjax_lab`` and ``dnsjax-lab`` to
-find the lab, so it is not scanned itself.
+``fields`` and ``sections``.  This file names ``dnsjax_lab`` and
+``dnsjax-lab`` to find the lab, so it is not scanned itself.
 
 Run::
 
@@ -69,8 +72,10 @@ def core_files() -> list[Path]:
 def lab_names() -> dict | None:
     """What the lab registers, from its entry points (``None``: absent).
 
-    ``systems`` (its flows), ``scripts`` (its console scripts) and
-    ``fields`` (``section -> names`` it adds to the core sections).
+    ``systems`` (its flows), ``scripts`` (its console scripts),
+    ``fields`` (``section -> names`` it adds to the core sections) and
+    ``sections`` (the parameter sections it registers, those whose
+    model it defines).
     """
     try:
         eps = distribution(LAB_DIST).entry_points
@@ -89,7 +94,20 @@ def lab_names() -> dict | None:
         for section, named in ep.load().items():
             fields.setdefault(section, set()).update(named)
     scripts = {ep.name for ep in eps.select(group="console_scripts")}
-    return {"systems": systems, "scripts": scripts, "fields": fields}
+    # Importing the registry loads the lab's extension modules.
+    from dnsjax.extensions import EXTENSIONS
+
+    sections = {
+        name
+        for name, ext in EXTENSIONS.items()
+        if ext.model.__module__.split(".")[0] == LAB_PACKAGE
+    }
+    return {
+        "systems": systems,
+        "scripts": scripts,
+        "fields": fields,
+        "sections": sections,
+    }
 
 
 def _strings(tree: ast.AST):
@@ -160,6 +178,40 @@ def find_fields(tree: ast.AST, names: dict) -> list[tuple[int, str]]:
     return hits
 
 
+def find_sections(tree: ast.AST, names: dict) -> list[tuple[int, str]]:
+    """``(line, what)`` per use of a section the lab registers."""
+    sections = names["sections"]
+    hits = []
+    for node in ast.walk(tree):
+        key = None
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            text = node.value.lstrip("-")
+            if text.startswith("[") and text.endswith("]"):
+                key = text[1:-1]
+            else:
+                section, dot, name = text.partition(".")
+                if dot and name.isidentifier():
+                    key = section
+        elif isinstance(node, ast.Subscript):
+            key = _const_str(node.slice)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and node.args
+        ):
+            key = _const_str(node.args[0])
+        if key in sections:
+            hits.append((node.lineno, f"section {key!r}"))
+    return hits
+
+
+def _const_str(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
 def check_registry(names: dict) -> list[str]:
     """The registry's non-core flows are exactly the lab's."""
     from dnsjax.flows import registry
@@ -185,6 +237,7 @@ def check_self(names: dict) -> list[str]:
     script = sorted(names["scripts"])[0] if names["scripts"] else system
     section = sorted(names["fields"])[0]
     field = sorted(names["fields"][section])[0]
+    lab_section = sorted(names["sections"])[0]
     cases = {
         "import": (f"import {LAB_PACKAGE}.x", find_imports),
         "from-import": (f"from {LAB_PACKAGE} import x", find_imports),
@@ -195,6 +248,10 @@ def check_self(names: dict) -> list[str]:
         "pair": (f"p = ('{section}', '{field}')", find_fields),
         "call": (f"f('{section}', '{field}')", find_fields),
         "dotted": (f"a = ['--{section}.{field}', '1']", find_fields),
+        "section flag": (f"a = ['--{lab_section}.x', '1']", find_sections),
+        "section header": (f"t = '[{lab_section}]'", find_sections),
+        "section lookup": (f"e = EXTENSIONS['{lab_section}']", find_sections),
+        "section get": (f"v = dump.get('{lab_section}')", find_sections),
     }
     missed = []
     for case, (source, find) in cases.items():
@@ -224,6 +281,7 @@ def main() -> int:
         "imports": lambda: scan(find_imports),
         "systems": lambda: scan(find_systems, names),
         "fields": lambda: scan(find_fields, names),
+        "sections": lambda: scan(find_sections, names),
         "registry": lambda: check_registry(names),
         "self": lambda: check_self(names),
     }

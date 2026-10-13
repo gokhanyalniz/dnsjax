@@ -2224,8 +2224,9 @@ def trajectory_defining_changes(snapshot_params: dict) -> list[str]:
     (``snapshot_params`` is the ``params`` sub-dict of
     ``_dnsjax_meta.json``, in the stored **public**-named
     representation) against the live global :data:`params`, and the
-    stored trajectory-defining extension sections (``force``) against
-    their live singletons, skipping the JAX-setup fields in
+    stored trajectory-defining extension sections
+    (``ParamExtension.trajectory_defining``) against their live
+    singletons, skipping the JAX-setup fields in
     :data:`_SNAPSHOT_SKIP_FIELDS` (of which only
     ``res.double_precision`` lies in these sections).  Returns a
     human-readable ``"section.key: old -> new"`` description per

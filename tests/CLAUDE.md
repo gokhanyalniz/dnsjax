@@ -52,7 +52,7 @@ half of the same name in `lab/tests/`.
 ## Which script a change reaches
 
 Core and lab: `test_layering.py`: the core never names the lab
-(imports, system strings, lab-field access).
+(imports, system strings, lab fields and sections).
 
 Banded solve and Pallas kernel:
 - `test_banded_solver.py` (parity, whole tiles, cuda lowering, the

@@ -201,7 +201,7 @@ def _reset_values(ext: ParamExtension) -> None:
     """Return one extension's ``values`` to its defaults, in place.
 
     In place because consumers hold references to the singleton (e.g.
-    ``from dnsjax.extensions import force_params``), so it is never
+    :data:`dnsjax.analysis.transient_growth.tg_params`), so it is never
     replaced.
     """
     fresh = ext.model()

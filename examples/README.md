@@ -5,10 +5,10 @@ geometries. Each is a single annotated `parameters.toml` plus a short
 README, sized to reach turbulence on **one laptop core in minutes**, and
 each starts from a deterministic localized-roll perturbation — so two
 runs of the same file take the same trajectory, with no seed to record.
-(The annular geometry — Taylor–Couette, quasi-Keplerian, Dean — has
-no example here: in the linearly stable regimes its transition
-threshold is amplitude- and geometry-specific, with no standard
-minimal unit to copy.)
+(The annular geometry, that of Taylor–Couette flow, has no example
+here: in the linearly stable regimes its transition threshold is
+amplitude- and geometry-specific, with no standard minimal unit to
+copy.)
 
 | example | geometry | what it shows |
 |---|---|---|

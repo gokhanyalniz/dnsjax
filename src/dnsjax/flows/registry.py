@@ -267,8 +267,9 @@ def internalize_stored(
     hidden-derived internal keys (e.g. the wedge ``geo.lz``, the
     derived ``phys.re``/``re2``), so offline consumers see the same
     internal values a live ``update_parameters`` would produce.
-    Extension sections (e.g. ``force``) are passed through unchanged;
-    their relevance/ownership is the caller's concern.
+    Extension sections (any section outside the core models) are
+    passed through unchanged; their relevance/ownership is the
+    caller's concern.
 
     Raises
     ------
