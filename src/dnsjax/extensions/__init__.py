@@ -252,6 +252,18 @@ class RunHooks:
     :meth:`sample`, :meth:`finish` or :meth:`flush` reports a
     non-finite value, and the run aborts with it (exit code 3), as on a
     non-finite core diagnostic.
+
+    The fine print: the first iteration's :meth:`sample` sees the very
+    state :meth:`start` just recorded (``it0``), so a cadence hook
+    gates on ``it > it0`` itself; :meth:`modify` returns the state to
+    step from and cannot report (an exception from any hook is an
+    ordinary traceback); under ``cnab2`` the carried nonlinear history
+    is not offered to :meth:`modify`, so a modified state steps with
+    the history of the unmodified one; :meth:`finish` receives the
+    post-loop ``it`` (one past the last :meth:`modify`'s) and is
+    skipped on a non-finite abort and on a termination signal, which
+    flush unchecked and exit; and the step donates its input, so a
+    hook keeps no reference to a state it was handed across the step.
     """
 
     def start(self, state, t: float) -> str | None:

@@ -135,7 +135,7 @@ class _Geometry:
             "coordinate."
         ),
     )
-    # Default 11 (applied in the viscoelastic ``derive`` hook).
+    # Default 11: the viscoelastic Dean spec's ``FieldSpec`` default.
     delta: float | None = Field(
         default=None,
         gt=0,

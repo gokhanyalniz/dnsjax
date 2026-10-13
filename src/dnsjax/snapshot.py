@@ -281,8 +281,8 @@ class SnapshotMismatchError(Exception):
 #: interrupted save under the final name would load without complaint,
 #: blank wherever the writes did not reach.  A killed job therefore
 #: leaves a ``.partial`` beside the last good snapshot, outside every
-#: ``*.tar`` glob (``lab/scripts/ensemble_setup.py`` relies on it when it
-#: harvests parents), for one metadata operation per save.
+#: ``*.tar`` glob (a parent harvest relies on it), for one metadata
+#: operation per save.
 _PARTIAL_SUFFIX = ".partial"
 
 

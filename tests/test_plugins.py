@@ -43,6 +43,10 @@ JAX, a few seconds.
    name; ``hook-masked``, an ``AttributeError`` raised *inside* the
    flow module's import, reaches the caller as itself rather than as a
    "does not export" verdict on the hook.
+4. ``spec-labels``, in process: a spec storing more than three
+   components without labelling them, a cylindrical one without their
+   parity, and labels of the wrong length are refused at construction
+   (:class:`dnsjax.flow_spec.FlowSpec`).
 
 Run::
 
@@ -404,9 +408,62 @@ def check_discovery(got: dict) -> str | None:
     return None
 
 
+def check_spec_labels() -> str | None:
+    """``FlowSpec`` refuses unlabelled or mislabelled stored components."""
+    from dnsjax.flow_spec import FlowSpec
+
+    def build(**kwargs):
+        return FlowSpec(
+            system="plug-labels",
+            geometry=kwargs.pop("geometry", "cylindrical"),
+            summary="A plugin flow storing more than the velocity.",
+            fields=(),
+            **kwargs,
+        )
+
+    four = ("u_z", "u_r", "u_theta", "c")
+    parity = (True, False, False, True)
+    cases = {
+        "no labels": (dict(n_components=4), "labels none"),
+        "no parity": (
+            dict(n_components=4, components=four),
+            "gives no axis parity",
+        ),
+        "short labels": (
+            dict(n_components=4, components=four[:2], component_parity=parity),
+            "components has 2 entries for 4 components",
+        ),
+        "short parity": (
+            dict(n_components=4, components=four, component_parity=parity[:3]),
+            "component_parity has 3 entries for 4 components",
+        ),
+    }
+    for label, (kwargs, fragment) in cases.items():
+        try:
+            build(**kwargs)
+        except ValueError as exc:
+            if fragment not in str(exc):
+                return f"{label}: {exc}"
+        else:
+            return f"{label}: accepted"
+    try:
+        build(n_components=4, components=four, component_parity=parity)
+        build(geometry="cartesian", n_components=4, components=four)
+    except ValueError as exc:
+        return f"labelled spec refused: {exc}"
+    return None
+
+
 def main() -> int:
     failures: list[tuple[str, str]] = []
     passed = 0
+    reason = check_spec_labels()
+    print(f"  {'PASS' if reason is None else 'FAIL'}  spec-labels")
+    if reason is None:
+        passed += 1
+    else:
+        print(f"        {reason}")
+        failures.append(("spec-labels", reason))
     for name in CASES:
         try:
             got = run_case(name, timeout=300.0)

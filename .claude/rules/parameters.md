@@ -44,8 +44,10 @@ paths:
   `params.<section>.<field> = ...` is silently overwritten on the next
   pass (the `update_parameters` docstring).
 - A deferred field (`DeferredSpec`) is refused on the CLI, in TOML and
-  on direct assignment; `validate_parameters` rejects a knob the
-  flow's surface does not carry.
+  on direct assignment. `validate_parameters` guards direct assignment
+  only for the knobs it names (`geo.m0`, `geo.grid_type`, the moving
+  frame and the driving, the `[lowres]` targets); any other field a
+  flow's surface lacks is refused by the CLI/TOML parse alone.
 - A layer drops a `None`, so it can never unset a field. An optional
   output cadence is therefore off when unset **or 0**, and the merges
   turn a `0` back into unset. A new cadence joins
