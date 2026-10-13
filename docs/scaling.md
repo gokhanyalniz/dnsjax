@@ -3,7 +3,8 @@
 How `dnsjax` lays its data out, what a configuration costs in memory,
 and how the work is split across devices. All of it is independent of
 the flow — the geometry sets the meaning of each axis, and the device
-grid is chosen the same way for all ten systems. The last section
+grid is chosen the same way for every system, a plugin's included. The
+last section
 measures how one plane-channel run scales on a CPU cluster, from 1 to
 64 nodes.
 

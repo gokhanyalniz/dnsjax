@@ -60,9 +60,11 @@ moves only when one of these holds:
 
 Never raise it merely because the development machine has moved on.
 
-Moving the floor touches five places, none of which derive from each
-other: `requires-python` and the classifiers in `pyproject.toml`, the
-`smoke` matrix in `.github/workflows/ci.yml`, the Python badge in
+Moving the floor touches several places, none of which derive from
+each other: `requires-python` and the classifiers in `pyproject.toml`,
+`requires-python` in `lab/pyproject.toml`, the `smoke` matrix and the
+`core-only` job's floor venv in `.github/workflows/ci.yml`, the floor
+venv in `.github/workflows/release.yml`, the Python badge in
 `README.md`, and the Prerequisites line in the repository's root
 `CLAUDE.md`. **Lowering** it additionally requires a real run under the
 new floor, in this order: `py_compile` the tree, import it, then run
@@ -154,8 +156,10 @@ A release holds the solver alone. The PyPI sdist and the GitHub
 archive of the release tag that Zenodo keeps hold the same files (the
 package, its tests, docs, examples and scripts, and the top-level
 documents), and the archive adds `uv.lock`; neither holds the lab, the
-files written for coding agents or the development configuration
-(`.gitattributes`, and `[tool.uv.build-backend]` in `pyproject.toml`).
+files written for coding agents or the development configuration (the
+exclusions are `.gitattributes`'s for the archive and
+`[tool.uv.build-backend]`'s in `pyproject.toml` for the sdist and the
+wheel).
 The wheel is the package alone. The sdist and the archive install with
 uv: the archive with its `uv.lock` (`uv sync --locked`), the sdist
 without one. `main` cannot be released as it stands, since its
@@ -178,8 +182,9 @@ artefacts and the archive, then publishes to PyPI once the `pypi`
 environment's reviewer approves and drafts the GitHub release.
 Publishing that draft is what has Zenodo archive it. Running the
 workflow by hand rehearses the build on TestPyPI. CI's `core-only` job
-checks the release build from `main` on every push; to run it before
-pushing, from a commit of your own:
+checks the release build on every push of every branch and on every
+pull request, from that push's own commit; to run the same checks
+before pushing, from a commit of your own:
 
 ```bash
 uv run --no-project --with pyyaml python lab/scripts/release/ci_job.py core-only

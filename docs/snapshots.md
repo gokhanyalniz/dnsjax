@@ -44,8 +44,8 @@ complex data for `numpy.fromfile`.
 The stored field is the spectral **perturbation** $\mathbf{u}'$ for the
 base-flow systems (the laminar state is a zero array) and the **total**
 field for a force-driven one. Each flow declares which
-(`FlowSpec.total_field`); `dnsjax.analysis` exposes the set as
-`TOTAL_FIELD_SYSTEMS`.
+(`FlowSpec.total_field`); the JAX-free registry lists the set as
+`dnsjax.flows.registry.total_field_systems`.
 
 The pipe (and any flow built on its stepping) can store one more array
 beside the state, `carry/`: two fields its default time stepper evolves
@@ -159,12 +159,14 @@ a flow with a metric of its own they carry it (`GeometryInfo.metric`);
 how `integrate` splits one between the cross-section and the streamwise
 direction is in its docstring.
 
-Four more names round out the JAX-free API for the cases where the
+Five more names round out the JAX-free API for the cases where the
 field data is not what you are after. `read_meta` returns a snapshot's
 parsed metadata — resolution, grid, clock, lineage, the writing code's
 git revision — and `read_stats` the physical diagnostics of the state
-itself, which every snapshot carries as its own archive member unless
-`outs.snapshot_embed_stats` is turned off.
+itself, which every state snapshot carries as its own archive member
+unless `outs.snapshot_embed_stats` is turned off (a reduced-resolution
+file carries none). `read_dat` reads a `.dat` diagnostic stream
+(`stats.dat`, `steps.dat`, `corrector.dat`) into its named columns.
 `geometry_info` turns those parameters into the per-geometry axis and
 component schema, and `Namespace` is the read-only view they are
 returned through: it gives attribute access (`params.phys.re`) and item

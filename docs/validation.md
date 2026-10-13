@@ -74,7 +74,7 @@ map to them as follows.
 | Random initial conditions integrate through the full nonlinear path, every distinct stepping machinery | `tests/test_random_smoke.py` |
 | The Pallas banded kernel agrees with the dense reference solver | `tests/test_banded_solver.py`, `tests/test_banded_solver_sharded.py` |
 | Reverse-mode gradients of a step match a central difference, and the default corrector still refuses | `tests/test_autodiff.py` |
-| The banded kernel's adjoint matches the portable sweep's own autodiff, and composes inside the sharded solve | `tests/test_banded_solver.py` |
+| The banded kernel's adjoint matches the portable sweep's own autodiff, and composes through the solve's `shard_map` on one device | `tests/test_banded_solver.py` |
 | Triton lowering does not regress on GPU-less machines | `tests/test_banded_solver.py` (CUDA-lowering rows) |
 | Per-geometry operators and matvecs match independent NumPy constructions | `tests/test_cartesian.py`, `tests/test_cylindrical.py`, `tests/test_annular.py` |
 | Snapshots round-trip, resume across any device count, and carry lineage; a pipe-family resume continues the uninterrupted run to round-off | `tests/test_snapshot.py`, `tests/test_resume.py` |

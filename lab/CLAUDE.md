@@ -71,7 +71,8 @@ fixed on purpose.
 - `random_ic_calibrate.py`: score and sweep the random IC's `(y, k)`
   shape against a recorded ensemble (`[calib]`).
 - `performance/solver_benchmark.py`: pallas-vs-dense validation and
-  benchmark, every flow (`--cpu-smoke`).
+  benchmark on the flows its `SIZES` / `EXTRA_ENTRIES` tables list
+  (`--cpu-smoke`).
 - `performance/node_benchmark.py`: JAX-free layout and strong-scaling
   sweep of one problem, `mpirun` or `srun` over nodes, each row's
   `stats.dat` checked against a reference (`--dry-run`, `--cpu-smoke`);

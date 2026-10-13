@@ -524,8 +524,10 @@ such pairing is.
 
 | Module | Role |
 |---|---|
-| `series` | Readers for `twin.dat` / `twin_budget.dat` and the `twin.json` member record, plus the generic `read_dat` that loads any `.dat` stream (`stats.dat`, `stats_twin.dat`, …); per-component budget sums; `uniform_grid` |
+| `series` | Readers for `twin.dat` / `twin_budget.dat` and the `twin.json` member record, plus the core's `read_dat` re-exported, which loads any `.dat` stream (`stats.dat`, `stats_twin.dat`, …); per-component budget sums; `uniform_grid` |
 | `ensemble` | Member-tree aggregation on aligned relative time, plus the growth-rate fits (exponential-phase $\lambda$, algebraic-phase linear rate) |
+| `growth` | Growth-law diagnostics of a decorrelating pair: the logarithmic, logistic and decorrelation rates and the algebraic exponent |
+| `moments` | The log-coordinate moments of a $(y, k)$ stream and their rates |
 | `spectra` | Readers for `twin_spectra.bin` and its reference stream (either layout), and the decorrelation ratio |
 | `yspectra` | Readers for `twin_yspectra.bin` / `twin_ybudget.bin` and the reference stream, the wall-normal quadrature contraction, the three-bin energies recovered from them, and the budget regrouped as the difference-energy balance |
 | `cubes` | Readers for the 3-D cube directories, whole or by wall distance |

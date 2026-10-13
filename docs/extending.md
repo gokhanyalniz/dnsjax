@@ -52,8 +52,12 @@ so on), per-flow default overrides, narrowed choice sets, *deferred*
 fields — declared but not yet implemented, so they fail with their own
 message rather than looking nonsensical — and the flow's derivation and
 validation hooks. A state that is not three velocity components
-declares its count, and the initial-condition builders, the FFT and
-sharding layers, and the steppers are all component-count-agnostic. A
+declares its count and labels its components (`components`; on the
+cylindrical geometry their axis parity too, `component_parity`); the
+initial-condition builders and the FFT and sharding layers are
+component-count-agnostic, while the pipe's stepping is written for the
+three velocity components first, so a flow evolving more brings its own
+stepping (the `FlowSpec` docstring states the contract). A
 flow that integrates the total field, driven by a mean-mode body force,
 rather than a perturbation about a laminar profile declares that too
 (`total_field`); what a snapshot holds, the transient-growth scope and
@@ -74,7 +78,9 @@ A flow that needs a field the core sections lack adds it through the
 `{section: {name: (annotation, FieldInfo)}}` in a module that imports
 neither JAX nor `dnsjax.parameters`. The core composes these fields into
 its section models after its own, and refuses one that clashes with a
-core field or another plugin's. The flow's spec then lists the field
+core field or another plugin's, or that names a section the core does
+not have (a section of its own is an extension, below). The flow's spec
+then lists the field
 like any core field: the public name, the TOML key, the CLI flag and the
 snapshot metadata need nothing more.
 
@@ -89,7 +95,8 @@ can take part in the solver's run: its `runtime` names a factory of
 `RunHooks` (`start`, `sample`, `modify`, `flush`, `finish`), which the
 solver builds once the section is configured and calls at fixed points
 of every step, and its `seed_fields` are drawn, agreed across processes
-and recorded like the solver's own seed. A configured section is
+and recorded like the solver's own seed (unless the section resolves
+them itself, `seeds_at_start`). A configured section is
 recorded in snapshot metadata, and a snapshot recording a section that
 no installed package registers refuses to resume unless
 `init.force_resume` is set. The lab's `[probes]` and `[force]` sections

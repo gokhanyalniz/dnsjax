@@ -64,7 +64,7 @@ runs:
 
 | Script | What it does |
 |---|---|
-| `solver_benchmark.py` | the Pallas banded backend against the dense reference solver, every flow: validation and timing |
+| `solver_benchmark.py` | the Pallas banded backend against the dense reference solver on the six flows its size table lists: validation and timing |
 | `node_benchmark.py` | a layout and strong-scaling sweep of one production problem under `mpirun` or `srun`, each row's `stats.dat` checked against a reference; JAX-free driver |
 | `pallas_solve_profile.py` | GPU profile of the banded solve and its share of a step |
 | `memory_budget.py` | per-rank memory of the step as run, on any layout, from XLA's buffer assignment, offline |

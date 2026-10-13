@@ -33,8 +33,10 @@ Design notes
 one geometry where ``res.consistent_imm`` costs throughput: measured per step
 on an H100, the flag is -17 % on plane Couette and -12 % on Taylor-Couette,
 both of which go from four solves to three, against +6 % on the pipe.  Memory
-moves the other way for all three (four band families to three, and the
-pressure-response columns replaced by the cheaper `$u_r$` ones).
+moves the other way: the pressure-response columns are replaced by the
+cheaper `$u_r$` ones everywhere, and the pipe and the annulus keep three
+band families instead of four (the Cartesian geometry swaps one family
+for another).
 
 **Why this pass costs ~2x Cartesian.**  Solve counts do not explain the pipe's
 cost.  Measured with ``lab/scripts/performance/pallas_solve_profile.py`` Parts

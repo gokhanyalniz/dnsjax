@@ -83,9 +83,9 @@ Stepping:
   per geometry and legacy pass.
 - `test_wall_time_stop.py` (both suites, `mpirun`): both drivers stop
   on `stop.max_wall_time` together when the ranks' clocks disagree.
-- `test_run_status.py` (both suites; `--unit-only`, `--no-mpi`,
-  `--mpi-only`): the status files and the stop request, in both
-  drivers.
+- `test_run_status.py` (both suites; `--no-mpi`, `--mpi-only`, the
+  core half's `--unit-only`): the status files and the stop request,
+  in both drivers.
 
 Parameters, bootstrap, mesh, seeds:
 - `test_param_surface.py` (both suites: registry, surfaces and their
@@ -106,9 +106,9 @@ Initial conditions:
   `test_snapshot_perturb.py` (both suites).
 
 Snapshots, resume, analysis:
-- `test_snapshot.py`, `test_resume.py` (`--unit-only`),
-  `test_snapshot_export.py` (re-run after changing a primitive),
-  `test_transient_growth.py` (`--fast`), all both suites;
+- `test_snapshot.py`, `test_resume.py` (the core half's
+  `--unit-only`), `test_snapshot_export.py` (re-run after changing a
+  primitive), `test_transient_growth.py` (`--fast`), all both suites;
   `test_snapshot_import.py`, `test_wedge.py` (`geo.m0`; the lab's
   `test_quasi_keplerian.py` holds its flow's cases).
 - `test_lowres.py` (both suites: `[lowres]` files, the static

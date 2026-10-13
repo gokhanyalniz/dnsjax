@@ -136,8 +136,9 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
 ## Package map (`src/dnsjax/`)
 
 JAX-free leaves, importable before JAX is configured: `parameters.py`,
-`flow_spec.py`, `harmonics.py`, `fd.py`, `adaptive.py`,
-`snapshot_meta.py`, `seeding.py`, `run_status.py`, `flows/registry.py`,
+`param_surface.py`, `flow_spec.py`, `harmonics.py`, `fd.py`,
+`adaptive.py`, `snapshot_meta.py`, `seeding.py`, `run_status.py`,
+`extensions/`, `flows/registry.py`,
 the flow `specs/`, and `analysis/` (bar the members its notes name).
 Reuse them (extract a helper into one rather than copying it), and put
 a module used only outside the solver in a subpackage, not at this
@@ -153,6 +154,7 @@ param_surface.py  per-flow CLI/TOML surfaces, public names, params dump
 extensions/       extension sections: registry, run-loop hooks
 sharding.py       the (np0, np1) mesh singleton, layouts, pytree registration
 fft.py            real FFTs, 3/2 dealiasing, shard_map reshards, padding
+harmonics.py      integer wavenumber sequences of the spectral axes
 operators.py      wavenumbers (from harmonics.py), FFT wrappers
 rhs.py            rotational nonlinear term; measure_fn and metric hooks
 measurements.py   CFL
@@ -160,7 +162,8 @@ timestep.py       make_stepper: the iterative-cn and cnab2 steppers
 adaptive.py       CFL time-step controller
 fd.py             FD weights, quadrature, interpolation, grids
 solvers.py        dense (reference) and banded Pallas per-mode solves
-snapshot.py       snapshot save/load (snapshot_meta.py: tar metadata)
+snapshot.py       snapshot save/load
+snapshot_meta.py  snapshot tar metadata, stdlib only
 lowres.py         [lowres]: reduced-resolution snapshots (+ pressure)
 seeding.py        the seed contract
 ic/               random_field (the default IC), localized_rolls, mean_mode

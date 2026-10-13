@@ -34,4 +34,4 @@ docstrings. The human overview: `README.md` here.
   costs and what its streams can answer.
 - Offline tools: `lab/scripts/twin_postprocess.py`,
   `lab/scripts/twin_spectral_maps.py` and `lab/scripts/ensemble_setup.py
-  build-twin` (`scripts/CLAUDE.md`).
+  build-twin` (`lab/CLAUDE.md`).
