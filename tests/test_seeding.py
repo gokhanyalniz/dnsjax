@@ -17,9 +17,11 @@ Covers :mod:`dnsjax.seeding` and the resolution point that uses it
    when the start mode is the random IC (a laminar / rolls /
    snapshot-resume run needs no entropy at all), and an extension
    section's ``seed_fields`` only once the section is configured
-   (``ParamExtension.configured``, on a section of the test's own).
-   Both are checked with the entropy source disabled, so a spurious
-   draw *fails* rather than passing silently.
+   (``ParamExtension.configured``, on a section of the test's own),
+   and never one whose owner resolves it itself
+   (``ParamExtension.seeds_at_start`` false).  All are checked with the
+   entropy source disabled, so a spurious draw *fails* rather than
+   passing silently.
 4. **Provenance**: the layer -> label mapping, and that a seed a layer
    supplied is used unchanged and reported with that layer's label,
    never re-drawn.  Writing a drawn seed back is also checked to touch
@@ -280,6 +282,31 @@ def run_resolution_checks() -> str | None:
             else:
                 return "a configured section's unset seed resolved"
             gated.values = _Gated()
+
+            # (c') A section whose owner resolves its seeds itself
+            #      (``seeds_at_start`` false) is left alone even when
+            #      configured with its seed unset: no draw, no refusal,
+            #      no note.
+            deferred = register_extension(
+                ParamExtension(
+                    name="deferred",
+                    model=_Gated,
+                    relevant=lambda system: True,
+                    seed_fields=("seed",),
+                    seeds_at_start=False,
+                    configured=lambda values: values.on,
+                )
+            )
+            apply_extension_layer({"deferred": {"on": True}})
+            try:
+                notes = resolve_run_seeds(setup)
+            except SystemExit as exc:
+                return f"startup drew a seeds_at_start=False seed: {exc}"
+            if any(note.startswith("deferred.") for note in notes):
+                return f"a seeds_at_start=False seed was resolved: {notes!r}"
+            if deferred.values.seed is not None:
+                return "startup filled a seeds_at_start=False seed"
+            deferred.values = _Gated()
 
         # (d) With entropy available, an unset seed is drawn, lands in
         #     ``params`` (so the snapshot records what ran) and is
