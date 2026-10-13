@@ -124,12 +124,19 @@ GBPS = 1e9
 
 #: The systems profiled: those whose step the stage transcriptions
 #: (:func:`_imm_stage_breakdown`) follow.
-SYSTEMS = ("plane-couette", "plane-poiseuille", "pipe", "taylor-couette")
+SYSTEMS = (
+    "plane-couette",
+    "plane-poiseuille",
+    "pipe",
+    "taylor-couette",
+    "dean",
+)
 
 #: A system's fields beyond ``phys.re = 400``, as dotted parameter
 #: paths (the test-suite-standard values).
 SYS_ARGS: dict[str, dict[str, float]] = {
     "taylor-couette": {"phys.re1": 100.0, "phys.re2": 0.0, "geo.eta": 0.5},
+    "dean": {"geo.eta": 0.5},
 }
 
 #: The random IC's seed.  Fixed on purpose, like every seed in the
