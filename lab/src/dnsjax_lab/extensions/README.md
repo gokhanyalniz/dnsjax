@@ -5,8 +5,8 @@ simulation, beside the always-available `stats.dat` / `steps.dat` /
 `corrector.dat` text diagnostics. Both are **extensions** — sections
 owned outside `parameters.py`, but parsed from the CLI and
 `parameters.toml`, listed in `--help`, validated strictly per flow, and
-recorded into snapshot metadata exactly like a core section (the
-mechanism: [Parameter layering](../../../../docs/configuration.md)).
+recorded into snapshot metadata once configured (the mechanism:
+[Parameter layering](../../../../docs/configuration.md)).
 
 Together they are the runtime half of the input-output analysis in
 [`analysis/response`](../analysis/response/README.md): `[probes]`

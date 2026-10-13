@@ -173,6 +173,7 @@ from .parameters import (
     params,
     random_ic_selected,
     read_snapshot_params,
+    unregistered_sections,
     update_parameters,
     validate_parameters,
 )
@@ -533,6 +534,10 @@ class ResolvedSetup:
     ``parameters._user_set_fields`` is a union over the layers and so
     reports "set" on every resume, which cannot tell an inherited seed
     from a typed one.
+
+    ``ignored_sections`` names the parameter sections the snapshot
+    records that nothing here registers, resumed past under
+    ``init.force_resume`` (:func:`dnsjax.parameters.unregistered_sections`).
     """
 
     system: str
@@ -541,6 +546,7 @@ class ResolvedSetup:
     snapshot_path: Path | None
     snapshot_params_used: bool
     seed_layers: dict[str, str] = field(default_factory=dict)
+    ignored_sections: tuple[str, ...] = ()
 
 
 def resolve_parameters(
@@ -692,6 +698,7 @@ def resolve_parameters(
     snapshot_params_used = False
     snap_core: dict = {}
     snap_ext: dict[str, dict] = {}
+    ignored: tuple[str, ...] = ()
     if snapshot_path is not None:
         # An unreadable snapshot (below ``MIN_FORMAT_VERSION``, or
         # malformed metadata) raises ``ValueError`` from deep inside
@@ -715,6 +722,35 @@ def resolve_parameters(
         snap = read_snapshot_params(snapshot_path)
         if snap is not None:
             snap_params, snap_ext = snap
+            # A recorded section nothing here registers was in use
+            # when the snapshot was written (a plugin's, absent here)
+            # and may define its trajectory: refuse, unless the layers
+            # above say ``init.force_resume``, in which case the banner
+            # says what was left out.
+            from .extensions import LOADED_PLUGINS
+            from .snapshot_meta import read_snapshot_meta
+
+            unknown = unregistered_sections(
+                read_snapshot_meta(snapshot_path)["params"]
+            )
+            if unknown:
+                forced = bool(
+                    (cli_layer.get("init") or {}).get("force_resume")
+                    or (toml_layer.get("init") or {}).get("force_resume")
+                )
+                if not forced:
+                    loaded = ", ".join(LOADED_PLUGINS) or "none"
+                    raise SystemExit(
+                        f"{prog}: error: snapshot '{snapshot_path}' records "
+                        f"the parameter section(s) [{', '.join(unknown)}], "
+                        "which nothing installed here registers "
+                        f"(dnsjax.extensions plugins loaded: {loaded}); a "
+                        "recorded section was in use when the snapshot "
+                        "was written and may define its trajectory. "
+                        "Install the package that owns it, or set "
+                        "init.force_resume=True to resume without it."
+                    )
+                ignored = tuple(unknown)
             update_parameters(snap_params)
             apply_extension_layer(snap_ext)
             snapshot_params_used = True
@@ -742,6 +778,7 @@ def resolve_parameters(
             (SOURCE_TOML, toml_layer, toml_ext),
             (SOURCE_SNAPSHOT, snap_core, snap_ext),
         ),
+        ignored_sections=ignored,
     )
 
 

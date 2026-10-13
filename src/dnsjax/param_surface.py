@@ -352,7 +352,7 @@ def recorded_params_dump(parameters: Parameters) -> dict:
     """The ``params`` payload of snapshot metadata / sidecar JSON.
 
     :func:`externalize` for the resolved system's spec, plus the
-    recordable relevant extension sections
+    recordable relevant extension sections in use
     (:func:`dnsjax.extensions.extension_metadata`) as top-level keys
     (each under its section name) -- so resume can restore them and the
     trajectory diff can compare them.  Snapshot readers map it back

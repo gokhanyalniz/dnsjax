@@ -291,16 +291,26 @@ def run_unit_checks() -> str | None:
 
         # A trajectory-defining extension section: turning it on over
         # a snapshot without it is a trajectory change; a stored
-        # section matching the live singleton is not.
+        # section matching the live singleton is not.  A dump records
+        # a section only while it is configured (in use).
         example = _example_extension()
-        snap = recorded_params_dump(params)  # embeds [example], unset
+        snap = recorded_params_dump(params)
+        assert "example" not in snap, (
+            "unconfigured section recorded",
+            snap.get("example"),
+        )
         example.values.modes = "1,1"
         changes = trajectory_defining_changes(snap)
         assert any(c.startswith("example.modes:") for c in changes), (
             "extension change",
             changes,
         )
-        snap_on = recorded_params_dump(params)  # embeds it, configured
+        snap_on = recorded_params_dump(params)
+        recorded = {"modes": "1,1", "it_example": None}
+        assert snap_on.get("example") == recorded, (
+            "configured section not recorded",
+            snap_on.get("example"),
+        )
         changes = trajectory_defining_changes(snap_on)
         example.values = example.model()
         assert changes == [], ("extension match", changes)
@@ -308,9 +318,9 @@ def run_unit_checks() -> str | None:
         # A snapshot embedding solver params the current model no
         # longer defines (a retired backend name and its knobs) must
         # still resume: ``read_snapshot_params`` drops the
-        # execution-only [solver] section before validation.  The
-        # stored extension sections come back as extension overlays
-        # (pure defaults here: nothing was configured).
+        # execution-only [solver] section before validation.  A stored
+        # extension section comes back as an extension overlay; with
+        # nothing configured, none was recorded and none comes back.
         import io
         import json
         import tarfile
@@ -340,18 +350,21 @@ def run_unit_checks() -> str | None:
             "retired solver params inherited",
             loaded.solver,
         )
-        from dnsjax.extensions import EXTENSIONS, extension_metadata
+        from dnsjax.extensions import extension_metadata
 
-        recorded = set(extension_metadata("plane-couette"))
-        assert set(ext_overlays) == recorded, (ext_overlays, recorded)
-
-        for sec_name, sec in ext_overlays.items():
-            defaults = EXTENSIONS[sec_name].model().model_dump(mode="json")
-            assert sec == defaults, (
-                "unconfigured overlay must equal defaults",
-                sec_name,
-                sec,
+        assert extension_metadata("plane-couette") == {}, (
+            "unconfigured sections recorded",
+            extension_metadata("plane-couette"),
+        )
+        assert ext_overlays == {}, ("overlay of nothing", ext_overlays)
+        example.values.modes = "1,1"
+        try:
+            assert set(extension_metadata("plane-couette")) == {"example"}, (
+                "configured section not recorded",
+                extension_metadata("plane-couette"),
             )
+        finally:
+            example.values = example.model()
 
         # A pre-v6 snapshot (v5: the decoupled u_pm / spin component
         # basis; v4: the old on-disk array layout) is rejected outright
@@ -565,6 +578,70 @@ def run_refusal_message_checks() -> str | None:
     return None
 
 
+def run_unknown_section_checks() -> str | None:
+    """Offline unit: a recorded section nothing registers refuses the resume.
+
+    A snapshot records a parameter section only while it is in use
+    (``extension_metadata``), so one this installation does not
+    register -- a plugin's, absent here -- was in use when the snapshot
+    was written and may define its trajectory.  The resume refuses in
+    one ``<prog>: error:`` line naming the section and the way out,
+    under the solver's name or another entry point's own; with
+    ``init.force_resume`` it goes on without the section, which the
+    resolved setup reports for the banner.
+    """
+    from pathlib import Path
+
+    import dnsjax.parameters as P
+    from dnsjax.bootstrap import resolve_parameters
+    from dnsjax.extensions import reset_extensions
+    from dnsjax.param_surface import recorded_params_dump
+    from dnsjax.parameters import params
+
+    name = "unknown recorded section"
+    saved = params.model_dump()
+    saved_user_set = set(P._user_set_fields)
+    stored = recorded_params_dump(params) | {"plugsec": {"level": 1}}
+    meta = {"format_version": 6, "system": "plane-couette", "params": stored}
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plugged.tar"
+            write_meta_tar(path, meta)
+            for prog in ("dnsjax", "dnsjax-plugin"):
+                try:
+                    resolve_parameters(
+                        ["--init.snapshot", str(path)],
+                        toml_path=False,
+                        prog=prog,
+                    )
+                except SystemExit as exc:
+                    msg = str(exc.code)
+                else:
+                    raise AssertionError(f"{prog}: accepted the section")
+                assert msg.startswith(f"{prog}: error: "), msg
+                assert "[plugsec]" in msg and "init.force_resume" in msg, msg
+                assert str(path) in msg and "\n" not in msg, msg
+            setup = resolve_parameters(
+                ["--init.snapshot", str(path), "--init.force_resume", "True"],
+                toml_path=False,
+            )
+            assert setup.ignored_sections == ("plugsec",), setup
+    except AssertionError as exc:
+        print(f"  FAIL  {name}: {exc}")
+        return str(exc)
+    finally:
+        for section, values in saved.items():
+            model = getattr(params, section)
+            for key, value in values.items():
+                setattr(model, key, value)
+        P._user_set_fields.clear()
+        P._user_set_fields.update(saved_user_set)
+        reset_extensions()
+
+    print(f"  PASS  {name}")
+    return None
+
+
 def run_off_cadence_checks() -> str | None:
     """Offline unit: an inherited cadence switches off at ``0``.
 
@@ -620,7 +697,10 @@ def run_off_cadence_checks() -> str | None:
             fresh = example.model()
             assert example.values == fresh, ("not reset", example.values)
             dump = recorded_params_dump(params)
-            assert not any(dump["example"].values()), dump["example"]
+            assert "example" not in dump, (
+                "switched-off section recorded",
+                dump.get("example"),
+            )
     except AssertionError as exc:
         print(f"  FAIL  {name}: {exc}")
         return str(exc)
@@ -1114,6 +1194,7 @@ if __name__ == "__main__":
         ("grid_type half-cgl validation", run_grid_validation_checks()),
         ("grid_type default resolution", run_grid_default_resolution_checks()),
         ("non-checkpoint refusal", run_refusal_message_checks()),
+        ("unknown recorded section", run_unknown_section_checks()),
         ("off cadences", run_off_cadence_checks()),
     ]
     if not cli.unit_only:

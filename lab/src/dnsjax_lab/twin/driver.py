@@ -2368,6 +2368,13 @@ def _print_banner(setup: ResolvedSetup) -> None:
             "arguments override them.",
             flush=True,
         )
+    if setup.ignored_sections:
+        print(
+            "Ignoring the recorded parameter section(s) "
+            f"[{', '.join(setup.ignored_sections)}]: nothing installed "
+            "here registers them (init.force_resume is set).",
+            flush=True,
+        )
     if os.environ.get("DNSJAX_QUIET_STARTUP") != "1":
         print_resolved_parameters(
             params,

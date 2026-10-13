@@ -87,7 +87,11 @@ CGL-family, by a local order-`fd_order` stencil for tanh or custom
 grids — and each Fourier axis by inserting or dropping modes at its
 high-wavenumber end, so a state can be picked up at a different
 resolution (which, being a `res` change, starts a new trajectory rather
-than continuing one).
+than continuing one). The embedded parameters include an extension
+section only while it was configured, so a snapshot recording one that
+nothing installed here registers was written with that section in
+use: the resume refuses it unless `init.force_resume` is set
+([Parameter layering](configuration.md)).
 
 `stop.max_sim_time` is a horizon measured from the run's own initial
 condition rather than an absolute clock reading, so a resume asks for

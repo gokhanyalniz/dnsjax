@@ -89,5 +89,8 @@ can take part in the solver's run: its `runtime` names a factory of
 `RunHooks` (`start`, `sample`, `modify`, `flush`, `finish`), which the
 solver builds once the section is configured and calls at fixed points
 of every step, and its `seed_fields` are drawn, agreed across processes
-and recorded like the solver's own seed. The lab's `[probes]` and
-`[force]` sections are the worked examples.
+and recorded like the solver's own seed. A configured section is
+recorded in snapshot metadata, and a snapshot recording a section that
+no installed package registers refuses to resume unless
+`init.force_resume` is set. The lab's `[probes]` and `[force]` sections
+are the worked examples.

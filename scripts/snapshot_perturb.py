@@ -302,6 +302,7 @@ def configure_from_snapshot(
         padded_res,
         params,
         read_snapshot_params,
+        unregistered_sections,
         update_parameters,
         validate_parameters,
     )
@@ -312,9 +313,17 @@ def configure_from_snapshot(
     if snap is None:
         raise SystemExit(f"{snapshot} is not a dnsjax snapshot")
     snap_params, _ = snap  # extension overlays are irrelevant offline
-    stored_dp = bool(
-        read_snapshot_meta(snapshot)["params"]["res"]["double_precision"]
-    )
+    stored = read_snapshot_meta(snapshot)["params"]
+    unknown = unregistered_sections(stored)
+    if unknown:
+        # The perturbed snapshot records this run's parameters: a
+        # section nothing here registers would drop out of its lineage.
+        raise SystemExit(
+            f"{snapshot} records the parameter section(s) "
+            f"[{', '.join(unknown)}], which nothing installed here "
+            "registers; install the package that owns them."
+        )
+    stored_dp = bool(stored["res"]["double_precision"])
     params.res.double_precision = stored_dp
     update_parameters(snap_params)
     validate_parameters()

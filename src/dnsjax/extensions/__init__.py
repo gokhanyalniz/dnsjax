@@ -6,10 +6,11 @@ CLI (``--<name>.<field>``) and from ``parameters.toml``
 (``[<name>]``), appears in ``--help`` for the flows it applies to,
 is validated strictly (an extension section on a flow it does not
 apply to is an error, like any other irrelevant parameter), is
-recorded in snapshot metadata / sidecar JSON, and can be
-trajectory-defining.  Modules and scripts register their sections via
-:func:`register_extension`; the resolved values live on the
-extension's ``values`` singleton (analogous to the global ``params``).
+recorded in snapshot metadata / sidecar JSON while it is configured,
+and can be trajectory-defining.  Modules and scripts register their
+sections via :func:`register_extension`; the resolved values live on
+the extension's ``values`` singleton (analogous to the global
+``params``).
 An entry point owns its section (the transient-growth CLI's ``[tg]``,
 ``scripts/snapshot_perturb.py``'s ``[perturb]``); an installed plugin
 package registers its sections from a module it names under the
@@ -51,7 +52,11 @@ class ParamExtension:
     (see :func:`validate_extensions`); ``trajectory_defining`` folds
     the section into the resume trajectory comparison;
     ``record_in_metadata`` includes the resolved section in snapshot
-    metadata / sidecar params dumps.  ``off_cadences`` names the
+    metadata / sidecar params dumps while it is configured (so a dump
+    records what the run uses, and a recorded section an installation
+    does not register is known to have been in use:
+    :func:`dnsjax.parameters.unregistered_sections`).  ``off_cadences``
+    names the
     section's optional cadences that ``0`` switches off -- turned back
     into unset by :func:`apply_extension_layer`, as
     :data:`dnsjax.parameters.OFF_CADENCES` are by the core merge --
@@ -185,15 +190,20 @@ def validate_extensions(params) -> None:
 
 
 def extension_metadata(system: str) -> dict[str, dict]:
-    """The recordable extension sections for *system*, resolved, as JSON.
+    """The recordable extension sections of *system* in use, as JSON.
 
-    Merged into the ``params`` dump of snapshot metadata and sidecar
-    JSON (:func:`dnsjax.param_surface.recorded_params_dump`).
+    A relevant section with ``record_in_metadata`` that is configured
+    (``configured``; one without the hook counts as in use).  Merged
+    into the ``params`` dump of snapshot metadata and sidecar JSON
+    (:func:`dnsjax.param_surface.recorded_params_dump`); an
+    unconfigured section is left out, and a resume reads its absence
+    as the defaults (:func:`dnsjax.parameters.trajectory_defining_changes`).
     """
     return {
         name: ext.values.model_dump(mode="json")
         for name, ext in relevant_extensions(system).items()
         if ext.record_in_metadata
+        and (ext.configured is None or ext.configured(ext.values))
     }
 
 
@@ -286,6 +296,10 @@ def build_run_hooks(ext: ParamExtension, state, t: float) -> RunHooks:
 #: extension sections: each names a module whose import registers them.
 EXTENSIONS_ENTRY_POINT_GROUP = "dnsjax.extensions"
 
+#: The entry-point names loaded by :func:`_load_plugins`, for messages
+#: that say which plugins this installation has.
+LOADED_PLUGINS: tuple[str, ...] = ()
+
 
 def _load_plugins() -> None:
     """Import the modules registered under the entry-point group.
@@ -293,7 +307,11 @@ def _load_plugins() -> None:
     Last in this module, so a plugin module importing from it finds
     every name it needs; an import already under way (the plugin
     module imported first, importing this one) is left to finish.
+    Sections register in import order, so a plugin module that imports
+    another plugin's registering module lists that plugin's sections
+    before its own.
     """
+    global LOADED_PLUGINS
     found = entry_points(group=EXTENSIONS_ENTRY_POINT_GROUP)
     for ep in sorted(found, key=lambda e: e.name):
         try:
@@ -303,6 +321,7 @@ def _load_plugins() -> None:
                 f"extension plugin {ep.name!r} ({ep.value}) failed to "
                 f"load: {exc}"
             ) from exc
+        LOADED_PLUGINS = (*LOADED_PLUGINS, ep.name)
 
 
 _load_plugins()
