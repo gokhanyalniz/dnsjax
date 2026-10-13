@@ -12,10 +12,9 @@ A plugin package registers flows under the ``dnsjax.flows`` entry-point
 group; each entry point names a :class:`~dnsjax.flow_spec.FlowSpec` or
 an iterable of them, in a JAX-free module that never imports
 :mod:`dnsjax.parameters` (the spec rules).  The canonical order lists
-the flows by geometry -- the core geometries first, in
-:data:`GEOMETRY_ORDER`, then any geometry a plugin introduces -- and,
-within a geometry, the core flows before the plugins' (by entry-point
-name, each in its own order).
+the flows by geometry, in :data:`dnsjax.flow_spec.GEOMETRIES` order,
+and within a geometry the core flows before the plugins' (by
+entry-point name, each in its own order).
 
 Import direction: ``parameters.py -> flows.registry -> flows.*.specs
 -> flow_spec.py``; nothing here may import :mod:`dnsjax.parameters`.
@@ -24,17 +23,9 @@ Import direction: ``parameters.py -> flows.registry -> flows.*.specs
 from importlib import import_module
 from importlib.metadata import entry_points
 
-from ..flow_spec import FlowSpec
+from ..flow_spec import GEOMETRIES, FlowSpec
 from .triply_periodic.specs import SPECS as _PERIODIC_SPECS
 from .wall_bounded.specs import SPECS as _WALL_SPECS
-
-#: The core geometries, in listing order.
-GEOMETRY_ORDER: tuple[str, ...] = (
-    "triply-periodic",
-    "cartesian",
-    "cylindrical",
-    "annular",
-)
 
 #: The entry-point group plugin packages register their flows under.
 FLOWS_ENTRY_POINT_GROUP = "dnsjax.flows"
@@ -69,14 +60,10 @@ def _plugin_specs() -> list[FlowSpec]:
 
 def _canonical(specs: list[FlowSpec]) -> dict[str, FlowSpec]:
     """*specs* by system, grouped by geometry in listing order."""
-    order = list(GEOMETRY_ORDER)
-    for spec in specs:
-        if spec.geometry not in order:
-            order.append(spec.geometry)
     out: dict[str, FlowSpec] = {}
     # A stable sort keeps the core flows before the plugins' within
     # each geometry.
-    for spec in sorted(specs, key=lambda s: order.index(s.geometry)):
+    for spec in sorted(specs, key=lambda s: GEOMETRIES.index(s.geometry)):
         if spec.system in out:
             raise ValueError(
                 f"flow system {spec.system!r} is registered twice"

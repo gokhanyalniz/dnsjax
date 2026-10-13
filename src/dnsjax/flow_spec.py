@@ -36,6 +36,17 @@ class _Unset:
 #: the field's model default.
 UNSET: Final = _Unset()
 
+#: The geometries a flow runs on (:attr:`FlowSpec.geometry`), in the
+#: order the registry lists them.  The solver's machinery, the
+#: ``phys.system`` choices and every geometry dispatch know these alone;
+#: a flow with a metric of its own overrides one of them.
+GEOMETRIES: Final[tuple[str, ...]] = (
+    "triply-periodic",
+    "cartesian",
+    "cylindrical",
+    "annular",
+)
+
 #: Axis-parity class of the stored cylindrical velocity
 #: ``(u_z, u_r, u_theta)``: ``True`` for the `$(-1)^m$` (even) class,
 #: ``False`` for `$(-1)^{m+1}$` (odd).  A scalar (the pressure of a
@@ -102,9 +113,8 @@ class DeferredSpec:
 class FlowSpec:
     r"""Complete per-flow parameter declaration.
 
-    ``geometry`` names the geometry whose machinery drives the flow
-    (``"triply-periodic"``, ``"cartesian"``, ``"cylindrical"`` or
-    ``"annular"``): the registry's geometry lists
+    ``geometry`` names the geometry whose machinery drives the flow,
+    one of :data:`GEOMETRIES`: the registry's geometry lists
     (:data:`~dnsjax.flows.registry.cylindrical_systems`, ...) are built
     from it, and it groups the ``--help`` flow list.
 
@@ -261,6 +271,11 @@ class FlowSpec:
     )
 
     def __post_init__(self) -> None:
+        if self.geometry not in GEOMETRIES:
+            raise ValueError(
+                f"{self.system!r} spec names geometry {self.geometry!r}, "
+                f"not one of {', '.join(GEOMETRIES)}"
+            )
         fm = {fs.key: fs for fs in self.fields}
         if len(fm) != len(self.fields):
             raise ValueError(
