@@ -35,8 +35,8 @@ moves the other way for all three (four band families to three, and the
 pressure-response columns replaced by the cheaper `$u_r$` ones).
 
 **Why this pass costs ~2x Cartesian.**  Solve counts do not explain the pipe's
-cost.  Measured with ``scripts/pallas_solve_profile.py`` Parts B/A2 on CPU, one
-device, at matched resolution (`$128^3$`, ``fd_order 8``):
+cost.  Measured with ``lab/scripts/performance/pallas_solve_profile.py`` Parts
+B/A2 on CPU, one device, at matched resolution (`$128^3$`, ``fd_order 8``):
 
 ==============  =================  ==============
 geometry        ``_imm_iteration``  isolated Lk+Hk

@@ -50,11 +50,12 @@ against ``--node-gib``.
 Usage (from the repository root)::
 
     # the configuration of a parameters.toml, three layouts
-    .venv/bin/python scripts/memory_budget.py --toml parameters.toml \
+    .venv/bin/python lab/scripts/performance/memory_budget.py \
+        --toml parameters.toml \
         --layouts 128x1 1x128 4x32 --chunks 1 2 \
         --ranks-per-node 128 --overhead-gib 0.6 --node-gib 230
     # command-line parameters instead of a TOML
-    .venv/bin/python scripts/memory_budget.py --solver-args \
+    .venv/bin/python lab/scripts/performance/memory_budget.py --solver-args \
         "--phys.system plane-poiseuille --res.nx 1280 --res.ny 385 \
          --res.nz 320" --layouts 1x128
 
@@ -74,7 +75,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[3]
 GIB = 2**30
 
 #: The fewest wall-normal points a reduced problem keeps.

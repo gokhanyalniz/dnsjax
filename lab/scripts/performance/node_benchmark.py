@@ -141,31 +141,33 @@ jobs, node counts and machines.
 Usage (from the repository root)::
 
     # what would run, with each layout's padding
-    .venv/bin/python scripts/node_benchmark.py --target cpu --dry-run \
+    .venv/bin/python lab/scripts/performance/node_benchmark.py \
+        --target cpu --dry-run \
         --solver-args "--phys.system pipe --phys.re 2300 --geo.lz 20 \
             --res.nz 256 --res.nr 48 --res.ntheta 96 \
             --stop.max_sim_time 0.5 --outs.snapshot_save_initial False \
             --outs.snapshot_save_final False"
     # one node under Open MPI
-    .venv/bin/python scripts/node_benchmark.py --target cpu \
+    .venv/bin/python lab/scripts/performance/node_benchmark.py --target cpu \
         --ranks 16 32 64 128 --solver-args "..."
     # inside a Slurm allocation: 1-4 nodes, two grids per count
-    .venv/bin/python scripts/node_benchmark.py --target cpu \
+    .venv/bin/python lab/scripts/performance/node_benchmark.py --target cpu \
         --launcher srun --nodes 1 2 4 --tasks-per-node 128 \
         --np1 128 64 --repeats 2 --workdir "$PWD/bench" \
         --csv bench.csv --toml parameters.toml --solver-args "..."
     # rows that must reproduce an earlier run to round-off
-    .venv/bin/python scripts/node_benchmark.py --target cpu \
+    .venv/bin/python lab/scripts/performance/node_benchmark.py --target cpu \
         --ranks 4 --stats-reference ref/stats.dat \
         --stats-tolerance 1e-10 \
         --solver-args "... --outs.stats_precision 17"
     # the GPU node
-    .venv/bin/python scripts/node_benchmark.py --target gpu --gpus 4 \
+    .venv/bin/python lab/scripts/performance/node_benchmark.py \
+        --target gpu --gpus 4 \
         --tiles 2,32 1,32 2,64 --precisions double single \
         --solver-args "..."
     # harness self-check on any machine (2 CPU ranks, tiny problem;
     # its three layouts must agree)
-    .venv/bin/python scripts/node_benchmark.py --cpu-smoke
+    .venv/bin/python lab/scripts/performance/node_benchmark.py --cpu-smoke
 """
 
 from __future__ import annotations
@@ -196,7 +198,7 @@ from solver_benchmark import (  # noqa: E402
     _to_text,
 )
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[3]
 DNSJAX = REPO / ".venv" / "bin" / "dnsjax"
 
 #: The solver's closing peak-memory lines.

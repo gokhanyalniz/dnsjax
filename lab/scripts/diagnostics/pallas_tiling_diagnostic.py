@@ -27,8 +27,10 @@ construct; a passing alternative names the fix.
 
 Run **on a GPU** (single device, no mpirun)::
 
-    .venv/bin/python scripts/pallas_tiling_diagnostic.py        # full sweep
-    .venv/bin/python scripts/pallas_tiling_diagnostic.py --quick
+    # the full sweep, then the quick subset
+    .venv/bin/python lab/scripts/diagnostics/pallas_tiling_diagnostic.py
+    .venv/bin/python lab/scripts/diagnostics/pallas_tiling_diagnostic.py \
+        --quick
 
 Without a GPU it falls back to a **lowering-only** check
 (``lower(lowering_platforms=("cuda",))``) so the probes can be validated

@@ -95,8 +95,8 @@ parallelism is fixed at ``Nkz * Nkx * k`` threads, so a typical DNS
 the tile.  The tuning rule: keep ``bm1 >= 32`` (coalescing) and the
 program count ``cdiv(Nkz, bm0) * cdiv(Nkx, bm1)`` at least a few times
 the SM count; shrink the tile for small mode counts, grow it for very
-large DNS, and profile a change (``scripts/pallas_solve_profile.py``,
-Nsight).
+large DNS, and profile a change (Nsight, or the lab's
+``lab/scripts/performance/pallas_solve_profile.py``).
 
 **The partial-tile miscompile.**  When the tile does not divide the
 mode plane -- the common case, since ``Nkz = nz - 1`` is odd -- the
@@ -106,10 +106,10 @@ results across the grid, full-tile programs included,
 nondeterministically (warp-scheduling dependent), for any nontrivial
 kernel (the masked double-index band loads ``l_ref[i, d]`` /
 ``u_ref[i, d]``, and even a single-index window-carry sweep), while
-interpret mode and the CUDA lowering both accept it.
-``scripts/pallas_tiling_diagnostic.py`` localized it: only trivial
-copy and round-trip kernels survive a partial plane, and full tiles
-are always correct at ``(2, 32)``.  The same diagnostic found the
+interpret mode and the CUDA lowering both accept it.  The lab's
+``lab/scripts/diagnostics/pallas_tiling_diagnostic.py`` localized it:
+only trivial copy and round-trip kernels survive a partial plane, and
+full tiles are always correct at ``(2, 32)``.  The same diagnostic found the
 forward-to-backward round-trip of ``y`` through the output ref
 coherent without the ``debug_barrier`` (the ``bm1 > 1`` miscompile was
 the masked load, not a visibility bug), which stays as a cheap guard.
@@ -219,10 +219,10 @@ real columns too -- and some look redundant *between* consumers:
 indexes or linearly combines it, and ``Lk_op.solve`` splits it straight
 back apart.  XLA does not simplify them away (optimized CPU HLO: one
 ``.solve`` emits one ``complex`` and one ``real``/``imag`` pair; one
-``_imm_iteration`` emits 12/6/6 Cartesian, 15/6/6 annular, 23/8/8
-pipe).  Carrying the field split-real across that chain nevertheless
-loses.  ``scripts/pallas_solve_profile.py`` Part A2 times the real
-``Hk.solve -> map -> Lk.solve`` chain both ways, fidelity-gated,
+``_imm_iteration`` emits 12/6/6 Cartesian, 15/6/6 annular, 23/8/8 pipe).
+Carrying the field split-real across that chain nevertheless loses.
+``lab/scripts/performance/pallas_solve_profile.py`` Part A2 times the
+real ``Hk.solve -> map -> Lk.solve`` chain both ways, fidelity-gated,
 factors as jit arguments (CPU, one device; measured with the permuting
 CPU sweep, before the mode-inner one; positive = hoisting is faster):
 

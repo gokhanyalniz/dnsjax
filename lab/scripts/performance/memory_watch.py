@@ -43,10 +43,12 @@ and start a sampler per core)::
 
     srun --overlap --nodes="$SLURM_NNODES" --ntasks="$SLURM_NNODES" \
         --ntasks-per-node=1 \
-        .venv/bin/python scripts/memory_watch.py sample --out mem &
+        .venv/bin/python lab/scripts/performance/memory_watch.py \
+        sample --out mem &
     ...                        # the runs (srun, node_benchmark.py, ...)
     touch mem/stop; wait       # every sampler exits at its next sample
-    .venv/bin/python scripts/memory_watch.py summary mem --rows bench.csv
+    .venv/bin/python lab/scripts/performance/memory_watch.py \
+        summary mem --rows bench.csv
 
 Locally (any Linux machine): start ``sample`` in the background, run
 the solver, then ``touch`` the stop file.

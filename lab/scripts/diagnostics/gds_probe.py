@@ -55,17 +55,18 @@ Part C  ``--end-to-end``: the real ``save_snapshot`` /
 Run on a GPU node, from a directory on the **scratch / parallel
 filesystem** the runs write to (``--outdir``)::
 
-    .venv/bin/python scripts/gds_probe.py --outdir /scratch/$USER/gdsprobe
+    .venv/bin/python lab/scripts/diagnostics/gds_probe.py \
+        --outdir /scratch/$USER/gdsprobe
 
     # add the real snapshot path (single process, all visible GPUs)
-    .venv/bin/python scripts/gds_probe.py --outdir /scratch/$USER/gdsprobe \
-        --end-to-end --dist.platform cuda --np0 4 \
-        --ny 193 --nx 256 --nz 256
+    .venv/bin/python lab/scripts/diagnostics/gds_probe.py \
+        --outdir /scratch/$USER/gdsprobe --end-to-end \
+        --dist.platform cuda --np0 4 --ny 193 --nx 256 --nz 256
 
 Part A alone is cheap and needs no GPU allocation beyond a node with
 the driver::
 
-    .venv/bin/python scripts/gds_probe.py --env-only
+    .venv/bin/python lab/scripts/diagnostics/gds_probe.py --env-only
 
 ``--cpu-smoke`` runs Part B's POSIX engines only, so the harness can
 be validated on a machine with no GPU, no cupy and no kvikIO.  Paste the
@@ -83,8 +84,8 @@ MB = 1 << 20
 GB = 1 << 30
 
 #: The random IC's seed for Part C's snapshot.  Fixed on purpose, like
-#: every diagnostic seed in ``scripts/`` (``init.random_seed`` itself
-#: defaults to drawing one).
+#: every seed in the benchmarks and diagnostics (``init.random_seed``
+#: itself defaults to drawing one).
 IC_SEED = 1
 
 # Span sizes that bracket the range the *solver* layout would write

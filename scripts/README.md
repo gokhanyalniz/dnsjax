@@ -3,24 +3,25 @@
 Standalone programs that meet the solver through its snapshots and
 streams, or launch it as a subprocess; none of them changes how a
 simulation runs. Each script's module docstring is its manual. The
-figure scripts need the `plots` dependency group:
+figure script needs the `plots` dependency group:
 
 ```bash
 uv run --group plots python scripts/snapshot_figure.py ...
 ```
 
-Several take `--cpu-smoke`, a tiny CPU run that exercises the script
-without its target hardware, or `--dry-run`, which prints what would
-run; their docstrings say which. The lab's scripts — ensembles, twin
-post-processing and figures, and the benchmark with the lab's flows —
-are in `lab/scripts/` ([`lab/README.md`](../lab/README.md#scripts)).
+These are the tools for working with a simulation. The repository's lab
+holds the rest ([`lab/README.md`](../lab/README.md#scripts)): ensembles
+and twin post-processing in `lab/scripts/`, and, kept apart from them,
+the performance tools (benchmarks, profiles, memory sizing, the scaling
+figure) in `lab/scripts/performance/` and the functionality checks
+(differentiability, GPU kernel and storage diagnostics) in
+`lab/scripts/diagnostics/`.
 
 ## Figures
 
 | Script | What it does |
 |---|---|
 | `snapshot_figure.py` | velocity-plane figures and animations from a snapshot, JAX-free (the figures in the README and the docs); `_figure_common.py` holds its per-flow helpers |
-| `scaling_figure.py` | the strong-scaling figure and tables of [`docs/scaling.md`](../docs/scaling.md), from the committed CSV of measured runs |
 
 ## Initial conditions
 
@@ -28,21 +29,8 @@ are in `lab/scripts/` ([`lab/README.md`](../lab/README.md#scripts)).
 |---|---|
 | `snapshot_perturb.py` | injects a scaled single-mode perturbation into a snapshot (`[perturb]`) |
 
-## Resolution, performance and memory
+## Resolution
 
 | Script | What it does |
 |---|---|
 | `wall_normal_resolution.py` | how many wall-normal modes a finite-difference grid resolves: sizes `res.ny`, `fd_order` and `geo.grid_type` against a Chebyshev order (Cartesian) |
-| `node_benchmark.py` | a layout and strong-scaling sweep of one production problem under `mpirun` or `srun`, each row's `stats.dat` checked against a reference; JAX-free driver |
-| `memory_budget.py` | per-rank memory of the step as run, on any layout, from XLA's buffer assignment, offline |
-| `memory_watch.py` | per-node memory sampler for multi-process runs, with a summary of each node's peak and typical use, JAX-free |
-| `solver_benchmark.py` | the Pallas banded backend against the dense reference solver: validation and timing |
-| `pallas_solve_profile.py` | GPU profile of the banded solve and its share of a step |
-
-## Diagnostics
-
-| Script | What it does |
-|---|---|
-| `grad_probe.py` | which stepping configurations differentiate in forward and reverse mode, each gradient checked against a finite difference ([`docs/differentiability.md`](../docs/differentiability.md)) |
-| `pallas_tiling_diagnostic.py` | GPU harness that bisects the partial-tile Triton miscompile the kernel's whole-tile padding avoids |
-| `gds_probe.py` | cluster diagnostic for the snapshot write path through GPUDirect Storage |
