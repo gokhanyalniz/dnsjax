@@ -31,14 +31,15 @@ from .wall_bounded.specs import SPECS as _WALL_SPECS
 FLOWS_ENTRY_POINT_GROUP = "dnsjax.flows"
 
 
-def _plugin_specs() -> list[FlowSpec]:
+def _plugin_specs() -> list[tuple[FlowSpec, str]]:
     """The specs registered under :data:`FLOWS_ENTRY_POINT_GROUP`.
 
+    Each with the entry point that registered it, for the refusals.
     Raises if an entry point fails to load or names anything but
     specs: a flow that silently went missing would turn a run of it
     into an "unknown system" error far from the cause.
     """
-    out: list[FlowSpec] = []
+    out: list[tuple[FlowSpec, str]] = []
     found = entry_points(group=FLOWS_ENTRY_POINT_GROUP)
     for ep in sorted(found, key=lambda e: e.name):
         try:
@@ -47,35 +48,53 @@ def _plugin_specs() -> list[FlowSpec]:
             raise RuntimeError(
                 f"flow plugin {ep.name!r} ({ep.value}) failed to load: {exc}"
             ) from exc
-        specs = (obj,) if isinstance(obj, FlowSpec) else tuple(obj)
+        if isinstance(obj, FlowSpec):
+            specs: tuple = (obj,)
+        else:
+            try:
+                specs = tuple(obj)
+            except TypeError:
+                specs = (obj,)
         bad = [s for s in specs if not isinstance(s, FlowSpec)]
         if bad:
             raise TypeError(
                 f"flow plugin {ep.name!r} ({ep.value}) names {bad!r}, "
                 "not FlowSpec objects"
             )
-        out.extend(specs)
+        out.extend((spec, f"flow plugin {ep.name!r}") for spec in specs)
     return out
 
 
-def _canonical(specs: list[FlowSpec]) -> dict[str, FlowSpec]:
-    """*specs* by system, grouped by geometry in listing order."""
+def _canonical(specs: list[tuple[FlowSpec, str]]) -> dict[str, FlowSpec]:
+    """*specs* (each with its source) by system, grouped by geometry.
+
+    The listing order within a geometry is the input order; a system
+    registered twice is refused naming both sources.
+    """
     out: dict[str, FlowSpec] = {}
+    sources: dict[str, str] = {}
     # A stable sort keeps the core flows before the plugins' within
     # each geometry.
-    for spec in sorted(specs, key=lambda s: GEOMETRIES.index(s.geometry)):
+    for spec, source in sorted(
+        specs, key=lambda pair: GEOMETRIES.index(pair[0].geometry)
+    ):
         if spec.system in out:
             raise ValueError(
-                f"flow system {spec.system!r} is registered twice"
+                f"flow system {spec.system!r} is registered twice, by "
+                f"{sources[spec.system]} and {source}"
             )
         out[spec.system] = spec
+        sources[spec.system] = source
     return out
 
 
 #: All flow specs, in the canonical order (drives the ``phys.system``
 #: ``Literal``, ``--help``, and every listing).
 SPECS: dict[str, FlowSpec] = _canonical(
-    [*_PERIODIC_SPECS, *_WALL_SPECS, *_plugin_specs()]
+    [
+        *((spec, "the core") for spec in (*_PERIODIC_SPECS, *_WALL_SPECS)),
+        *_plugin_specs(),
+    ]
 )
 
 #: The parameter fields every flow accepts, ``(section, name)`` on the
@@ -157,21 +176,37 @@ def spec_for(system: str) -> FlowSpec:
         ) from None
 
 
+def import_flow_module(system: str):
+    """The imported flow module of *system* (``FlowSpec.flow_module``).
+
+    Importing it imports JAX and builds the geometry singletons, so
+    only once JAX is configured.  A spec naming no module (``None``:
+    the flow is declared but not implemented) is refused by name; an
+    error raised while the module imports propagates as itself.
+    """
+    module = spec_for(system).flow_module
+    if module is None:
+        raise ValueError(
+            f"{system!r} names no flow module (FlowSpec.flow_module): "
+            "the flow is not yet implemented"
+        )
+    return import_module(module)
+
+
 def flow_hook(system: str, name: str):
     """The export *name* of *system*'s flow module, a required hook.
 
-    Imports the module ``spec_for(system).flow_module`` names -- which
-    imports JAX and builds the geometry singletons, so only once JAX is
-    configured -- and raises naming the hook if it lacks one (the
-    flow-module surface: :class:`~dnsjax.flow_spec.FlowSpec`).
+    Imports the module through :func:`import_flow_module` and raises
+    naming the hook if it lacks one (the flow-module surface:
+    :class:`~dnsjax.flow_spec.FlowSpec`).
     """
-    module = spec_for(system).flow_module
+    module = import_flow_module(system)
     try:
-        return getattr(import_module(module), name)
+        return getattr(module, name)
     except AttributeError:
         raise AttributeError(
-            f"{module} does not export {name}, part of the flow-module "
-            "surface (dnsjax.flow_spec.FlowSpec)"
+            f"{module.__name__} ({system!r}) does not export {name}, "
+            "part of the flow-module surface (dnsjax.flow_spec.FlowSpec)"
         ) from None
 
 

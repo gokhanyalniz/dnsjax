@@ -21,13 +21,25 @@ JAX, a few seconds.
 
    - ``flow-load``: a flow plugin whose module fails to import;
    - ``flow-type``: one naming something other than ``FlowSpec``
-     objects;
-   - ``flow-twice``: a plugin flow with a core flow's system name;
+     objects, and ``flow-object``: one naming no iterable at all;
+   - ``flow-twice``: a plugin flow with a core flow's system name, and
+     ``flow-twice-plugins``: one two plugins both register;
    - ``flow-geometry``: a plugin flow on a geometry the core lacks;
+   - ``flow-field``: a spec listing a field no parameter section
+     defines (it would otherwise vanish from every surface);
    - ``field-core``: a field that redefines a core field;
    - ``field-twice``: a field two plugins add;
    - ``field-section``: a field in a section the core does not have;
+   - ``field-object`` and ``field-shape``: a parameter plugin naming
+     no mapping, or a definition that is not ``(annotation,
+     FieldInfo)``;
    - ``section-core``: an extension section named like a core section.
+
+3. The flow-module hook lookup (:func:`dnsjax.flows.registry.flow_hook`):
+   ``hook-none``, a spec naming no ``flow_module``, is refused by
+   name; ``hook-masked``, an ``AttributeError`` raised *inside* the
+   flow module's import, reaches the caller as itself rather than as a
+   "does not export" verdict on the hook.
 
 Run::
 
@@ -87,12 +99,30 @@ SPECS = (
     ),
 )
 NOT_SPECS = ("plug-cartesian",)
+NUMBER = 42
 TWICE = (
     FlowSpec(
         system="pipe",
         geometry="cylindrical",
         summary="A plugin flow named like a core one.",
         fields=(),
+    ),
+)
+MISSING = (
+    FlowSpec(
+        system="plug-missing",
+        geometry="cartesian",
+        summary="A plugin flow listing a field no section defines.",
+        fields=(FieldSpec("phys", "no_such_knob"),),
+    ),
+)
+MASKED = (
+    FlowSpec(
+        system="plug-masked",
+        geometry="cartesian",
+        summary="A plugin flow whose module fails at import.",
+        fields=(),
+        flow_module="plugmasked",
     ),
 )
 """,
@@ -102,6 +132,8 @@ from pydantic import Field
 FIELDS = {"phys": {"plug_knob": (float, Field(1.5, description="Knob."))}}
 CORE = {"phys": {"re": (float, Field(1.0, description="Clash."))}}
 SECTION = {"plugsec": {"level": (int, Field(0, description="Where."))}}
+TUPLE = ("phys",)
+SHAPE = {"phys": {"knob": 1.5}}
 """,
     "plugsections": """
 from pydantic import BaseModel
@@ -139,6 +171,9 @@ register_extension(
     "plugbroken": """
 raise ImportError("plugbroken is broken on purpose")
 """,
+    "plugmasked": """
+raise AttributeError("raised inside the flow module import")
+""",
     "plugelsewhere": """
 from dnsjax.flow_spec import FlowSpec
 
@@ -159,6 +194,18 @@ IMPORT_ALL = """
 try:
     import dnsjax.parameters
     import dnsjax.extensions
+except Exception as exc:
+    print(json.dumps({"error": type(exc).__name__, "message": str(exc)}))
+else:
+    print(json.dumps({"error": None}))
+"""
+
+#: The child body of the hook cases: look one hook up, report the
+#: exception (its own type and message) or its absence.
+HOOK = """
+from dnsjax.flows.registry import flow_hook
+try:
+    flow_hook(SYSTEM, "init_random_state")
 except Exception as exc:
     print(json.dumps({"error": type(exc).__name__, "message": str(exc)}))
 else:
@@ -202,27 +249,72 @@ CASES: dict[str, tuple[dict, str]] = {
     ),
     "flow-load": ({FLOWS: [["broken", "plugbroken:SPECS"]]}, IMPORT_ALL),
     "flow-type": ({FLOWS: [["plug", "plugflows:NOT_SPECS"]]}, IMPORT_ALL),
+    "flow-object": ({FLOWS: [["plug", "plugflows:NUMBER"]]}, IMPORT_ALL),
     "flow-twice": ({FLOWS: [["plug", "plugflows:TWICE"]]}, IMPORT_ALL),
+    "flow-twice-plugins": (
+        {FLOWS: [["a", "plugflows:SPECS"], ["b", "plugflows:SPECS"]]},
+        IMPORT_ALL,
+    ),
     "flow-geometry": ({FLOWS: [["plug", "plugelsewhere:SPECS"]]}, IMPORT_ALL),
+    "flow-field": ({FLOWS: [["plug", "plugflows:MISSING"]]}, IMPORT_ALL),
     "field-core": ({FIELDS: [["plug", "plugfields:CORE"]]}, IMPORT_ALL),
     "field-twice": (
         {FIELDS: [["a", "plugfields:FIELDS"], ["b", "plugfields:FIELDS"]]},
         IMPORT_ALL,
     ),
     "field-section": ({FIELDS: [["plug", "plugfields:SECTION"]]}, IMPORT_ALL),
+    "field-object": ({FIELDS: [["plug", "plugfields:TUPLE"]]}, IMPORT_ALL),
+    "field-shape": ({FIELDS: [["plug", "plugfields:SHAPE"]]}, IMPORT_ALL),
     "section-core": ({SECTIONS: [["plug", "plugsections_core"]]}, IMPORT_ALL),
+    "hook-none": (
+        {FLOWS: [["plug", "plugflows:SPECS"]]},
+        HOOK.replace("SYSTEM", "'plug-cartesian'"),
+    ),
+    "hook-masked": (
+        {FLOWS: [["plug", "plugflows:MASKED"]]},
+        HOOK.replace("SYSTEM", "'plug-masked'"),
+    ),
 }
 
 #: The error each refusal raises: its type and a fragment of its text.
 REFUSALS: dict[str, tuple[str, str]] = {
     "flow-load": ("RuntimeError", "flow plugin 'broken'"),
     "flow-type": ("TypeError", "not FlowSpec objects"),
+    "flow-object": (
+        "TypeError",
+        "flow plugin 'plug' (plugflows:NUMBER) names [42]",
+    ),
     "flow-twice": ("ValueError", "'pipe' is registered twice"),
+    "flow-twice-plugins": (
+        "ValueError",
+        "'plug-cartesian' is registered twice, by flow plugin 'a' and "
+        "flow plugin 'b'",
+    ),
     "flow-geometry": ("RuntimeError", "names geometry 'plug-geometry'"),
-    "field-core": ("ValueError", "redefines core field(s) of [phys]: re"),
-    "field-twice": ("ValueError", "phys.plug_knob is added by two"),
+    "flow-field": (
+        "ValueError",
+        "'plug-missing' spec names phys.no_such_knob, which no parameter",
+    ),
+    "field-core": (
+        "ValueError",
+        "parameter plugin 'plug' redefines core field(s) of [phys]: re",
+    ),
+    "field-twice": (
+        "ValueError",
+        "phys.plug_knob is added by two parameter plugins ('a' and 'b')",
+    ),
     "field-section": ("ValueError", "unknown section(s) ['plugsec']"),
+    "field-object": (
+        "TypeError",
+        "parameter plugin 'plug' (plugfields:TUPLE) names ('phys',)",
+    ),
+    "field-shape": (
+        "TypeError",
+        "parameter plugin 'plug' (plugfields:SHAPE) defines phys.knob as 1.5",
+    ),
     "section-core": ("RuntimeError", "'phys' clashes with a core"),
+    "hook-none": ("ValueError", "'plug-cartesian' names no flow module"),
+    "hook-masked": ("AttributeError", "raised inside the flow module import"),
 }
 
 

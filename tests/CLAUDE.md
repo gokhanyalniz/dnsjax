@@ -53,7 +53,8 @@ half of the same name in `lab/tests/`.
 
 Core and lab: `test_layering.py`: the core never names the lab
 (imports, system strings, lab fields and sections); `test_plugins.py`:
-what a plugin's entry points add (faked), and each loader's refusals.
+what a plugin's entry points add (faked), each loader's refusals and
+the flow-module hook lookup.
 
 Banded solve and Pallas kernel:
 - `test_banded_solver.py` (parity, whole tiles, cuda lowering, the
