@@ -14,7 +14,7 @@ the children and the ``mpirun`` runs alike.
 
 A.  **Single-device matrix** (one subprocess per config x backend --
     the singletons capture the backend at import): per operator group
-    (``Lk``/``Hk``/``Hc``) the operator class built, exact persistent
+    (:data:`OP_GROUPS`) the operator class built, exact persistent
     factor bytes, device memory after setup and peak after stepping,
     isolated ``.solve`` times, and per-step times for **both**
     schemes (``predict_and_fully_correct`` and ``step_cnab2``), plus
@@ -25,14 +25,14 @@ A.  **Single-device matrix** (one subprocess per config x backend --
     stepper rebuild on the same operators and IC, so the comparison is
     independent of the default -- which is off, an opt-in; see
     ``_split_core`` in ``timestep.py``), reported per row and as a
-    verdict section; a dedicated coupling-stressed
-    ``dean-split-stress`` entry (``nz = 64``, ``dt = 0.15``, the
-    reference regime of the :mod:`dnsjax.parameters` Design notes)
-    shows the split's FFT-refresh savings, while the default-``dt``
-    entries pin the no-regression claim (corrector converges in ~1
-    iteration either way -- a count the ``res.consistent_imm``
-    formulation moves, so read it against the formulation the row was
-    run with).
+    verdict section.  At the bench ``dt`` the entries pin the
+    no-regression claim (the corrector converges in ~1 iteration
+    either way -- a count the ``res.consistent_imm`` formulation
+    moves, so read it against the formulation the row was run with);
+    the split's FFT-refresh savings show only where ``dt`` drives the
+    unsplit corrector towards its cap (the :mod:`dnsjax.parameters`
+    Design notes), an entry of :data:`EXTRA_ENTRIES` with its own
+    ``dt``.
 B.  **Multi-GPU section** (``mpirun ... -m dnsjax`` production runs
     from scratch dirs): multi-GPU execution of the Pallas Triton
     kernel -- correctness via JAX-free ``dnsjax.analysis`` snapshot
@@ -58,6 +58,12 @@ mpirun stdout is logged under ``{workdir}/logs``, results stream as
 ``@@RESULT`` JSON lines (also ``{workdir}/results.jsonl``), and the
 run ends in summary tables plus a ``VERDICT`` section (parity,
 multi-GPU health, stability notices).
+
+The module tables name the systems and what is measured on each
+(:data:`SYS_ARGS` to :data:`OP_GROUPS`).  A plugin's flows join by
+extending them and pointing :data:`SELF` at a script of its own, which
+the children re-enter: ``lab/scripts/solver_benchmark.py`` does that
+for the lab's flows.
 
 Run **on the GPU cluster** from inside a single-node allocation with
 >= 1 GPU (4 for the full mesh cases) and generous **host** memory --
@@ -91,6 +97,7 @@ banner and the planned matrix (with dense-size estimates) and exits.
 from __future__ import annotations
 
 import argparse
+import importlib
 import itertools
 import json
 import math
@@ -101,10 +108,13 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 PY = REPO / ".venv" / "bin" / "python"
+#: The script the children run (``--child``): a script extending the
+#: tables below points it at itself, so that its children see them too.
 SELF = Path(__file__).resolve()
 RESULT_TAG = "@@RESULT "
 
@@ -121,49 +131,90 @@ SYS_ARGS: dict[str, dict[str, float]] = {
         "geo.eta": 0.5,
         "geo.lx": 5.0,
     },
-    "dean": {"phys.re": 1000.0, "geo.eta": 0.5, "geo.lx": 5.0},
-    "viscoelastic-dean": {
-        "phys.wi": 20.0,
-        "phys.el": 20.0,
-        "init.random_conformation_amplitude": 10.0,
-        "geo.lx": 5.0,
-    },
-    "viscoelastic-pipe": {
-        "phys.wi": 20.0,
-        "phys.el": 0.02,
-        "init.random_conformation_amplitude": 10.0,
-        "geo.lx": 5.0,
-    },
 }
 
-# (nx, ny, nz) per system and size class.
+# (nx, ny, nz) per system and size class: the single-device matrix.
 SIZES: dict[str, dict[str, tuple[int, int, int]]] = {
     "plane-couette": {"small": (64, 64, 64), "prod": (256, 192, 256)},
     "pipe": {"small": (64, 48, 64), "prod": (256, 192, 256)},
     "taylor-couette": {"small": (64, 48, 64), "prod": (256, 192, 256)},
-    "viscoelastic-dean": {"small": (32, 48, 32), "prod": (128, 96, 128)},
-    "viscoelastic-pipe": {"small": (32, 48, 32), "prod": (128, 96, 128)},
 }
 
-# Dense-backend operator count: Lk + the Hk components (+ the 6 Hc of
-# the sPTT flows).  The default reconstruction scheme's curvilinear Hk
-# is the spin pair (2 families), the legacy primitive one's the three
-# velocity components; the Cartesian count is 2 under both.
+
+def _dims(nxyz: tuple[int, int, int]) -> dict[str, int]:
+    """A :data:`SIZES` triple as an entry's ``nx``, ``ny``, ``nz``."""
+    return dict(zip(("nx", "ny", "nz"), nxyz, strict=True))
+
+
+#: Single-device entries beyond the system x size matrix, as ``(size
+#: class, entry)``: an entry joins when its size class and its system
+#: are both selected (``--sizes``, ``--systems``).
+EXTRA_ENTRIES: list[tuple[str, dict]] = [
+    (
+        "prod",
+        {
+            "name": "plane-couette-prod-fd8",
+            "system": "plane-couette",
+            **_dims(SIZES["plane-couette"]["prod"]),
+            "fd_order": 8,
+        },
+    ),
+]
+
+# Dense-backend operator count: Lk + the Hk components (+ a flow's
+# further groups, :data:`OP_GROUPS`).  The default reconstruction
+# scheme's curvilinear Hk is the spin pair (2 families), the legacy
+# primitive one's the three velocity components; the Cartesian count is
+# 2 under both.
 N_OPS = {
     "plane-couette": 2,
     "plane-poiseuille": 2,
     "pipe": 3,
     "taylor-couette": 3,
-    "dean": 3,
-    "viscoelastic-dean": 9,
-    "viscoelastic-pipe": 9,
 }
-N_OPS_LEGACY = N_OPS | {
-    "pipe": 4,
-    "taylor-couette": 4,
-    "dean": 4,
-    "viscoelastic-dean": 10,
-    "viscoelastic-pipe": 10,
+N_OPS_LEGACY = N_OPS | {"pipe": 4, "taylor-couette": 4}
+
+#: ``system -> "module:builder"``: the stepper factory its flow module
+#: builds with, which the split-corrector A/B re-runs on the same flow.
+STEPPERS: dict[str, str] = {
+    "plane-couette": (
+        "dnsjax.geometries.wall_bounded.cartesian:build_cartesian_stepper"
+    ),
+    "plane-poiseuille": (
+        "dnsjax.geometries.wall_bounded.cartesian:build_cartesian_stepper"
+    ),
+    "pipe": (
+        "dnsjax.geometries.wall_bounded.cylindrical:build_cylindrical_stepper"
+    ),
+    "taylor-couette": (
+        "dnsjax.geometries.wall_bounded.annular:build_annular_stepper"
+    ),
+}
+
+#: The systems of the multi-device correctness matrix, in run order
+#: (each one when ``--systems`` selects it).
+MPI_SYSTEMS: list[str] = ["plane-couette", "pipe", "taylor-couette"]
+
+
+def _imm_operand(params) -> int:
+    """What one shared ``Hk_op`` solve takes, per formulation.
+
+    The default scheme's wall-normal velocity/vorticity pair, the
+    legacy primitive scheme's three velocity components.
+    """
+    return 2 if params.res.consistent_imm else 3
+
+
+#: The operator groups a child sizes and times: ``name -> (flow
+#: attribute, operand)``.  A grouped operator (one factor family per
+#: slot) takes one operand component per family, read off the operator;
+#: a shared one takes *operand* components, ``None`` for a scalar field,
+#: or a function of ``params`` for a count the formulation sets.  A
+#: group the flow leaves unbuilt (absent or ``None``) reports no
+#: operator class and no time.
+OP_GROUPS: dict[str, tuple[str, int | Callable | None]] = {
+    "Lk": ("Lk_op", None),
+    "Hk": ("Hk_op", _imm_operand),
 }
 
 BACKENDS = ("pallas", "dense")
@@ -221,57 +272,21 @@ def _echo_tail(name: str, stdout: str, stderr: str) -> None:
 
 def _import_flow(system: str):
     """Import the flow module for *system* (builds the operators)."""
-    if system == "plane-couette":
-        from dnsjax.flows.wall_bounded import plane_couette as m
-    elif system == "plane-poiseuille":
-        from dnsjax.flows.wall_bounded import plane_poiseuille as m
-    elif system == "pipe":
-        from dnsjax.flows.wall_bounded import pipe as m
-    elif system == "taylor-couette":
-        from dnsjax.flows.wall_bounded import taylor_couette as m
-    elif system == "dean":
-        from dnsjax_lab.flows.wall_bounded import dean as m
-    elif system == "viscoelastic-dean":
-        from dnsjax_lab.flows.wall_bounded import viscoelastic_dean as m
-    elif system == "viscoelastic-pipe":
-        from dnsjax_lab.flows.wall_bounded import viscoelastic_pipe as m
-    else:
-        raise SystemExit(f"unsupported system: {system}")
-    return m
+    from dnsjax.flows.registry import spec_for
+
+    return importlib.import_module(spec_for(system).flow_module)
 
 
 def _rebuild_pfc(system: str, flow):
-    """Rebuild ``predict_and_fully_correct`` from the geometry builder.
+    """Rebuild ``predict_and_fully_correct`` from the stepper factory.
 
-    Picks up the *current* ``params.step.split_corrector`` (read at
+    Re-runs *system*'s :data:`STEPPERS` factory on *flow*, which picks
+    up the *current* ``params.step.split_corrector`` (read at
     stepper-construction time) -- same operators, same flow, no
     re-import.  Used for the split-vs-unsplit corrector A/B.
     """
-    if system in ("plane-couette", "plane-poiseuille"):
-        from dnsjax.geometries.wall_bounded.cartesian import (
-            build_cartesian_stepper as build,
-        )
-    elif system == "pipe":
-        from dnsjax.geometries.wall_bounded.cylindrical import (
-            build_cylindrical_stepper as build,
-        )
-    elif system == "viscoelastic-pipe":
-        from dnsjax_lab.geometries.wall_bounded import (
-            cylindrical_viscoelastic as geometry,
-        )
-
-        build = geometry.build_viscoelastic_stepper
-    elif system in ("taylor-couette", "dean"):
-        from dnsjax.geometries.wall_bounded.annular import (
-            build_annular_stepper as build,
-        )
-    elif system == "viscoelastic-dean":
-        from dnsjax_lab.geometries.wall_bounded.annular_viscoelastic import (
-            build_viscoelastic_stepper as build,
-        )
-    else:
-        raise SystemExit(f"unsupported system: {system}")
-    return build(flow)[1]
+    module, _, name = STEPPERS[system].partition(":")
+    return getattr(importlib.import_module(module), name)(flow)[1]
 
 
 def _mem_stats(jax) -> dict:
@@ -308,11 +323,11 @@ def _bench_step(jax, jnp, step, state, n: int, warmup: int = 3):
     s = jnp.copy(state)
     c = 0
     for _ in range(warmup):
-        s, _err, c = step(s)
+        s, _err, c, *_ = step(s)
     jax.block_until_ready(s)
     t0 = time.perf_counter()
     for _ in range(n):
-        s, _err, c = step(s)
+        s, _err, c, *_ = step(s)
     jax.block_until_ready(s)
     return (time.perf_counter() - t0) / n, int(c)
 
@@ -420,13 +435,13 @@ def run_child(a: argparse.Namespace) -> None:
     }
 
     # Operator classes + exact persistent factor bytes.
-    groups = {"Lk": flow.Lk_op, "Hk": flow.Hk_op}
-    if hasattr(flow, "Hc_op"):  # a conformation-tensor flow
-        groups["Hc"] = flow.Hc_op
+    groups = {
+        g: getattr(flow, attr, None) for g, (attr, _) in OP_GROUPS.items()
+    }
     operators: dict[str, str | None] = {}
     factor_bytes: dict[str, int] = {}
     for g, op in groups.items():
-        if op is None:  # viscoelastic kappa == 0: no Hc group
+        if op is None:  # a group this flow leaves unbuilt
             operators[g] = None
             factor_bytes[g] = 0
             continue
@@ -478,32 +493,35 @@ def run_child(a: argparse.Namespace) -> None:
     ncomp, N, Nkz, Nkx = state.shape
     sspec = sharding.spec_scalar_shard
     vspec = sharding.spec_vector_shard
-    zs = [
-        _make_complex(jax, (N, Nkz, Nkx), 100 + i, sharding, sspec)
-        for i in range(a.reps)
-    ]
-    z3 = [
-        _make_complex(jax, (3, N, Nkz, Nkx), 200 + i, sharding, vspec)
-        for i in range(a.reps)
-    ]
-    t_lk = _bench(jax, lambda z: flow.Lk_op.solve(z), [(z,) for z in zs])
-    t_hk = _bench(jax, lambda z: flow.Hk_op.solve(z), [(z,) for z in z3])
-    solve_ms: dict[str, float | None] = {
-        "Lk": 1e3 * t_lk,
-        "Hk": 1e3 * t_hk,
-        "Hc": None,
-    }
-    if groups.get("Hc") is not None:
-        z6 = [
-            _make_complex(jax, (6, N, Nkz, Nkx), 300 + i, sharding, vspec)
+    solve_ms: dict[str, float | None] = {}
+    for j, (g, (_, operand)) in enumerate(OP_GROUPS.items()):
+        op = groups[g]
+        if op is None:
+            solve_ms[g] = None
+            continue
+        factor = op.L if hasattr(op, "L") else op.lu  # pallas / dense
+        if factor.ndim == 5:  # (C, ...): one family per operand slot
+            n_op = int(factor.shape[0])
+        else:
+            n_op = operand(params) if callable(operand) else operand
+        shape, spec = (
+            ((N, Nkz, Nkx), sspec)
+            if n_op is None
+            else ((n_op, N, Nkz, Nkx), vspec)
+        )
+        zs = [
+            _make_complex(jax, shape, 100 * (j + 1) + i, sharding, spec)
             for i in range(a.reps)
         ]
-        solve_ms["Hc"] = 1e3 * _bench(
-            jax, lambda z: flow.Hc_op.solve(z), [(z,) for z in z6]
+        solve_ms[g] = 1e3 * _bench(
+            jax, lambda z, op=op: op.solve(z), [(z,) for z in zs]
         )
-    del zs, z3
+        del zs
 
-    # Step timings, both schemes, from fresh copies of the same IC.
+    # Step timings, both schemes, from fresh copies of the same IC, in
+    # the solver basis the parity loop started from (the timers copy
+    # it before stepping).
+    state = to_solver(state)
     t_icn, corrs = _bench_step(
         jax, jnp, m.predict_and_fully_correct, state, a.steps
     )
@@ -1635,54 +1653,30 @@ def _diff_snapshots(pa: Path, pb: Path, ncomp: int) -> tuple[float, list]:
 # ── driver: sections ─────────────────────────────────────────────────
 
 
+def _driver_systems() -> list[str]:
+    """The systems ``--systems`` offers: those with entries to run."""
+    return sorted({*SIZES, *(e["system"] for _, e in EXTRA_ENTRIES)})
+
+
 def _build_entries(args: argparse.Namespace) -> list[dict]:
+    """The selected systems' :data:`SIZES` entries, then their extras."""
     entries = []
     for system in args.systems:
         for size in args.sizes:
-            nx, ny, nz = SIZES[system][size]
-            entries.append(
-                {
-                    "name": f"{system}-{size}",
-                    "system": system,
-                    "nx": nx,
-                    "ny": ny,
-                    "nz": nz,
-                    "fd_order": 4,
-                }
-            )
-    if "plane-couette" in args.systems and "prod" in args.sizes:
-        nx, ny, nz = SIZES["plane-couette"]["prod"]
-        entries.append(
-            {
-                "name": "plane-couette-prod-fd8",
-                "system": "plane-couette",
-                "nx": nx,
-                "ny": ny,
-                "nz": nz,
-                "fd_order": 8,
-            }
-        )
-    if "small" in args.sizes:
-        # Split-corrector stress case: total-field Dean at the
-        # reference regime of the parameters Design notes (nz = 64,
-        # dt = 0.15), where the corrector cost is dominated by the
-        # instantaneous mean-flow coupling (l_bf == L_mf) -- the
-        # regime the split corrector targets.  The other entries
-        # carry the split-vs-unsplit A/B too, but at the default
-        # bench dt their correctors converge in ~1 iteration (the
-        # equal-cost regime); this entry shows the FFT-refresh
-        # savings.
-        entries.append(
-            {
-                "name": "dean-split-stress",
-                "system": "dean",
-                "nx": 64,
-                "ny": 48,
-                "nz": 64,
-                "fd_order": 4,
-                "dt": 0.15,
-            }
-        )
+            if size in SIZES.get(system, {}):
+                entries.append(
+                    {
+                        "name": f"{system}-{size}",
+                        "system": system,
+                        **_dims(SIZES[system][size]),
+                        "fd_order": 4,
+                    }
+                )
+    entries += [
+        dict(entry)
+        for size, entry in EXTRA_ENTRIES
+        if size in args.sizes and entry["system"] in args.systems
+    ]
     return entries
 
 
@@ -1784,16 +1778,7 @@ def _apply_locked_mode(runs: list[dict], args: argparse.Namespace) -> None:
 
 def _mpi_runs(args: argparse.Namespace, platform: str) -> list[dict]:
     """The multi-device correctness matrix (padding-inducing plane)."""
-    systems = [
-        s
-        for s in (
-            "plane-couette",
-            "pipe",
-            "taylor-couette",
-            "viscoelastic-dean",
-        )
-        if s in args.systems
-    ]
+    systems = [s for s in MPI_SYSTEMS if s in args.systems]
     # Correctness runs are small (30 steps + JIT, minutes when
     # healthy): cap their timeout below --mpi-timeout so a residual
     # hang costs 10 min, not 30, before the auto-skip kicks in.
@@ -1937,6 +1922,9 @@ def _mpi_correctness_section(
         print(f"          {rec['status']} {note}", flush=True)
 
     args.multirank_broken = multirank_timeouts >= 2
+    from dnsjax.flows.registry import spec_for
+
+    system_of = {run["name"]: run["system"] for run in runs}
     diffs: list[dict] = []
     ok_names = {n for n, r in recs.items() if r["status"] == "ok"}
     for name, ref, label in _diff_pairs(ok_names):
@@ -1959,7 +1947,7 @@ def _mpi_correctness_section(
             drec["status"] = "fail"
             drec["error"] = "missing final snapshot"
         else:
-            ncomp = 9 if "viscoelastic" in name else 3
+            ncomp = spec_for(system_of[name]).n_components
             try:
                 worst, per = _diff_snapshots(pa, pb, ncomp)
                 drec["max_rel_diff"] = worst
@@ -2081,8 +2069,8 @@ def _single_tables(results: list[dict], parity_tol: float) -> list[str]:
         print(
             f"  {'backend':22s} {'icn ms':>10s} {'uns ms':>10s} "
             f"{'c s/u':>6s} {'cnab2 ms':>10s} "
-            f"{'Lk ms':>8s} {'Hk ms':>8s} {'Hc ms':>8s} "
-            f"{'factor MB':>10s} {'peak MB':>10s} {'parity':>9s}"
+            + "".join(f"{g + ' ms':>8s} " for g in OP_GROUPS)
+            + f"{'factor MB':>10s} {'peak MB':>10s} {'parity':>9s}"
         )
         for r in rows:
             b = r["config"]["backend"]
@@ -2107,7 +2095,10 @@ def _single_tables(results: list[dict], parity_tol: float) -> list[str]:
                 delta = f"{de:.1e}"
                 if de > parity_tol:
                     delta += "!"
-            hc = f"{sv['Hc']:8.2f}" if sv["Hc"] is not None else f"{'-':>8s}"
+            solves = "".join(
+                f"{sv[g]:8.2f} " if sv.get(g) is not None else f"{'-':>8s} "
+                for g in OP_GROUPS
+            )
             uns = sm.get("icn_unsplit")
             uns_s = f"{uns:10.2f}" if uns is not None else f"{'-':>10s}"
             csu = (
@@ -2117,7 +2108,7 @@ def _single_tables(results: list[dict], parity_tol: float) -> list[str]:
             print(
                 f"  {name:22s} {sm['icn']:10.2f} {uns_s} {csu:>6s} "
                 f"{sm['cnab2']:10.2f} "
-                f"{sv['Lk']:8.2f} {sv['Hk']:8.2f} {hc} "
+                f"{solves}"
                 f"{_mb(r['factor_bytes']['total']):>10s} {peak_mb:>10s} "
                 f"{delta:>9s}"
             )
@@ -2533,10 +2524,14 @@ def main() -> None:
         help="distinct RHS per solve timing (default 6 GPU / 4 CPU)",
     )
     # driver flags
-    # Driver entries need a SIZES row; systems outside it (e.g.
-    # plane-poiseuille) stay reachable via ``--child --system``.
+    # Driver entries need a SIZES row or an extra entry; systems
+    # without one (e.g. plane-poiseuille) stay reachable via ``--child
+    # --system``.
     ap.add_argument(
-        "--systems", nargs="*", default=sorted(SIZES), choices=sorted(SIZES)
+        "--systems",
+        nargs="*",
+        default=_driver_systems(),
+        choices=_driver_systems(),
     )
     ap.add_argument(
         "--sizes",

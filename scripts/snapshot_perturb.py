@@ -20,8 +20,9 @@ Runs single-device (``np0 = np1 = 1``) on the snapshot's own
 parameters and stored precision, so every untouched mode round-trips
 **bit-identically** (the injection changes exactly the target column
 and, for ``i3 = 0``, its conjugate partner).  Supported systems: the
-transient-growth set (plane-couette, plane-poiseuille, pipe,
-taylor-couette, quasi-keplerian).
+transient-growth set
+(:data:`dnsjax.analysis.transient_growth.WALL_BOUNDED_TG_SYSTEMS`, the
+walled systems that store a perturbation).
 
 The CLI rides the shared per-flow surface
 (:func:`dnsjax.bootstrap.resolve_parameters`) with the script's own
@@ -237,9 +238,9 @@ def _validate_perturb(values: PerturbParams, params) -> None:
     if params.phys.system not in WALL_BOUNDED_TG_SYSTEMS:
         raise ValueError(
             f"perturb: system {params.phys.system!r} is not supported "
-            f"(one of {', '.join(WALL_BOUNDED_TG_SYSTEMS)}; the "
-            "force-driven/viscoelastic total-field systems have no "
-            "single-mode perturbation convention here)."
+            f"(one of {', '.join(WALL_BOUNDED_TG_SYSTEMS)}; a "
+            "total-field system has no single-mode perturbation "
+            "convention here)."
         )
     if values.mode is None:
         raise ValueError("perturb.mode ('i2,i3') is required.")
@@ -332,9 +333,8 @@ def _dispatch_supported(system: str) -> tuple[Any, Any, str]:
     if system not in WALL_BOUNDED_TG_SYSTEMS:
         raise SystemExit(
             f"system {system!r} is not supported (one of "
-            f"{', '.join(WALL_BOUNDED_TG_SYSTEMS)}; the force-driven/"
-            "viscoelastic total-field systems have no single-mode "
-            "perturbation convention here)"
+            f"{', '.join(WALL_BOUNDED_TG_SYSTEMS)}; a total-field "
+            "system has no single-mode perturbation convention here)"
         )
     return _dispatch(system)
 
