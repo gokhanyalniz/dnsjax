@@ -93,7 +93,7 @@ variants; the claims the scripts back are mapped in
 | Initial conditions | `localized_rolls`, `rolls_smoke`, `mean_mode`, `snapshot_perturb` |
 | Snapshots, resume, analysis | `snapshot`, `resume`, `snapshot_import`, `snapshot_export`, `transient_growth`, `wedge`, `lowres` |
 | Diagnostic streams and run-loop hooks | `driving`, `run_hooks` |
-| The solver without the lab | `layering` |
+| Plugins, and the solver without the lab | `plugins`, `layering` |
 
 The lab's suite adds its flows' halves of the split scripts, the curved
 and viscoelastic flows' own operator tests, the probe and forcing
