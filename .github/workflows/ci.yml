@@ -155,6 +155,13 @@ jobs:
             exit 1
           fi
 
+      - name: The sdist holds the archive's files, the archive adds uv.lock
+        run: |
+          set -eu
+          git archive -o "$RUNNER_TEMP/archive.tar" HEAD
+          uv run --no-project python lab/scripts/release/prepare_release.py \
+            files dist/dnsjax-*.tar.gz "$RUNNER_TEMP/archive.tar"
+
       # The floor Python, the wheel and its dependencies only.
       - name: The wheel alone renders every flow's surface
         run: |

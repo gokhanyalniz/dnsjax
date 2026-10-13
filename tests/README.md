@@ -1,6 +1,6 @@
 # Tests
 
-39 standalone scripts for the solver, and 36 more in
+41 standalone scripts for the solver, and 36 more in
 [`lab/tests/`](../lab/tests/) for the repository's lab package. Each one
 is a program with a `__main__` runner, runnable on its own:
 

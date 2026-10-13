@@ -104,8 +104,10 @@ fixed on purpose.
 - `refactor/prose_scan.py`: the lab's vocabulary in the core's prose,
   for review.
 - `release/prepare_release.py`: `cut VERSION`, a release's own commit
-  and tag (the lab stripped, relocked, the PyPI README pinned);
-  `strip`, the same `pyproject.toml` edit for CI. Never push its tag.
+  and tag (the lab stripped, relocked, the PyPI README pinned, the
+  archive's lab links absolute); `strip`, the same `pyproject.toml`
+  edit for CI; `files`, an sdist against an archive. Never push its
+  tag.
 - `release/pypi_readme.py`: write `docs/pypi/README.md` from the root
   `README.md` (`--check`, in CI's lint job).
 - `release/ci_job.py`: run one CI workflow job's steps locally in a
