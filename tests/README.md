@@ -92,7 +92,7 @@ variants; the claims the scripts back are mapped in
 | Parameters, bootstrap, device mesh, seeds | `param_surface`, `bootstrap`, `seeding`, `device_grid`, `host_placement`, `mpi_communicators` |
 | Initial conditions | `localized_rolls`, `rolls_smoke`, `mean_mode`, `snapshot_perturb` |
 | Snapshots, resume, analysis | `snapshot`, `resume`, `snapshot_import`, `snapshot_export`, `transient_growth`, `wedge`, `lowres` |
-| Diagnostic streams | `driving` |
+| Diagnostic streams and run-loop hooks | `driving`, `run_hooks` |
 | The solver without the lab | `layering` |
 
 The lab's suite adds its flows' halves of the split scripts, the curved
