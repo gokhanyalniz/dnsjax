@@ -2,7 +2,9 @@
 name = "dnsjax"
 version = "0.1.0"
 description = "A GPU-accelerated pseudo-spectral solver for direct numerical simulation of the 3D incompressible Navier–Stokes equations, written in JAX."
-readme = "README.md"
+# The README rewritten for PyPI (absolute links, plain math), generated
+# from README.md by lab/scripts/release/pypi_readme.py.
+readme = "docs/pypi/README.md"
 authors = [
     { name = "Gökhan Yalnız", email = "g.yalniz@imperial.ac.uk" }
 ]
@@ -77,6 +79,12 @@ dnsjax-lab = { workspace = true }
 [build-system]
 requires = ["uv_build>=0.11.4,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+# No agent notes in a release: the CLAUDE.md files beside the code stay
+# out of both artefacts.
+source-exclude = ["**/CLAUDE.md"]
+wheel-exclude = ["**/CLAUDE.md"]
 
 [tool.pytest.ini_options]
 # The core suite, then the lab's (lab/ is absent from a release).

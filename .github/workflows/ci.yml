@@ -2,6 +2,10 @@ name: CI
 
 on:
   push:
+    # Branches only: a release tag points at its own commit, which has
+    # no lab to test (lab/scripts/release/prepare_release.py);
+    # release.yml checks it instead.
+    branches: ["**"]
   pull_request:
   schedule:
     # Mondays, 05:00 UTC — the full offline suite.
@@ -38,6 +42,8 @@ jobs:
       # the Python blocks in the Markdown docs and the example notebook,
       # which are laid out to be read.
       - run: uv run ruff format --check src tests scripts lab/src lab/tests lab/scripts
+      # The PyPI copy of the README must follow every README change.
+      - run: uv run python lab/scripts/release/pypi_readme.py --check
 
   smoke:
     name: smoke (CPU, Python ${{ matrix.python }})
@@ -113,8 +119,10 @@ jobs:
             exit 1
           fi
 
-  # What a release ships: the root package alone, built and installed
-  # into an environment that has never seen the lab.
+  # What a release ships: the root package alone, built from the
+  # pyproject.toml a release commit has (the lab stripped out),
+  # installed into an environment that has never seen the lab, and a
+  # lab-free tree that installs with uv as the release zipball must.
   core-only:
     name: core release artefacts (no lab)
     runs-on: ubuntu-latest
@@ -125,18 +133,23 @@ jobs:
         with:
           enable-cache: true
 
+      - run: uv run --no-project python lab/scripts/release/prepare_release.py strip
       - run: uv build --package dnsjax --out-dir dist
 
-      - name: The sdist and the wheel hold no lab code
+      - name: The sdist and the wheel hold no lab code and no agent notes
         run: |
           set -eu
           ls dist
-          if tar -tzf dist/dnsjax-*.tar.gz | grep -E '(^|/)(lab|dnsjax_lab)(/|$)'; then
-            echo "the sdist carries lab files"
+          if tar -tzf dist/dnsjax-*.tar.gz | grep -E '(^|/)(lab|dnsjax_lab)(/|$)|CLAUDE\.md|/\.claude/'; then
+            echo "the sdist carries lab or agent files"
             exit 1
           fi
-          if python3 -m zipfile -l dist/dnsjax-*.whl | grep dnsjax_lab; then
-            echo "the wheel carries lab files"
+          if python3 -m zipfile -l dist/dnsjax-*.whl | grep -E 'dnsjax_lab|CLAUDE\.md'; then
+            echo "the wheel carries lab or agent files"
+            exit 1
+          fi
+          if tar -xzOf dist/dnsjax-*.tar.gz --wildcards '*/pyproject.toml' | grep dnsjax-lab; then
+            echo "the sdist's pyproject.toml names the lab"
             exit 1
           fi
 
@@ -189,6 +202,25 @@ jobs:
             echo "failed:$failed"
             exit 1
           fi
+
+      # The release tag's GitHub archive, which Zenodo keeps, is what
+      # `git archive` gives under .gitattributes.
+      - name: The archive holds no lab and no agent files
+        run: |
+          set -eu
+          if git archive HEAD | tar -t | grep -E '^lab/|CLAUDE\.md|^\.claude/'; then
+            echo "git archive carries lab or agent files"
+            exit 1
+          fi
+
+      # Last: it removes the lab from the checkout.
+      - name: A tree without the lab installs with uv sync
+        run: |
+          set -eu
+          rm -rf lab
+          uv lock
+          uv sync
+          uv run python -c "import dnsjax.flows.registry as r; print(r.all_systems())"
 
   full-cpu:
     name: full offline suite (CPU)

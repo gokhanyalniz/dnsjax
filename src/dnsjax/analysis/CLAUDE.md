@@ -11,8 +11,8 @@ The external-facing snapshot API: `snapshot_export.read_state` and
   `transient_growth.py` (the JAX-based TG CLI, every JAX import
   deferred) and `snapshot_import.py` (the inbound direction; needs the
   solver runtime, imports JAX in-function). The lab's analysis
-  (`dnsjax_lab.analysis`: `response/` may use JAX and SciPy, lazily;
-  `twin/` is JAX-free) is never imported from here.
+  (`dnsjax_lab.analysis`, indexed in `lab/CLAUDE.md`) is never
+  imported from here.
 - Return data in the stored layout: a chunk reshaped to
   `meta["native_shape"][1:]` is the solver's own layout, and coordinate
   tuples are ordered to match.
@@ -28,12 +28,6 @@ The external-facing snapshot API: `snapshot_export.read_state` and
   with `dnsjax_lab.geometries.wall_bounded.cylindrical_curved`.
 - The `*_SYSTEMS` sets mirror the registry, whose geometry and
   total-field axes overlap (`flows/registry.py`).
-- The lab's `response/`: ensemble members aggregate on relative time
-  while `dnsjax_lab.extensions.probes` gates `probes.bin` on the
-  absolute `it % it_probes`, so harvest parents at multiples of the
-  probe cadence or `response.ensemble.aggregate_tree` refuses the set.
-  The pipeline and the route trade-offs:
-  `dnsjax_lab/analysis/response/__init__.py`.
 - `transient_growth.single_mode_state` / `mode_state_energy` are
   shared with `scripts/snapshot_perturb.py`, and `--tg.save_operator`
   exports the per-mode generators the lab's `response/` consumes:

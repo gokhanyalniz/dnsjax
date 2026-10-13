@@ -1,4 +1,7 @@
-# The lab (lab/, the dnsjax-lab package) is developed here but never
-# released: keep it out of `git archive` and so out of GitHub's release
-# zipball, which Zenodo archives.
+# What `git archive` -- and so the GitHub release zipball, which Zenodo
+# archives -- leaves out: the lab (lab/, the dnsjax-lab package), which
+# is developed here but never released, and every file written for
+# coding agents (the CLAUDE.md notes, .claude/).
 /lab export-ignore
+/.claude export-ignore
+CLAUDE.md export-ignore
