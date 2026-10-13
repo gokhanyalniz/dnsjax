@@ -9,12 +9,14 @@ and adding parameter fields and sections. Start at the
 
 A flow system is two pieces. The first is a **`FlowSpec`**, plain data
 plus pure-Python hooks. The second is the flow module it names
-(`flow_module`), which exports the stepping surface the `FlowSpec`
-docstring lists: the steppers, the diagnostics, and the two
-initial-condition builders `init_random_state` and
-`init_localized_rolls`, which the random and localized-rolls start
-modes call. A flow composes its geometry's generators there with
-whatever it adds itself, such as a total-field flow's laminar state.
+(`flow_module`), which exports the surface the `FlowSpec` docstring
+lists: the steppers, the diagnostics, the two initial-condition
+builders `init_random_state` and `init_localized_rolls`, which the
+random and localized-rolls start modes call, and what its geometry and
+the transient-growth driver need besides (the basis pair of the
+cylindrical and annular geometries, the frozen-profile flow). A flow
+composes its geometry's generators there with whatever it adds itself,
+such as a total-field flow's laminar state.
 Nothing else is edited: the `phys.system` literal, the `--help` and
 `parameters.toml` surfaces, `--sample-toml`, the snapshot metadata
 surface, the stepping dispatch and the analysis package's geometry sets
