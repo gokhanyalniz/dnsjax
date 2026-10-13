@@ -4,13 +4,13 @@ The default `$v$`-`$\omega_y$` step (``res.consistent_imm``) never forms
 a pressure, and the legacy primitive step forms the
 Crank-Nicolson-weighted Bernoulli one.  This module recovers the
 instantaneous **static** pressure of a stored field from the field
-alone, consistently with the discrete dynamics that produced it.  Two
-consumers: the reduced-resolution snapshots of :mod:`dnsjax.lowres`
-(the perturbation pressure `$p'$` of one state, or a twin run's
-difference pressure `$\Delta p$`, :func:`convective_nonlinear` with a
-reference) and the twin budget's `$\Delta p$`
-(:mod:`dnsjax_lab.twin.pressure`).  All solve the same problem with a
-different source; nothing below reads the source except as a source.
+alone, consistently with the discrete dynamics that produced it: the
+perturbation pressure `$p'$` of one state, which the reduced-resolution
+snapshots of :mod:`dnsjax.lowres` store, or the difference pressure
+`$\Delta p$` of two states (:func:`convective_nonlinear` with a
+reference), which the lab's twin runs take (``dnsjax_lab.twin.pressure``
+builds on this module).  All solve the same problem with a different
+source; nothing below reads the source except as a source.
 
 Interior equation
 -----------------
@@ -82,8 +82,7 @@ but cheaper -- no velocity is stepped, so no Helmholtz solve enters:
 one banded solve.  Right under either ``res.consistent_imm``: both
 schemes deliver discrete continuity at the walls (the default delivers
 it everywhere).  The analytic condition then supplies an independent
-truncation diagnostic (``DifferencePressure.neumann_residual``,
-:mod:`dnsjax_lab.twin.pressure`).
+truncation diagnostic, which a consumer may report.
 
 The mean mode
 -------------
@@ -107,8 +106,8 @@ some 12 % on top at ``fd_order = 8``.  Build it only when a consumer
 is enabled.  Per sample, :func:`static_pressure` takes 15 single-field
 transforms (:func:`convective_nonlinear`) and one banded solve, and a
 difference pressure 30 (the same function with a reference).  Their
-peak transients, measured as :mod:`dnsjax_lab.twin.diagnostics`
-("Memory") measures every program: 13 / 11 and 16 / 17 padded
+peak transients, read from XLA's buffer assignment of the compiled
+program (``memory_analysis()``): 13 / 11 and 16 / 17 padded
 physical components at ``solver.rhs_transform_chunks`` 1 / 3, below
 the time step's own on CPU (22 / 20 iterative-CN), so a ``[lowres]``
 pressure sample does not set a CPU run's peak.  A GPU schedules its
@@ -180,7 +179,7 @@ class PoissonPressure:
         ----------
         field:
             The spectral velocity field, ``(3, Ny, Nkz, Nkx)``: a
-            perturbation, or the twin's difference field.  Only its
+            perturbation, or a difference of two states.  Only its
             wall-normal component is read.
         div_n:
             `$\widehat{\nabla\cdot\mathcal{N}}$`, ``(Ny, Nkz, Nkx)``.
@@ -285,9 +284,8 @@ def mean_advect(prof: Array, field: Array, kx: Array, kz: Array) -> Array:
     r"""`$(\mathbf{P}\cdot\nabla)\mathbf{f}$`, `$\mathbf{P}$` a mean profile.
 
     Diagonal in `$k$`, so FFT-free.  The wall-normal row of any mean
-    profile vanishes (continuity plus no-slip at `$k = 0$`; the twin
-    module's "State preconditions"), so only the two wall-parallel
-    rows of *prof* (``(3, Ny)``) enter.
+    profile vanishes (continuity plus no-slip at `$k = 0$`), so only
+    the two wall-parallel rows of *prof* (``(3, Ny)``) enter.
     """
     return (
         1j
@@ -323,8 +321,7 @@ def convective_nonlinear(
     statement order alone does not hold XLA to it).  The other two
     terms are mode-diagonal.  In a moving frame (``phys.u_grid``) the
     solver's `$+\mathrm{i}k_xU_{grid}\mathbf{u}'$` is added, so
-    ``div_n`` and ``n_hat[1]`` match the solver term for term (the
-    twin module's "Frame invariance").
+    ``div_n`` and ``n_hat[1]`` match the solver term for term.
 
     With a *reference* `$\mathbf{u}'^{(1)}$` the result is the source
     of the difference `$\Delta\mathbf{u} = $` *state* `$-$`
@@ -343,12 +340,13 @@ def convective_nonlinear(
     are `$\mathrm{i}(k_xP_x + k_zP_z)\Delta\hat{\mathbf{u}}$` with
     *state*'s profile, `$\mathrm{i}(k_x\Delta P_x + k_z\Delta P_z)
     \hat{\mathbf{u}}'^{(1)}$` and `$\Delta\hat v\,\partial_y
-    \mathbf{U}_b$`. That is
-    :func:`dnsjax_lab.twin.diagnostics._convective_sources` summed, to
-    round-off, without the six-piece split its budget needs: 30 transforms,
-    and each half of a component's pair goes back on its own, behind its own
-    barrier, so one gradient set is live at a time -- the peak the pressure
-    of a reduced difference snapshot sets (Design notes: "Cost").
+    \mathbf{U}_b$`.  That is, to round-off, the sum of the six
+    convective pieces a difference-energy budget splits it into (the
+    lab's twin diagnostics), without the split: 30 transforms, and each
+    half of a component's pair goes back on its own, behind its own
+    barrier, so one gradient set is live at a time -- the peak the
+    pressure of a reduced difference snapshot sets (Design notes:
+    "Cost").
     Without a reference the program is the single-state one above, unchanged.
 
     Returns ``(n_hat, div_n)``: `$\hat{\mathcal{N}}$`

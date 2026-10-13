@@ -89,8 +89,8 @@ def make_stepper(
 
     **Basis contract.** This module never inspects a state's
     components, and it must not: the geometries are free to carry the
-    state in a solver basis (the cylindrical/annular `$u_\pm$`, the
-    viscoelastic spin tensor).  Their RHS comes back in that basis too
+    state in a solver basis (the cylindrical/annular `$u_\pm$`, a
+    carried tensor's spin components).  Their RHS comes back in that basis too
     -- a geometry converts to the physical triad only around its own
     FFTs, because the real FFT needs per-component Hermitian symmetry
     -- but only the geometry knows which basis and which slots an

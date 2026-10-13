@@ -1,8 +1,8 @@
 r"""Run status files and the graceful stop request.
 
-A solver run (``dnsjax``, ``dnsjax-twin``) keeps one status file in
-its run directory (the working directory) while it is live, and leaves
-one behind when it ends:
+A solver run (``dnsjax``, or an entry point built on its run loop)
+keeps one status file in its run directory (the working directory)
+while it is live, and leaves one behind when it ends:
 
 ``RUNNING``
     Written by process 0 as soon as the JAX runtime is configured
@@ -33,9 +33,9 @@ The stop request
 A request is one more exit criterion of the stepping loop beside the
 wall-clock budget, judged with it at the ``outs.it_error_check`` host
 sync (:meth:`RunStatus.stop_flags`), so it takes the closing path that
-budget already takes: the final stats row and probe sample, the final
-snapshot under ``outs.snapshot_save_final`` (default on), the final
-reduced snapshot when due, and every stream flushed.  A request made
+budget already takes: the final stats row and extension records, the
+final snapshot under ``outs.snapshot_save_final`` (default on), the
+final reduced snapshot when due, and every stream flushed.  A request made
 during setup or compilation is honoured before the first step, with
 no step taken.  The decision is collective: process 0 alone looks for
 ``RUNNING`` and every process reports its own ``SIGUSR1``, and one

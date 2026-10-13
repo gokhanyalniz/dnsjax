@@ -41,7 +41,7 @@ Laminar state
 -------------
 ``start_from_laminar`` uses the closed-form, Reynolds-independent laminar
 profile `$U_\theta(r) = -(C/2) r\ln r + \alpha r + \beta/r$` (see
-:func:`~dnsjax.geometries.wall_bounded.annular.dean_laminar_u_theta`).
+:func:`dean_laminar_u_theta`).
 It is the steady solution of the *continuous* equations; on the FD grid
 it is preserved up to truncation (the mean-mode centripetal term is
 balanced by pressure and `$u_\theta$` by the viscous + forcing balance).

@@ -23,9 +23,9 @@ initial-condition perturbation and nothing else --
   and the pair's bulks differ exactly as any two states' would --
   deliberately unconstrained.
 
-That is what a twin run (:mod:`dnsjax_lab.twin.driver`) needs of
-`$\delta$`, and it is what a solver run needs of a random IC built
-around the laminar profile.
+That is what a state and its perturbed copy need of `$\delta$` to be
+the same flow, driven identically, and it is what a solver run needs
+of a random IC built around the laminar profile.
 
 Derivation
 ----------

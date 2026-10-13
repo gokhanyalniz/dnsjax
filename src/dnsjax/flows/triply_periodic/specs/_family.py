@@ -4,7 +4,7 @@ One surface for the family's flows (kolmogorov): the periodic box
 lengths and tilt, the identity-named resolution and the Reynolds
 number.  The moving frame, the mean-mode perturbation and the reduced
 snapshots' pressure are deferred here; the wall-bounded-only fields
-(grids, probes, forcing, ...) are not part of the surface.
+(grids, driving, ...) are not part of the surface.
 """
 
 from ....flow_spec import DeferredSpec, FieldSpec

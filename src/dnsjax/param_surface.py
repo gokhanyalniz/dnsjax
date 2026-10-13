@@ -354,7 +354,7 @@ def recorded_params_dump(parameters: Parameters) -> dict:
     :func:`externalize` for the resolved system's spec, plus the
     recordable relevant extension sections
     (:func:`dnsjax.extensions.extension_metadata`) as top-level keys
-    (e.g. ``force``, ``probes``) -- so resume can restore them and the
+    (each under its section name) -- so resume can restore them and the
     trajectory diff can compare them.  Snapshot readers map it back
     with :func:`dnsjax.flows.registry.internalize_stored` /
     ``stored_value``.

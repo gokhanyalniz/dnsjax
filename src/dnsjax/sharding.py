@@ -180,23 +180,18 @@ def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
     closure or ``static_argnames``.  A baked-in global is legal in one
     process and fails at trace time in two, and an outer ``jit`` around
     a function that hands module globals to an inner ``jit`` bakes them
-    in all the same.  Only a real multi-process run catches a slip:
-    ``test_np2_run`` in ``lab/tests/test_twin_driver.py``, the
+    in all the same.  Only a real multi-process run catches a slip: the
     ``*-mpi-pad`` rows of ``tests/test_random_smoke.py``.
 
-    Used by the geometry base dataclasses
-    (``TriplyPeriodicFlow``, ``CartesianFlow``,
-    ``CylindricalFlow``, ``AnnularFlow``,
-    ``ViscoelasticAnnularFlow``, ``ViscoelasticCylindricalFlow``),
-    their flow subclasses, the geometry-specific ``Fourier``
-    classes, the solver dataclasses (``DenseJAXSolver``,
-    ``PerModeBandedPallasOperator``), and
-    :class:`~dnsjax_lab.twin.pressure.DifferencePressure`.
+    Used by the geometry base dataclasses (``TriplyPeriodicFlow``,
+    ``CartesianFlow``, ``CylindricalFlow``, ``AnnularFlow``), their
+    flow subclasses, the geometry-specific ``Fourier`` classes and the
+    solver dataclasses (``DenseJAXSolver``,
+    ``PerModeBandedPallasOperator``).
 
     Only ``dataclasses.fields`` are visited, so methods and
-    ``ClassVar``s add nothing to the tree -- which is what lets the
-    viscoelastic flows carry their per-geometry adapter surface
-    (``_viscoelastic_stepping``) as methods at zero memory cost.
+    ``ClassVar``s add nothing to the tree -- which is what lets a flow
+    carry an adapter surface as methods at zero memory cost.
     """
 
     def _tree_flatten(obj: T) -> tuple[tuple[object, ...], dict[str, object]]:

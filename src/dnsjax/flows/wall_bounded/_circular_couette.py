@@ -1,21 +1,20 @@
 r"""Shared circular-Couette flow machinery (Taylor-Couette family).
 
-Taylor-Couette and quasi-Keplerian are the *same* flow -- the
-circular-Couette base profile `$U_\theta = A_0 r + B_0/r$` on the
-annular geometry -- differing only in their control-parameter
-interfaces (`$(\mathrm{Re}_1, \mathrm{Re}_2, \eta)$` vs
-`$(\mathrm{Re}_i, R_\Omega, \eta)$`; the specs in
-``flows/wall_bounded/specs/`` own that math and land in the same
-``derived_params.ccf_A``/``ccf_B``/radii).  Everything the two flow
-modules share therefore lives here once: the flow dataclass (base
+Every flow with the circular-Couette base profile
+`$U_\theta = A_0 r + B_0/r$` on the annular geometry is the *same*
+flow, whatever its control parameters: Taylor-Couette takes
+`$(\mathrm{Re}_1, \mathrm{Re}_2, \eta)$`, and another
+parameterization (a plugin's) differs only in its spec, which lands in
+the same ``derived_params.ccf_A``/``ccf_B``/radii.  Everything such
+flow modules share therefore lives here once: the flow dataclass (base
 flow, curl, laminar constants), the transient-growth
 ``frozen_profile_flow`` builder, and the jitted diagnostics.
 
-The per-system modules (:mod:`.taylor_couette`,
-:mod:`.quasi_keplerian`) remain the user-facing surface -- their
-docstrings carry the per-flow conventions -- and each instantiates its
-own ``flow`` singleton of the class defined here, plus the thin
-wrappers that bind it for ``__main__`` and the analysis drivers.
+The per-system modules (:mod:`.taylor_couette`, and any other) remain
+the user-facing surface -- their docstrings carry the per-flow
+conventions -- and each instantiates its own ``flow`` singleton of the
+class defined here, plus the thin wrappers that bind it for
+``__main__`` and the analysis drivers.
 """
 
 from dataclasses import dataclass
@@ -51,8 +50,7 @@ class CircularCouetteFlow(AnnularFlow):
     `$[r_1, r_2]$` are computed in ``__post_init__`` from the
     circular-Couette coefficients and radii on ``derived_params``
     (set by the selected system's spec: Taylor-Couette from
-    `$(\mathrm{Re}_1, \mathrm{Re}_2, \eta)$`, quasi-Keplerian from
-    `$(\mathrm{Re}_i, R_\Omega, \eta)$`).
+    `$(\mathrm{Re}_1, \mathrm{Re}_2, \eta)$`).
     """
 
     I_lam: float = 0.0

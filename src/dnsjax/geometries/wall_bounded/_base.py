@@ -1,7 +1,7 @@
 r"""Shared infrastructure for wall-bounded geometries.
 
 Functions shared by the wall-bounded geometry modules (Cartesian,
-cylindrical, annular, and the two viscoelastic ones) live here to
+cylindrical, annular, and any a plugin builds on them) live here to
 avoid duplication.  Geometry-specific code (operator assembly, IMM
 iteration, curl, etc.) stays in the respective geometry modules.
 
@@ -23,14 +23,14 @@ grid            GEMM      stencil   per-pair ratio, median (IQR)
 
 and the other geometries, at a moderate and the smallest grid: the
 pipe x1.04 (``32x97x64``) and x0.97 (``16x33x16``), Taylor-Couette
-x1.08 and x0.95, viscoelastic Dean and pipe x1.04 and x1.05
+x1.08 and x0.95, the lab's viscoelastic Dean and pipe x1.04 and x1.05
 (``16x65x32``).  ``10x385x320`` has the per-rank modes and points of a
 ``1280 x 385 x 320`` run on 128 ranks, where XLA's count for the step
 falls from 18.25 to 4.45 GFLOP.  The gain grows with `$N_y$` (the
 GEMM's FLOPs per point do); on the smallest test grids the stencil's
 fixed cost can leave it a few per cent behind.  The step temporaries
-are unchanged, but for viscoelastic Dean's (+0.15 %: its re/im split
-on the 9-field tensor stacks); the stored parts add ``~30 KB`` per
+are unchanged, but for the lab's viscoelastic Dean's (+0.15 %: its
+re/im split on the 9-field tensor stacks); the stored parts add ``~30 KB`` per
 matrix, and the unrolled stencils about 2.5 s of compile per step
 program.  The stencil's first form padded the field by the full
 half-bandwidth and summed `$2p + 3$` shifted slices (19 at
@@ -356,13 +356,13 @@ def to_pm_basis(state: Array) -> Array:
     whole time stepper works.
 
     This is the boundary between the two representations: physical
-    outside the solver (snapshots, diagnostics, probes, initial
-    conditions, analysis), decoupled inside it, crossed at most once
-    per state (:mod:`dnsjax.__main__`).  Elementwise on the leading,
-    unsharded component axis, so it needs no collective and applies
-    unchanged to a single mode column ``(3, N_y)``.  The viscoelastic
-    geometry supplies its own 9-component map covering the
-    conformation spin components; inverse: :func:`from_pm_basis`.
+    outside the solver (snapshots, diagnostics, extension streams,
+    initial conditions, analysis), decoupled inside it, crossed at most
+    once per state (:mod:`dnsjax.__main__`).  Elementwise on the
+    leading, unsharded component axis, so it needs no collective and
+    applies unchanged to a single mode column ``(3, N_y)``.  A flow
+    carrying more components supplies its own map covering them;
+    inverse: :func:`from_pm_basis`.
     """
     u_r, u_theta = state[1], state[2]
     return jnp.stack([state[0], u_r + 1j * u_theta, u_r - 1j * u_theta])
@@ -715,10 +715,8 @@ def get_pert_enstrophy(
     in `$dE/dt = I - D$` for resolved stepped states.  A **discrete**
     budget instead closes only against the operator form
     `$-\langle \mathbf{u}' \cdot (\nabla_h^2 + D_2)\,\mathbf{u}'
-    \rangle$`, which gives up the positivity -- the rule and the case
-    that forced it: the "Dissipation form" section of
-    ``twin/diagnostics.py``.  The same holds for the cylindrical and
-    annular twins of this function.
+    \rangle$`, which gives up the positivity.  The same holds for the
+    cylindrical and annular counterparts of this function.
     """
     horiz = get_norm2(state, k2 * k_metric, y_weights)
     dy_state = apply_y_matrix(D1, state)

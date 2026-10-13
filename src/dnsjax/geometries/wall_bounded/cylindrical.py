@@ -35,8 +35,8 @@ satisfies a Helmholtz equation whose radial operator is
 This is the solver's **working** basis: the state carried between
 steps, the RHS, the corrector iterates and every operator below
 live in `$(u_z, u_+, u_-)$`.  It is not what anything outside the
-time stepper sees -- snapshots, diagnostics, probes, initial
-conditions and the analysis package all work in the physical
+time stepper sees -- snapshots, diagnostics, extension streams,
+initial conditions and the analysis package all work in the physical
 triad `$(u_z, u_r, u_\theta)$`, and a given state crosses between
 the two at most once, at that boundary (``to_pm_basis`` /
 ``from_pm_basis`` in ``_base.py``, driven by
@@ -111,8 +111,9 @@ operators, the norms, and the ``CylindricalFlow`` dataclass.  The
 **stepping** built on them -- the pseudo-spectral RHS, the FFT-free
 base-flow coupling, the influence-matrix pass, the predictor /
 corrector / norm and the stepper factory -- lives once in
-:mod:`._cylindrical_stepping`, shared with the curved (toroidal) pipe
-and parametrized by the flow dataclass; the names below re-exported
+:mod:`._cylindrical_stepping`, shared with any flow a plugin builds on
+this geometry and parametrized by the flow dataclass; the names below
+re-exported
 from it keep this module the single import site it has always been.
 
 Design notes
@@ -842,7 +843,7 @@ def _build_A_base(D1: Array, D2: Array, inv_r: Array) -> Array:
     `$D_1 x$` is reused, the split form stays.  The fused product is
     not bit-identical to the split one, so a change to it is guarded by
     ``tests/test_imm_continuity.py``, the band-vs-dense parity tests
-    and the two viscoelastic suites -- not by the laminar smoke, whose
+    and the lab's viscoelastic suites -- not by the laminar smoke, whose
     `$u' = 0$` makes every stage zero either way.
 
     Parameters
@@ -1613,9 +1614,10 @@ class CylindricalFlow:
     def divergence_defect(self, state: Array, fourier_: Fourier) -> None:
         r"""The straight divergence `$\nabla_0\cdot$` of the carried state.
 
-        Incompressibility forces it to **zero** here, and to an
-        `$O(\kappa)$` field on the curved pipe.  ``None`` means zero,
-        and removes every dependent term at trace time.
+        Incompressibility forces it to **zero** here; a flow with a
+        metric overrides this with the field its continuity leaves.
+        ``None`` means zero, and removes every dependent term at trace
+        time.
         """
         return None
 
@@ -1654,10 +1656,10 @@ class CylindricalFlow:
     def _build_metric(self) -> None:
         """Build whatever metric the geometry carries.
 
-        Nothing here: the straight pipe's metric is the identity.  The
-        curved pipe overrides it (:mod:`.cylindrical_curved`), and the
-        call site in ``__post_init__`` is placed so the grid it needs is
-        already built and the bulk response that reads it is not yet.
+        Nothing here: the straight pipe's metric is the identity.  A
+        flow with a metric overrides it, and the call site in
+        ``__post_init__`` is placed so the grid it needs is already
+        built and the bulk response that reads it is not yet.
         """
 
     def bulk_deficit(self, uz_src: Array) -> Array:

@@ -343,7 +343,8 @@ def _write_dat_header(file_path, columns, col_width) -> None:
     comment (its default ``comments="#"``) -- a ``.dat`` stream loads
     with no extra flags.  A reader that wants the column names must
     ``lstrip("#")`` the header line before splitting it.  Shared by
-    every measurement stream, here and in the twin driver.
+    every measurement stream, here and in any entry point that writes
+    one.
     """
     padded = [
         n.rjust(col_width - 1 if i == 0 else col_width)

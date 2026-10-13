@@ -1,10 +1,9 @@
 """Wall-bounded geometries: Cartesian, cylindrical and annular.
 
-``cartesian``, ``cylindrical`` (with its toroidal variant
-``cylindrical_curved``) and ``annular`` are the geometries and
-``_base`` their shared layer.  The remaining modules hold the pipe
-stepping both cylindrical geometries share, the viscoelastic
-extensions, the legacy primitive influence-matrix paths and the
+``cartesian``, ``cylindrical`` and ``annular`` are the geometries and
+``_base`` their shared layer.  The remaining modules hold the pipe's
+stepping (shared with any flow a plugin builds on the cylindrical
+geometry), the legacy primitive influence-matrix paths and the
 Cartesian static pressure (each module docstring says which).
 """
 

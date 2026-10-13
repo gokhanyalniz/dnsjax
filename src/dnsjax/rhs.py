@@ -119,11 +119,10 @@ def get_nonlin(
     ``solver.rhs_transform_chunks`` caps that transient by splitting
     the batch (:func:`dnsjax.fft.chunked_transform`; the default 1
     keeps the single fused batch), while the forward transform of the
-    3 outputs stays fused.  The knob matters
-    most for the 36-field viscoelastic variant (the ``_get_rhs_core``
-    of ``geometries/wall_bounded/_viscoelastic_stepping.py``), whose
-    batch dominates its step's peak; the trade-off is documented in the
-    :mod:`dnsjax.fft` memory note.
+    3 outputs stays fused.  The knob matters most for a flow whose
+    batch carries several times the velocity's fields (a carried
+    tensor), where the batch dominates the step's peak; the trade-off
+    is documented in the :mod:`dnsjax.fft` memory note.
 
     Parameters
     ----------
@@ -157,16 +156,16 @@ def get_nonlin(
     extra_spec_fn:
         Optional ``vorticity_spec -> extra_spec``: further spectral
         fields to ride the same batched inverse transform, handed to
-        *metric_rhs_fn* in physical space.  The curved pipe sends `$\partial_s
-        \boldsymbol{\Omega}$` this way, so its curvature terms cost
-        no transform of their own.
+        *metric_rhs_fn* in physical space.  A metric geometry sends
+        what its metric terms need this way, so they cost no transform
+        of their own.
     to_physical_fn:
         Optional ``(velocity_phys, vorticity_phys) -> (velocity_phys,
         vorticity_phys)`` converting the *carried* components into the
         **physical** ones, applied before both the cross product and
-        *measure_fn*.  A geometry whose state is metric-weighted (the
-        curved pipe carries `$h\,u_s$`) divides here, where the
-        pointwise metric factor is free.
+        *measure_fn*.  A geometry whose state is metric-weighted
+        (carrying `$h\,u_s$`, say) divides here, where the pointwise
+        metric factor is free.
     metric_rhs_fn:
         Optional ``(nonlin_phys, vorticity_phys, extra_phys) ->
         nonlin_phys`` applied after the cross product, receiving the

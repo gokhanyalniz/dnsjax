@@ -50,7 +50,8 @@ legacy scheme's pressure Poisson operator uses
 As in cylindrical, this is the solver's **working** basis -- the
 carried state, the RHS, the corrector iterates and every operator
 below -- while everything outside the time stepper (snapshots,
-diagnostics, probes, initial conditions, the analysis package) works
+diagnostics, extension streams, initial conditions, the analysis
+package) works
 in the physical triad `$(u_z, u_r, u_\theta)$`, a given state
 crossing between the two at most once (``to_pm_basis`` /
 ``from_pm_basis`` in ``_base.py``).  :func:`_get_rhs_core` and
@@ -88,35 +89,33 @@ Driving: shear-driven and force-driven flows
 --------------------------------------------
 The geometry supports two driving modes via the same infrastructure:
 
-- **Shear-driven** (Taylor-Couette / quasi-Keplerian -- the same
-  circular-Couette flow under two parameterizations): the rotating
+- **Shear-driven** (Taylor-Couette, or any other parameterization of
+  the circular-Couette flow): the rotating
   walls set an azimuthal base flow `$U_\theta(r) = A_0 r + B_0/r$` and
   the perturbation `$\mathbf{u}'$` is integrated.  The base coupling enters
   only through the rotational-form nonlinear term (see ``rhs.py``) via
   ``base_flow`` and ``curl_base_flow`` -- no hand-coded coupling terms.
-- **Force-driven** (Dean flow): both walls are stationary and the
+- **Force-driven** (a flow a plugin builds): both walls are
+  stationary and the
   **total** velocity is integrated (``base_flow = curl_base_flow = 0``,
   so the rotational term computes the full `$(\nabla\times\mathbf{u})
   \times\mathbf{u}$`).  An azimuthally-/axially-uniform, radius-dependent
   azimuthal body force `$-\Pi_\theta$` is supplied through
   ``AnnularFlow.force_theta`` (a radial profile holding that force,
   zero by default) and added at the mean mode by
-  :func:`_get_rhs_core`.  See ``flows.wall_bounded.dean`` and
-  :func:`dean_laminar_u_theta`.
+  :func:`_get_rhs_core`.
 
-The viscoelastic sPTT extension (``annular_viscoelastic.py``, bound by
-``flows.wall_bounded.viscoelastic_dean``) is a third user of the same
-infrastructure: it reuses the force-driven total-field mode with the
-9-component velocity + conformation state.
+A plugin may build further flows on the same infrastructure, carrying
+more components than the velocity.
 
 An optional ``block_mean_spanwise_velocity`` zeroes the mean **axial**
 velocity (the undriven homogeneous direction); the azimuthal mean
 evolves freely.
 
-Flow-specific modules (e.g. ``flows.wall_bounded.taylor_couette``,
-``flows.wall_bounded.dean``) subclass ``AnnularFlow``, set the base flow
-and/or ``force_theta``, then call ``build_annular_stepper`` to obtain
-ready-to-use time-stepping functions.
+Flow modules (e.g. ``flows.wall_bounded.taylor_couette``) subclass
+``AnnularFlow``, set the base flow and/or ``force_theta``, then call
+``build_annular_stepper`` to obtain ready-to-use time-stepping
+functions.
 
 Design notes
 ------------
@@ -360,7 +359,7 @@ def get_enstrophy_annular(
 
     Geometry-general: the *state* may be a perturbation `$\mathbf{u}'$`
     (shear-driven Taylor-Couette) or the total field `$\mathbf{u}$`
-    (force-driven Dean flow).  Uses the identity split into
+    (a force-driven flow).  Uses the identity split into
     radial-derivative, azimuthal, and axial terms; the azimuthal term
     is the covariant azimuthal gradient in `$(u_z, u_r, u_\theta)$`
     components,
@@ -712,7 +711,7 @@ class AnnularFlow:
     force_theta:
         Mean-mode azimuthal body force on the radial grid, shape
         ``(Nr,)``; zero for shear-driven flows, set by force-driven
-        subclasses (Dean flow).
+        subclasses.
     D1, D2:
         First/second-derivative FD matrices, shape ``(Nr, Nr)``.
     D1_bnd:
@@ -746,7 +745,7 @@ class AnnularFlow:
     #: Trailing carried slots of the solver-basis state: none -- the
     #: annular pass evolves exactly as many scalars as it reconstructs
     #: from (the pipe's does not; ``_cylindrical_stepping``).  Read by
-    #: the viscoelastic stepper shared with the pipe.
+    #: a stepper shared between the two geometries.
     n_carried: ClassVar[int] = 0
 
     dt: Array = field(init=False)
@@ -832,7 +831,7 @@ class AnnularFlow:
         self.y_weights = jax.device_put(self.y_weights, sharding.no_shard)
 
         # Mean-mode azimuthal body force on the radial grid, zero by
-        # default.  Force-driven subclasses (Dean flow) overwrite it;
+        # default.  Force-driven subclasses overwrite it;
         # applied at the mean mode by ``_get_rhs_core``.
         self.force_theta = jnp.zeros(
             Nr, dtype=sharding.float_type, out_sharding=sharding.no_shard
@@ -1318,14 +1317,15 @@ def _l_bf(
     stiff on the wall-clustered grid, so the CN/AB2 scheme advances this
     term implicitly while the self-advection `$\mathbf{u}' \times
     \boldsymbol{\omega}' = \text{get\_rhs} - \text{\_l\_bf}$` stays
-    explicit (the constant Dean body force ``force_theta`` is not part of
-    this coupling; it rides in the explicit term).
+    explicit (a force-driven flow's constant body force
+    ``force_theta`` is not part of this coupling; it rides in the
+    explicit term).
 
     With ``params.step.implicit_mean_coupling`` (default on) the
     *instantaneous mean-flow* coupling is folded in by adding the
     `$m = k_z = 0$` mean profiles of the `$(u_z, u_r, u_\theta)$`
     state and of `$\boldsymbol{\omega}'$` onto the base-flow profiles
-    -- FFT-free; see the Cartesian ``_l_bf``.  For force-driven Dean
+    -- FFT-free; see the Cartesian ``_l_bf``.  For a force-driven flow
     (total field, ``base_flow = 0``) this is the *only* coupling:
     without it ``_l_bf`` is identically zero in the default lab frame
     (a moving frame adds its diagonal term), i.e. the entire evolving
@@ -1375,7 +1375,7 @@ def _get_rhs_core(
        :func:`~dnsjax.rhs.get_nonlin` with the cylindrical curl (and the
        optional physical-space *measure_fn*).  The base coupling enters
        here through ``base_flow_padded`` / ``curl_base_flow_padded``.
-       For force-driven flows (Dean) ``base_flow`` is zero, so this is
+       For force-driven flows ``base_flow`` is zero, so this is
        the full `$(\nabla\times\mathbf{u})\times\mathbf{u}$` of the
        total field.
     3. Add the mean-mode azimuthal body force ``flow_.force_theta`` to
@@ -1394,7 +1394,7 @@ def _get_rhs_core(
     if measure_fn is not None:
         nonlin, measurements = nonlin
 
-    # Mean-mode azimuthal body force (Dean flow), applied only at the
+    # Mean-mode azimuthal body force (force-driven flows), applied at the
     # mean mode (m, k_z) = (0, 0); zero for shear-driven Taylor-Couette.
     # get_nonlin returns the +u x omega rotational term, so the force
     # enters the RHS with a + sign (and into NL_+/- via NL_theta).
@@ -1475,11 +1475,11 @@ def mean_driving(state: Array, flow_: AnnularFlow) -> dict[str, Array]:
     under the same key and sign as
     :func:`_apply_bulk_correction`.
 
-    **Newtonian only.**  It uses the solvent viscosity alone, so it
-    does not close the balance for the viscoelastic annular flow, whose
-    polymer stress carries its own axial wall traction -- that flow
-    therefore does not export it (its ``t = t0`` row is written as
-    zero instead of a wrong number; see :mod:`dnsjax.__main__`).
+    **Newtonian only.**  It uses the viscosity alone, so it does not
+    close the balance for a flow whose extra stress carries its own
+    axial wall traction -- such a flow does not export it (its
+    ``t = t0`` row is written as zero instead of a wrong number; see
+    :mod:`dnsjax.__main__`).
     """
     if not params.phys.block_mean_spanwise_velocity:
         return {}
@@ -1683,8 +1683,8 @@ def _imm_iteration_vw(
     Boundary conditions
     ~~~~~~~~~~~~~~~~~~~
     `$\omega_r|_{\mathrm{wall}} = 0$` (physical for every annular flow
-    -- perturbation form for Taylor-Couette / quasi-Keplerian,
-    stationary walls for Dean and the viscoelastic mode) and
+    -- the perturbation form of a shear-driven flow, the stationary
+    walls of a force-driven one) and
     `$u_r|_{\mathrm{wall}} = 0$` are identity wall rows of `$H_k$` and
     `$L_{v,\mathrm{mod}}$`; `$(D_1 u_r)|_{\mathrm{wall}} = 0$` is
     imposed by the `$2 \times 2$` influence matrix over the two free
@@ -1695,8 +1695,8 @@ def _imm_iteration_vw(
     are a live diagnostic of influence-matrix health.
 
     `$\Phi$` is **not** carried between steps: the state stays
-    `$(u_z, u_+, u_-)$` -- the basis the RHS, the probes, the forcing
-    and the viscoelastic extension all share -- and stage 2 recomputes
+    `$(u_z, u_+, u_-)$` -- the basis the RHS and everything stepping
+    the state share -- and stage 2 recomputes
     `$\Phi^n$` from it on full rows.  The wall rows of that
     recomputation are therefore the discrete
     `$(\Delta\mathbf{u})_r$` rather than the influence matrix's own
@@ -1728,10 +1728,10 @@ def _imm_iteration_vw(
     updates then reproduce the primitive mean update term for term (the
     mean pressure gradient is `$D_1 p$` in *both* `$u_\pm$` rows, so it
     cancels out of `$u_\theta$` exactly as the mean-`$u_r$` projection
-    removes it), which is what lets Dean's body force and the bulk
-    corrections ride unchanged.  Padding modes need no special-casing:
-    their placeholder wavenumbers keep `$\Delta > 0$`, and zero fields
-    stay zero through every stage.
+    removes it), which is what lets a force-driven flow's body force and
+    the bulk corrections ride unchanged.  Padding modes need no
+    special-casing: their placeholder wavenumbers keep `$\Delta > 0$`,
+    and zero fields stay zero through every stage.
     """
     c = params.step.implicitness
     dt = flow_.dt
