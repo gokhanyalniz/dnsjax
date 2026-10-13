@@ -95,10 +95,10 @@ jobs:
       - name: The wheel alone installs and runs
         run: |
           set -eu
-          uv venv --python 3.12 /tmp/core
-          uv pip install --python /tmp/core/bin/python dist/dnsjax-*.whl
-          /tmp/core/bin/dnsjax --help > /dev/null
-          /tmp/core/bin/dnsjax --sample-toml pipe > /dev/null
+          uv venv --python 3.12 "$RUNNER_TEMP/core"
+          uv pip install --python "$RUNNER_TEMP/core/bin/python" dist/dnsjax-*.whl
+          "$RUNNER_TEMP/core/bin/dnsjax" --help > /dev/null
+          "$RUNNER_TEMP/core/bin/dnsjax" --sample-toml pipe > /dev/null
 
       - name: Publish to TestPyPI (rehearsal)
         if: github.event_name == 'workflow_dispatch'
