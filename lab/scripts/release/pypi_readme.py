@@ -109,18 +109,18 @@ def pypi_readme(readme: str, url: str, ref: str) -> str:
         base = tree if path.endswith("/") else blob
         return f"{base}/{path}" + (f"#{anchor}" if anchor else "")
 
+    def image(target: str) -> str:
+        return target if re.match(r"[a-z]+:", target) else f"{raw}/{target}"
+
     def links(part: str) -> str:
         part = re.sub(
             r'(<img\b[^>]*?\bsrc=")([^"]+)(")',
-            lambda m: (
-                m.group(1)
-                + (
-                    m.group(2)
-                    if re.match(r"[a-z]+:", m.group(2))
-                    else f"{raw}/{m.group(2)}"
-                )
-                + m.group(3)
-            ),
+            lambda m: m.group(1) + image(m.group(2)) + m.group(3),
+            part,
+        )
+        part = re.sub(
+            r"(!\[[^\]]*\])\(([^)\s]+)\)",
+            lambda m: f"{m.group(1)}({image(m.group(2))})",
             part,
         )
         part = re.sub(

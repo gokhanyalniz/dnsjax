@@ -173,7 +173,13 @@ Pushing the tag runs `.github/workflows/release.yml`, which checks the
 artefacts and the archive, then publishes to PyPI once the `pypi`
 environment's reviewer approves and drafts the GitHub release.
 Publishing that draft is what has Zenodo archive it. Running the
-workflow by hand rehearses the build on TestPyPI.
+workflow by hand rehearses the build on TestPyPI. CI's `core-only` job
+checks the release build from `main` on every push; to run it before
+pushing, from a commit of your own:
+
+```bash
+uv run --no-project --with pyyaml python lab/scripts/release/ci_job.py core-only
+```
 
 PyPI shows `docs/pypi/README.md`, the README with absolute links and
 plain-text math. Regenerate it after every change to `README.md`:

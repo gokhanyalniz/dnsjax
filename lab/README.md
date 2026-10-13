@@ -100,6 +100,7 @@ release is cut: [`CONTRIBUTING.md`](../CONTRIBUTING.md#releases)):
 |---|---|
 | `prepare_release.py` | cuts a release as a commit and tag of its own: the lab taken out of `pyproject.toml`, `uv.lock` relocked without it, the citation dated and the PyPI README's links pinned to the tag; it pushes nothing |
 | `pypi_readme.py` | writes `docs/pypi/README.md`, the README as PyPI shows it, with absolute links and images and plain-text math; `--check` fails on a stale copy |
+| `ci_job.py` | runs one GitHub workflow job's steps locally, in a throwaway clone of a commit — `core-only` checks a release's artefacts before anything is pushed |
 
 ## Tests
 

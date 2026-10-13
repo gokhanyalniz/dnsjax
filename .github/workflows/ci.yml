@@ -82,25 +82,27 @@ jobs:
           print('dnsjax.analysis is JAX-free')
           "
 
-      # The fast half of the offline suite: the core/lab layering, the
-      # parameter surfaces, bootstrap decisions, FFT padding, the
-      # mean-mode mask, quadrature, the JAX-free analysis API against
-      # solver ground truth (the surfaces and the API in a core and a
-      # lab half each), and the four response readers/identifiers.
-      # ~2 min locally; the rest of the offline suite runs weekly in
-      # full-cpu below.
+      # The fast half of the offline suite: the core/lab layering,
+      # plugin discovery, the parameter surfaces, bootstrap decisions,
+      # FFT padding, the mean-mode mask, quadrature, the run-loop hooks,
+      # the JAX-free analysis API against solver ground truth (the
+      # surfaces and the API in a core and a lab half each), and the
+      # four response readers/identifiers.  ~2.5 min locally; the rest
+      # of the offline suite runs weekly in full-cpu below.
       - name: Fast test scripts
         run: |
           set -u
           failed=""
           for t in \
             tests/test_layering \
+            tests/test_plugins \
             tests/test_bootstrap \
             tests/test_param_surface \
             lab/tests/test_param_surface \
             tests/test_padding \
             tests/test_mean_mask \
             tests/test_integration \
+            tests/test_run_hooks \
             tests/test_snapshot_export \
             lab/tests/test_snapshot_export \
             lab/tests/response/test_probes_reader \
@@ -157,13 +159,13 @@ jobs:
       - name: The wheel alone renders every flow's surface
         run: |
           set -eu
-          uv venv --python 3.12 /tmp/core
-          uv pip install --python /tmp/core/bin/python dist/dnsjax-*.whl
+          uv venv --python 3.12 "$RUNNER_TEMP/core"
+          uv pip install --python "$RUNNER_TEMP/core/bin/python" dist/dnsjax-*.whl
           for s in plane-couette plane-poiseuille pipe taylor-couette kolmogorov; do
-            /tmp/core/bin/dnsjax --help "$s" > /dev/null
-            /tmp/core/bin/dnsjax --sample-toml "$s" > /dev/null
+            "$RUNNER_TEMP/core/bin/dnsjax" --help "$s" > /dev/null
+            "$RUNNER_TEMP/core/bin/dnsjax" --sample-toml "$s" > /dev/null
           done
-          /tmp/core/bin/python - <<'PY'
+          "$RUNNER_TEMP/core/bin/python" - <<'PY'
           import sys
           from importlib.metadata import entry_points
 
@@ -178,22 +180,25 @@ jobs:
           PY
 
       # Run from the checkout, but importing the installed wheel: the
-      # scripts put tests/ on the path, never src/.
+      # scripts put tests/ on the path, never src/.  test_run_hooks
+      # steps the solver from the wheel.
       - name: Fast core scripts against the installed wheel
         run: |
           set -u
           failed=""
           for t in \
             tests/test_layering \
+            tests/test_plugins \
             tests/test_bootstrap \
             tests/test_param_surface \
             tests/test_padding \
             tests/test_mean_mask \
             tests/test_integration \
+            tests/test_run_hooks \
             tests/test_snapshot_export
           do
             echo "::group::$t.py"
-            if ! /tmp/core/bin/python "$t.py"; then
+            if ! "$RUNNER_TEMP/core/bin/python" "$t.py"; then
               failed="$failed $t"
             fi
             echo "::endgroup::"
