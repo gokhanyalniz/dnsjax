@@ -45,6 +45,8 @@ _SCRIPTS: list[Row] = [
     # subprocesses, so it is a slow row.
     ("test_imm_continuity.py", (), SLOW, 3600),
     ("test_integration.py", (), (), 1800),
+    # Parses the core's sources; no JAX, a few seconds.
+    ("test_layering.py", (), (), 1800),
     ("test_localized_rolls.py", (), (), 1800),
     # In-process (forced CPU device) workers, one per case; no mpirun.
     ("test_lowres.py", (), (), 1800),
