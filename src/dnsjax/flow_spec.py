@@ -148,28 +148,44 @@ class FlowSpec:
     ``step.scheme`` (the cylindrical family is scheme-dependent);
     ``None`` for flows without a wall-normal grid.
 
-    ``flow_module`` is the dotted path of the runtime flow module
-    exporting the stepping surface (``init_state``, ``get_stats``,
-    ``predict_and_fully_correct(_measured)``, ``step_cnab2(_measured)``,
-    ``set_dt`` / ``reset_ab2_kappa`` (the adaptive-dt hooks),
-    ``get_perturbation_energy``) and the initial-condition hooks
-    ``init_random_state(amplitude, smoothness, wall_smoothness,
-    wall_confinement, seed, mean_flow)`` and
-    ``init_localized_rolls(amplitude, width, wavelength)``, which
-    :mod:`dnsjax.ic.random_field` and :mod:`dnsjax.ic.localized_rolls`
-    call (the flow composes the core generators of its geometry with
-    what it adds itself, e.g. a total-field flow's laminar state) -- a
+    ``flow_module`` is the dotted path of the runtime flow module -- a
     string, so the spec stays JAX-free; consumers import it lazily (the
     ``__main__`` flow dispatch, the transient-growth driver,
-    :func:`dnsjax.flows.registry.flow_hook`).  One export is
-    **optional**: ``get_driving(state) -> dict[str, Array]``, the
-    wall-shear inference of the mean-mode driving from the
-    physical-basis state (the same contract as ``get_stats``), exported
-    only by flows that can apply one (``phys.driving`` /
+    :mod:`dnsjax.lowres`, :func:`dnsjax.flows.registry.flow_hook`).
+    The module exports:
+
+    - the stepping surface: ``flow`` (the flow instance the steppers
+      are bound to), ``init_state``, ``get_stats``,
+      ``predict_and_fully_correct(_measured)``,
+      ``step_cnab2(_measured)``, ``set_dt`` / ``reset_ab2_kappa`` (the
+      adaptive-dt hooks) and ``get_perturbation_energy``;
+    - the initial-condition hooks ``init_random_state(amplitude,
+      smoothness, wall_smoothness, wall_confinement, seed, mean_flow)``
+      and ``init_localized_rolls(amplitude, width, wavelength)``, which
+      :mod:`dnsjax.ic.random_field` and :mod:`dnsjax.ic.localized_rolls`
+      call (the flow composes the core generators of its geometry with
+      what it adds itself, e.g. a total-field flow's laminar state);
+    - on the cylindrical and annular geometries, the basis pair
+      ``to_solver_basis`` / ``from_solver_basis`` (the geometry's,
+      re-exported), which ``__main__`` requires there: a state that
+      enters the stepper in the wrong basis steps without error, only
+      wrongly;
+    - on a wall-bounded base-flow flow (``total_field`` false),
+      ``frozen_profile_flow(profile)``, the flow frozen about a given
+      profile, which the transient-growth driver linearizes about.
+
+    Two exports are **optional**.  ``get_driving(state) -> dict[str,
+    Array]`` is the wall-shear inference of the mean-mode driving from
+    the physical-basis state (the same contract as ``get_stats``),
+    exported only by flows that can apply one (``phys.driving`` /
     ``phys.block_mean_spanwise_velocity``).  It supplies the extra
     ``stats.dat`` column names and the ``t = t0`` row, which has no
     step behind it to report the applied value of; ``__main__`` reads
     it with ``getattr`` and falls back to no column.
+    ``CARRIED_FIELDS`` names the solver state's trailing slots past the
+    ``n_components`` physical ones (the pipe's spin-quad differences),
+    which ``from_solver_basis`` drops and ``outs.snapshot_embed_carry``
+    stores as the snapshot's ``carry/`` member; absent, there are none.
 
     ``n_components`` is the leading state-axis size (3 velocity
     components unless the flow carries more); the snapshot writer and
