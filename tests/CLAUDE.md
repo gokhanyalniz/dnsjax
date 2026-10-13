@@ -42,8 +42,17 @@ half of the same name in `lab/tests/`.
   `lab/tests/response/_common.py`.
 - A launch across two hosts fakes the second one with
   `_fake_host.py` (gloo or the MPI collectives alike).
+- A script covering core and lab flows is split in two of one name:
+  the shared runner in `tests/_<name>.py`, free of side effects at
+  import; the core rows in `tests/test_<name>.py`; the lab rows in
+  `lab/tests/test_<name>.py`, whose first import is
+  `import _repo  # noqa: F401`. A shared runner never branches on a
+  system name: it takes registry lists, spec fields or per-row hooks.
 
 ## Which script a change reaches
+
+Core and lab: `test_layering.py`: the core never names the lab
+(imports, system strings, lab-field access).
 
 Banded solve and Pallas kernel:
 - `test_banded_solver.py` (parity, whole tiles, cuda lowering, the

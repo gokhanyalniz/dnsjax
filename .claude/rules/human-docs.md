@@ -32,3 +32,7 @@ paths:
   `\lt`, or use a math block. A `$` directly after a hyphen or an
   en-dash does not open math.
 - Em-dashes stay: a spaced hyphen ` - ` used as a dash becomes ` — `.
+- `docs/pypi/README.md`, the README as PyPI shows it, is generated:
+  never edit it, and after any change to `README.md` rerun
+  `uv run python lab/scripts/release/pypi_readme.py` (CI's lint job
+  fails on a stale copy).

@@ -63,11 +63,12 @@ Never raise it merely because the development machine has moved on.
 Moving the floor touches five places, none of which derive from each
 other: `requires-python` and the classifiers in `pyproject.toml`, the
 `smoke` matrix in `.github/workflows/ci.yml`, the Python badge in
-`README.md`, and the Prerequisites line in `CLAUDE.md`. **Lowering** it
-additionally requires a real run under the new floor, in this order:
-`py_compile` the tree, import it, then run the offline suite.
-Source-level compatibility is necessary but not sufficient, and only a
-real run finds things like reliance on deferred annotation evaluation.
+`README.md`, and the Prerequisites line in the repository's root
+`CLAUDE.md`. **Lowering** it additionally requires a real run under the
+new floor, in this order: `py_compile` the tree, import it, then run
+the offline suite. Source-level compatibility is necessary but not
+sufficient, and only a real run finds things like reliance on deferred
+annotation evaluation.
 
 ## Lint and format
 
@@ -131,9 +132,10 @@ history go in a closing "Design notes" section of the module docstring.
 The human-facing documents — `README.md`, this file, the `docs/` pages,
 `tests/README.md`, `scripts/README.md`, the `examples/` READMEs and the
 lab's READMEs and `lab/docs/` pages — are updated in the same change
-that makes them wrong. They are written pointer-first: they link the module
-docstring that owns a detail rather than restating it, which is what
-keeps that affordable.
+that makes them wrong. They are written pointer-first: they link the
+module docstring that owns a detail rather than restating it, which is
+what keeps that affordable. `docs/pypi/README.md`, the README as PyPI
+shows it, is regenerated rather than edited (Releases, below).
 
 Nothing committed carries a placeholder: no `TODO(author)`, no draft
 block, no section waiting on a number. Content that cannot be finished
@@ -145,3 +147,39 @@ Imperative, sentence case, no prefix, and specific about what changed —
 `Refuse every stale twin stream, and price two costs honestly` rather
 than `fix streams`. Wrap the body at 72 columns and use it for the
 reasoning: what was wrong, and why this is the fix.
+
+## Releases
+
+A release holds the solver alone. The PyPI sdist and wheel, and the
+GitHub archive of the release tag that Zenodo keeps, leave out the lab
+and the files written for coding agents (`.gitattributes` and
+`[tool.uv.build-backend]` in `pyproject.toml`). Both forms install with
+uv: the archive with its `uv.lock` (`uv sync --locked`), the sdist
+without one. `main` cannot be released as it stands, since its
+`pyproject.toml` installs the lab with the solver, so each release is
+cut as a commit of its own, reachable only from its tag, by
+`lab/scripts/release/prepare_release.py`. With the version bumped in
+both `pyproject.toml` and `CITATION.cff` on `main`:
+
+```bash
+uv run python lab/scripts/release/prepare_release.py cut 0.2.0 --dry-run
+uv run python lab/scripts/release/prepare_release.py cut 0.2.0
+git push origin v0.2.0
+```
+
+`cut` strips the lab from `pyproject.toml`, relocks, dates the
+citation, pins the PyPI README's links to the tag, commits and tags.
+Pushing the tag runs `.github/workflows/release.yml`, which checks the
+artefacts and the archive, then publishes to PyPI once the `pypi`
+environment's reviewer approves and drafts the GitHub release.
+Publishing that draft is what has Zenodo archive it. Running the
+workflow by hand rehearses the build on TestPyPI.
+
+PyPI shows `docs/pypi/README.md`, the README with absolute links and
+plain-text math. Regenerate it after every change to `README.md`:
+
+```bash
+uv run python lab/scripts/release/pypi_readme.py
+```
+
+CI's lint job fails while it is stale.

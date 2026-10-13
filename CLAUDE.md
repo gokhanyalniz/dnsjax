@@ -108,6 +108,11 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
   the special case, and keep the specialised one where it wins.
 - Fix a problem at its source where possible; where not, make the
   exception explicit where it lives, with the reason.
+- Commit a reusable, valuable tool a session writes (a check, a
+  harness, a converter) rather than leave it in the scratchpad or
+  `~/.cache`: in `lab/scripts/<topic>/` (`scripts/` if a solver user
+  needs it), its docstring the manual, with a line in that directory's
+  script index and README, so a later session reruns it, not rebuilds it.
 
 ## Documentation rules
 
@@ -192,6 +197,25 @@ analysis/         snapshot API, transient_growth, snapshot_import
   solver through snapshots, not in a new solver parameter or runtime
   path.
 
+## Core and lab
+
+- One uv workspace, two packages: `dnsjax` (the root, released) and
+  `dnsjax-lab` (`lab/`, never released; its index: `lab/CLAUDE.md`).
+  `uv sync` installs both.
+- One way only: the core never imports or names the lab
+  (`tests/test_layering.py`). The lab plugs in through the
+  `dnsjax.flows` / `dnsjax.parameters` / `dnsjax.extensions` entry
+  points and may import core internals, so a core change runs both
+  suites.
+- A lab feature that needs the core adds or widens a seam the core's
+  own flows use too, in the same commit.
+- A release (PyPI's sdist and wheel; the tag's GitHub archive, which
+  Zenodo keeps) holds neither the lab nor any agent file (`CLAUDE.md`,
+  `.claude/`): a new kind of agent file gets a pattern in
+  `.gitattributes` and `pyproject.toml`'s `[tool.uv.build-backend]`.
+  `lab/scripts/release/prepare_release.py` cuts it; only the author
+  pushes the tag or publishes.
+
 ## Other notes
 
 - `.claude/rules/`, each loaded when you read, edit or write a file it
@@ -202,4 +226,5 @@ analysis/         snapshot API, transient_growth, snapshot_import
   human-facing docs), `agent-notes.md` (these notes).
 - Directory notes (`CLAUDE.md`): `tests/`, `scripts/`, in
   `src/dnsjax/`: `geometries/wall_bounded/`, `geometries/triply_periodic/`,
-  `flows/`, `analysis/`, and the lab's `lab/src/dnsjax_lab/twin/`.
+  `flows/`, `analysis/`; the lab's `lab/` (its index, scripts included)
+  and `lab/src/dnsjax_lab/twin/`.

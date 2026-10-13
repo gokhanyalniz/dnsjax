@@ -687,9 +687,9 @@ def run_integration(timeout: float) -> str | None:
     """End-to-end snapshot-lineage and resume-policy checks."""
     from dnsjax.snapshot_meta import read_snapshot_meta, read_snapshot_stats
 
-    # Reuse the random-smoke "clean integration" check for run 1.
+    # Reuse the smokes' "clean integration" check for run 1.
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from test_random_smoke import _check_run
+    from _smoke import check_run
 
     name = "resume lineage"
     base = tempfile.mkdtemp(prefix="resume_")
@@ -704,7 +704,7 @@ def run_integration(timeout: float) -> str | None:
         r1 = _run_dnsjax(work1, RUN1_ARGS, timeout)
         if r1.returncode != 0:
             return _fail("run1", r1)
-        _check_run(r1.stdout, "run1", 0.03, 0.01)  # raises on a bad run
+        check_run(r1.stdout, "run1", 0.03, 0.01)  # raises on a bad run
 
         idx1 = _snap_indices(work1)
         assert 0 in idx1, f"IC state00000.tar missing: {idx1}"

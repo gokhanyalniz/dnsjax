@@ -93,6 +93,14 @@ core/lab split):
 | `check_imports.py` | checks, without importing, that every `dnsjax` / `dnsjax_lab` import in the repository resolves |
 | `prose_scan.py` | lists the lab's vocabulary in the core's prose, for review |
 
+The release tooling, in [`scripts/release/`](scripts/release/) (how a
+release is cut: [`CONTRIBUTING.md`](../CONTRIBUTING.md#releases)):
+
+| Script | What it does |
+|---|---|
+| `prepare_release.py` | cuts a release as a commit and tag of its own: the lab taken out of `pyproject.toml`, `uv.lock` relocked without it, the citation dated and the PyPI README's links pinned to the tag; it pushes nothing |
+| `pypi_readme.py` | writes `docs/pypi/README.md`, the README as PyPI shows it, with absolute links and images and plain-text math; `--check` fails on a stale copy |
+
 ## Tests
 
 36 standalone scripts in [`tests/`](tests/), laid out like the
