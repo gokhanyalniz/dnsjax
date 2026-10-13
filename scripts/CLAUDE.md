@@ -1,23 +1,24 @@
 # Offline tools
 
 Each script's module docstring is its manual. Only
-`twin_spectral_maps.py`, `snapshot_figure.py` and `scaling_figure.py`
-need matplotlib: run them as
+`snapshot_figure.py`, `scaling_figure.py` and the lab's
+`twin_spectral_maps.py` need matplotlib: run them as
 `uv run --group plots python scripts/<name>.py` (`uv sync` alone does
-not install the `plots` group). The seeds in the benchmarks
-and diagnostics are fixed on purpose.
+not install the `plots` group). The lab's scripts are in
+`lab/scripts/`. The seeds in the benchmarks and diagnostics are fixed
+on purpose.
 
 - `snapshot_perturb.py`: inject a scaled single-mode perturbation into
   a snapshot (`[perturb]`).
-- `ensemble_setup.py`: JAX-free `harvest` / `build` / `build-twin` of
-  ensemble member trees from a snapshot archive.
-- `twin_postprocess.py`: rebuild a twin member's streams from its
-  snapshot pairs (`[recon]`).
-- `twin_spectral_maps.py`: `(λ, y)` maps, `(y, t)` / `(λ, t)`
-  histories, moment budgets, decorrelation fronts and growth-law
-  figures of the twin `(y, k)` streams over an ensemble.
-- `random_ic_calibrate.py`: score and sweep the random IC's `(y, k)`
-  shape against a recorded ensemble (`[calib]`).
+- `lab/scripts/ensemble_setup.py`: JAX-free `harvest` / `build` /
+  `build-twin` of ensemble member trees from a snapshot archive.
+- `lab/scripts/twin_postprocess.py`: rebuild a twin member's streams
+  from its snapshot pairs (`[recon]`).
+- `lab/scripts/twin_spectral_maps.py`: `(λ, y)` maps, `(y, t)` /
+  `(λ, t)` histories, moment budgets, decorrelation fronts and
+  growth-law figures of the twin `(y, k)` streams over an ensemble.
+- `lab/scripts/random_ic_calibrate.py`: score and sweep the random
+  IC's `(y, k)` shape against a recorded ensemble (`[calib]`).
 - `snapshot_figure.py`: velocity-plane figures and animations (the
   `docs/figures/` sources); `_figure_common.py` holds its JAX-free
   per-flow helpers.

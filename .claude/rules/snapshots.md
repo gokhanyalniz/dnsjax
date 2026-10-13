@@ -6,8 +6,10 @@ paths:
   - "src/dnsjax/{__main__,param_surface}.py"
   - "src/dnsjax/flows/registry.py"
   - "src/dnsjax/analysis/**/*.py"
+  - "lab/src/dnsjax_lab/analysis/**/*.py"
   - "lab/src/dnsjax_lab/twin/driver.py"
-  - "scripts/{snapshot_perturb,snapshot_figure,ensemble_setup,twin_postprocess}.py"
+  - "scripts/{snapshot_perturb,snapshot_figure}.py"
+  - "lab/scripts/{ensemble_setup,twin_postprocess}.py"
   - "tests/test_{snapshot,snapshot_export,snapshot_import,snapshot_perturb,resume}.py"
 ---
 

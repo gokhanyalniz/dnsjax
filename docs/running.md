@@ -127,8 +127,7 @@ fixed precedence: a supplied `init.snapshot` wins over everything, then
 run with no snapshot and no explicit mode starts from a random
 divergence-free field. The random builder takes
 `--init.random_amplitude` / `_smoothness` / `_seed`, the wall-normal
-pair `_wall_smoothness` / `_wall_confinement`, plus
-`_conformation_amplitude` where it applies; the roll builder adds
+pair `_wall_smoothness` / `_wall_confinement`; the roll builder adds
 `--init.localized_rolls_wavelength` to the amplitude and width shown
 above. On the two plane channels the random field can also perturb the
 $(k_x, k_z) = (0, 0)$ mean profile (`--init.random_mean_flow`, off by
@@ -149,15 +148,16 @@ Leave `--init.random_seed` unset and the run **draws one from the
 system entropy pool**, prints it with its source, and records it in the
 snapshot — so a batch of runs launched the same way explores different
 realizations, and any one of them replays exactly by passing its
-printed seed back. The same holds for `--twin.seed` and `--force.seed`.
+printed seed back. The same holds for any seed an extension section
+declares.
 A run that draws nothing (laminar, rolls, or a resume) never asks for
 entropy; one that would draw and cannot reach a source stops rather
 than falling back to a fixed value.
 
 ## Moving frame
 
-One default worth knowing: the pipes integrate in a frame translating at
-their laminar bulk velocity $1/2$, and plane-Poiseuille in one at $2/3$,
+One default worth knowing: the pipe integrates in a frame translating at
+its laminar bulk velocity $1/2$, and plane-Poiseuille in one at $2/3$,
 and their snapshots are stored in that frame; pass `--phys.u_grid 0` for
 the lab frame (see
 [Temporal discretization](numerics.md#temporal-discretization)).
@@ -229,18 +229,13 @@ a closure the test suite pins. The wall-bounded flows add per-wall
 shear stresses and bulk velocities under the names natural to the
 geometry (`tau'_s,b`/`tau'_s,t` and `Ub'_s`/`Ub'_n` in the channels,
 `tau'_z`/`tau'_th` in the pipe, inner/outer pairs in the annulus),
-primed on the flows that evolve a perturbation and unprimed on the
-four that integrate the total field. The viscoelastic flows report
-the solvent dissipation `D_s` in place of `D` and add the polymer
-work `W_p`, the elastic energy `E_p`, and the mean conformation
-trace `TrC`. A run holding a bulk velocity or a mean
+primed because every flow here evolves a perturbation (a total-field
+flow's are unprimed). A run holding a bulk velocity or a mean
 spanwise velocity fixed appends one further column per constrained
 direction (`-dPds'` / `-dPdn'` / `-dPdz'`): the mean-mode **forcing**
-the corrector applied over that step, positive when accelerating. Two
-optional binary streams — a spectral-mode probe stream and a
-stochastic-forcing log — are available through the `[probes]` and
-`[force]` sections; see
-[`src/dnsjax/extensions`](../lab/src/dnsjax_lab/extensions/README.md).
+the corrector applied over that step, positive when accelerating.
+Further streams come from extension sections (the lab's spectral-mode
+probes and stochastic forcing: [`lab/README.md`](../lab/README.md)).
 
 ### Reduced-resolution snapshots
 
@@ -258,7 +253,7 @@ fit on disk:
 Every `lowres.it_lowres` steps (counted like `outs.it_snapshot`) the
 run writes `lowres/lowres_<it>.tar`, the step count zero-padded to ten
 digits. The targets take the flow's own `res` names (`lowres.nz`,
-`lowres.nr` and `lowres.ntheta` on the pipes and the annulus). Each
+`lowres.nr` and `lowres.ntheta` on the pipe and the annulus). Each
 defaults to the run's own count, and a set one may not exceed it. Like
 `[outs]`, the section is inherited on resume; `--lowres.it_lowres 0`
 switches it off ([`configuration.md`](configuration.md)).

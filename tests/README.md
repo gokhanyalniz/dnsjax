@@ -1,7 +1,8 @@
 # Tests
 
-53 standalone scripts. Each one is a program with a `__main__` runner,
-runnable on its own:
+39 standalone scripts for the solver, and 36 more in
+[`lab/tests/`](../lab/tests/) for the repository's lab package. Each one
+is a program with a `__main__` runner, runnable on its own:
 
 ```bash
 uv run python tests/test_cartesian.py
@@ -37,10 +38,12 @@ platform, precision and device layout before importing anything from
 
 ## The pytest bridge
 
-`pytest_suite.py` is the only file pytest collects. It shells each
-script out as a subprocess, asserts a zero exit code, and surfaces the
-output tail on failure — the scripts stay authoritative, and `pytest`
-becomes a way to run them all with markers and a summary.
+`pytest_suite.py` is the only file pytest collects here, and
+`lab/tests/pytest_suite.py` the lab's counterpart; one `pytest` run
+collects both. Each shells its scripts out as subprocesses, asserts a
+zero exit code, and surfaces the output tail on failure — the scripts
+stay authoritative, and `pytest` becomes a way to run them all with
+markers and a summary.
 
 ```bash
 uv run pytest -m "not slow and not mpi"   # offline: no mpirun launch
@@ -61,8 +64,10 @@ Two markers:
 - **`slow`** — full solver integration runs, `dt` sweeps, or the
   published transient-growth values. Minutes each.
 
-Adding a test script means adding one row to `_SCRIPTS` in
-`pytest_suite.py`.
+Adding a test script means adding one row to `_SCRIPTS` in its
+suite's `pytest_suite.py`. A script covering both the solver's flows
+and the lab's is split in two of the same name, one in each suite,
+sharing a runner `tests/_<name>.py`.
 
 ## Running them well
 
@@ -82,11 +87,15 @@ variants; the claims the scripts back are mapped in
 | Area | Scripts (`test_` prefix dropped) |
 |---|---|
 | Banded solve and Pallas kernel | `banded_solver`, `banded_solver_sharded` |
-| Geometry operators and grids | `cartesian`, `cylindrical`, `annular`, `curved_pipe`, `viscoelastic`, `viscoelastic_pipe`, `integration`, `mean_mask`, `padding` |
+| Geometry operators and grids | `cartesian`, `cylindrical`, `annular`, `integration`, `mean_mask`, `padding` |
 | Stepping | `laminar_smoke`, `random_smoke`, `cnab2`, `temporal_order`, `adaptive`, `imm_continuity`, `energy_budget`, `autodiff`, `monochromatic`, `wall_normal_matvec`, `wall_time_stop`, `run_status` |
 | Parameters, bootstrap, device mesh, seeds | `param_surface`, `bootstrap`, `seeding`, `device_grid`, `host_placement`, `mpi_communicators` |
 | Initial conditions | `localized_rolls`, `rolls_smoke`, `mean_mode`, `snapshot_perturb` |
-| Snapshots, resume, analysis | `snapshot`, `resume`, `snapshot_import`, `snapshot_export`, `transient_growth`, `quasi_keplerian`, `lowres` |
-| Diagnostic streams | `probes`, `forcing`, `driving` |
-| Twin runs | `twin_unit`, `twin_driver`, `twin_budget`, `twin_analysis`, `twin_postprocess`, `twin_spectral_maps` |
-| Response analysis (`response/`) | `probes_reader`, `operator_tools`, `ensemble`, `lim`, `ssi` |
+| Snapshots, resume, analysis | `snapshot`, `resume`, `snapshot_import`, `snapshot_export`, `transient_growth`, `wedge`, `lowres` |
+| Diagnostic streams | `driving` |
+| The solver without the lab | `layering` |
+
+The lab's suite adds its flows' halves of the split scripts, the curved
+and viscoelastic flows' own operator tests, the probe and forcing
+streams, the twin runs and the response analysis
+([`lab/README.md`](../lab/README.md)).

@@ -3,9 +3,10 @@
 `dnsjax`: GPU-accelerated pseudo-spectral + finite-difference DNS of
 the 3D incompressible Navier-Stokes equations, in JAX. Two independent
 geometry families: triply-periodic (Kolmogorov) and wall-bounded
-(plane Couette and Poiseuille, pipe, curved pipe, Taylor-Couette,
-quasi-Keplerian, Dean, and the sPTT viscoelastic pipe and Dean). Human
-docs: `README.md`, `docs/`, `CONTRIBUTING.md`.
+(plane Couette and Poiseuille, pipe, Taylor-Couette; in the
+unreleased lab, `lab/`: curved pipe, quasi-Keplerian, Dean, and the
+sPTT viscoelastic pipe and Dean). Human docs: `README.md`, `docs/`,
+`CONTRIBUTING.md`.
 
 ## Commands
 
@@ -15,15 +16,17 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
 
 - `uv sync`: the environment, plus the `dnsjax` and `dnsjax-twin`
   console scripts in `.venv/bin`.
-- `uv run ruff check --fix` and `uv run ruff format src tests scripts`
-  (never a bare `ruff format`: it also rewrites the Python blocks in the
-  Markdown docs and the example notebook, laid out for reading). Lines
+- `uv run ruff check --fix` and `uv run ruff format src tests scripts
+  lab/src lab/tests lab/scripts` (never a bare `ruff format`: it also
+  rewrites the Python blocks in the Markdown docs and the example
+  notebook, laid out for reading). Lines
   are at most 79 columns. `prek.toml` (at commit) and
   `.claude/settings.json` (on each edited `.py`) run both.
 - `uv run pytest -m "not slow and not mpi"` (the offline loop, ~22
   min), `-m "not slow"` (adds the quick `mpirun` rows), `uv run pytest`
-  (everything); one script: `uv run python tests/<name>.py`. Which
-  script a change needs: `tests/CLAUDE.md`.
+  (everything), each over both suites; one script: `uv run python
+  tests/<name>.py` (`lab/tests/` for the lab's). Which script a change
+  needs: `tests/CLAUDE.md`.
 - Figures: `uv run --group plots python scripts/<name>.py`
   (`scripts/CLAUDE.md`).
 - A flow's parameter surface: `uv run dnsjax --help <system>` and
@@ -51,8 +54,8 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
 
   `mpirun -np 4 .venv/bin/dnsjax --dist.np0 2 --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 28`
 
-- Twin runs (Cartesian wall-bounded flows, fixed `dt`, launched like
-  the solver; `lab/src/dnsjax_lab/twin/CLAUDE.md`):
+- Twin runs (the lab's; Cartesian wall-bounded flows, fixed `dt`,
+  launched like the solver; `lab/src/dnsjax_lab/twin/CLAUDE.md`):
 
   `.venv/bin/dnsjax-twin --init.snapshot parent.tar --twin.e0 1e-6 --twin.seed 3 --stop.max_sim_time 10`
 
@@ -117,8 +120,8 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
   columns.
 - The human-facing docs change in the same pass as what they describe:
   `README.md`, `CONTRIBUTING.md`, `tests/README.md`, `scripts/README.md`,
-  `docs/*.md`, `examples/**/README.md`, and the READMEs of
-  `extensions/`, `twin/` and `analysis/response/` (their conventions:
+  `docs/*.md`, `examples/**/README.md`, and the lab's READMEs
+  (`lab/**/README.md`; their conventions:
   `.claude/rules/human-docs.md`).
 - Nothing committed carries a placeholder, an invisible marker or a
   claim whose backing artefact has not landed: no `TODO(author)`, no
@@ -142,7 +145,7 @@ run_status.py     RUNNING / FINISHED / STOPPED / TERMINATED, the stop request
 parameters.py     pydantic models; params / derived_params / padded_res
 flow_spec.py      FieldSpec / DeferredSpec / FlowSpec
 param_surface.py  per-flow CLI/TOML surfaces, public names, params dump
-extensions/       [probes] and [force]: sections and their streams
+extensions/       extension sections: registry, run-loop hooks
 sharding.py       the (np0, np1) mesh singleton, layouts, pytree registration
 fft.py            real FFTs, 3/2 dealiasing, shard_map reshards, padding
 operators.py      wavenumbers (from harmonics.py), FFT wrappers
@@ -156,11 +159,9 @@ snapshot.py       snapshot save/load (snapshot_meta.py: tar metadata)
 lowres.py         [lowres]: reduced-resolution snapshots (+ pressure)
 seeding.py        the seed contract
 ic/               random_field (the default IC), localized_rolls, mean_mode
-twin/             dnsjax-twin
 geometries/       wall_bounded/, triply_periodic/
 flows/            registry.py; per-family flow modules and specs/
-analysis/         snapshot API, transient_growth, snapshot_import,
-                  response/, twin/
+analysis/         snapshot API, transient_growth, snapshot_import
 ```
 
 ## Invariants everywhere
@@ -199,6 +200,6 @@ analysis/         snapshot API, transient_growth, snapshot_import,
   `stepping.md`, `parameters.md`, `initial-conditions.md`,
   `snapshots.md`, `diagnostics.md`, `pallas.md`, `human-docs.md` (the
   human-facing docs), `agent-notes.md` (these notes).
-- Directory notes (`CLAUDE.md`): `tests/`, `scripts/`, and in
+- Directory notes (`CLAUDE.md`): `tests/`, `scripts/`, in
   `src/dnsjax/`: `geometries/wall_bounded/`, `geometries/triply_periodic/`,
-  `flows/`, `twin/`, `analysis/`.
+  `flows/`, `analysis/`, and the lab's `lab/src/dnsjax_lab/twin/`.

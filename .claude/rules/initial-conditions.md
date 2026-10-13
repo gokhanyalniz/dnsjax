@@ -5,8 +5,11 @@ paths:
   - "lab/src/dnsjax_lab/twin/driver.py"
   - "lab/src/dnsjax_lab/extensions/forcing.py"
   - "src/dnsjax/analysis/transient_growth.py"
-  - "scripts/{snapshot_perturb,ensemble_setup,random_ic_calibrate}.py"
-  - "tests/test_{mean_mode,localized_rolls,rolls_smoke,random_smoke,seeding,snapshot_perturb,forcing}.py"
+  - "lab/src/dnsjax_lab/flows/**/*.py"
+  - "scripts/snapshot_perturb.py"
+  - "lab/scripts/{ensemble_setup,random_ic_calibrate}.py"
+  - "tests/test_{mean_mode,localized_rolls,rolls_smoke,random_smoke,seeding,snapshot_perturb}.py"
+  - "lab/tests/test_{localized_rolls,forcing}.py"
 ---
 
 # Initial conditions, seeds and the mean mode
@@ -17,7 +20,8 @@ paths:
   module docstrings. `init.random_smoothness` (laminar starts) and
   `twin.smoothness` (a turbulent parent, seeded below the minimal flow
   unit) are one law with deliberately different defaults: what `s`
-  sets, `ic/random_field.py`; the twin value per flow, `TwinParams`.
+  sets, `ic/random_field.py`; the twin value per flow,
+  `dnsjax_lab.twin.driver.TwinParams`.
 - Every seed defaults to unset, meaning "draw one": `init.random_seed`,
   `twin.seed`, `force.seed`, `lab/scripts/ensemble_setup.py --seed-base`.
   The contract (draw, agree across processes, print, record, refuse
@@ -44,5 +48,5 @@ paths:
     not zero them; their `u_s` mean, which carries the flux, stays
     zero.
 
-  Guards: `tests/test_mean_mode.py`, `test_localized_rolls.py`,
-  `test_forcing.py`, `test_snapshot_perturb.py`.
+  Guards: `tests/test_mean_mode.py`, `test_localized_rolls.py` (both
+  suites), `test_snapshot_perturb.py`, `lab/tests/test_forcing.py`.

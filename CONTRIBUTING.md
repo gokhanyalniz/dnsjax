@@ -7,9 +7,21 @@ uv sync
 ```
 
 That provisions the pinned Python, installs the dependencies and the
-`dnsjax` / `dnsjax-twin` console scripts, and puts `pytest`, `ruff` and
-`prek` in the dev environment. Figure scripts additionally need the
-`plots` group: `uv run --group plots python scripts/snapshot_figure.py`.
+`dnsjax` console script, and puts `pytest`, `ruff` and `prek` in the dev
+environment. Figure scripts additionally need the `plots` group:
+`uv run --group plots python scripts/snapshot_figure.py`.
+
+The repository is a
+[uv workspace](https://docs.astral.sh/uv/concepts/projects/workspaces/)
+of two packages sharing one lockfile and one `.venv`: `dnsjax`, the
+released solver at the root, and `dnsjax-lab` in `lab/`, which is
+developed alongside it but never released
+([`lab/README.md`](lab/README.md)). `uv sync` installs both, the lab in
+editable mode with its own console script, `dnsjax-twin`. The solver
+finds the lab only through its entry points and never imports it:
+`tests/test_layering.py` fails on any core file that names it. A change
+to the solver that a lab feature needs adds or widens a seam the
+solver's own flows use too, and is tested by both suites.
 
 ## Python versions
 
@@ -61,7 +73,7 @@ real run finds things like reliance on deferred annotation evaluation.
 
 ```bash
 uv run ruff check --fix
-uv run ruff format src tests scripts
+uv run ruff format src tests scripts lab/src lab/tests lab/scripts
 ```
 
 Line length is **79** for code and prose alike (the Markdown docs'
@@ -78,9 +90,10 @@ uv run prek install
 
 ## Tests
 
-Every test is a standalone script; `pytest` is a bridge over them. Why,
-how to run one, and what the `mpi` / `slow` markers mean:
-[`tests/README.md`](tests/README.md).
+Every test is a standalone script; `pytest` is a bridge over them,
+collecting the solver's suite (`tests/`) and the lab's (`lab/tests/`)
+together. Why, how to run one, and what the `mpi` / `slow` markers
+mean: [`tests/README.md`](tests/README.md).
 
 ```bash
 uv run pytest -m "not slow and not mpi"   # the offline loop
@@ -99,10 +112,11 @@ type-hint pass cannot change behaviour, and a test run that cannot tell
 ## Adding a flow system
 
 Two files: a `FlowSpec` under `src/dnsjax/flows/<family>/specs/`, added
-to that package's `SPECS` tuple, and the flow module it names. The
-surfaces, the dispatch and the analysis geometry sets all derive from
-the registry. The full recipe, including what a spec may and may not
-import: [`docs/extending.md`](docs/extending.md).
+to that package's `SPECS` tuple, and the flow module it names; a flow
+in another package registers its spec through an entry point instead.
+The surfaces, the dispatch and the analysis geometry sets all derive
+from the registry. The full recipe, including what a spec may and may
+not import: [`docs/extending.md`](docs/extending.md).
 
 New flows also need a row in `tests/test_random_smoke.py`, and one in
 `tests/test_laminar_smoke.py` when the flow has a closed-form laminar
@@ -116,8 +130,8 @@ reasons in a sentence or two; measurements, rejected alternatives and
 history go in a closing "Design notes" section of the module docstring.
 The human-facing documents — `README.md`, this file, the `docs/` pages,
 `tests/README.md`, `scripts/README.md`, the `examples/` READMEs and the
-three subpackage READMEs — are updated in the same change that makes
-them wrong. They are written pointer-first: they link the module
+lab's READMEs and `lab/docs/` pages — are updated in the same change
+that makes them wrong. They are written pointer-first: they link the module
 docstring that owns a detail rather than restating it, which is what
 keeps that affordable.
 
