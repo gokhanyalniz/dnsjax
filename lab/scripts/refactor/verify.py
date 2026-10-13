@@ -12,9 +12,9 @@ capture drives), captures it into ``WORK/cap-NAME`` (``capture.py``),
 compares that with the reference capture ``WORK/cap-REF``
 (``compare.py``, which receives every option after ``--``) and removes
 the worktree.  Everything is logged to ``WORK/logs/verify-NAME.log``.
-``--only`` passes a run/text filter to the capture, for a quick look at
-a subset.  Without a reference capture it only captures, which is how
-a refactor's baseline is made::
+``--only`` passes a run/text filter to the capture and the comparison,
+for a quick look at a subset.  Without a reference capture it only
+captures, which is how a refactor's baseline is made::
 
     verify.py main baseline                  # the reference, once
     verify.py HEAD step1                     # each step after it
@@ -67,13 +67,11 @@ def main() -> int:
     ap.add_argument("--work", type=Path, default="~/.cache/dnsjax-refactor")
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--only", default=None)
-    ap.add_argument("compare_options", nargs=argparse.REMAINDER)
-    a = ap.parse_args()
-    options = (
-        a.compare_options[1:]
-        if a.compare_options[:1] == ["--"]
-        else a.compare_options
-    )
+    # Split at the first ``--`` by hand: an ``argparse.REMAINDER``
+    # positional would also swallow the options given after NAME.
+    argv = sys.argv[1:]
+    cut = argv.index("--") if "--" in argv else len(argv)
+    a, options = ap.parse_args(argv[:cut]), argv[cut + 1 :]
     work = a.work.expanduser().resolve()
     tree, capture = work / f"wt-{a.name}", work / f"cap-{a.name}"
     ref = work / f"cap-{a.ref}"
@@ -113,6 +111,10 @@ def main() -> int:
             print(f"no reference {ref}: captured only", file=log)
             print(f"no reference {ref}: captured only")
             return 0
+        # A subset capture compares as that subset, or every reference
+        # entry it left out would count as missing.
+        if a.only and "--only" not in options:
+            options = [*options, "--only", a.only]
         return _run(
             [sys.executable, HERE / "compare.py", ref, capture, *options], log
         )
