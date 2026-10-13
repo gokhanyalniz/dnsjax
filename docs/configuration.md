@@ -18,12 +18,12 @@ names (a pipe has `--geo.lz`/`--res.nz`/`--res.nr`/`--res.ntheta` where a
 plane channel has `--geo.lx`/`--res.nx`/`--res.ny`/`--res.nz`, and the
 `[lowres]` resolution targets follow the same names), and per-flow
 defaults (the pipe's moving frame `u_grid = 0.5`, its scheme-dependent
-`grid_type`, the viscoelastic rheology values) are materialized before
-printing or recording. The parameters that must be known before JAX
-initializes — `dist.np0`, `dist.np1`, `dist.platform`, and
-`res.double_precision` — are never inherited from a snapshot, nor are the
-resume-decision fields `init.snapshot` and `init.force_resume` (recorded
-for lineage only), and the entire `solver` section is execution-only.
+`grid_type`) are materialized before printing or recording. The
+parameters that must be known before JAX initializes — `dist.np0`,
+`dist.np1`, `dist.platform`, and `res.double_precision` — are never
+inherited from a snapshot, nor are the resume-decision fields
+`init.snapshot` and `init.force_resume` (recorded for lineage only),
+and the entire `solver` section is execution-only.
 
 A layer can set a field but never unset it: a `None` (`--outs.it_stats
 None`) is indistinguishable from not setting the field at all. So every
@@ -33,13 +33,11 @@ command line overrides one set in `parameters.toml`. The cadences are:
 
 - `outs.it_stats`, `it_steps`, `it_snapshot` and `it_corrector`;
 - `lowres.it_lowres`;
-- `probes.it_probes` and `force.it_force`; a `0` here switches the
-  whole section off, whatever else it inherited;
-- the `[twin]` cadences.
+- an extension section's cadences (its `off_cadences`).
 
-A `0` is recorded as unset, so the next resume inherits "off". Three
-cadences have no off state: `outs.it_error_check`, `step.cfl_cadence`
-and `twin.it_energy`.
+A `0` is recorded as unset, so the next resume inherits "off". Two
+cadences have no off state: `outs.it_error_check` and
+`step.cfl_cadence`.
 
 Not every section is owned by the core parameter model. An
 **extension** registers a whole section of its own — parsed as
@@ -47,12 +45,14 @@ Not every section is owned by the core parameter model. An
 `--sample-toml`, validated strictly per flow (a section on a flow it
 does not apply to is an error like any other irrelevant key),
 optionally recorded into snapshot metadata, and optionally
-trajectory-defining. Two ship with the solver, `[probes]` and
-`[force]`; the analysis and preprocessing entry points register their
-own on the same shared surface (`[tg]` for the transient-growth CLI,
-`[perturb]` for `scripts/snapshot_perturb.py`, `[twin]` for
-`dnsjax-twin`). A section name colliding with a core one is rejected
-at registration, so the two namespaces cannot drift into each other.
+trajectory-defining. A plugin package registers its sections through
+the `dnsjax.extensions` entry point, as the repository's lab does
+(see [`extending.md`](extending.md)); the analysis and preprocessing
+entry points register their own on the same shared surface (`[tg]`
+for the transient-growth CLI, `[perturb]` for
+`scripts/snapshot_perturb.py`). A section name colliding with a core
+one is rejected at registration, so the two namespaces cannot drift
+into each other.
 
 `uv run dnsjax --help` shows the global parameters and the flow list,
 `--help <system>` one flow's full surface with per-field descriptions, and

@@ -5,8 +5,9 @@ paths:
   - "docs/**/*.md"
   - "examples/**/README.md"
   - "scripts/README.md"
-  - "src/**/README.md"
   - "tests/README.md"
+  - "lab/**/README.md"
+  - "lab/docs/**/*.md"
 ---
 
 # Human-facing docs

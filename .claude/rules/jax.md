@@ -3,6 +3,9 @@ paths:
   - "src/**/*.py"
   - "tests/**/*.py"
   - "scripts/**/*.py"
+  - "lab/src/**/*.py"
+  - "lab/tests/**/*.py"
+  - "lab/scripts/**/*.py"
 ---
 
 # Python conventions (JAX, sharding)

@@ -17,8 +17,8 @@ docstrings. The human overview: `README.md` here.
 - A resume never re-perturbs, and every `_TWIN_MATCH_KEYS` entry must
   match the recorded `twin.json`, a back-filled legacy value included
   (the `_TWIN_LEGACY_DEFAULTS` comment).
-- `analysis.twin.stored_fields` / `record_dtype` own the `(y, k)`
-  stream layouts, for the eager reader and for
+- `dnsjax_lab.analysis.twin.stored_fields` / `record_dtype` own the
+  `(y, k)` stream layouts, for the eager reader and for
   `lab/scripts/twin_spectral_maps.py`'s memory map alike.
 - The reference spectra are streams of their own (`*_ref`), but a
   member recorded before the split resumes writing them inside the

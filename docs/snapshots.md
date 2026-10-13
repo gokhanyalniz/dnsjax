@@ -9,8 +9,9 @@ snapshot. Start at the [README](../README.md) for the solver itself.
 A snapshot is a **single uncompressed tar archive** (format version 6)
 wrapping a **zarr3** store, a JSON metadata member (parameters, grid,
 lineage, and the writing code's git revision), and one contiguous chunk
-per state component (three velocity components, or nine for the
-viscoelastic flows). Each chunk is stored **in the solver's native
+per state component (the three velocity components, or every
+component a flow carrying more stores). Each chunk is stored **in the
+solver's native
 spectral layout** at true (unpadded) mode counts — saving, loading, and
 reading never transpose — and in **physical components** for every
 geometry: the cylindrical and annular families convert from the
@@ -42,47 +43,40 @@ complex data for `numpy.fromfile`.
 
 The stored field is the spectral **perturbation** $\mathbf{u}'$ for the
 base-flow systems (the laminar state is a zero array) and the **total**
-field for the force-driven ones: the curved pipe, Dean, viscoelastic
-Dean and the viscoelastic pipe. Each flow declares which
+field for a force-driven one. Each flow declares which
 (`FlowSpec.total_field`); `dnsjax.analysis` exposes the set as
 `TOTAL_FIELD_SYSTEMS`.
 
-The pipe family — pipe, curved pipe, viscoelastic pipe — can store one
-more array beside the state, `carry/`: two fields its default time
-stepper evolves from step to step rather than deriving them from the
-velocity (the `_cylindrical_stepping` module documents them). They are
+The pipe (and any flow built on its stepping) can store one more array
+beside the state, `carry/`: two fields its default time stepper evolves
+from step to step rather than deriving them from the velocity (the
+`_cylindrical_stepping` module documents them). They are
 solver-internal, and nothing that reads the state sees them. With them,
 a resume continues the trajectory to round-off. Without them, the solver
-re-derives both fields from the velocity, a one-off change of
-truncation size. That happens for a snapshot written with
+re-derives both fields from the velocity, a one-off change of truncation
+size. That happens for a snapshot written with
 `outs.snapshot_embed_carry = false` (two fields fewer per snapshot, a
-pipe snapshot's size lower by two fifths and a viscoelastic pipe's by
-two elevenths), for one a script wrote, and for any resume that starts
-a new trajectory, a re-grid included.
+pipe snapshot's size lower by two fifths), for one a script wrote, and
+for any resume that starts a new trajectory, a re-grid included.
 
 ### Other files in the same container
 
-Two more kinds of output use this format and its writer:
+The **reduced-resolution snapshots** of the `[lowres]` section
+(`lowres/lowres_<it>.tar`; see
+[Running](running.md#reduced-resolution-snapshots)) use this format and
+its writer. Each is a state at the reduced resolution, with its
+metadata describing the reduced field and a `lowres` entry naming the
+run's own resolution. On plane Couette and plane Poiseuille it can also
+hold a `pressure/` array beside the state, one component: the static
+pressure. These files are output, not checkpoints: `init.snapshot`
+refuses one.
 
-- The **reduced-resolution snapshots** of the `[lowres]` section
-  (`lowres/lowres_<it>.tar`; see
-  [Running](running.md#reduced-resolution-snapshots)). Each is a
-  state at the reduced resolution, with its metadata describing the
-  reduced field and a `lowres` entry naming the run's own resolution.
-  On plane Couette and plane Poiseuille it can also hold a `pressure/`
-  array beside the state, one component: the static pressure. These
-  files are output, not checkpoints: `init.snapshot` refuses one.
-  `dnsjax-twin` writes the same files for its reference state, and in
-  `lowres_delta/` for the difference field.
-- The 3-D spectra and budget **cubes** of `dnsjax-twin`
-  ([twin runs](../lab/src/dnsjax_lab/twin/README.md)). These hold real
-  `(field, y, k_z, k_x)` arrays, y-major like a state, with a metadata
-  `kind` naming what they are. Every field reader and `init.snapshot`
-  refuses them by that name; `dnsjax_lab.analysis.twin.read_cube` reads
-  them.
-
-A state snapshot carries no `kind`, so every file written before the
-field existed still reads as one.
+Another entry point may write arrays of its own in the same container
+(the lab's twin runs write 3-D spectra and budget cubes). Such an array,
+y-major like a state, carries a metadata `kind` naming what it is, and
+every field reader and `init.snapshot` refuses it by that name. A state
+snapshot carries no `kind`, so every file written before the field
+existed still reads as one.
 
 ## Resume and re-gridding
 
@@ -157,9 +151,9 @@ The companion `dnsjax.analysis.snapshot_ops` module provides `derivative`,
 `gradient`, `divergence`, `curl`, and `integrate` that reproduce the
 solver's *discrete* operators node-for-node, plus `to_physical` and
 `to_spectral` for moving a field between the two representations. On
-the curved pipe they carry its toroidal metric; how `integrate` splits
-it between the cross-section and the streamwise direction is in its
-docstring.
+a flow with a metric of its own they carry it (`GeometryInfo.metric`);
+how `integrate` splits one between the cross-section and the streamwise
+direction is in its docstring.
 
 Four more names round out the JAX-free API for the cases where the
 field data is not what you are after. `read_meta` returns a snapshot's
@@ -177,18 +171,17 @@ access side by side, the latter for stats keys such as `E'` or
 
 `dnsjax.analysis.snapshot_import` covers the reverse direction: packing
 a velocity field produced elsewhere (by another simulator, say) into a
-valid snapshot — velocity flows only, the nine-component viscoelastic
-state being readable but not importable.
+valid snapshot — for a flow whose state is the velocity alone.
 
 The importer is a library (not a CLI) and **assumes the field is already
 in dnsjax's native layout**: components leading, axes $(y, z, x)$ for the
 Cartesian and triply-periodic systems and $(r, \theta, z)$ for the
-cylindrical and annular flows (pipe, curved pipe, Taylor–Couette,
-quasi-Keplerian, Dean) — whose components are $(u_z, u_r, u_\theta)$ — so
+cylindrical and annular flows (pipe, Taylor–Couette) — whose
+components are $(u_z, u_r, u_\theta)$ — so
 any axis permutation and component reordering from the source code's
 conventions is the caller's first step. The field is what a snapshot of
 that flow stores ([What is stored](#what-is-stored)): the perturbation
-for a base-flow system, the total field for Dean and the curved pipe.
+for a base-flow system, the total field for a force-driven one.
 
 Two conventions to keep in mind. The resolutions are the solver's
 nominal (physical) mode counts *without* the 3/2 dealiasing expansion —
@@ -197,7 +190,7 @@ parameters — and every Fourier count must be **even**, so resample an
 odd-sized source axis before importing it. And every wall-bounded flow
 needs its wall-normal/radial grid points, **ascending** in dnsjax's
 convention: bottom wall $-1$ to top wall $+1$ (Cartesian), near-axis to
-the outer wall on $(0, 1]$ (the pipes), inner to outer radius (the
+the outer wall on $(0, 1]$ (the pipe), inner to outer radius (the
 annulus); the triply-periodic systems take no grid. Parameters
 go by the flow's public names, exactly as on the CLI:
 

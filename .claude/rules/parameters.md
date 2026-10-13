@@ -4,10 +4,15 @@ paths:
   - "src/dnsjax/flows/registry.py"
   - "src/dnsjax/flows/**/specs/*.py"
   - "src/dnsjax/extensions/__init__.py"
-  - "lab/src/dnsjax_lab/twin/driver.py"
   - "src/dnsjax/analysis/transient_growth.py"
+  - "lab/src/dnsjax_lab/parameters.py"
+  - "lab/src/dnsjax_lab/extensions/__init__.py"
+  - "lab/src/dnsjax_lab/twin/driver.py"
+  - "lab/src/dnsjax_lab/flows/**/specs/*.py"
   - "tests/**/*.py"
+  - "lab/tests/**/*.py"
   - "scripts/*.py"
+  - "lab/scripts/*.py"
 ---
 
 # Parameters
@@ -48,13 +53,14 @@ paths:
   `ParamExtension.off_cadences`; an all-or-none section also sets
   `reset_when_off`. A cadence whose unset means something else (the
   twin `*_ref`) keeps its `0` and is read through a helper
-  (`twin.driver.ref_cadence`).
+  (`dnsjax_lab.twin.driver.ref_cadence`).
 - What a resume never inherits from a snapshot (the JAX-setup fields,
   `res.double_precision`, `[solver]`, `init.snapshot` /
   `init.force_resume`): the `parameters.py` module docstring and
   `read_snapshot_params`.
-- Extension sections: `[probes]` and `[force]` are built in
-  (`extensions/__init__.py`); `[twin]` belongs to `dnsjax-twin`, `[tg]`
+- Extension sections: the core builds none in; the lab's `[probes]`
+  and `[force]` register through the `dnsjax.extensions` entry point
+  (`dnsjax_lab.extensions`). `[twin]` belongs to `dnsjax-twin`, `[tg]`
   to `analysis.transient_growth`, `[perturb]` to
   `scripts/snapshot_perturb.py`, `[recon]` to
   `lab/scripts/twin_postprocess.py`, `[calib]` to

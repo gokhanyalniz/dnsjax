@@ -21,7 +21,6 @@ in $y$) to about **2 %** or better:
 | Plane-Couette | $Re = 1000$ | $(\alpha, \beta) = (0.035,\ 1.60)$ | $\approx 1185$ | $\approx 117$ | Butler & Farrell 1992 |
 | Pipe | $Re = 3000$ | $m = 1$, $\alpha = 0$ | $649$ | $147$ | Schmid & Henningson 1994, p. 217 |
 | Taylor–Couette | $\eta = 0.881$, $Re_1 = 591$, $Re_2 = -2588$ | $n = 10$, $k = 1.994$ | $71.58$ | — | Maretzke, Hof & Avila 2014, table 3 |
-| Quasi-Keplerian | $\eta = 0.71$, $R_\Omega = -1.2$, $Re_1 = 10^4$ | $m = 4$, $k_z = 0$ | $13.04$ | $27 \tau_d$ | Shi et al. 2017, table III case I |
 
 Two further checks ride along: the centrifugally unstable
 Taylor–Couette case ($Re_1 = 100$, $Re_2 = 0$, $\eta = 1/2$) must come
@@ -55,8 +54,6 @@ The published values come from:
   Hagen–Poiseuille flow*, J. Fluid Mech. **277**, 197–225 (1994).
 - S. Maretzke, B. Hof and M. Avila, *Transient growth in linearly stable
   Taylor–Couette flows*, J. Fluid Mech. **742**, 254–290 (2014).
-- L. Shi, B. Hof, M. Rampp and M. Avila, *Hydrodynamic turbulence in
-  quasi-Keplerian rotating flows*, Phys. Fluids **29**, 044107 (2017).
 - S. A. Orszag, *Accurate solution of the Orr–Sommerfeld stability
   equation*, J. Fluid Mech. **50**, 689–703 (1971).
 
@@ -69,26 +66,22 @@ map to them as follows.
 | Claim | Pinned by |
 |---|---|
 | A stepped state's discrete divergence is round-off at any resolution | `tests/test_imm_continuity.py` |
-| On the toroidal pipe, where the metric makes the constraint iterative, that divergence instead tracks the corrector tolerance | `lab/tests/test_curved_pipe.py` |
-| The toroidal equation set reproduces its published reference, and $\kappa = 0$ reproduces the straight pipe | `lab/tests/test_curved_pipe.py` |
-| Curvature produces Dean vortices: the streamwise maximum moves to the outer wall and the flux drops under a fixed pressure gradient | `lab/tests/test_curved_pipe.py` |
 | The default formulation is second order in time in all three wall-bounded geometries, and beats the primitive one in absolute error *and* decay rate | `tests/test_temporal_order.py` |
 | Second-order temporal convergence, fixed and variable step | `tests/test_temporal_order.py` |
 | The default off-centred Crank–Nicolson weight stays second order, as accurate as the trapezoidal rule to within 25 % | `tests/test_temporal_order.py` |
 | $dE/dt = I - D$ closes to truncation order, pressure-gradient work included | `tests/test_energy_budget.py` |
-| Laminar states step at machine precision, every wall-bounded flow with a closed-form laminar state (all but the curved pipe) | `tests/test_laminar_smoke.py` |
+| Laminar states step at machine precision, every wall-bounded flow | `tests/test_laminar_smoke.py` |
 | Random initial conditions integrate through the full nonlinear path, every distinct stepping machinery | `tests/test_random_smoke.py` |
 | The Pallas banded kernel agrees with the dense reference solver | `tests/test_banded_solver.py`, `tests/test_banded_solver_sharded.py` |
 | Reverse-mode gradients of a step match a central difference, and the default corrector still refuses | `tests/test_autodiff.py` |
 | The banded kernel's adjoint matches the portable sweep's own autodiff, and composes inside the sharded solve | `tests/test_banded_solver.py` |
 | Triton lowering does not regress on GPU-less machines | `tests/test_banded_solver.py` (CUDA-lowering rows) |
-| Per-geometry operators and matvecs match independent NumPy constructions | `tests/test_cartesian.py`, `tests/test_cylindrical.py`, `tests/test_annular.py`, `lab/tests/test_viscoelastic.py`, `lab/tests/test_viscoelastic_pipe.py` |
+| Per-geometry operators and matvecs match independent NumPy constructions | `tests/test_cartesian.py`, `tests/test_cylindrical.py`, `tests/test_annular.py` |
 | Snapshots round-trip, resume across any device count, and carry lineage; a pipe-family resume continues the uninterrupted run to round-off | `tests/test_snapshot.py`, `tests/test_resume.py` |
-| Host-built arrays reach the devices without JAX's cross-process gather, at setup and at every forcing kick, in every flow family and the twin driver | `tests/test_host_placement.py` |
+| Host-built arrays reach the devices without JAX's cross-process gather, at setup, in every flow family | `tests/test_host_placement.py` |
 | A run spans nodes: each `np1` group stays on one node whatever order the launcher numbers the ranks in, and a two-host run reproduces the one-host statistics and snapshot | `tests/test_device_grid.py` |
 | Under the MPI collectives every device group a run uses has its communicator open before a collective can run off the MPI thread, on one host and across two | `tests/test_mpi_communicators.py` |
 | The JAX-free analysis API reproduces the solver's own discrete operators | `tests/test_snapshot_export.py` |
 | The $(k_x, k_z) = (0, 0)$ perturbation respects its conservation laws | `tests/test_mean_mode.py` |
-| The applied mean-mode driving column agrees with the wall-shear inference at converged resolution, and on the toroidal pipe with its whole mean-momentum balance | `tests/test_driving.py`, `lab/tests/test_curved_pipe.py` |
-| A zero-energy twin perturbation reproduces the reference bit-for-bit, every stream included | `lab/tests/test_twin_driver.py` |
+| The applied mean-mode driving column agrees with the wall-shear inference at converged resolution | `tests/test_driving.py` |
 | Quadrature weights and interpolation matrices | `tests/test_integration.py` |

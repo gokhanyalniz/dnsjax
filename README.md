@@ -12,9 +12,9 @@ of the 3D incompressible Navier–Stokes equations, written in
 Periodic directions are **pseudo-spectral** (Fourier); up to one
 wall-bounded direction uses **banded finite differences**, where an
 **influence-matrix method** reconciles incompressibility with the wall
-boundary conditions. Ten flow systems across four geometries share one
-stepping core. The same code works on **CPUs and GPUs**, and distributes
-across many.
+boundary conditions. Five flow systems across four geometries share one
+stepping core, and further flows plug in without editing it. The same
+code works on **CPUs and GPUs**, and distributes across many.
 
 <a id="fig-planes"></a>
 <p align="center">
@@ -44,6 +44,7 @@ plane by itself.</a>
 [Extending](#extending) ·
 [Limitations](#limitations) ·
 [References](#references) ·
+[The lab](#the-lab) ·
 [License and citation](#license-and-citation) ·
 [Acknowledgements](#acknowledgements) ·
 [Use of AI](#use-of-ai)
@@ -62,15 +63,13 @@ plane by itself.</a>
 - **Machine-precision discrete incompressibility, by default** — a
   stepped state's divergence sits at round-off *at any resolution*,
   with less operator storage than in a primitive-variable formulation
-  (also available as an option). The one exception is the toroidal
-  pipe, whose metric couples azimuthal modes: there the constraint holds
-  at the corrector's fixed point, hence to the corrector tolerance.
-- **Ten flow systems across four geometries**, all on one stepping core,
-  including two nine-component viscoelastic (sPTT) flows.
-- **Three analyses built on the solver itself** — non-modal optimal
-  growth, lockstep twin runs for perturbation growth, and three
-  interchangeable routes from a turbulent run to a data-driven linear
-  operator.
+  (also available as an option).
+- **Five flow systems across four geometries**, all on one stepping
+  core; a package of your own adds flows, parameter fields and run-loop
+  sections through entry points, without editing the solver.
+- **Non-modal optimal growth built on the solver itself** — linear
+  transient growth about an arbitrary wall-normal profile, reusing the
+  solver's own linear step mode by mode.
 - **Post-processing that needs no solver** — snapshots are ordinary tar
   archives wrapping a zarr3 store, and the reading API imports nothing
   but NumPy.
@@ -131,12 +130,7 @@ itself), and the output streams, see
 | Flow | Geometry | Laminar base / driving | Defining controls |
 |---|---|---|---|
 | **Pipe** | cylindrical | $U_z = 1 - r^2$, pressure-driven | `re`, axial length `lz` |
-| **Curved pipe** | cylindrical (toroidal) | uniform body force on a pipe bent onto a circle, total field; no closed-form laminar state | `re`, `curvature`, `lz` |
-| **Viscoelastic pipe** | cylindrical (sPTT) | pressure-driven, 9-component total field | `el`, `wi`, `beta`, `epsilon`, `kappa`, `lz` |
 | **Taylor–Couette** | annular | $U_\theta = A_0 r + B_0/r$, wall rotation | `re1`, `re2`, `eta`, `lz` |
-| **Quasi-Keplerian** | annular | $U_\theta = A_0 r + B_0/r$, Rayleigh-stable co-rotation | `re1`, `r_omega`, `eta`, `lz` |
-| **Dean** | annular | azimuthal body force (a pressure-driven *curved* channel), total field | `re`, `eta`, `lz` |
-| **Viscoelastic Dean** | annular (sPTT) | azimuthal body force (a pressure-driven *curved* channel), 9-component total field | `el`, `wi`, `beta`, `epsilon`, `kappa`, `delta`, `lz` |
 | **Plane-Poiseuille** | Cartesian | $U = 1 - y^2$, pressure-driven | `re`, `lx`, `lz`, `tilt_degree` |
 | **Plane-Couette** | Cartesian | $U = y$, wall-driven | `re`, `lx`, `lz`, `tilt_degree` |
 | **Kolmogorov** | triply-periodic | $U = \sin(2\pi y / L_y)$, sine body force | `re`, `lx`, `lz`, `tilt_degree` |
@@ -202,7 +196,7 @@ machine, the method, the tables and that breakdown.
 
 ## Validation
 
-The optimal-growth module reproduces published values for all five of
+The optimal-growth module reproduces published values for all four of
 its flows to about 2 % or better, and the rest of the suite pins the
 discrete divergence, the energy budget, the temporal order, the banded
 kernel against a dense reference, and the analysis API against the
@@ -253,7 +247,6 @@ in [`docs/validation.md`](docs/validation.md).
 |---|---|
 | **Banded-LU GPU kernel** | $O(N_y p)$ factors instead of dense $O(N_y^2)$, with a dense reference solver; checked in interpret mode *and* by lowering to CUDA on GPU-less machines |
 | **Differentiable time steps** | `jax.grad` through a step, opt-in: a fixed-count corrector replaces the one construct reverse mode cannot traverse, and the banded GPU kernel carries a custom adjoint — [docs/differentiability.md](docs/differentiability.md) |
-| **Twin-run perturbation growth** | a reference snapshot and a perturbed copy stepped in lockstep, streaming difference-field energy, $y$-resolved spectra with the matching budget, $(k_z, k_x)$ spectra, and subsampled $(y, k_z, k_x)$ cubes of both — [twin/](lab/src/dnsjax_lab/twin/README.md) |
 | **Optimal-growth analysis** | linear optimal energy growth $G(t)$ about an arbitrary wall-normal profile, reusing the solver's own linear step per mode — [docs/validation.md](docs/validation.md#non-modal-optimal-growth-against-published-values) |
 | **Two-axis device mesh** | $(n_{p0}, n_{p1})$ with an in-FFT reshard pipeline — [docs/scaling.md](docs/scaling.md#parallelization) |
 | **A memory–throughput dial** | `solver.rhs_transform_chunks` splits the batched inverse transform $k$ ways, cutting its working set $k$-fold at identical results |
@@ -266,7 +259,6 @@ in [`docs/validation.md`](docs/validation.md).
 | **Crash-consistent diagnostics** | buffered streams flushed before snapshots and on termination; a NaN or inf aborts naming the quantity and writes no snapshot of the broken state |
 | **Graceful shutdown** | an ISO 8601 wall-time budget ends the run cleanly, final snapshot included, before a queue kills it |
 | **Laminarization auto-stop** | a run ends once the perturbation energy falls below a threshold |
-| **Response and identification** | record spectral modes, drive them with white-in-time kicks, identify a data-driven generator three interchangeable ways — [response/](lab/src/dnsjax_lab/analysis/response/README.md) |
 
 ## Documentation
 
@@ -279,21 +271,18 @@ in [`docs/validation.md`](docs/validation.md).
 | [`docs/snapshots.md`](docs/snapshots.md) | the snapshot format, resume and re-gridding, the JAX-free API, the importer |
 | [`docs/validation.md`](docs/validation.md) | what is checked against what, and which test pins each claim |
 | [`docs/differentiability.md`](docs/differentiability.md) | what differentiates through a step, the two opt-in knobs, the banded solve's adjoint |
-| [`docs/extending.md`](docs/extending.md) | adding a flow system |
+| [`docs/extending.md`](docs/extending.md) | adding a flow system, in this package or from your own |
 | [`docs/cpu-collectives.md`](docs/cpu-collectives.md) | routing multi-process CPU collectives through MPI |
 | [`tests/README.md`](tests/README.md) | how the suite is laid out and how to run it |
 | [`scripts/README.md`](scripts/README.md) | the offline tools: figures, benchmarks, ensembles, post-processing |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | setup, lint, tests, adding a flow, commit style |
-| [`src/dnsjax/extensions`](lab/src/dnsjax_lab/extensions/README.md) | the `[probes]` and `[force]` runtime streams |
-| [`lab/src/dnsjax_lab/analysis/response`](lab/src/dnsjax_lab/analysis/response/README.md) | probe stream → turbulent mean → linear operator → identification |
-| [`lab/src/dnsjax_lab/twin`](lab/src/dnsjax_lab/twin/README.md) | the `dnsjax-twin` driver, its streams and its ensembles |
 
 Field-by-field parameter documentation lives in the code, rendered per
 flow by `dnsjax --help <system>` and `dnsjax --sample-toml <system>`.
 
 ## Testing
 
-53 standalone scripts under `tests/`, run directly
+39 standalone scripts under `tests/`, run directly
 (`uv run python tests/test_cartesian.py`) or through a pytest bridge that
 shells each one out as a subprocess. They pin the solvers and operators
 against independent constructions; the physics (laminar fixed points at
@@ -307,13 +296,15 @@ Several launch real `mpirun` multi-device runs; none needs a GPU. See
 ## Extending
 
 Adding a flow system on an existing geometry is a two-file operation: a
-**`FlowSpec`** under `src/dnsjax/flows/<family>/specs/`, added to that
-package's `SPECS` tuple, and the flow module it names. Nothing else is
-edited — the `phys.system` literal, the `--help` and `parameters.toml`
-surfaces, `--sample-toml`, the snapshot metadata surface, the stepping
-dispatch and the analysis package's geometry sets all derive from the
-registry and extend themselves. A flow with a metric of its own adds a
-geometry module as well, as the curved pipe did. See
+**`FlowSpec`** and the flow module it names — in this package, under
+`src/dnsjax/flows/<family>/specs/`, or in a package of your own that
+registers its specs through the `dnsjax.flows` entry point. Nothing
+else is edited — the `phys.system` literal, the `--help` and
+`parameters.toml` surfaces, `--sample-toml`, the snapshot metadata
+surface, the stepping dispatch and the analysis package's geometry sets
+all derive from the registry and extend themselves. A flow with a
+metric of its own adds a geometry module as well, and parameter fields
+and run-loop sections plug in the same way. See
 [`docs/extending.md`](docs/extending.md).
 
 ## Limitations
@@ -332,15 +323,8 @@ geometry module as well, as the curved pipe did. See
   channels, whose mean-mode conservation laws are established; every
   other flow declares the field and refuses it with its own message
   rather than appearing to offer something it does not implement.
-- **The viscoelastic laminar states are exact only at $\epsilon = 0$.**
-  At the default $\epsilon = 10^{-3}$ the sPTT `start_from_laminar`
-  profile does not balance momentum exactly, so those two flows carry a
-  small residual and their laminarization check cannot fire. Fixing it
-  needs a shooting solve; the size of the discrepancy is recorded in the
-  flow modules.
 - **Resume requires matching precision.** Device count, resolution and
   grid all re-grid on load; a single/double mismatch is rejected.
-- **`dnsjax-twin` is Cartesian wall-bounded, fixed step.**
 - **CPU collectives over MPI are untested on macOS**, where the library
   search cannot fire — [docs/cpu-collectives.md](docs/cpu-collectives.md).
 
@@ -379,9 +363,16 @@ The numerics follow these references:
 - J. A. C. Weideman and S. C. Reddy, *A MATLAB differentiation matrix suite*,
   ACM Trans. Math. Softw. **26**(4), 465–519 (2000). Differentiation and
   interpolation matrices.
-- N. Phan-Thien and R. I. Tanner, *A new constitutive equation derived from
-  network theory*, J. Non-Newtonian Fluid Mech. **2**(4), 353–365 (1977). The
-  (simplified) Phan-Thien–Tanner viscoelastic model.
+
+## The lab
+
+This repository also holds [`lab/`](lab/README.md), a second package
+developed alongside the solver and never released with it: further
+flows (the curved pipe, quasi-Keplerian, Dean and two viscoelastic
+flows), lockstep twin runs, runtime probe and forcing streams, and
+response analysis. It plugs into the solver through the same entry
+points a package of your own would use, and `uv sync` installs it into
+the same environment.
 
 ## License and citation
 

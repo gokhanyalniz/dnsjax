@@ -2,6 +2,7 @@
 paths:
   - "src/dnsjax/{timestep,adaptive,rhs,__main__}.py"
   - "src/dnsjax/geometries/**/*.py"
+  - "lab/src/dnsjax_lab/geometries/**/*.py"
   - "lab/src/dnsjax_lab/twin/driver.py"
   - "src/dnsjax/analysis/transient_growth.py"
   - "tests/test_{cnab2,temporal_order,adaptive,autodiff,imm_continuity}.py"
@@ -22,9 +23,9 @@ paths:
   reverse-differentiates. It is refused with `split_corrector` and
   forced to 0 by the transient-growth driver, and it turns the
   corrector error from a verdict into a diagnostic, so both drivers
-  (`__main__.py`, `twin/driver.py`) gate their loop guard, their
-  closing line and their exit code (`run_status.EXIT_CORRECTOR`) on
-  it.
+  (`__main__.py`, `dnsjax_lab.twin.driver`) gate their loop guard,
+  their closing line and their exit code (`run_status.EXIT_CORRECTOR`)
+  on it.
 - "corrector failed to converge" at a *low* CFL is the corrector's
   contraction limit: reduce `dt`; it is not a blow-up. A correction
   that stalls at one value pass after pass, and keeps stalling as `dt`

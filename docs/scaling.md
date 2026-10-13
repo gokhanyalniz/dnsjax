@@ -23,9 +23,8 @@ arithmetic), at reduced accuracy. Assuming the default 3/2 dealiasing and
 the default backends:
 
 - **Spectral state** — exactly $n_c$ fields, with $n_c = 3$ velocity
-  components (9 for the viscoelastic flows, and 2 more for the pipe
-  family — pipe, curved pipe, viscoelastic pipe — whose default time
-  stepper carries two further fields across steps): one component is
+  components (2 more for the pipe, whose default time stepper carries
+  two further fields across steps): one component is
   $(n_x/2) \cdot n_y \cdot (n_z - 1)$ complex numbers ($n_y - 1$ in place
   of $n_y$ for the periodic box), i.e.
   $\approx n_x n_y n_z$ reals. The time stepper holds about three further
@@ -34,30 +33,25 @@ the default backends:
   default scheme's, whose corrector branch XLA keeps reserved).
 - **Nonlinear term, every step** — the rotational form inverse-transforms a
   6-field batch (velocity + vorticity) to the oversampled grid, multiplies
-  pointwise, and forward-transforms the 3 product fields (the curved
-  pipe sends 8: its curvature terms ride the same batch rather than
-  paying for transforms of their own). Counting the held
+  pointwise, and forward-transforms the 3 product fields. Counting the
+  held
   fields, the products, and the one to two batch-sized intermediates inside
   the transforms, the working set is $W \approx 15\text{–}21$ oversampled
   fields; each oversampled field is $(3/2)^2 = 2.25$ fields for
   wall-bounded systems (the wall-normal direction is never oversampled) and
   $(3/2)^3 = 3.375$ fields for triply-periodic ones. How much of this
   coexists is decided by XLA's buffer reuse, so treat the upper end as the
-  sizing estimate. The viscoelastic right-hand side instead transforms a
-  36-field batch with 9 outputs, and `solver.rhs_transform_chunks = k` —
-  the knob applies to every flow's batch, but bites here — cuts its
-  transform-stage share $k$-fold at identical results. Both viscoelastic
-  flows share that right-hand side.
+  sizing estimate. `solver.rhs_transform_chunks = k` cuts the batch's
+  transform-stage share $k$-fold at identical results; it bites where a
+  flow's batch is several times the velocity's.
 - **Wall-normal operators** — the Pallas backend stores no-pivot banded LU
   factors: $(2p + 1) \cdot n_y$ reals per matrix per Fourier mode, with the
   half-bandwidth $p$ equal to `fd_order`, over the $(n_z - 1)(n_x/2)$ mode
   plane — that is $m (2p + 1)/2$ fields for $m$ banded matrices, the one
   term that grows with `fd_order`. Here $m = 2$ for
-  plane-Couette/Poiseuille, $3$ for the pipe, curved pipe,
-  Taylor–Couette, quasi-Keplerian, and Dean, and $9$ for the
-  viscoelastic flows (the same $3$ plus the six conformation Helmholtz
-  matrices), plus $v$ field-sized boundary-response vectors ($v/2$
-  fields): $v = 2$, or $3$ for the pipe family. The legacy primitive
+  plane-Couette/Poiseuille and $3$ for the pipe and Taylor–Couette, plus
+  $v$ field-sized boundary-response vectors ($v/2$ fields): $v = 2$, or
+  $3$ for the pipe. The legacy primitive
   scheme (`res.consistent_imm = false`) stores one more matrix in the
   curvilinear geometries and up to six response vectors. Switching to
   `solver.backend = "dense"` replaces $(2p + 1)$ by $n_y$ per matrix — the
@@ -84,12 +78,11 @@ Summing these, the leading-order total per device is
   \, \frac{n_x n_y n_z}{2^{27} \, n_{p0} n_{p1}} \ \text{GiB},
 ```
 
-with $W \approx 15\text{–}21$ as above (for the viscoelastic flows,
-$W \approx 45 + 72/k$ with $k$ = `rhs_transform_chunks`) and
-$(n_c, m, v) = (3, 2, 2)$ for the plane flows, $(5, 3, 3)$ for the pipe
-and the curved pipe, $(3, 3, 2)$ for Taylor–Couette, quasi-Keplerian,
-and Dean, $(11, 9, 3)$ for the viscoelastic pipe, and $(9, 9, 2)$ for
-viscoelastic Dean. The sum is an upper estimate —
+with $W \approx 15\text{–}21$ as above and $(n_c, m, v) = (3, 2, 2)$
+for the plane flows, $(5, 3, 3)$ for the pipe and $(3, 3, 2)$ for
+Taylor–Couette (the lab's flows:
+[`lab/docs/numerics.md`](../lab/docs/numerics.md#conventions)). The sum
+is an upper estimate —
 XLA's buffer reuse typically realizes less — and halves at single
 precision. Off the stepping path, a snapshot write reshards the state
 onto an I/O layout before moving each device's bytes directly to disk
@@ -112,8 +105,8 @@ streamwise, **wn** wall-normal, **sh** shearwise, **sp** spanwise.
 |---|---|---|---|---|---|
 | Triply-periodic (Kolmogorov) | $(u_x, u_y, u_z)$ = (sw, sh, sp) | $[y, z, x]$ | $[k_y, k_z, k_x]$ | $y$ / $k_z$ | $z$ / $k_x$ |
 | Cartesian (plane-Poiseuille/Couette) | $(u_x, u_y, u_z)$ = (sw, wn, sp) | $[y, z, x]$ | $[y, k_z, k_x]$ | $y$ / $k_z$ | $z$ / $k_x$ |
-| Cylindrical (pipe, curved pipe, viscoelastic pipe) | $(u_z, u_r, u_\theta)$ = (sw, wn, sp) | $[r, \theta, z]$ | $[r, k_\theta, k_z]$ | $r$ / $k_\theta$ | $\theta$ / $k_z$ |
-| Annular (Taylor–Couette, quasi-Keplerian, Dean, viscoelastic Dean) | $(u_z, u_r, u_\theta)$ = (**sp**, wn, **sw**) | $[r, \theta, z]$ | $[r, k_\theta, k_z]$ | $r$ / $k_\theta$ | $\theta$ / $k_z$ |
+| Cylindrical (pipe) | $(u_z, u_r, u_\theta)$ = (sw, wn, sp) | $[r, \theta, z]$ | $[r, k_\theta, k_z]$ | $r$ / $k_\theta$ | $\theta$ / $k_z$ |
+| Annular (Taylor–Couette) | $(u_z, u_r, u_\theta)$ = (**sp**, wn, **sw**) | $[r, \theta, z]$ | $[r, k_\theta, k_z]$ | $r$ / $k_\theta$ | $\theta$ / $k_z$ |
 
 Each `np0` / `np1` cell reads *physical axis* / *spectral axis*.
 Velocity components are stored in `(streamwise, wall-normal, spanwise)`
@@ -446,7 +439,7 @@ all four GPUs, no launcher:
   the fraction (`export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9`) when it
   needs more of the device. `solver.rhs_transform_chunks` shrinks the
   transform transient at the cost of more FFT dispatches, which makes it
-  the knob for a run that does not fit — chiefly the viscoelastic flows.
+  the knob for a run that does not fit.
 - **Pallas tile.** The defaults (2, 32) were tuned on an H100 SXM, which
   has the same 132 streaming multiprocessors as an H200 but less memory
   bandwidth (3.35 against 4.8 TB/s), so they are where a `--tiles` sweep

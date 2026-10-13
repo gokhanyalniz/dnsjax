@@ -4,27 +4,31 @@ Each module's docstring is its manual. `_base.py` is the shared layer
 (`apply_y_matrix`, the basis maps, `extract_mean_mode(s)`,
 `pad_base_flow`, `frozen_profile_flow`, `build_wall_bounded_stepper`);
 `cartesian.py`, `cylindrical.py` and `annular.py` are the geometries.
-The pipe's stepping is `_cylindrical_stepping.py`, shared by the
-straight, curved and viscoelastic pipes; `cylindrical_curved.py` adds
-the toroidal metric (its docstring is the worked example of a new
-metric); `_*_primitive_imm.py` hold the legacy `(v, p)` path
-(`res.consistent_imm = False`); `_viscoelastic_*.py` and
+The pipe's stepping is `_cylindrical_stepping.py`, shared with the
+lab's curved and viscoelastic pipes; `_*_primitive_imm.py` hold the
+legacy `(v, p)` path (`res.consistent_imm = False`). The lab's
+geometry modules (`lab/src/dnsjax_lab/geometries/wall_bounded/`):
+`cylindrical_curved.py` adds the toroidal metric (its docstring is the
+worked example of a new metric); `_viscoelastic_*.py` and
 `*_viscoelastic.py` are the sPTT extension. The two shared stepping
-modules import neither geometry (guard: `test_no_cross_geometry_import`).
+modules (`_cylindrical_stepping.py`, the lab's
+`_viscoelastic_stepping.py`) import neither geometry (the latter's
+guard: `test_no_cross_geometry_import` in `lab/tests/`).
 
 ## Component basis (cylindrical, annular)
 
 - The state is carried in the solver basis `u_± = u_r ± i u_θ` (plus
   the conformation spin components), and so are the RHS, the cnab2
   carry and every stepper interior. Everything outside the stepper
-  (snapshots, diagnostics, probes, forcing, ICs, `dnsjax.analysis`,
+  (snapshots, diagnostics, extension streams, ICs, `dnsjax.analysis`,
   the TG export) sees physical `(u_z, u_r, u_θ)` (+ tensor).
 - A state crosses once, never back: `_base.to_pm_basis` /
   `from_pm_basis`, re-exported by each flow module as
-  `to_solver_basis` / `from_solver_basis` (9 components:
+  `to_solver_basis` / `from_solver_basis` (9 components: the lab's
   `_viscoelastic_common.to_spin_basis` / `from_spin_basis`).
-  `__main__` owns the field-level crossings; `extensions/probes.py`
-  and `forcing.py` convert their own mode columns. An unconverted
+  `__main__` owns the field-level crossings; the lab's
+  `dnsjax_lab.extensions.probes` and `.forcing` convert their own mode
+  columns. An unconverted
   state steps without error, just wrong; templates for converting a
   freshly built one: `__main__`'s post-IC line,
   `transient_growth._linear_step`.
@@ -107,8 +111,9 @@ modules import neither geometry (guard: `test_no_cross_geometry_import`).
   has no other consumer. It is not bit-identical: its guards are the
   ones `cylindrical._build_A_base` names, not the laminar smoke.
 
-## Curvature (toroidal pipe)
+## Metric flows (the lab's toroidal pipe)
 
-- Zero any source added to the `L_v,mod` solve on the wall row: that
-  row is a Dirichlet identity, so the RHS value there becomes `u_r` at
-  the wall and the corrector stops converging.
+- Zero any source added to the `L_v,mod` solve on the wall row (a
+  `divergence_defect` hook's included): that row is a Dirichlet
+  identity, so the RHS value there becomes `u_r` at the wall and the
+  corrector stops converging.

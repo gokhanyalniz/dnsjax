@@ -21,7 +21,7 @@ equations,
 \qquad \nabla \cdot \mathbf{u} = 0 .
 ```
 
-Most systems evolve the **perturbation** $\mathbf{u}'$ about an analytical
+Every flow here evolves the **perturbation** $\mathbf{u}'$ about an analytical
 laminar profile $\mathbf{U}$, using the **rotational form** of the nonlinear
 term,
 
@@ -33,50 +33,10 @@ term,
 ```
 
 in which the base-flow self-interaction is a pure gradient absorbed by the
-pressure. The force-driven systems instead integrate the **total** field
-with a mean-mode body force: azimuthal for Dean and viscoelastic Dean,
-streamwise for the viscoelastic pipe and the curved pipe.
-
-The **curved pipe** is the one system whose metric is not the identity: a
-pipe bent onto a circle of radius $R_c$, with curvature
-$\kappa = a/R_c$ (`geo.curvature`) and zero torsion, whose scale factors
-are $(1, r, h)$ with $h = 1 + \kappa r\cos\theta$. It solves the same
-equations in that metric, and it does so on the *straight* pipe's
-operators: carrying $h u_s$ in place of $u_s$ leaves the curl, the
-pressure projection, the influence matrix and every Helmholtz solve
-untouched, so no operator couples azimuthal modes. The four identities
-that make that work, and the two places curvature does survive, are
-derived in the `geometries/wall_bounded/cylindrical_curved.py` module
-docstring. Curvature also reaches the dealiasing: the nonlinear term
-carries $1/h^2$, whose harmonics never end, so the 3/2 rule alone leaves
-it aliased. `phys.curvature_padding`, on by default, adds a fixed number
-of azimuthal points, set by $\kappa$ and the working precision, that
-puts that aliasing below roundoff at any resolution. Both initial
-conditions, the random field and the localized rolls, are mapped onto the
-toroidal continuity constraint.
-
-The viscoelastic flows couple a symmetric **conformation tensor** $\mathbf{c}$
-through a simplified Phan-Thien–Tanner constitutive law,
-
-```math
-\partial_t \mathbf{c} + (\mathbf{u}\cdot\nabla)\mathbf{c} -
-  (\nabla\mathbf{u})^\top \mathbf{c} - \mathbf{c}\,(\nabla\mathbf{u})
-  = \kappa \nabla^2 \mathbf{c} -
-    \frac{1 - 3\epsilon + \epsilon\,\mathrm{tr}\,\mathbf{c}}{Wi}
-    (\mathbf{c} - \mathbf{I}),
-```
-
-with the polymer stress feeding momentum as
-$\tfrac{1-\beta}{Re\ Wi}\nabla\cdot\mathbf{c}$ and solvent viscosity
-$\nu = \beta/Re$. This grows the state to nine components on the same solver
-machinery. The system is that of Lellep, Linkmann & Morozov
-([2024](#references), eqs. 1–3), carried over from their channel to the
-pipe and the annulus, with their stress diffusivity $\kappa$ and its wall
-condition: at a wall the conformation obeys the $\kappa = 0$ equation,
-which dnsjax imposes in the equivalent form $\nabla^2 \mathbf{c} = 0$.
-The defaults $\beta = 0.8$, $\epsilon = 10^{-3}$ and
-$\kappa = 5 \cdot 10^{-5}$ are theirs too; the Weissenberg and
-elasticity numbers are each flow's own.
+pressure. A force-driven flow, without such a profile, integrates the
+**total** field with a mean-mode body force instead
+(`FlowSpec.total_field`), as those of the repository's lab package do
+([`lab/README.md`](../lab/README.md)).
 
 ## Spatial discretization
 
@@ -167,11 +127,10 @@ step.
 A moving frame of reference (`u_grid`) translates the domain along the
 streamwise / axial direction and is integrated implicitly by both schemes —
 convenient for following travelling structures. By default the frame moves
-at the laminar bulk velocity: $1/2$ for the three pipes, $2/3$ for
-plane-Poiseuille, and zero for the others (Dean's driving is azimuthal, so
-its axial bulk vanishes). The pipes and plane-Poiseuille therefore
-integrate, and store snapshots, in the moving frame unless `u_grid` is set
-to `0` (see also [Moving frame](running.md#moving-frame)).
+at the laminar bulk velocity: $1/2$ for the pipe, $2/3$ for
+plane-Poiseuille, and zero for the others. The pipe and plane-Poiseuille
+therefore integrate, and store snapshots, in the moving frame unless
+`u_grid` is set to `0` (see also [Moving frame](running.md#moving-frame)).
 
 ## Grids
 
@@ -247,20 +206,10 @@ A few conventions worth knowing across the flow surfaces:
 - **Reynolds number.** `re` sets the viscosity $\nu = 1/Re$. For the pipe it
   is simultaneously the centreline–radius and the bulk-velocity–diameter
   Reynolds number (the factors of two cancel in the chosen normalization).
-  The viscoelastic flows are the exception: they expose no `re` (it is
-  derived as $Re = Wi/El$), and $\nu = \beta/Re$ is the *solvent*
-  viscosity, the polymer stress carrying the rest. The curved pipe keeps
-  the pipe's normalization, so under a held flux its `re` is the
-  bulk-velocity–diameter Reynolds number of the toroidal-pipe
-  literature, with Dean number $De = Re\sqrt{\kappa}$; under the default
-  constant pressure gradient it is the *nominal* value of the same
-  driving, and the realized bulk is lower by the Dean friction
-  increase.
-- **Driving.** The pressure-driven flows (pipe, curved pipe,
-  plane-Poiseuille) accept
+- **Driving.** The pressure-driven flows (pipe, plane-Poiseuille) accept
   `phys.driving = "constant_bulk_velocity"` to hold the bulk velocity
   fixed instead of the mean pressure gradient, and every wall-bounded
-  flow but the three pipes can pin the mean velocity of its undriven
+  flow but the pipe can pin the mean velocity of its undriven
   homogeneous direction to zero (`phys.block_mean_spanwise_velocity`) —
   the spanwise mean in the channels, the axial mean in the annulus.
 - **Taylor–Couette rotation.** `re1` and `re2` are the inner and outer
@@ -268,23 +217,7 @@ A few conventions worth knowing across the flow surfaces:
   be negative. The sign pattern selects the configuration: inner-driven
   (`re1 > 0, re2 = 0`), outer-driven (`re1 = 0, re2 > 0`), co-rotating (same
   signs), or counter-rotating (`re2 < 0`); `eta = r_1/r_2` is the radius
-  ratio. The quasi-Keplerian flow is the same annulus parameterized by
-  `re1`, the rotation number `r_omega` on the quasi-Keplerian half-line
-  $R_\Omega \lt -1$, and `eta`, with the outer Reynolds number `re2`
-  derived from them.
-- **Viscoelastic controls.** `el` is the elasticity number and sets
-  $Re = Wi/El$; `wi` is the Weissenberg number; `beta` the solvent-to-total
-  viscosity ratio; `epsilon` the sPTT extensibility; `kappa` an artificial
-  stress diffusivity. Both viscoelastic flows share these, and both take
-  the axial length `lz` like their Newtonian counterparts; the annular one
-  adds `delta`, the inner radius (the gap is fixed at 2), where the pipe
-  needs no radius parameter — its radius is 1.
-- **Viscoelastic memory.** With 9 state components, the viscoelastic
-  right-hand side inverse-transforms a 36-field batch every step, and that
-  batch dominates the step's peak memory — the one configuration where
-  the `solver.rhs_transform_chunks` memory–throughput dial is worth
-  reaching for (see
-  [Memory footprint](scaling.md#memory-footprint)).
+  ratio.
 - **Grid axes.** Each flow's parameters use the names natural to its
   geometry: the cylindrical and annular flows expose `lz` (axial
   length), `nz` (axial modes), `nr` (radial points), and `ntheta`
@@ -294,8 +227,7 @@ A few conventions worth knowing across the flow surfaces:
   $[-1, 1]$, the pipe radius is 1, the annulus $[r_1, r_2]$, and the
   periodic box uses $L_y = 4$).
 - **Azimuthal wedge.** `--geo.m0` restricts a cylindrical or annular
-  flow to the $m_0$-periodic subspace, which the dynamics preserve (all
-  but the curved pipe, whose metric breaks that symmetry).
+  flow to the $m_0$-periodic subspace, which the dynamics preserve.
   It is a cost lever, not a coarsening: at fixed `ntheta` the wedge
   costs $m_0$ times less azimuthal work and memory while resolving
   the same physical azimuthal scales a full circle would need
@@ -314,9 +246,4 @@ A few conventions worth knowing across the flow surfaces:
 ## References
 
 The numerical methods' references are collected in the
-[README](../README.md#references). Specific to this page:
-
-- M. Lellep, M. Linkmann and A. Morozov, *Purely elastic turbulence in
-  pressure-driven channel flows*, Proc. Natl. Acad. Sci. USA **121**(9),
-  e2318851121 (2024). The sPTT system with stress diffusivity, its wall
-  condition and the default $\beta$, $\epsilon$ and $\kappa$.
+[README](../README.md#references).

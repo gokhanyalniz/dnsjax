@@ -1,9 +1,11 @@
 # Tests
 
-Every test is a standalone script (`uv run python tests/<name>.py`);
-`pytest_suite.py` is the bridge, one `_SCRIPTS` row per invocation
-(add one for a new script). Markers and tiers: `README.md` here. What a
-script pins and its flags: its module docstring.
+Every test is a standalone script (`uv run python tests/<name>.py`,
+the lab's `lab/tests/<name>.py`); each suite's `pytest_suite.py` is its
+bridge, one `_SCRIPTS` row per invocation (add one for a new script).
+Markers and tiers: `README.md` here. What a script pins and its flags:
+its module docstring. "(both suites)" below marks a script with a lab
+half of the same name in `lab/tests/`.
 
 ## Writing a test
 
@@ -36,7 +38,8 @@ script pins and its flags: its module docstring.
   attribute, a PAX tar header), or the test passes for the same reason
   the bug shipped.
 - A script whose children stream output uses `_live.run_live` and
-  `_live.report`. Shared response fixtures: `response/_common.py`.
+  `_live.report`. Shared response fixtures:
+  `lab/tests/response/_common.py`.
 - A launch across two hosts fakes the second one with
   `_fake_host.py` (gloo or the MPI collectives alike).
 
@@ -48,62 +51,67 @@ Banded solve and Pallas kernel:
   the wall-normal stencil).
 
 Geometry operators and grids:
-- `test_cartesian.py`, `test_cylindrical.py`, `test_annular.py`
-  (operators, band-vs-dense parity); `test_curved_pipe.py` (`--only`);
-  `test_viscoelastic.py` (annular sPTT), `test_viscoelastic_pipe.py`.
+- `test_cartesian.py`, `test_cylindrical.py` (both suites),
+  `test_annular.py` (operators, band-vs-dense parity); the lab's
+  `test_curved_pipe.py` (`--only`), `test_viscoelastic.py` (annular
+  sPTT), `test_viscoelastic_pipe.py`.
 - `test_integration.py` (quadrature, interpolation),
   `test_mean_mask.py` (one-hot under padding), `test_padding.py`
   (padded sizes, FFT exactness, `chunked_transform`).
 
 Stepping:
-- `test_laminar_smoke.py` (every wall-bounded flow but the curved
-  pipe), `test_random_smoke.py` (every stepping machinery and its
-  variants).
-- `test_cnab2.py`, `test_temporal_order.py`, `test_adaptive.py`,
-  `test_imm_continuity.py`, `test_energy_budget.py`,
-  `test_autodiff.py` (`--only`), `test_monochromatic.py` (Kolmogorov).
-- `test_wall_normal_matvec.py` (`--only`): one step under the GEMM and
-  the stencil (`solver.wall_normal_matvec`) must agree, per geometry
-  and legacy pass.
-- `test_wall_time_stop.py` (`mpirun`): both drivers stop on
-  `stop.max_wall_time` together when the ranks' clocks disagree.
-- `test_run_status.py` (`--unit-only`, `--no-mpi`, `--mpi-only`): the
-  status files and the stop request, in both drivers.
+- `test_laminar_smoke.py` (both suites: every wall-bounded flow but
+  the curved pipe), `test_random_smoke.py` (both suites: every stepping
+  machinery and its variants).
+- `test_cnab2.py` and `test_adaptive.py` (both suites),
+  `test_temporal_order.py`, `test_imm_continuity.py`,
+  `test_energy_budget.py`, `test_autodiff.py` (`--only`),
+  `test_monochromatic.py` (Kolmogorov).
+- `test_wall_normal_matvec.py` (both suites, `--only`): one step under
+  the GEMM and the stencil (`solver.wall_normal_matvec`) must agree,
+  per geometry and legacy pass.
+- `test_wall_time_stop.py` (both suites, `mpirun`): both drivers stop
+  on `stop.max_wall_time` together when the ranks' clocks disagree.
+- `test_run_status.py` (both suites; `--unit-only`, `--no-mpi`,
+  `--mpi-only`): the status files and the stop request, in both
+  drivers.
 
 Parameters, bootstrap, mesh, seeds:
-- `test_param_surface.py` (registry, surfaces and their `--help`, the
-  total-field axis), `test_bootstrap.py`, `test_seeding.py`
-  (`--unit-only`).
+- `test_param_surface.py` (both suites: registry, surfaces and their
+  `--help`, the total-field axis), `test_bootstrap.py`,
+  `test_seeding.py` (both suites, `--unit-only`).
 - `test_device_grid.py` (`--unit-only`): the mesh across nodes, two
   hosts faked on one machine under `mpirun`.
-- `test_host_placement.py` (`mpirun`, `--only`): no host array reaches
-  the mesh through JAX's cross-process gather
+- `test_host_placement.py` (both suites, `mpirun`, `--only`): no host
+  array reaches the mesh through JAX's cross-process gather
   (`sharding.Sharding.distribute`).
 - `test_mpi_communicators.py` (`mpirun`): the mesh's MPI communicators
   are open before a collective can run off the MPI thread
   (`sharding._warm_communicators`).
 
 Initial conditions:
-- `test_localized_rolls.py`, `test_rolls_smoke.py` (the roll builders),
-  `test_mean_mode.py` (`--unit-only`), `test_snapshot_perturb.py`.
+- `test_localized_rolls.py`, `test_rolls_smoke.py` (the roll builders;
+  both suites), `test_mean_mode.py` (`--unit-only`),
+  `test_snapshot_perturb.py` (both suites).
 
 Snapshots, resume, analysis:
 - `test_snapshot.py`, `test_resume.py` (`--unit-only`),
-  `test_snapshot_import.py`, `test_snapshot_export.py` (re-run after
-  changing a primitive), `test_transient_growth.py` (`--fast`),
-  `test_wedge.py` (`geo.m0`).
-- `test_lowres.py` (`[lowres]` files, the static pressure, the cube
-  container); multi-process `[lowres]` writes: the `*-mpi-pad` rows of
-  `test_random_smoke.py`.
+  `test_snapshot_export.py` (re-run after changing a primitive),
+  `test_transient_growth.py` (`--fast`), all both suites;
+  `test_snapshot_import.py`, `test_wedge.py` (`geo.m0`; the lab's
+  `test_quasi_keplerian.py` holds its flow's cases).
+- `test_lowres.py` (both suites: `[lowres]` files, the static
+  pressure, the cube container); multi-process `[lowres]` writes: the
+  `*-mpi-pad` rows of `test_random_smoke.py`.
 
-Streams: `test_probes.py`, `test_forcing.py`, `test_driving.py` (each
-`--unit-only`).
+Streams: `test_driving.py`; the lab's `test_probes.py`,
+`test_forcing.py` (each `--unit-only`).
 
-Twin: `test_twin_unit.py`, `test_twin_driver.py` (`--only`),
-`test_twin_budget.py` (`--only`, `--quick`), `test_twin_analysis.py`,
-`test_twin_postprocess.py` (`--unit-only`), `test_twin_spectral_maps.py`
-(skips without the `plots` group).
+Twin (all in `lab/tests/`): `test_twin_unit.py`, `test_twin_driver.py`
+(`--only`), `test_twin_budget.py` (`--only`, `--quick`),
+`test_twin_analysis.py`, `test_twin_postprocess.py` (`--unit-only`),
+`test_twin_spectral_maps.py` (skips without the `plots` group).
 
-Response: `response/test_probes_reader.py`,
-`response/test_operator_tools.py`, `response/test_ensemble.py`,
-`response/test_lim.py`, `response/test_ssi.py`.
+Response (all in `lab/tests/response/`): `test_probes_reader.py`,
+`test_operator_tools.py`, `test_ensemble.py`, `test_lim.py`,
+`test_ssi.py`.
