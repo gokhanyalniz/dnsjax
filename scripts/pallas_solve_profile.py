@@ -94,11 +94,13 @@ a clean driver to wrap in an external profiler (e.g.
 from __future__ import annotations
 
 import argparse
+import importlib
 import time
 
 import jax
 
 from dnsjax.bootstrap import configure_jax_platform
+from dnsjax.flows.registry import spec_for
 from dnsjax.parameters import (
     Parameters,
     padded_res,
@@ -117,6 +119,16 @@ HBM_PEAK_BY_KIND = {
 }
 
 GBPS = 1e9
+
+#: The systems profiled: those whose step the stage transcriptions
+#: (:func:`_imm_stage_breakdown`) follow.
+SYSTEMS = ("plane-couette", "plane-poiseuille", "pipe", "taylor-couette")
+
+#: A system's fields beyond ``phys.re = 400``, as dotted parameter
+#: paths (the test-suite-standard values).
+SYS_ARGS: dict[str, dict[str, float]] = {
+    "taylor-couette": {"phys.re1": 100.0, "phys.re2": 0.0, "geo.eta": 0.5},
+}
 
 #: The random IC's seed.  Fixed on purpose, like every diagnostic
 #: seed in ``scripts/``: each profile of one configuration steps the
@@ -141,8 +153,8 @@ def _configure_system(
     Mutates ``params`` directly (the ``pallas`` backend, f64, the given
     resolution), then triggers the derived-parameter recompute with an
     empty :class:`Parameters` merge (the ``test_*`` / tiling-diagnostic
-    idiom).  Per-geometry required fields (Taylor-Couette / Dean) use the
-    test-suite-standard values; the physics is irrelevant to timing.
+    idiom).  A system's further required fields (:data:`SYS_ARGS`) take
+    the test-suite-standard values; the physics is irrelevant to timing.
 
     *solver_overrides* merges extra ``[solver]`` fields into the same
     layering call -- the Pallas kernel-tile knobs (``pallas_block_m0``
@@ -164,12 +176,9 @@ def _configure_system(
     params.res.fd_order = order
     params.res.double_precision = True
     params.res.consistent_imm = not legacy_imm
-    if system == "taylor-couette":
-        params.phys.re1 = 100.0
-        params.phys.re2 = 0.0
-        params.geo.eta = 0.5
-    elif system == "dean":
-        params.geo.eta = 0.5
+    for dotted, value in SYS_ARGS.get(system, {}).items():
+        section, name = dotted.split(".")
+        setattr(getattr(params, section), name, value)
     # Through the layering call (not a direct assignment), so the
     # per-family backend re-resolution in ``update_parameters`` cannot
     # overwrite it.
@@ -186,15 +195,9 @@ def _configure_system(
 
 def _geom_module(system: str):
     """The geometry module (holds ``_get_rhs`` / ``_imm_iteration``)."""
-    from dnsjax.geometries.wall_bounded import annular, cartesian, cylindrical
-
-    if system in ("plane-couette", "plane-poiseuille"):
-        return cartesian
-    if system == "pipe":
-        return cylindrical
-    if system in ("taylor-couette", "dean"):
-        return annular
-    raise SystemExit(f"unsupported system: {system}")
+    return importlib.import_module(
+        f"dnsjax.geometries.wall_bounded.{spec_for(system).geometry}"
+    )
 
 
 def _import_flow(system: str):
@@ -203,19 +206,7 @@ def _import_flow(system: str):
     The import builds the geometry ``fourier`` / ``flow`` singletons and
     the jitted stepper, exactly as ``__main__`` does.
     """
-    if system == "plane-couette":
-        from dnsjax.flows.wall_bounded import plane_couette as m
-    elif system == "plane-poiseuille":
-        from dnsjax.flows.wall_bounded import plane_poiseuille as m
-    elif system == "pipe":
-        from dnsjax.flows.wall_bounded import pipe as m
-    elif system == "taylor-couette":
-        from dnsjax.flows.wall_bounded import taylor_couette as m
-    elif system == "dean":
-        from dnsjax_lab.flows.wall_bounded import dean as m
-    else:
-        raise SystemExit(f"unsupported system for this diagnostic: {system}")
-    return m
+    return importlib.import_module(spec_for(system).flow_module)
 
 
 # ── timing helpers ───────────────────────────────────────────────────
@@ -759,7 +750,7 @@ def _part_a2(system, flow, sharding, reps, t_step, n) -> None:
     # The geometry's real call shape.  Cartesian stacks components
     # leading and indexes; the curvilinear pair is y-leading and takes
     # the om_shift combination (annular/cylindrical stage 5).
-    cartesian = system in ("plane-couette", "plane-poiseuille")
+    cartesian = spec_for(system).geometry == "cartesian"
     ca = 0 if cartesian else 1
     nc = _hk_components(hk)
     N = lk.L.shape[0]
@@ -898,17 +889,18 @@ def _imm_stage_breakdown(
     the parity reduction, so it separates the two explanations.  The
     legacy primitive scheme keeps its Cartesian-only transcription.
     """
+    geometry = spec_for(params.phys.system).geometry
     if not params.res.consistent_imm:
-        if params.phys.system not in ("plane-couette", "plane-poiseuille"):
+        if geometry != "cartesian":
             print(
                 "\n  (no --legacy-imm stage transcription for "
                 f"{params.phys.system}; Cartesian only.)"
             )
             return
         stages = _stages_vp
-    elif params.phys.system == "pipe":
+    elif geometry == "cylindrical":
         stages = _stages_vw_cyl
-    elif params.phys.system in ("taylor-couette", "dean"):
+    elif geometry == "annular":
         stages = _stages_vw_ann
     else:
         stages = _stages_vw
@@ -2186,11 +2178,7 @@ def _print_env() -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument(
-        "--system",
-        default="plane-couette",
-        help="plane-couette/plane-poiseuille/pipe/taylor-couette/dean",
-    )
+    ap.add_argument("--system", default="plane-couette", choices=SYSTEMS)
     ap.add_argument("--ny", type=int, default=128)
     ap.add_argument("--nx", type=int, default=128)
     ap.add_argument("--nz", type=int, default=128)

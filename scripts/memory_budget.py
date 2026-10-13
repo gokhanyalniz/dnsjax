@@ -4,12 +4,12 @@ r"""Per-rank memory of one production run on candidate layouts, offline.
 Before a run is submitted, the questions are how much memory each rank
 needs on a given ``(np0, np1)`` grid, and whether a node full of such
 ranks fits.  This script answers the data part with XLA's own buffer
-assignment, the instrument the twin "Memory" notes use: the run's time
-step is lowered **as the run calls it** (the ``fourier`` and ``flow``
-singletons passed as arguments; a ``jit`` of the bound step would bake
-them in as constants instead and measure a different program),
-compiled, and read through ``memory_analysis()``.  Nothing executes,
-so the figures are deterministic: no hardware, no timing noise.
+assignment: the run's time step is lowered **as the run calls it**
+(the ``fourier`` and ``flow`` singletons passed as arguments; a ``jit``
+of the bound step would bake them in as constants instead and measure
+a different program), compiled, and read through
+``memory_analysis()``.  Nothing executes, so the figures are
+deterministic: no hardware, no timing noise.
 
 A production problem does not fit on the machine that sizes it, so each
 layout is compiled at a **reduced** problem, on that layout's own grid

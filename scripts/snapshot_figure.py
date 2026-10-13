@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 r"""Render a snapshot as a publication-style field figure.
 
-The presentation counterpart of ``lab/scripts/twin_spectral_maps.py``: it
-turns one snapshot into a single PNG of a velocity plane, for a
-README, a talk, or a quick look at what a run is doing.  It
-reads the snapshot through :func:`dnsjax.analysis.read_state` alone --
-NumPy and the standard library, **no JAX and no solver runtime** -- so
-it runs anywhere the snapshot does, at any resolution, without a
-device.
+It turns one snapshot into a single PNG of a velocity plane, for a
+README, a talk, or a quick look at what a run is doing.  It reads the
+snapshot through :func:`dnsjax.analysis.read_state` alone -- NumPy and
+the standard library, **no JAX and no solver runtime** -- so it runs
+anywhere the snapshot does, at any resolution, without a device.
 
 Two views, chosen from the snapshot's own geometry:
 
@@ -31,9 +29,9 @@ Two views, chosen from the snapshot's own geometry:
 
 The quantity is the **stored** field, which is the perturbation `$u'$`
 about the laminar profile for the base-flow systems and the total field
-for the force-driven ones (:data:`TOTAL_FIELD_SYSTEMS`: the curved
-pipe, Dean and the two viscoelastic flows); the colourbar label says
-which, and no base flow is ever added or removed here.
+for the total-field ones (:data:`TOTAL_FIELD_SYSTEMS`,
+``FlowSpec.total_field``); the colourbar label says which, and no base
+flow is ever added or removed here.
 
 The colour scale is diverging and pinned symmetric about zero
 (``vmin = -vmax``), so the neutral midpoint *is* zero -- an asymmetric
