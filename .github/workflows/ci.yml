@@ -76,22 +76,27 @@ jobs:
           print('dnsjax.analysis is JAX-free')
           "
 
-      # The fast half of the offline suite: parameter surface, bootstrap
-      # decisions, FFT padding, the mean-mode mask, quadrature, the
-      # JAX-free analysis API against solver ground truth, and the four
-      # response readers/identifiers. ~2 min locally; the rest of the
-      # offline suite runs weekly in full-cpu below.
+      # The fast half of the offline suite: the core/lab layering, the
+      # parameter surfaces, bootstrap decisions, FFT padding, the
+      # mean-mode mask, quadrature, the JAX-free analysis API against
+      # solver ground truth (the surfaces and the API in a core and a
+      # lab half each), and the four response readers/identifiers.
+      # ~2 min locally; the rest of the offline suite runs weekly in
+      # full-cpu below.
       - name: Fast test scripts
         run: |
           set -u
           failed=""
           for t in \
+            tests/test_layering \
             tests/test_bootstrap \
             tests/test_param_surface \
+            lab/tests/test_param_surface \
             tests/test_padding \
             tests/test_mean_mask \
             tests/test_integration \
             tests/test_snapshot_export \
+            lab/tests/test_snapshot_export \
             lab/tests/response/test_probes_reader \
             lab/tests/response/test_operator_tools \
             lab/tests/response/test_lim \
