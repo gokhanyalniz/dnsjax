@@ -414,5 +414,10 @@ def main(script: str, cases: list[dict]) -> int:
             gen_subprocess(script, system, out, m0)
             check_system(system, out, case)
 
+    # The promise holds past the reads too: a flow's ``analysis_metric``
+    # module, imported on its snapshot's first read, is JAX-free.
+    assert "jax" not in sys.modules, "JAX leaked into a read (analysis_metric)"
+    print("JAX-free reads: OK")
+
     print("\nAll snapshot-export tests passed.")
     return 0
