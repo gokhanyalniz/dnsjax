@@ -52,7 +52,8 @@ half of the same name in `lab/tests/`.
 ## Which script a change reaches
 
 Core and lab: `test_layering.py`: the core never names the lab
-(imports, system strings, lab fields and sections).
+(imports, system strings, lab fields and sections); `test_plugins.py`:
+what a plugin's entry points add (faked), and each loader's refusals.
 
 Banded solve and Pallas kernel:
 - `test_banded_solver.py` (parity, whole tiles, cuda lowering, the
@@ -113,7 +114,9 @@ Snapshots, resume, analysis:
   pressure, the cube container); multi-process `[lowres]` writes: the
   `*-mpi-pad` rows of `test_random_smoke.py`.
 
-Streams: `test_driving.py`; the lab's `test_probes.py`,
+Streams: `test_driving.py`; `test_run_hooks.py` (an extension
+section's `RunHooks`: call order, inert default, modify after every
+save, abort on a report); the lab's `test_probes.py`,
 `test_forcing.py` (each `--unit-only`).
 
 Twin (all in `lab/tests/`): `test_twin_unit.py`, `test_twin_driver.py`
