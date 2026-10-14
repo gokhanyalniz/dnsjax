@@ -205,7 +205,7 @@ Conventions and choices
 - **Dealiasing** needs no action: the linear step is entirely FFT-free
   (spectral coupling + banded solves), so the 3/2 padding pipeline is
   never entered -- there is no aliasing to remove.
-- **Moving frame:** ``phys.u_grid`` is forced to `$0$` (lab frame)
+- **Moving frame:** ``phys.u_grid`` is forced to `$0$` (laboratory frame)
   unless the user sets it.  `$G$` is frame-invariant (a per-mode phase);
   a moving frame only shifts each eigenvalue by `$-i k_0 U_{grid}$`.
 - **Backward Euler probe** (`$\theta = 1$`): exact generator recovery;
@@ -238,7 +238,7 @@ mode below is guarded per mode with an explicit error.
     early, mesh-dependent `$G$` spike that decays long before the
     physical optimum -- and, being a genuine property of `$\mathcal{A}
     _{\mathrm{res}}$`, no post-processing can subtract it.  Measured
-    (the lab's quasi-Keplerian flow, `$Re_i = 10^4$`, `$m = 4$`,
+    (a quasi-Keplerian Taylor-Couette flow, `$Re_i = 10^4$`, `$m = 4$`,
     `$N_y = 128$`), the numerical abscissa falls
     `$+162 \to +82 \to +57$` for `$\Delta t =
     0.003 \to 0.01 \to 0.03$`, and the rank gap *widens* over the same
@@ -303,7 +303,7 @@ mode below is guarded per mode with an explicit error.
   probe-resolved eigenspace, in an orthonormal energy-coordinate
   basis), the bases `$V, F, Q$`, and the coordinate contract -- the
   input for controllability / growth-curve / identification
-  post-processing (the lab's response analysis consumes it; the
+  post-processing (a linear-response analysis consumes it; the
   storage layout: the ``_write_operator_npz`` docstring).
 - ``--tg.export_amplitude`` (1e-4): volume-averaged energy `$E'$` of
   the exported seed (the solver's own measure).  The default keeps
@@ -314,8 +314,8 @@ Converging `$N_y$` (do this before trusting `$G_{\max}$`)
 ---------------------------------------------------------
 The physical `$G(t)$` converges *fast* in `$N_y$`; the artefact of step
 5 converges *slowly*, so **`$N_y$` is set by the artefact, not by the
-physics**.  Measured on the lab's quasi-Keplerian flow, `$Re_i = 10^4$`,
-`$m = 4$`, `$\Delta t = 10^{-2}$` (`$G_{\max} = 13.04$` at
+physics**.  Measured on a quasi-Keplerian Taylor-Couette flow,
+`$Re_i = 10^4$`, `$m = 4$`, `$\Delta t = 10^{-2}$` (`$G_{\max} = 13.04$` at
 `$t_{\mathrm{opt}} = 27$`):
 
 ===========  =====================  ===================  ==============
@@ -1465,10 +1465,9 @@ def _write_operator_npz(
     ``mode_k_metric`` and the ``i3 = 0`` conjugate partner supply the
     same factor 2).
 
-    Consumers: the lab's response analysis
-    (``dnsjax_lab.analysis.response.operator_tools``: controllability
-    modes, growth curves, subspace restriction), which changes with
-    this layout.
+    Consumers: a linear-response analysis (controllability modes,
+    growth curves, subspace restriction) reads this layout, which is
+    therefore a contract: change it with its readers.
     """
     results = sorted(results, key=lambda m: (m.i2, m.i3))
     out: dict[str, Any] = {
@@ -1589,7 +1588,7 @@ def _seed_metadata_params():
     """Production-default metadata for an exported seed snapshot.
 
     The driver forces analysis stepping (backward-Euler ``theta = 1``,
-    ``tg.dt``, a tight corrector) and the lab frame onto the live
+    ``tg.dt``, a tight corrector) and the laboratory frame onto the live
     ``params``; embedding those in the exported seed would make a
     production resume inherit them silently through the snapshot
     parameter layer.  A seed is pure state plus its

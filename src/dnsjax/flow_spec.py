@@ -186,7 +186,7 @@ class FlowSpec:
       the leading three slots of the solver state, the carried slots
       after them (``CARRIED_FIELDS``): the pipe's ``build_stepper`` is
       written for that layout, and a flow evolving more components
-      brings its own stepping (the lab's viscoelastic pipe does);
+      brings its own stepping (a flow carrying a conformation tensor does);
     - on a wall-bounded base-flow flow (``total_field`` false),
       ``frozen_profile_flow(profile)``, the flow frozen about a given
       profile, which the transient-growth driver linearizes about.

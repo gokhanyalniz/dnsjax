@@ -23,8 +23,10 @@ commit:
 worktree of ``HEAD``: strips the lab from ``pyproject.toml`` (the
 ``lab`` group and its default, the workspace and its source, the lab's
 test path), sets ``date-released`` in ``CITATION.cff`` (*--date*,
-default today), pins the PyPI README's links to the tag
-(``pypi_readme.py``), points every link the archive's Markdown makes to
+default today), trims ``README.md`` to the sections a release
+carries (``pypi_readme.DROPPED_SECTIONS``), pins the PyPI README's
+links to the tag (``pypi_readme.py``), points every link the archive's
+Markdown makes to
 a file the archive leaves out (the lab's) at GitHub at the tag
 (:func:`archive_links`), relocks (``uv lock``), commits "Release vVERSION"
 and tags it ``vVERSION`` (annotated).  The commit is reachable from the
@@ -61,7 +63,11 @@ HERE = Path(__file__).resolve().parent
 #: The repository holding this script (``lab/scripts/release/``).
 REPO = HERE.parents[2]
 sys.path.insert(0, str(HERE))
-from pypi_readme import pypi_readme, repository_url  # noqa: E402
+from pypi_readme import (  # noqa: E402
+    drop_sections,
+    pypi_readme,
+    repository_url,
+)
 
 #: The ``pyproject.toml`` edits of a release, as ``(what, pattern,
 #: replacement)``; each pattern must match exactly once.
@@ -293,9 +299,9 @@ def _cut(version: str, date: str, dry_run: bool) -> int:
                     flags=re.M,
                 )
             )
-            readme = pypi_readme(
-                (tree / "README.md").read_text(), repository_url(), tag
-            )
+            path = tree / "README.md"
+            path.write_text(drop_sections(path.read_text()))
+            readme = pypi_readme(path.read_text(), repository_url(), tag)
             (tree / "docs" / "pypi" / "README.md").write_text(readme)
             for line in archive_links(tree, repository_url(), tag):
                 print(line)

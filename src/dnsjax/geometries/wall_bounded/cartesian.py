@@ -928,9 +928,8 @@ def build_poisson_operator(
     ``res.consistent_imm = False``; the default `$v$`-`$\omega_y$` scheme puts
     a **Dirichlet** Laplacian there instead and never forms a pressure.  This
     entry point exists for the consumers that want the pressure under either
-    flag -- the lab's twin pressure (``dnsjax_lab.twin.pressure``), which
-    recovers the difference-field pressure for the wall-normal-resolved
-    budget.  The two
+    flag -- a difference-field pressure, recovered for the
+    wall-normal-resolved budget of two lockstep states, for one.  The two
     Neumann builders stay in the legacy module: all three geometries name
     theirs identically there, and splitting one of the three would cost that
     symmetry for nothing (the import is the same deferred one the flag-off
@@ -1370,8 +1369,8 @@ def mean_driving_from_profile(
     and it is latency-bound, so paying it twice for a profile already
     in hand is pure cost.  The map is also **linear** in *mean_u*, so
     the driving *difference* between two states is this map of their
-    profile difference, with no collective of its own (the lab's twin
-    diagnostics take it so).
+    profile difference, with no collective of its own (a difference
+    diagnostic of two states takes it so).
     """
     cbv = params.phys.driving == "constant_bulk_velocity"
     if not (cbv or params.phys.block_mean_spanwise_velocity):

@@ -13,9 +13,11 @@ relative links (Markdown and HTML) made absolute GitHub URLs at *REF*
 (default ``main``; a release pins its tag, ``prepare_release.py``),
 relative images their ``raw.githubusercontent.com`` URLs, each
 ``<picture>`` its light ``<img>``, in-page anchors links into the
-GitHub README, inline math a code span in plain symbols, and the
-GitHub-only "Contents" line left out.  The repository URL comes from
-``pyproject.toml`` (``[project.urls] Repository``).
+GitHub README, inline math a code span in plain symbols, the
+GitHub-only "Contents" line left out, and the sections
+:data:`DROPPED_SECTIONS` names left out, as a release's ``README.md``
+leaves them out (``prepare_release.py``).  The repository URL comes
+from ``pyproject.toml`` (``[project.urls] Repository``).
 
 A LaTeX command the conversion table (:data:`LATEX`) does not know is
 an error, so new README math is converted on purpose, not silently.
@@ -36,6 +38,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 #: Where the PyPI copy lives.
 OUT = REPO / "docs" / "pypi" / "README.md"
+#: Sections of ``README.md`` a published copy (PyPI's, a release's)
+#: leaves out, by their ``## `` title.
+DROPPED_SECTIONS: tuple[str, ...] = ("Acknowledgements",)
 
 #: LaTeX in the README's inline math -> plain symbols (in order).
 LATEX: list[tuple[str, str]] = [
@@ -72,6 +77,31 @@ def plain_math(tex: str) -> str:
     return out
 
 
+def drop_sections(
+    readme: str, titles: tuple[str, ...] = DROPPED_SECTIONS
+) -> str:
+    """*readme* without the ``## title`` sections in *titles*.
+
+    Each section goes from its heading to the next ``## `` heading or
+    the end, with its entry in the "Contents" line (``[Title](#slug)
+    ·``, or a last entry's leading separator).
+    """
+    text = readme
+    for title in titles:
+        slug = re.sub(r"[^\w\- ]", "", title).strip().lower()
+        slug = slug.replace(" ", "-")
+        text = re.sub(
+            rf"\n## {re.escape(title)}\n.*?(?=\n## |\Z)",
+            "",
+            text,
+            flags=re.DOTALL,
+        )
+        entry = rf"\[{re.escape(title)}\]\(#{slug}\)"
+        text = re.sub(entry + r" ·\n", "", text)
+        text = re.sub(r" ·\n" + entry + r"(?=\n)", "", text)
+    return text
+
+
 def _outside(text: str, fn, spans: bool) -> str:
     """Apply *fn* to the parts of *text* outside fenced code blocks, and
     outside inline code spans too when *spans*."""
@@ -88,9 +118,13 @@ def pypi_readme(readme: str, url: str, ref: str) -> str:
     )
     raw = f"{raw}/{ref}"
 
-    # The GitHub-only table of contents (PyPI has its own navigation).
+    # The sections :data:`DROPPED_SECTIONS` names, then the GitHub-only
+    # table of contents (PyPI has its own navigation).
     text = re.sub(
-        r"\n\*\*Contents\*\* —.*?\n\n", "\n", readme, flags=re.DOTALL
+        r"\n\*\*Contents\*\* —.*?\n\n",
+        "\n",
+        drop_sections(readme),
+        flags=re.DOTALL,
     )
     # A <picture> becomes its light <img>.
     text = re.sub(

@@ -502,8 +502,8 @@ def _lab_frame_shift(plane, distance: float, length: float):
     A run may integrate in a frame moving along the streamwise axis
     (``phys.u_grid``), which is a change of *coordinate* only -- the
     solver adds a convective term and leaves the stored field alone.
-    Undoing it for a figure is therefore a pure translation: the lab
-    field at time `$t$` is the stored one shifted by
+    Undoing it for a figure is therefore a pure translation: the
+    laboratory-frame field at time `$t$` is the stored one shifted by
     `$U_{\mathrm{grid}}\,(t - t_0)$`.
 
     ``x`` is periodic and the stored field carries no Nyquist mode, so

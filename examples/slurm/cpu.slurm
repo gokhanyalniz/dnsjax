@@ -135,9 +135,9 @@ PLATFORM=cpu
 # node.  The record survives an out-of-memory kill, which the solver's
 # own closing memory lines do not.  A peak between two samples still
 # shows in the summary's cgroup column (the kernel's high-water mark,
-# where it keeps one).  0: off.  The sampler is the repository lab's
-# lab/scripts/performance/memory_watch.py; without it (a release
-# archive holds the solver alone) the record is skipped with a note.
+# where it keeps one).  0: off.  The sampler is one the full repository
+# provides (its README, "The lab"); without it (a release archive holds
+# the solver alone) the record is skipped with a note.
 MEMWATCH=1
 MEMWATCH_INTERVAL=10
 

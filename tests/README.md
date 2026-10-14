@@ -98,4 +98,4 @@ variants; the claims the scripts back are mapped in
 The lab's suite adds its flows' halves of the split scripts, the curved,
 quasi-Keplerian and viscoelastic flows' own tests, the probe and forcing
 streams, the twin runs and the response analysis
-([`lab/README.md`](../lab/README.md)).
+([the lab](../README.md#the-lab)).

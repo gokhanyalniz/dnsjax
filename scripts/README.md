@@ -9,13 +9,9 @@ figure script needs the `plots` dependency group:
 uv run --group plots python scripts/snapshot_figure.py ...
 ```
 
-These are the tools for working with a simulation. The repository's lab
-holds the rest ([`lab/README.md`](../lab/README.md#scripts)): ensembles
-and twin post-processing in `lab/scripts/`, and, kept apart from them,
-the performance tools (benchmarks, profiles, memory sizing, the scaling
-figure) in `lab/scripts/performance/` and the functionality checks
-(differentiability, GPU kernel and storage diagnostics) in
-`lab/scripts/diagnostics/`.
+These are the tools for working with a simulation; the ensemble,
+post-processing, performance and diagnostic tools of the repository's
+lab are listed with it ([the lab](../README.md#the-lab)).
 
 ## Figures
 

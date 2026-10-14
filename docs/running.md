@@ -161,7 +161,7 @@ than falling back to a fixed value.
 One default worth knowing: the pipe integrates in a frame translating at
 its laminar bulk velocity $1/2$, and plane-Poiseuille in one at $2/3$,
 and their snapshots are stored in that frame; pass `--phys.u_grid 0` for
-the lab frame (see
+the laboratory frame (see
 [Temporal discretization](numerics.md#temporal-discretization)).
 
 ## What a run writes
@@ -237,8 +237,8 @@ flow's are unprimed). A run holding a bulk velocity or a mean
 spanwise velocity fixed appends one further column per constrained
 direction (`-dPds'` / `-dPdn'` / `-dPdz'`): the mean-mode **forcing**
 the corrector applied over that step, positive when accelerating.
-Further streams come from extension sections (the lab's spectral-mode
-probes and stochastic forcing: [`lab/README.md`](../lab/README.md)).
+Further streams come from extension sections, a package's own
+([`extending.md`](extending.md#parameter-sections)).
 
 ### Reduced-resolution snapshots
 

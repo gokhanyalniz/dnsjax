@@ -1327,7 +1327,7 @@ def _l_bf(
     state and of `$\boldsymbol{\omega}'$` onto the base-flow profiles
     -- FFT-free; see the Cartesian ``_l_bf``.  For a force-driven flow
     (total field, ``base_flow = 0``) this is the *only* coupling:
-    without it ``_l_bf`` is identically zero in the default lab frame
+    without it ``_l_bf`` is identically zero in the default laboratory frame
     (a moving frame adds its diagonal term), i.e. the entire evolving
     mean profile -- laminar included -- would ride the explicit AB2
     term; with it the mean-flow advection is implicit, as ``L_bf`` is

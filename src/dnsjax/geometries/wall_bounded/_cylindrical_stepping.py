@@ -39,8 +39,9 @@ band families instead of four (the Cartesian geometry swaps one family
 for another).
 
 **Why this pass costs ~2x Cartesian.**  Solve counts do not explain the pipe's
-cost.  Measured with ``lab/scripts/performance/pallas_solve_profile.py`` Parts
-B/A2 on CPU, one device, at matched resolution (`$128^3$`, ``fd_order 8``):
+cost.  Measured on CPU, one device, at matched resolution (`$128^3$`,
+``fd_order 8``), timing one ``_imm_iteration`` and the isolated Lk+Hk
+solves:
 
 ==============  =================  ==============
 geometry        ``_imm_iteration``  isolated Lk+Hk
@@ -124,7 +125,7 @@ and its boundary was crossed by **refinement** at fixed
 see neither; what catches it is a default-vs-legacy comparison at
 the intended `$(\mathrm{Re}, n_r)$`, read digit by digit.  It also
 had nothing to do with the polymer, though it was first found and
-misattributed on the lab's viscoelastic pipe: that flow reproduced
+misattributed on a viscoelastic pipe flow: that flow reproduced
 every row, including at `$\beta = 1$` where the polymer stress is
 decoupled from the velocity entirely, and raising `$\kappa$` 200x
 changed nothing.
@@ -1021,8 +1022,8 @@ def _imm_iteration_vw(
         # the wall row, like every other source reaching this solve:
         # ``Lk_op`` carries a Dirichlet identity row there, so whatever
         # the RHS holds *is* `$u_r|_{\mathrm{wall}}$`.  The defect
-        # vanishes at the wall at the fixed point (on the lab's toroidal
-        # pipe, no-slip makes the constraint read
+        # vanishes at the wall at the fixed point (on a toroidal pipe,
+        # no-slip makes the constraint read
         # `$h_w(\partial_r w_r)|_w = 0$`), but the iterate's does not,
         # and leaving it in imposes a nonzero wall velocity -- measured
         # there: the corrector stops converging above

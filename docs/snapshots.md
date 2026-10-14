@@ -72,7 +72,7 @@ pressure. These files are output, not checkpoints: `init.snapshot`
 refuses one.
 
 Another entry point may write arrays of its own in the same container
-(the lab's twin runs write 3-D spectra and budget cubes). Such an array,
+(3-D spectra, say, or budget cubes). Such an array,
 y-major like a state, carries a metadata `kind` naming what it is, and
 every field reader and `init.snapshot` refuses it by that name. A state
 snapshot carries no `kind`, so every file written before the field
