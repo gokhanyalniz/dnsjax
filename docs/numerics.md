@@ -165,10 +165,11 @@ requiring $\nabla \cdot \mathbf{u} = 0$ at the walls. The classical
 **Kleiser–Schumann influence-matrix method** resolves this by precomputing a
 small set of homogeneous responses once, so that each time step recovers the
 boundary condition with a tiny per-mode solve, after which the velocity is
-corrected by linearity. It enforces the wall conditions exactly — but the
-*interior* divergence of a stepped state is left with a residual that is
-`O(1)` relative to the individual terms of the divergence sum, a convergent
-truncation error rather than zero.
+corrected by linearity. It enforces the wall conditions exactly — but a
+stepped state's discrete divergence keeps a truncation-level residual,
+amplified at the walls and converging under refinement (a few per cent of
+the divergence sum's terms at 25 wall-normal points, $10^{-5}$ to $10^{-3}$
+at 97), rather than zero.
 
 The solver therefore ships a reformulation that removes it by construction,
 and it is **the default** (`res.consistent_imm`): advance the wall-normal
