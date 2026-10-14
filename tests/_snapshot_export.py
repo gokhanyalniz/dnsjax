@@ -310,6 +310,33 @@ def check_system(system: str, outdir: str, case: dict) -> None:
             for c, s in zip(st.spectral, DIV_PROBE, strict=True)
         ]
         mine = np.asarray(divergence(probe, st.params, st.spectral_coords))
+        if info.family in ("cartesian", "triply_periodic"):
+            # A flow storing more than the velocity labels the extra
+            # components; the divergence takes the leading three, the
+            # velocity by contract, and ignores the rest.
+            import dataclasses
+
+            from dnsjax.flows import registry
+
+            spec = registry.SPECS[system]
+            registry.SPECS[system] = dataclasses.replace(
+                spec,
+                n_components=len(spec.components or info.components) + 1,
+                components=(*info.components, "c"),
+            )
+            try:
+                wider = np.asarray(
+                    divergence(
+                        [*probe, np.zeros_like(probe[0])],
+                        st.params,
+                        st.spectral_coords,
+                    )
+                )
+            finally:
+                registry.SPECS[system] = spec
+            assert np.array_equal(wider, mine), (
+                f"{system}: divergence depends on components past the velocity"
+            )
         derr = relerr(mine, np.load(div_path))
         assert derr < DIV_PARITY_TOL, (
             f"{system}: divergence vs dnsjax {derr:.2e}"

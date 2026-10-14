@@ -985,6 +985,50 @@ def run_truncation_case() -> str | None:
     return None
 
 
+def run_compressed_case() -> str | None:
+    """A compressed copy of a snapshot is refused, never read.
+
+    The data chunks are read at raw byte offsets, so a gzip'd archive
+    (which ``tarfile`` would open transparently) must fail every
+    reader's archive check rather than be read at offsets of the
+    decompressed stream.
+    """
+    import gzip
+    import shutil
+
+    from dnsjax.snapshot_meta import (
+        SnapshotArchiveError,
+        is_snapshot_file,
+        read_snapshot_meta,
+    )
+
+    name = "compressed archive rejected"
+    with tempfile.TemporaryDirectory() as tmp:
+        snap = os.path.join(tmp, "snap.tar")
+        r = _run_worker(
+            "save", "plane-couette", "walled", "concurrent", 1, snap
+        )
+        if reason := _check(name, "save", r):
+            return reason
+        gz = snap + ".gz"
+        with open(snap, "rb") as src, gzip.open(gz, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        if is_snapshot_file(gz):
+            print(f"  FAIL  {name}: a gzip'd archive passes is_snapshot_file")
+            return "compressed archive passed is_snapshot_file"
+        try:
+            read_snapshot_meta(gz)
+        except SnapshotArchiveError as exc:
+            if "compressed" not in str(exc):
+                print(f"  FAIL  {name}: rejected without naming compression")
+                return "compressed archive rejected without naming the cause"
+        else:
+            print(f"  FAIL  {name}: metadata read from a gzip'd archive")
+            return "compressed archive read silently"
+    print(f"  PASS  {name}")
+    return None
+
+
 def run_meta_chunk_consistency_case() -> str | None:
     """The chunks must match the ``native_shape`` describing them.
 
