@@ -602,8 +602,9 @@ def _conformation_coupling(
         # (3, N_r) column: bit-identical to extracting from a physical
         # triad, without that field-sized ``shard_map`` operand XLA
         # cannot slice back into its producer
-        # (:func:`._base.extract_mean_modes`) -- which is also why
-        # ``state`` is passed whole rather than as ``state[:3]``.
+        # (:func:`~dnsjax.geometries.wall_bounded._base.extract_mean_modes`)
+        # -- which is also why ``state`` is passed whole rather than as
+        # ``state[:3]``.
         mean_vel = from_pm_basis(extract_mean_mode(state)[:3])  # (3, Nr)
         # Mean velocity gradient profiles: D1 on the bare (N_r,) mean
         # profiles, at the spin weight of each (0 for u_z, 1 for

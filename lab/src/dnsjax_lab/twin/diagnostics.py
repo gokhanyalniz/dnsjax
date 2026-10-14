@@ -799,7 +799,8 @@ def _twin_budget_jit(
         "ru1": state1 * m_u1,
         "ru2": state1 * m_u2,
     }
-    # One collective for the pair (:func:`._base.extract_mean_modes`);
+    # One collective for the pair
+    # (:func:`~dnsjax.geometries.wall_bounded._base.extract_mean_modes`);
     # cadenced, so this is tidiness rather than a measured win.
     mean_delta, mean_ref = extract_mean_modes(delta, state1)
     prof = {

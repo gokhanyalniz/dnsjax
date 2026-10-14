@@ -104,8 +104,8 @@ Every radial derivative therefore carries a per-slot sign, built by
 ``rhs_radial_derivatives`` / ``div_c_radial_derivatives`` /
 ``tensor_abase_matvec`` adapters below).  Those GEMMs stack their
 inputs **y-leading** (``component_axis=1``), the transpose-free layout;
-:func:`~.cylindrical._parity_y_matvec` lands the ghost correction on
-the radial axis either way.
+:func:`~dnsjax.geometries.wall_bounded.cylindrical._parity_y_matvec`
+lands the ghost correction on the radial axis either way.
 
 Time integration
 ----------------
@@ -233,7 +233,7 @@ from dnsjax_lab.geometries.wall_bounded._viscoelastic_stepping import (
 #: ``cylindrical.py``); it reads the nine evolved slots only, so it
 #: also drops the velocity pass's carried slots.  The physical ->
 #: solver half appends those, so the flow module binds it
-#: (:func:`._cylindrical_stepping.with_carried`).
+#: (:func:`dnsjax.geometries.wall_bounded._cylindrical_stepping.with_carried`).
 from_solver_basis = jax.jit(from_spin_basis)
 
 # Spin weights of the fused radial-derivative batch of the shared
@@ -252,10 +252,10 @@ def _parity_signs(spins: np.ndarray, fourier_: Fourier) -> Array:
     r"""Per-slot ghost sign `$(-1)^{m+s}$`, shaped ``(1, C, Nm, 1)``.
 
     Broadcasts against a y-leading ``(g, C, Nm, Nkz)`` ghost product, so
-    one :func:`~.cylindrical._parity_y_matvec` call can carry a whole
-    stack of differently-signed components.  Only the parity of *spins*
-    is read: `$s$` even selects the `$(-1)^m$` class, `$s$` odd the
-    `$(-1)^{m+1}$` one.
+    one :func:`~dnsjax.geometries.wall_bounded.cylindrical._parity_y_matvec`
+    call can carry a whole stack of differently-signed components.  Only
+    the parity of *spins* is read: `$s$` even selects the `$(-1)^m$`
+    class, `$s$` odd the `$(-1)^{m+1}$` one.
     """
     psp = fourier_.m_is_even * 2 - 1  # (-1)^m
     psv = -psp  # (-1)^{m+1}

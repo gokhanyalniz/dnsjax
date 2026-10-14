@@ -9,12 +9,13 @@ accretion-disk-relevant regime studied as a hydrodynamic model for the
 origin of turbulence in Keplerian disks.
 
 The physics, operators, and base flow are **identical** to
-:mod:`.taylor_couette` (both are the circular-Couette base flow
-`$U_\theta = A_0 r + B_0/r$` on the annular geometry) and both bind the shared
-implementation in :mod:`._circular_couette`; this module differs only in the
-*control-parameter interface* and its documented conventions.  The geometry
-(radial grid, FD matrices, the `$2 \times 2$` influence-matrix operators and
-iteration, solvers) is inherited from
+:mod:`~dnsjax.flows.wall_bounded.taylor_couette` (both are the
+circular-Couette base flow `$U_\theta = A_0 r + B_0/r$` on the annular
+geometry) and both bind the shared implementation in
+:mod:`~dnsjax.flows.wall_bounded._circular_couette`; this module differs
+only in the *control-parameter interface* and its documented conventions.
+The geometry (radial grid, FD matrices, the `$2 \times 2$` influence-matrix
+operators and iteration, solvers) is inherited from
 :class:`~dnsjax.geometries.wall_bounded.annular.AnnularFlow`.
 
 Control parameters and the quasi-Keplerian regime
@@ -94,7 +95,7 @@ docstring): `$m_0 > 1$` restricts the simulation to the
 Base flow and laminar constants
 -------------------------------
 Identical to Taylor-Couette (see that module's docstring and
-:mod:`._circular_couette`): the base flow is
+:mod:`~dnsjax.flows.wall_bounded._circular_couette`): the base flow is
 `$\mathbf{U} = (0, 0, U_\theta)$` in `$(u_z, u_r, u_\theta)$` with
 uniform axial vorticity `$\omega_z = 2 A_0$` and
 `$\nabla^2\mathbf{U} = 0$`, so the energy budget uses
