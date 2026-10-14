@@ -45,9 +45,9 @@ reduced, axis by axis, where each axis is local:
   zero and the pressure's `$(0, 0)$` mode re-pinned to zero at the
   upper wall: a truncation moves end values, and both are stated
   exactly (the no-slip condition, the pressure's gauge).  Both grids
-  are built in float64 by
-  :func:`dnsjax.fd.grid_nodes`, so the CGL path holds in a
-  single-precision run too.  A custom ``geo.wall_grid`` keeps its own
+  are built in float64 by :func:`dnsjax.snapshot.wall_grid_nodes`, as
+  a resume's are, so the CGL path holds in a single-precision run
+  too.  A custom ``geo.wall_grid`` keeps its own
   count (``validate_parameters``);
 - **periodic** `$k_y$`, in the solver layout: the highest modes
   dropped (:func:`dnsjax.snapshot._resize_wrapped_axis`);
@@ -87,7 +87,7 @@ from .snapshot import (
     apply_wall_normal_regrid,
     save_snapshot,
     stored_component_parity,
-    wall_regrid_geometry,
+    wall_grid_nodes,
     wall_regrid_matrix,
     wall_velocity_rows,
 )
@@ -190,16 +190,10 @@ class LowResWriter:
             if self.target["ny"] != res.ny:
                 self.ky = (res.ny - 1, a)
         elif self.target["ny"] != res.ny:
-            from .fd import grid_nodes
-
-            family = wall_regrid_geometry()
             nodes = partial(
-                grid_nodes,
-                family,
+                wall_grid_nodes,
                 grid_type=params.geo.grid_type,
                 grid_stretch=params.geo.grid_stretch,
-                r_inner=derived_params.r_inner,
-                r_outer=derived_params.r_outer,
             )
             y_new = nodes(self.target["ny"])
             self.T = wall_regrid_matrix(nodes(res.ny), y_new)

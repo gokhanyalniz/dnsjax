@@ -634,6 +634,106 @@ def wall_regrid_geometry() -> str:
     return "cartesian"
 
 
+def wall_grid_nodes(
+    ny: int, grid_type: str | None, grid_stretch: float
+) -> np.ndarray:
+    r"""This run's geometry's standard grid at *ny* points, in float64.
+
+    :func:`dnsjax.fd.grid_nodes` for :func:`wall_regrid_geometry` with
+    the run's radii, in float64 whatever the run's precision, so that
+    a CGL grid passes the detection behind
+    :func:`dnsjax.fd.build_interpolation_matrix`; the grid a
+    single-precision run holds (``derived_params.wall_normal_grid``)
+    is float32-rounded and does not.  A custom ``geo.wall_grid`` has
+    no formula and is not handled here.
+    """
+    from .fd import grid_nodes
+
+    return grid_nodes(
+        wall_regrid_geometry(),
+        ny,
+        grid_type,
+        grid_stretch,
+        r_inner=derived_params.r_inner,
+        r_outer=derived_params.r_outer,
+    )
+
+
+def _sharpened(held, ny, grid_type, grid_stretch, custom) -> np.ndarray:
+    """*held* in float64, rebuilt exactly where its formula reproduces it.
+
+    *held* is a recorded or a built grid; *ny*, *grid_type*,
+    *grid_stretch* and *custom* (``geo.wall_grid``) are its
+    parameters.  :func:`wall_grid_nodes` replaces it when that agrees
+    with it to float32 rounding (a ``1e-5`` relative tolerance) and it
+    is no custom grid; otherwise, or when the parameters build no grid
+    (a type this version lacks), *held* is returned as it is.
+    """
+    held = np.asarray(held, dtype=np.float64)
+    if custom is not None or ny is None:
+        return held
+    if grid_stretch is None:
+        grid_stretch = params.geo.grid_stretch
+    try:
+        exact = wall_grid_nodes(ny, grid_type, grid_stretch)
+    except ValueError:
+        return held
+    tol = 1e-5 * max(1.0, float(np.abs(held).max()))
+    if len(exact) == len(held) and np.allclose(exact, held, rtol=0, atol=tol):
+        return exact
+    return held
+
+
+def resume_wall_grids(meta: dict) -> tuple[np.ndarray, np.ndarray]:
+    r"""The two grids of a resume from the snapshot *meta* describes.
+
+    ``(y_old, y_new)`` in float64: the wall-normal grid the stored
+    state lives on (``wall_normal_grid`` of the metadata) and the one
+    this run holds (``derived_params.wall_normal_grid``), for
+    :func:`wall_regrid_matrix` and :func:`same_wall_grid`.  Each is
+    rebuilt by :func:`wall_grid_nodes` from its ``res.ny`` /
+    ``geo.grid_type`` / ``geo.grid_stretch`` (the recorded ones, the
+    live ones) where that reproduces it to float32 rounding and it is
+    no custom ``geo.wall_grid``, else taken as it is
+    (:func:`_sharpened`).  So a single-precision run's float32-rounded
+    grids, recorded and held, still take the spectral route, and a
+    precision change alone is no regrid; a custom grid keeps the
+    stencil it always had.
+    """
+    from .flows.registry import stored_value
+
+    stored = meta.get("params", {})
+    system = meta["system"]
+    y_old = _sharpened(
+        meta["wall_normal_grid"],
+        stored_value(stored, system, "res", "ny"),
+        stored_value(stored, system, "geo", "grid_type"),
+        stored_value(stored, system, "geo", "grid_stretch"),
+        stored_value(stored, system, "geo", "wall_grid"),
+    )
+    y_new = _sharpened(
+        derived_params.wall_normal_grid,
+        params.res.ny,
+        params.geo.grid_type,
+        params.geo.grid_stretch,
+        params.geo.wall_grid,
+    )
+    return y_old, y_new
+
+
+def same_wall_grid(meta: dict) -> bool:
+    """Whether the state *meta* describes needs no wall-normal regrid.
+
+    The two grids of :func:`resume_wall_grids` have the same count and
+    agree to ``1e-12``: the one judgement ``__main__`` and the carried
+    fields' loader (:func:`load_snapshot_carry`) share.
+    """
+    y_old, y_new = resume_wall_grids(meta)
+    return len(y_old) == len(y_new) and bool(
+        np.allclose(y_old, y_new, atol=1e-12)
+    )
+
+
 def wall_velocity_rows() -> tuple[int, ...]:
     """The wall rows whose velocity a regrid resets to zero.
 
@@ -651,8 +751,8 @@ def wall_regrid_matrix(y_old, y_new) -> Array | tuple[Array, Array]:
     the local stencil otherwise -- cast to the run's real precision and
     placed by ``sharding.distribute``.  Real, because
     :func:`apply_wall_normal_regrid` applies it as a real GEMM.  The
-    grids should be float64: a float32-rounded CGL grid misses the CGL
-    detection (:func:`dnsjax.fd.grid_nodes`).
+    grids come from :func:`resume_wall_grids` or :func:`wall_grid_nodes`,
+    in float64: a float32-rounded CGL grid misses the CGL detection.
     """
     from .fd import build_interpolation_matrix
 
@@ -1841,15 +1941,13 @@ def load_snapshot_carry(path: str | Path) -> Array | None:
         return None
     meta = read_metadata(path)
     comp_shape = tuple(meta["native_shape"][1:])
-    # "Same grid" exactly as ``__main__._interpolate_if_needed`` judges
-    # it for the state, so the two never disagree about a regrid.
-    snap_grid = meta.get("wall_normal_grid")
-    curr_grid = derived_params.wall_normal_grid
+    # The judgement ``__main__._interpolate_if_needed`` makes for the
+    # state (``same_wall_grid``), so the two never disagree about a
+    # regrid.
     same_grid = (
         comp_shape == _true_spec_shape()
-        and snap_grid is not None
-        and len(snap_grid) == len(curr_grid)
-        and np.allclose(snap_grid, curr_grid, atol=1e-12)
+        and meta.get("wall_normal_grid") is not None
+        and same_wall_grid(meta)
     )
     if not same_grid:
         return None

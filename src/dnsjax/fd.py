@@ -693,7 +693,9 @@ def grid_nodes(
     single-precision run -- a float32-rounded grid misses their
     ``1e-12`` tolerance (an odd grid's centre node lands near
     ``4e-8``), and :func:`build_interpolation_matrix` would then fall
-    back to the local stencil.
+    back to the local stencil.  Both go through
+    :func:`dnsjax.snapshot.wall_grid_nodes`: the reduced-resolution
+    snapshots and a resume's regrid alike.
 
     The builders keep their own formulas, so the solver's grids are
     untouched; ``tests/test_integration.py`` pins the two against
@@ -1127,6 +1129,37 @@ def local_interpolation_matrix(
     return T
 
 
+def interpolation_route(y_old: ndarray, y_new: ndarray, geometry: str) -> str:
+    r"""The interpolation :func:`build_interpolation_matrix` builds.
+
+    ``"chebyshev"`` for a Cartesian or an annular pair of CGL grids
+    (the annular ones after the affine map to `$[-1, 1]$`),
+    ``"parity"`` for a cylindrical pair of detected radial CGL grids
+    (:func:`cgl_axis_gap`: half-CGL or rigged-CGL, any combination),
+    ``"stencil"`` otherwise (a tanh, custom or undetected grid).  The
+    detection reads the grids in float64 at ``1e-12``: a
+    float32-rounded CGL grid fails it (:func:`grid_nodes` rebuilds one
+    exactly).
+    """
+    y_old = np.asarray(y_old, dtype=np.float64)
+    y_new = np.asarray(y_new, dtype=np.float64)
+    if geometry == "cartesian":
+        if is_cgl_grid(y_old) and is_cgl_grid(y_new):
+            return "chebyshev"
+    elif geometry == "cylindrical":
+        gap_old, gap_new = cgl_axis_gap(y_old), cgl_axis_gap(y_new)
+        if gap_old is not None and gap_new is not None:
+            return "parity"
+    elif geometry == "annular":
+        # A CGL grid affinely mapped to [r1, r2]: normalize to detect it.
+        def _to_unit(g: ndarray) -> ndarray:
+            return (2.0 * g - g[0] - g[-1]) / (g[-1] - g[0])
+
+        if is_cgl_grid(_to_unit(y_old)) and is_cgl_grid(_to_unit(y_new)):
+            return "chebyshev"
+    return "stencil"
+
+
 def build_interpolation_matrix(
     y_old: ndarray,
     y_new: ndarray,
@@ -1153,6 +1186,9 @@ def build_interpolation_matrix(
       (:func:`local_interpolation_matrix`), whose Lebesgue constant
       stays bounded on any monotone grid.
 
+    The choice is :func:`interpolation_route`'s, which a caller may
+    name in its log.
+
     Parameters
     ----------
     y_old:
@@ -1175,33 +1211,16 @@ def build_interpolation_matrix(
     """
     y_old = np.asarray(y_old, dtype=np.float64)
     y_new = np.asarray(y_new, dtype=np.float64)
-
-    if geometry == "cartesian" and is_cgl_grid(y_old) and is_cgl_grid(y_new):
+    route = interpolation_route(y_old, y_new, geometry)
+    if route == "chebyshev":
+        # The Chebyshev matrix depends on the point counts alone (it
+        # works in coefficient space), so the annular affine map costs
+        # nothing.
         return chebyshev_interpolation_matrix(len(y_old), len(y_new))
-
-    if geometry == "cylindrical":
-        # Spectral parity interpolation when both grids are detected
-        # radial CGL grids (half-CGL or rigged-CGL, any combination);
-        # returns an (T_even, T_odd) parity pair applied per azimuthal
-        # mode by the caller.  A custom / tanh grid (gap None) falls
-        # through to the local stencil.
-        gap_old = cgl_axis_gap(y_old)
-        gap_new = cgl_axis_gap(y_new)
-        if gap_old is not None and gap_new is not None:
-            return cgl_parity_interpolation_matrices(
-                len(y_old), len(y_new), gap_old, gap_new
-            )
-
-    if geometry == "annular":
-        # The annular grid is a CGL grid affinely mapped to [r1, r2];
-        # normalize each grid to [-1, 1] to detect it.  The Chebyshev
-        # interpolation matrix depends only on the point counts (it
-        # works in coefficient space), so it is invariant under the
-        # affine domain map.
-        def _to_unit(g: ndarray) -> ndarray:
-            return (2.0 * g - g[0] - g[-1]) / (g[-1] - g[0])
-
-        if is_cgl_grid(_to_unit(y_old)) and is_cgl_grid(_to_unit(y_new)):
-            return chebyshev_interpolation_matrix(len(y_old), len(y_new))
-
+    if route == "parity":
+        # An (T_even, T_odd) pair, applied per azimuthal mode by the
+        # caller.
+        return cgl_parity_interpolation_matrices(
+            len(y_old), len(y_new), cgl_axis_gap(y_old), cgl_axis_gap(y_new)
+        )
     return local_interpolation_matrix(y_old, y_new, order)

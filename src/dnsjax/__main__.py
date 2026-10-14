@@ -265,7 +265,6 @@ from .flows.registry import (
 )
 from .param_surface import print_resolved_parameters
 from .parameters import (
-    derived_params,
     ns_to_s,
     padded_res,
     params,
@@ -361,43 +360,36 @@ def _write_dat_header(file_path, columns, col_width) -> None:
 def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
     r"""Interpolate snapshot state if the wall-normal grid changed.
 
-    Compares the snapshot's wall-normal grid against the current
-    grid (from ``derived_params``).  When they differ -- either
-    in number of points or in point locations -- applies the
-    geometry's regrid (:func:`dnsjax.snapshot.wall_regrid_matrix`:
-    spectral between CGL grids, the local ``fd_order`` stencil
-    otherwise) and resets the wall velocity to zero.
+    Compares the snapshot's wall-normal grid against the current one
+    (:func:`dnsjax.snapshot.same_wall_grid`: both in float64 from
+    :func:`dnsjax.snapshot.resume_wall_grids`, so a single-precision
+    run's float32-rounded grids still count as CGL).  When they differ
+    -- in point count or in point locations -- applies the geometry's
+    regrid (:func:`dnsjax.snapshot.wall_regrid_matrix`: spectral
+    between CGL grids, the local ``fd_order`` stencil otherwise, the
+    route named in the log line) and resets the wall velocity to zero.
 
     After interpolation, the first corrector iteration projects
     out any `$O(\varepsilon)$` divergence introduced by the
     changed `$\partial/\partial y$` operator.
     """
-    import numpy as np
-
-    from .flows.registry import stored_value
-
-    meta = read_metadata(Path(snap_path))
-    snap_grid = meta.get("wall_normal_grid")
-    # Stored params use public names (res.ny is "nr" for the
-    # cylindrical/annular flows); look it up via the alias.
-    snap_ny = stored_value(meta.get("params", {}), meta["system"], "res", "ny")
-    curr_grid = derived_params.wall_normal_grid
-
-    needs_interp = snap_ny != params.res.ny or not np.allclose(
-        snap_grid, curr_grid, atol=1e-12
-    )
-
-    if not needs_interp:
-        return state
-
+    from .fd import interpolation_route
     from .snapshot import (
         apply_wall_normal_regrid,
+        resume_wall_grids,
+        same_wall_grid,
         stored_component_parity,
+        wall_regrid_geometry,
         wall_regrid_matrix,
         wall_velocity_rows,
     )
 
-    T = wall_regrid_matrix(np.array(snap_grid), np.array(curr_grid))
+    meta = read_metadata(Path(snap_path))
+    if same_wall_grid(meta):
+        return state
+    y_old, y_new = resume_wall_grids(meta)
+    route = interpolation_route(y_old, y_new, wall_regrid_geometry())
+    T = wall_regrid_matrix(y_old, y_new)
     parity = stored_component_parity()
     m_even = None
     if isinstance(T, tuple):
@@ -437,9 +429,15 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
         zero_velocity_walls=wall_velocity_rows(),
     )
 
+    by = {
+        "chebyshev": "Chebyshev coefficient map",
+        "parity": "radial parity maps",
+        "stencil": f"local order-{params.res.fd_order} stencil",
+    }[route]
     sharding.print(
-        "Interpolated wall-normal grid; first corrector step "
-        "will project out any residual divergence."
+        f"Interpolated the wall-normal grid, {len(y_old)} -> {len(y_new)} "
+        f"points, by the {by}; the first corrector step projects out any "
+        "residual divergence."
     )
     return state
 

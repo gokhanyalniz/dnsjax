@@ -12,11 +12,12 @@ Exercises the host (non-GDS) I/O path:
   member parses as plain JSON (stdlib ``tarfile`` + ``json``), and
   after ``tar xf`` the ``state/`` store reads back via TensorStore
   with exactly the stored data;
-- wall-normal regrid on load: the Cartesian case interpolates a
-  polynomial profile ny 8 -> 16, and the **pipe** case additionally
-  pins the alias-aware stored-``nr`` lookup (the metadata stores
-  public names) plus the spectral parity interpolation across a
-  rigged-CGL -> half-CGL radial-grid change;
+- wall-normal regrid on load: the Cartesian case interpolates a polynomial
+  profile ny 8 -> 16 (9 -> 16 from a grid recorded in float32 arithmetic, still
+  by the spectral route), and the **pipe** case additionally pins the
+  alias-aware stored-``nr`` lookup (the metadata stores public names) plus the
+  spectral parity interpolation across a rigged-CGL -> half-CGL radial-grid
+  change;
 - ``serial`` write mode produces a valid snapshot whose stored
   component data is identical to the ``concurrent`` one (the
   archives are not byte-identical as *files*: the metadata records
@@ -391,6 +392,14 @@ if __name__ == "__main__":
                 load_np0=2,
                 label=" 2D",
                 save_ny=7,
+            ),
+        )
+    )
+    results.append(
+        (
+            "wb ny 9->16 interp f32-grid",
+            run_ny_mismatch_case(
+                label=" f32-grid", save_ny=9, stored_float32=True
             ),
         )
     )
