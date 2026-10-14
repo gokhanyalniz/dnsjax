@@ -12,11 +12,13 @@ transparently via an extra ``vmap``.
 
 The banded path factors each per-mode operator with a **no-pivot**
 banded LU (:func:`_banded_factor_mode_inner`, every mode at once,
-straight into the stored mode-inner layout); pivoting is never needed
-for the diagonally-dominant Helmholtz/Poisson-like operators solved
-here.  :func:`_build_pallas_operator` verifies this once at setup
+straight into the stored mode-inner layout).  The Helmholtz- and
+Poisson-like operators solved here are not diagonally dominant on every
+row (an eighth-order `$D_2$` row's off-diagonals outweigh its diagonal),
+but their no-pivot element growth stays `$O(1)$`:
+:func:`_build_pallas_operator` verifies that once at setup, per mode
 (solve-residual probe + LU element-growth check, computed with the
-factorization: :func:`_factor_checked`) and hard-errors with an
+factorization: :func:`_factor_checked`), and hard-errors with an
 actionable message on a genuinely unstable factorization instead of
 proceeding silently.
 
@@ -1839,9 +1841,10 @@ def _probe_residual(a_band: Array, L: Array, U: Array) -> Array:
 # ill-conditioning of the operator itself (solve residual above
 # tolerance with `$O(1)$` growth, e.g. the near-singular Poisson `$L_k$`
 # at the smallest nonzero `$k^2$` of a huge box), where pivoting would
-# change nothing fundamental.  The diagonally-dominant operators solved
-# here keep growth `$O(1)$`; ``1e3`` is orders of magnitude above what
-# any supported configuration produces.
+# change nothing fundamental.  The operators solved here keep growth
+# `$O(1)$` (measured, not assumed: neither family is diagonally dominant
+# on every row); ``1e3`` is orders of magnitude above what any supported
+# configuration produces.
 _NO_PIVOT_GROWTH_TOL: float = 1e3
 
 
@@ -1856,7 +1859,7 @@ def _build_pallas_operator(
     each with the no-pivot banded LU, then verify the group once at
     setup:
 
-    - LU element growth ``max|U| / max|A|`` above
+    - LU element growth ``max|U| / max|A|`` of any one mode above
       :data:`_NO_PIVOT_GROWTH_TOL`, or any non-finite factor or
       residual, means the no-pivot factorization itself is unstable:
       hard ``RuntimeError`` (use ``solver.backend = "dense"``, the
@@ -1884,7 +1887,9 @@ def _build_pallas_operator(
     # The cross-device maxima run here, outside the looping program
     # (Design notes: "The setup check's programs").
     resids = [float(jnp.max(r)) for _, _, r, _, _ in checked]
-    growths = [float(jnp.max(mu) / jnp.max(ma)) for _, _, _, mu, ma in checked]
+    # Per mode, then the worst mode: a mode whose |A| is small against
+    # the group's largest would hide its growth in a ratio of maxima.
+    growths = [float(jnp.max(mu / ma)) for _, _, _, mu, ma in checked]
     # The group's worst band -- and a NaN in *any* band, which ``max``
     # would drop unless it came first.
     resid = math.nan if any(map(math.isnan, resids)) else max(resids)
