@@ -10,13 +10,11 @@ The external-facing snapshot API: `snapshot_export.read_state` and
 - Outside that guarantee, and never imported from a JAX-free module:
   `transient_growth.py` (the JAX-based TG CLI, every JAX import
   deferred) and `snapshot_import.py` (the inbound direction; needs the
-  solver runtime, imports JAX in-function). No core module imports
-  the lab's analysis (`dnsjax_lab.analysis`, indexed in
-  `lab/CLAUDE.md`), but `_core._axial_metric` imports a flow's
-  `analysis_metric` factory when its snapshot is first read, and the
-  registry loads every installed plugin's spec module: both must stay
-  JAX-free, which `tests/test_snapshot_export.py` asserts before and
-  after its reads.
+  solver runtime, imports JAX in-function).
+- `_core._axial_metric` imports a flow's `analysis_metric` factory when
+  its snapshot is first read, and the registry loads every installed
+  plugin's spec module: both must stay JAX-free, which
+  `tests/test_snapshot_export.py` asserts before and after its reads.
 - Return data in the stored layout: a chunk reshaped to
   `meta["native_shape"][1:]` is the solver's own layout, and coordinate
   tuples are ordered to match.

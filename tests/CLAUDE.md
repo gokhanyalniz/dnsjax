@@ -62,7 +62,7 @@ Banded solve and Pallas kernel:
   the wall-normal stencil).
 
 Geometry operators and grids:
-- `test_cartesian.py`, `test_cylindrical.py` (both suites),
+- `test_cylindrical.py` (both suites), `test_cartesian.py`,
   `test_annular.py` (operators, band-vs-dense parity); the lab's
   `test_curved_pipe.py` (`--only`), `test_viscoelastic.py` (annular
   sPTT), `test_viscoelastic_pipe.py`.

@@ -10,20 +10,21 @@ sPTT viscoelastic pipe and Dean). Human docs: `README.md`, `docs/`,
 
 ## Commands
 
-Prerequisites: Python >=3.12 (`.python-version` pins 3.14), `uv`, and
-MPI only for multi-process runs (a lone process needs none, even across
-GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
+Prerequisites: Python at `pyproject.toml`'s `requires-python` or newer
+(`.python-version` pins the newest release; both, and moving them:
+`CONTRIBUTING.md` "Python versions"), `uv`, and MPI only for
+multi-process runs (a lone process needs none, even across GPUs).
 
 - `uv sync`: the environment, plus the `dnsjax` and `dnsjax-twin`
   console scripts in `.venv/bin`.
 - `uv run ruff check --fix` and `uv run ruff format src tests scripts
   lab/src lab/tests lab/scripts` (never a bare `ruff format`: it also
   rewrites the Python blocks in the Markdown docs and the example
-  notebook, laid out for reading). Lines
-  are at most 79 columns. `prek.toml` (at commit) and
-  `.claude/settings.json` (on each edited `.py`) run both.
-- `uv run pytest -m "not slow and not mpi"` (the offline loop, ~22
-  min), `-m "not slow"` (adds the quick `mpirun` rows), `uv run pytest`
+  notebook, laid out for reading). Lines are at most 79 columns.
+  `prek.toml` (at commit) and `.claude/settings.json` (on each edited
+  `.py`) run both.
+- `uv run pytest -m "not slow and not mpi"` (the offline loop, a heavy
+  suite), `-m "not slow"` (adds the quick `mpirun` rows), `uv run pytest`
   (everything), each over both suites; one script: `uv run python
   tests/<name>.py` (`lab/tests/` for the lab's). Which script a change
   needs: `tests/CLAUDE.md`.
@@ -111,8 +112,9 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
 - Commit a reusable, valuable tool a session writes (a check, a
   harness, a converter) rather than leave it in the scratchpad or
   `~/.cache`: in `lab/scripts/<topic>/` (`scripts/` if a solver user
-  needs it), its docstring the manual, with a line in that directory's
-  script index and README, so a later session reruns it, not rebuilds it.
+  needs it), its docstring the manual, with a line in the script index
+  and the README that list its directory, so a later session reruns
+  it, not rebuilds it.
 
 ## Documentation rules
 
@@ -124,10 +126,8 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
 - Keep docstrings, comments, type hints and these notes current, at 79
   columns.
 - The human-facing docs change in the same pass as what they describe:
-  `README.md`, `CONTRIBUTING.md`, `tests/README.md`, `scripts/README.md`,
-  `docs/*.md`, `examples/**/README.md`, and the lab's READMEs
-  (`lab/**/README.md`; their conventions:
-  `.claude/rules/human-docs.md`).
+  the READMEs, `CONTRIBUTING.md`, `docs/` and `lab/docs/` (the set, and
+  their conventions: the `paths:` of `.claude/rules/human-docs.md`).
 - Nothing committed carries a placeholder, an invisible marker or a
   claim whose backing artefact has not landed: no `TODO(author)`, no
   `DRAFT:`, no empty section, no badge for a DOI that does not exist.
@@ -196,9 +196,9 @@ analysis/         snapshot API, transient_growth, snapshot_import
   value is captured in the singletons and the jitted steppers. `dt`
   alone changes in place, through the flow module's `set_dt` with
   `params.step.dt` kept in step, as `__main__`'s adaptive loop does.
-- Pre- and post-processing belong in a `scripts/` tool that meets the
-  solver through snapshots, not in a new solver parameter or runtime
-  path.
+- Pre- and post-processing belong in an offline tool, placed as Conduct
+  says, that meets the solver through snapshots, not in a new solver
+  parameter or runtime path.
 
 ## Core and lab
 
@@ -213,12 +213,11 @@ analysis/         snapshot API, transient_growth, snapshot_import
 - A lab feature that needs the core adds or widens a seam the core's
   own flows use too, in the same commit.
 - A release (PyPI's sdist and wheel; the tag's GitHub archive, which
-  Zenodo keeps) holds neither the lab, `CONTRIBUTING.md`, `uv.lock` nor
-  any agent file (`CLAUDE.md`, `.claude/`): a new kind of agent file
-  gets a pattern in `.gitattributes` and `pyproject.toml`'s
-  `[tool.uv.build-backend]`.
-  `lab/scripts/release/prepare_release.py` cuts it; only the author
-  pushes the tag or publishes.
+  Zenodo keeps) leaves out what `.gitattributes` lists, the lab and
+  every agent file (`CLAUDE.md`, `.claude/`) among them: a new kind of
+  agent file gets a pattern there and in `pyproject.toml`'s
+  `[tool.uv.build-backend]`. `lab/scripts/release/prepare_release.py`
+  cuts it; only the author pushes the tag or publishes.
 
 ## Other notes
 
