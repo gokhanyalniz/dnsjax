@@ -412,8 +412,10 @@ v)|_w$`.  The second is machine-zero under either scheme -- each
 influence matrix imposes `$(D_1 v)|_w = 0$` exactly, the legacy one in
 the wall-divergence stages of ``_imm_iteration_vp`` -- and the first
 only under the default ``res.consistent_imm``, whose discrete
-continuity holds everywhere: the legacy flag's states carry an
-`$O(1)$` relative interior divergence.  Carrying the term costs one
+continuity holds everywhere: the legacy flag's states carry a
+truncation-level interior divergence, converging under refinement
+(:mod:`dnsjax.parameters` Design notes, "Consistent influence
+matrix").  Carrying the term costs one
 mode-diagonal multiply and makes :mod:`dnsjax_lab.twin.pressure`'s "right
 under either ``res.consistent_imm``" claim unconditional.
 

@@ -67,9 +67,10 @@ start mode is decided by two files -- the partner of
   would disconnect the pair from its own streams) -- start a fresh
   member instead.  ``stop.max_sim_time`` is a horizon counted from
   the *resumed* clock rather than an end time
-  (:class:`dnsjax.parameters.Termination`), so a member restarted
-  mid-horizon asks for what is left of it, not for the original
-  value.
+  (:class:`dnsjax.parameters.Termination`): a member restarted
+  mid-horizon runs the whole value again, so to end where it was
+  meant to, resume it with ``--stop.max_sim_time`` set to what is
+  left.
 - partner exists, no ``twin.json`` -> error (either a resume in a
   directory missing its member record, or a fresh start pointed at a
   twin run's own output; copy the reference tar out to seed a fresh
@@ -740,34 +741,12 @@ def _validate_twin(values: TwinParams, params) -> None:
                 return bool(value)
             return value != getattr(defaults, name)
 
+        # Every field but e0, so a new knob is checked without a list
+        # to extend.
         stray = [
             name
-            for name in (
-                "seed",
-                "smoothness",
-                "wall_smoothness",
-                "wall_confinement",
-                "mean_flow",
-                "bins",
-                "x0_planes",
-                "it_energy",
-                "it_budget",
-                "it_spectra",
-                "it_yspectra",
-                "it_ybudget",
-                "rotational_ybudget",
-                "spectra_ref",
-                "it_spectra_ref",
-                "it_yspectra_ref",
-                "it_spectra3d",
-                "it_spectra3d_ref",
-                "it_budget3d",
-                "n_y3d",
-                "n_kz3d",
-                "n_kx3d",
-                "it_lowres_delta",
-            )
-            if configured(name)
+            for name in TwinParams.model_fields
+            if name != "e0" and configured(name)
         ]
         if stray:
             raise ValueError(
@@ -1807,9 +1786,9 @@ def run(
             *_, meas = step_cnab2_measured(jnp.copy(state1), jnp.copy(rhs1))
         else:
             *_, meas = predict_and_fully_correct_measured(jnp.copy(state1))
-        # ``state2`` no longer forces the unmeasured program to compile
-        # in iteration 0: on a recording step both states take the
-        # measured variant.  Pre-compile it when the first iteration
+        # On a recording step both states take the measured variant, so
+        # ``state2`` does not compile the unmeasured program in
+        # iteration 0.  Pre-compile it when the first iteration
         # records but not every one does, exactly as
         # :func:`dnsjax.__main__.run` does (``step.adaptive`` is
         # rejected here, so ``outs.it_steps`` is the only consumer of

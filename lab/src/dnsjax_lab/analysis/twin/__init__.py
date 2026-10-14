@@ -1,7 +1,7 @@
 r"""JAX-free offline analysis of twin-run (``dnsjax-twin``) outputs.
 
-Layout (one module per concern; none is imported by the top-level
-``dnsjax.analysis`` namespace, mirroring ``analysis/response``):
+Layout (one module per concern; ``dnsjax_lab.analysis`` imports none
+of them):
 
 - :mod:`.series` -- readers for the ``.dat`` scalar streams
   (``twin.dat`` / ``twin_budget.dat``) and the ``twin.json`` member

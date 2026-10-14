@@ -442,8 +442,9 @@ parent's clock, so offline analysis reads the perturbation time from
 `twin.json`.
 
 `stop.max_sim_time` is a horizon counted from whichever clock the run
-starts on, not an absolute end time, so a member restarted mid-horizon
-asks for what is left of it rather than for the original value.
+starts on, not an absolute end time: a member restarted mid-horizon runs
+the whole value again, so to end where it was meant to, resume it with
+`--stop.max_sim_time` set to what is left.
 
 ## Ensembles
 
