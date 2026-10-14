@@ -112,8 +112,9 @@ def cartesian_fields() -> tuple[FieldSpec, ...]:
         FieldSpec("lowres", "nz"),
         # The static pressure exists for these two flows only
         # (``geometries/wall_bounded/_cartesian_pressure.py``), so it
-        # defaults on here and is deferred everywhere else.
-        FieldSpec("lowres", "pressure", default=True),
+        # is offered here, opt-in at the model default (off), and
+        # deferred everywhere else.
+        FieldSpec("lowres", "pressure"),
     )
 
 

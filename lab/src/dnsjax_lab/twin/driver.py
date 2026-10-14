@@ -105,8 +105,9 @@ Each of the other outputs has its own cadence in :class:`TwinParams`:
   (:mod:`dnsjax_lab.twin.cubes`);
 - the reduced-resolution snapshots (:mod:`dnsjax.lowres`):
   ``lowres/`` holds the reference state at ``[lowres]``'s cadence,
-  and ``lowres_delta/`` the difference field with its pressure at
-  ``twin.it_lowres_delta``.  Nothing is written for the partner.
+  and ``lowres_delta/`` the difference field (with its pressure
+  under ``lowres.pressure``) at ``twin.it_lowres_delta``.  Nothing is
+  written for the partner.
 
 The reference halves of the energy spectra are streams of their own
 (``twin_spectra_ref``, ``twin_yspectra_ref``).  A member recorded

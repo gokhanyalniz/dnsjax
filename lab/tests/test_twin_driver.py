@@ -640,6 +640,8 @@ def test_np2_run() -> None:
                 "--lowres.it_lowres",
                 "1",
                 *_LOWRES,
+                "--lowres.pressure",
+                "True",
             ],
             np_count=2,
             np1=2,
@@ -756,6 +758,8 @@ def test_cubes_and_lowres() -> None:
         "--lowres.it_lowres",
         "4",
         *_LOWRES,
+        "--lowres.pressure",
+        "True",
     ]
     with tempfile.TemporaryDirectory() as tmp:
         member = Path(tmp)

@@ -1312,9 +1312,9 @@ class Lowres(BaseModel):
             "highest dropped); unset = res.nz."
         ),
     )
-    # The model default is off so that a flow without the static
-    # pressure (its ``DeferredSpec``) holds an inert value; the flows
-    # that have it default it on through their ``FieldSpec``.
+    # Off by default everywhere: opt-in on the flows that have the
+    # static pressure, and an inert value on those without it (their
+    # ``DeferredSpec``).
     pressure: bool = Field(
         default=False,
         description=(

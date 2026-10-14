@@ -103,6 +103,8 @@ def _build_command(
         base += ["--lowres.it_lowres", str(lowres["it_lowres"])]
         for axis, value in lowres["res"].items():
             base += [f"--lowres.{axis}", str(value)]
+        if lowres["pressure"]:
+            base += ["--lowres.pressure", "True"]
     return base + system["args"]
 
 

@@ -242,7 +242,7 @@ tools have a page of their own,
 | **Two-axis device mesh** | `(n_p0, n_p1)` with an in-FFT reshard pipeline — [docs/scaling.md](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/scaling.md#parallelization) |
 | **A memory–throughput dial** | `solver.rhs_transform_chunks` splits the batched inverse transform `k` ways, cutting its working set `k`-fold at identical results |
 | **Snapshots and resume** | tar + zarr3, written by every device in parallel; resume across any device count, re-gridding every changed axis — [docs/snapshots.md](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/snapshots.md) |
-| **Reduced-resolution snapshots** | on a cadence of their own: Fourier axes truncated, the wall-normal axis interpolated, every field computed at full resolution first, with the static pressure on the plane channels — [docs/running.md](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/running.md#reduced-resolution-snapshots) |
+| **Reduced-resolution snapshots** | on a cadence of their own: Fourier axes truncated, the wall-normal axis interpolated, every field computed at full resolution first, optionally with the static pressure on the plane channels — [docs/running.md](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/running.md#reduced-resolution-snapshots) |
 | **External-data import** | pack a field produced elsewhere into a valid snapshot — [docs/snapshots.md](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/snapshots.md#importing-a-field-from-elsewhere) |
 | **Initial conditions** | divergence-free random fields and deterministic localized spots, reproducible independent of device count |
 | **Adaptive CFL stepping** | re-selects `Δ t` and rebuilds the implicit operators on device with no recompilation |
