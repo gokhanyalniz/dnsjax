@@ -292,7 +292,7 @@ tools have a page of their own,
 | [`docs/cpu-collectives.md`](docs/cpu-collectives.md) | routing multi-process CPU collectives through MPI |
 | [`tests/README.md`](tests/README.md) | how the suite is laid out and how to run it |
 | [`scripts/README.md`](scripts/README.md) | the offline tools: figures, a snapshot perturbation, wall-normal resolution |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | setup, lint, tests, adding a flow, commit style |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | setup, lint, tests, adding a flow, commit style, releases |
 | [`lab/README.md`](lab/README.md) | the lab: its flows, runs and analyses, scripts and tests |
 | [`lab/docs/numerics.md`](lab/docs/numerics.md) | the lab flows' equations and conventions |
 | [`lab/docs/validation.md`](lab/docs/validation.md) | what the lab's flows and tools are checked against |

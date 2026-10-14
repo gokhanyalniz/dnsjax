@@ -213,9 +213,10 @@ analysis/         snapshot API, transient_growth, snapshot_import
 - A lab feature that needs the core adds or widens a seam the core's
   own flows use too, in the same commit.
 - A release (PyPI's sdist and wheel; the tag's GitHub archive, which
-  Zenodo keeps) holds neither the lab nor any agent file (`CLAUDE.md`,
-  `.claude/`): a new kind of agent file gets a pattern in
-  `.gitattributes` and `pyproject.toml`'s `[tool.uv.build-backend]`.
+  Zenodo keeps) holds neither the lab, `CONTRIBUTING.md`, `uv.lock` nor
+  any agent file (`CLAUDE.md`, `.claude/`): a new kind of agent file
+  gets a pattern in `.gitattributes` and `pyproject.toml`'s
+  `[tool.uv.build-backend]`.
   `lab/scripts/release/prepare_release.py` cuts it; only the author
   pushes the tag or publishes.
 

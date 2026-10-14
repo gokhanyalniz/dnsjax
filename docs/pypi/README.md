@@ -267,7 +267,7 @@ tools have a page of their own,
 | [`docs/cpu-collectives.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/cpu-collectives.md) | routing multi-process CPU collectives through MPI |
 | [`tests/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/tests/README.md) | how the suite is laid out and how to run it |
 | [`scripts/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/scripts/README.md) | the offline tools: figures, a snapshot perturbation, wall-normal resolution |
-| [`CONTRIBUTING.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/CONTRIBUTING.md) | setup, lint, tests, adding a flow, commit style |
+| [`CONTRIBUTING.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/CONTRIBUTING.md) | setup, lint, tests, adding a flow, commit style, releases |
 | [`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/README.md) | the lab: its flows, runs and analyses, scripts and tests |
 | [`lab/docs/numerics.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/docs/numerics.md) | the lab flows' equations and conventions |
 | [`lab/docs/validation.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/docs/validation.md) | what the lab's flows and tools are checked against |

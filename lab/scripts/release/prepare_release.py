@@ -8,15 +8,15 @@ Usage::
     prepare_release.py files SDIST ARCHIVE
 
 A release holds the solver alone, in two forms with the same files: the
-PyPI sdist, and the GitHub zipball Zenodo archives, which adds
-``uv.lock`` (the sdist's ``source-include`` and ``.gitattributes`` keep
-the lab, the agent notes and the development configuration out of
-both).  Both must install with ``uv``.  ``main``'s ``pyproject.toml`` cannot
-serve as is: its default ``lab`` dependency group names ``dnsjax-lab``,
-a workspace member neither form contains, so ``uv sync`` there would
-fail -- while in a full clone that group is what installs the lab with
-the solver, which must keep working.  So a release is cut from its own
-commit:
+PyPI sdist, and the GitHub zipball Zenodo archives (the sdist's
+``source-include`` and ``.gitattributes`` keep the lab, the agent
+notes, the contributor guide, the development configuration and
+``uv.lock`` out of both).  Both must install with ``uv``.  ``main``'s
+``pyproject.toml`` cannot serve as is: its default ``lab`` dependency
+group names ``dnsjax-lab``, a workspace member neither form contains,
+so ``uv sync`` there would fail -- while in a full clone that group is
+what installs the lab with the solver, which must keep working.  So a
+release is cut from its own commit:
 
 ``cut`` checks *VERSION* against ``pyproject.toml`` and
 ``CITATION.cff`` (bump both on ``main`` first), then, in a throwaway
@@ -27,7 +27,8 @@ default today), trims ``README.md`` to the sections a release
 carries (``pypi_readme.DROPPED_SECTIONS``), pins the PyPI README's
 links to the tag (``pypi_readme.py``), points every link the archive's
 Markdown makes to
-a file the archive leaves out (the lab's) at GitHub at the tag
+a file the archive leaves out (the lab's, the contributor guide) at
+GitHub at the tag
 (:func:`archive_links`), relocks (``uv lock``), commits "Release vVERSION"
 and tags it ``vVERSION`` (annotated).  The commit is reachable from the
 tag alone: ``main`` is untouched, and pushing the tag
@@ -39,9 +40,8 @@ leaves no commit or tag.
 a release rehearsal that builds from ``main``.
 
 ``files`` checks an sdist against an archive (a ``git archive`` tar or
-the GitHub zipball): the same files, but for ``uv.lock``, which the
-archive alone holds, and the build backend's own (:data:`SDIST_ONLY`);
-exit 1, listing them, on any other difference.
+the GitHub zipball): the same files, but for the build backend's own
+(:data:`SDIST_ONLY`); exit 1, listing them, on any other difference.
 """
 
 from __future__ import annotations
@@ -124,8 +124,6 @@ def strip_pyproject(text: str) -> str:
 #: The files the build backend writes into an sdist, which no archive
 #: holds.
 SDIST_ONLY = frozenset({"PKG-INFO", "pyproject.toml.orig"})
-#: The files the archive holds that the sdist leaves out.
-ARCHIVE_ONLY = frozenset({"uv.lock"})
 
 
 def _members(path: Path) -> set[str]:
@@ -153,19 +151,12 @@ def _files(sdist: Path, archive: Path) -> int:
             f"only in the sdist: {f}"
             for f in in_sdist - in_archive - SDIST_ONLY
         ),
-        *(
-            f"only in the archive: {f}"
-            for f in in_archive - in_sdist - ARCHIVE_ONLY
-        ),
-        *(f"missing from the archive: {f}" for f in ARCHIVE_ONLY - in_archive),
+        *(f"only in the archive: {f}" for f in in_archive - in_sdist),
     ]
     if problems:
         print("\n".join(sorted(problems)))
         return 1
-    print(
-        f"the sdist holds the archive's {len(in_archive & in_sdist)} files; "
-        f"the archive adds {', '.join(sorted(ARCHIVE_ONLY))}"
-    )
+    print(f"the sdist and the archive hold the same {len(in_archive)} files")
     return 0
 
 
