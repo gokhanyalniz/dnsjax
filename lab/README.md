@@ -65,7 +65,7 @@ runs:
 
 | Script | What it does |
 |---|---|
-| `solver_benchmark.py` | the Pallas banded backend against the dense reference solver on the six flows its size table lists: validation and timing |
+| `solver_benchmark.py` | the Pallas banded backend against the dense reference solver on the flows its `SIZES` and `EXTRA_ENTRIES` tables list: validation and timing |
 | `node_benchmark.py` | a layout and strong-scaling sweep of one production problem under `mpirun` or `srun`, each row's `stats.dat` checked against a reference; JAX-free driver |
 | `pallas_solve_profile.py` | GPU profile of the banded solve and its share of a step |
 | `memory_budget.py` | per-rank memory of the step as run, on any layout, from XLA's buffer assignment, offline |
@@ -128,12 +128,14 @@ each suite, sharing a runner in the solver's `tests/`.
 
 ## Limitations
 
-- **The viscoelastic laminar states are exact only at $\epsilon = 0$.**
-  At the default $\epsilon = 10^{-3}$ the sPTT `start_from_laminar`
-  profile does not balance momentum exactly, so those two flows carry a
-  small residual and their laminarization check cannot fire. Fixing it
-  needs a shooting solve; the size of the discrepancy is recorded in the
-  flow modules.
+- **The viscoelastic laminar states are exact only at
+  $\epsilon = \kappa = 0$.** At the defaults the sPTT
+  `start_from_laminar` pair is not a steady state (its velocity neglects
+  the shear-thinning $\epsilon$ brings, its conformation the stress
+  diffusion $\kappa$ brings), so `E'` keeps a floor and the
+  laminarization check cannot fire. Fixing it needs a nonlinear solve for
+  the velocity profile; the defect, not small at the defaults, is
+  measured in the flow modules' Design notes.
 - **`dnsjax-twin` is Cartesian wall-bounded, fixed step.**
 
 ## References

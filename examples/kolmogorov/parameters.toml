@@ -11,9 +11,11 @@
 
 [phys]
 system = "kolmogorov"
-# Re = 1/nu on the fixed shear-direction box length (4) and the unit
-# forcing amplitude.  Above this box's transition threshold: the
-# perturbation grows by orders of magnitude before saturating.
+# Re = 1/nu, with the shear-direction box length fixed at 4 and the
+# laminar profile U = sin(2*pi*y/4) of unit amplitude (the sine force
+# that holds it is nu*(pi/2)^2).  Above this box's transition
+# threshold: the perturbation grows by orders of magnitude before
+# saturating.
 re = 100.0
 
 [geo]

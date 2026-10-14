@@ -137,9 +137,11 @@ itself), and the output streams, see
 | **Kolmogorov** | triply-periodic | $U = \sin(2\pi y / L_y)$, sine body force | `re`, `lx`, `lz`, `tilt_degree` |
 
 Each flow exposes only the parameters that apply to it, under the names
-natural to its geometry: a pipe takes `--geo.lz`/`--res.nr`/`--res.ntheta`
-where a plane channel takes `--geo.lx`/`--res.ny`/`--res.nz`. For the
-various conventions involved, see
+natural to its geometry: a pipe takes
+`--geo.lz`/`--res.nz`/`--res.nr`/`--res.ntheta` where a plane channel
+takes `--geo.lx`/`--res.nx`/`--res.ny`/`--res.nz` (the pipe's `nz` is
+axial, the channel's spanwise). For the various conventions involved,
+see
 [Conventions](docs/numerics.md#conventions).
 
 The repository's lab adds five flows on the same geometries — a curved

@@ -130,8 +130,9 @@ data = read_state(
 )
 ```
 
-Both README figures are made this way — no JAX, no solver runtime, just
-a snapshot and NumPy (`scripts/snapshot_figure.py`):
+Both README figures are made this way — no JAX and no solver runtime:
+the read takes a snapshot and NumPy, the drawing matplotlib
+(`scripts/snapshot_figure.py`, in the `plots` group):
 
 <a id="fig-streaks"></a>
 <p align="center">
@@ -243,7 +244,8 @@ convert_field_to_snapshot(
 `space="spectral"` accepts already-transformed input in the same axis
 order, with one restriction on where the half spectrum may sit: only the
 **last** axis (the streamwise `nx` / axial `nz` slot) is the real-FFT
-axis, holding the `nx//2` non-negative modes (Nyquist optional, dropped);
+axis, holding its `n//2` non-negative modes (`nx//2`, or `nz//2` on the
+pipe and the annulus; Nyquist optional, dropped);
 the other Fourier axes must carry full two-sided spectra, and
 `input_norm` names the source's FFT normalization. A source that
 `rfft`-ed a different axis must be permuted so its half axis lands last.

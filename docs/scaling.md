@@ -154,8 +154,8 @@ stays visible.
 
 Crucially, **every device holds the full wall-normal extent in spectral
 space**, so the per-mode banded solves need no communication. The forward and
-inverse FFTs move data between layouts with two reshards implemented as a
-`shard_map` with explicit `reshard` calls; with either grid axis at 1 the
+inverse FFTs run per device inside `shard_map`, and two `reshard` calls move
+the data between layouts; with either grid axis at 1 the
 decomposition collapses to a one-dimensional split and only the other
 reshard remains. `jax.device_count()` must equal $n_{p0} \cdot n_{p1}$.
 

@@ -76,7 +76,8 @@ XLA does — XLA calls `MPI_Init` itself, so an earlier initialization
 aborts the run. Worth knowing only if
 you add something that might. The rank bootstrap, the single-process
 skip and the collectives auto-selection live in
-`configure_jax_runtime` (`src/dnsjax/bootstrap.py`); the environment
-variables it reads (`JAX_COORDINATOR_ADDRESS`, `JAX_COORDINATOR_PORT`,
-`MPITRAMPOLINE_LIB`, `JAX_CPU_COLLECTIVES_IMPLEMENTATION`) are none of
-them dnsjax parameters.
+`configure_jax_runtime` (`src/dnsjax/bootstrap.py`); the four
+environment variables that steer it (`JAX_COORDINATOR_ADDRESS`,
+`JAX_COORDINATOR_PORT`, `MPITRAMPOLINE_LIB`,
+`JAX_CPU_COLLECTIVES_IMPLEMENTATION`) are none of them dnsjax
+parameters.
