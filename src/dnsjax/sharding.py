@@ -103,12 +103,13 @@ exit (exit 1, though the run completed): JAX finalizes MPI from an
 
 **The device banner.**  The startup banner reports the platform and
 kind of the live devices, not the requested ``params.dist.platform``,
-so it cannot contradict the hardware (a banner once read
-"1 cpu devices ... cuda:0" when a script left the requested platform at
-its default while JAX selected a GPU); the requested platform is shown
-alongside, so a genuine mismatch stays visible.  It is rank-gated like
-every print here, because ``jax.devices()`` is the global list and
-every rank would otherwise print the same long line.
+so it cannot contradict the hardware (a banner built from the request
+would read "1 cpu devices ... cuda:0" for a script leaving the
+requested platform at its default while JAX selects a GPU); the
+requested platform is shown alongside, so a genuine mismatch stays
+visible.  It is rank-gated like every print here, because
+``jax.devices()`` is the global list and every rank would otherwise
+print the same long line.
 
 **Why not ``jax.device_put``.**  Onto a sharding that spans several
 processes, ``jax.device_put`` checks a host value first by gathering

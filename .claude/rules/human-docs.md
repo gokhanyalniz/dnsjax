@@ -19,8 +19,8 @@ paths:
   `check_laminarization`) with British -our, -re and -lling
   (centreline, modelling, travelling).
 - Plain words, not fancy ones: never "flagship", "oracle" or "anchor".
-  The Pallas kernel is "custom", not "hand-written": the README's "Use
-  of AI" section keeps "by hand" for the AI-free first version. Make
+  Do not call the Pallas kernel hand-written: "by hand" applies only
+  to the first version (the README's "Use of AI" section). Make
   only mathematical claims, verified against the code, never
   phenomenological ones.
 - Display math goes in ```` ```math ```` fences: GitHub's double-dollar

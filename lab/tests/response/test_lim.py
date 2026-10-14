@@ -14,8 +14,8 @@ operator bundle comes from a real transient-growth
    (``X`` the continuous Lyapunov solution, so the process's
    stationary covariance is ``X`` and ``C(l) = E^l X`` exactly in
    expectation) -- LIM recovers ``L`` to a few %, and the sample
-   ``C(0)`` matches the controllability Gramian (the WP3 Lyapunov
-   identity).
+   ``C(0)`` matches the controllability Gramian (the stationary
+   Lyapunov identity).
 3. **File pipeline + CLI**: synthetic ``probes.bin`` streams built by
    lifting basis coordinates through a real operator bundle;
    ``identify_lim`` recovers the restricted reference generator

@@ -32,7 +32,7 @@ Part B  the span-pattern benchmark: the real ownership pattern of a
         sharded snapshot (``nspans`` spans of ``span_bytes``, every
         ``stride``-th block -- ``stride`` is ``np1``) written and read
         by each engine.  Engines: ``blocking`` (what ships),
-        ``pwrite:D`` (the proposed fix at queue depth D), ``contig``
+        ``pwrite:D`` (queued pwrite at queue depth D), ``contig``
         (one whole-buffer call -- the bandwidth ceiling this layout
         cannot reach), ``host`` (device->host copy per span + POSIX
         pwrite, i.e. the no-GDS engine that ships as the host
@@ -69,8 +69,8 @@ the driver::
     .venv/bin/python lab/scripts/diagnostics/gds_probe.py --env-only
 
 ``--cpu-smoke`` runs Part B's POSIX engines only, so the harness can
-be validated on a machine with no GPU, no cupy and no kvikIO.  Paste the
-full stdout back.
+be validated on a machine with no GPU, no cupy and no kvikIO.  Save the
+full stdout (e.g. ``| tee run.log``); it is the report.
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ NVFS_STATS = Path("/proc/driver/nvidia-fs/stats")
 NVFS_VERSION = Path("/proc/driver/nvidia-fs/version")
 
 
-# ── Part A: environment and the item-6 verdict ───────────────────────
+# ── Part A: environment and the engagement verdict ───────────────────
 
 
 def _read_proc(path: Path, limit: int = 40) -> list[str]:
@@ -188,7 +188,7 @@ def _part_a(outdir: Path) -> dict:
     have = {"kvikio": False, "cupy": False}
     # Read *before* anything imports the submodule: ``import a.b``
     # binds ``b`` as an attribute of ``a``, so asking afterwards can
-    # only ever answer True and the item-6 probe below would report a
+    # only ever answer True and the engagement probe below would report a
     # bug that had already been papered over by its own import.
     via_attr = False
     try:
@@ -537,7 +537,7 @@ def _run_read(engine, path, dev, host, offsets, span_elems, depth):
 
 def _part_b(outdir: Path, args, have: dict) -> None:
     print("\n" + "=" * 72)
-    print("PART B -- the span pattern, engine by engine (item 7)")
+    print("PART B -- the span pattern, engine by engine")
     print("=" * 72)
     print("  A device's snapshot bytes are `nspans` spans of `span` bytes,")
     print("  every `stride`-th block of the file (stride = np1): the")
@@ -629,8 +629,8 @@ def _part_b(outdir: Path, args, have: dict) -> None:
                 print(
                     f"    (blocking = the shipped engine: "
                     f"{base_w * 1e3:.2f} ms write / "
-                    f"{base_r * 1e3:.2f} ms read is what item 7 would "
-                    f"improve on)"
+                    f"{base_r * 1e3:.2f} ms read is what a queued engine "
+                    f"would improve on)"
                 )
             del host
             if dev is not None:
@@ -746,7 +746,7 @@ def _reshard_bench(state, reps: int = 3) -> None:
         x = jax.device_put(x, mid_sharding)
         return jax.device_put(x, io_sharding)
 
-    _timed(_eager, "same moves, eager (pre-fix)", crossing)
+    _timed(_eager, "same moves, eager device_put", crossing)
 
     devs = list(sharding.mesh.devices.flat)
     src = state.addressable_shards[0].data

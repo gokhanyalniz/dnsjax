@@ -38,19 +38,16 @@ scope, in temporary member directories:
    bounds.  The convergence claim lives in
    ``lab/tests/test_twin_budget.py``, which measures it on three-rung
    ladders across both Cartesian flows and every driving mode; the
-   six-run seed sweep that moved it there is tabulated in
+   six-run seed sweep behind that split is tabulated in
    ``test_budget_closure``'s own docstring.  ``--only closure`` (any
    test-name fragment) runs a subset; ``--seed N`` varies the
    partner's seed, which is what that sweep used.  ``--mean-free``
    overrides ``twin.mean_flow`` off, so the partner carries no
    ``(0, 0)`` content: it isolates the partner's mean-mode content
    from everything else (the parent is unaffected either way,
-   ``_build_parents`` taking the generator's mean-free default).  It
-   was added to tell "the bounds moved because the perturbation
-   energy redistributed" from "a budget term is missing"; the sweep
-   answered that -- **neither**, the bounds were fitted to one draw,
-   and the control fails at a different seed than the default path
-   does.
+   ``_build_parents`` taking the generator's mean-free default).  The
+   sweep shows the residual's seed-to-seed spread exceeding the
+   refinement effect with and without it.
 9. Every driver-level guard fires on a real input: missing
    ``twin.e0``, a snapshot recording a ``[force]`` section, the three
    bad start-mode quadrants (partner without ``twin.json``,
@@ -607,11 +604,10 @@ def test_np2_run() -> None:
     stream writes is assembled by a ``psum`` over both mesh axes so
     that rank 0 can pull it to the host, and every global array a
     jitted diagnostic reads must arrive as an *argument*.  Both are
-    free on one process, where nothing is non-addressable --
-    ``twin_ybudget`` took its difference-pressure operator as a
-    ``static_argnames`` entry, so the trace closed over that
-    operator's sharded banded factors, and only a run like this one
-    rejects it.
+    free on one process, where nothing is non-addressable: a
+    diagnostic taking a sharded operator as a static argument would
+    close over non-addressable arrays, which only a multi-process run
+    rejects.
     """
     from dnsjax_lab.analysis.twin import (
         integrate_y,
@@ -1087,8 +1083,9 @@ def test_budget_closure() -> None:
     fluctuating ones to a few percent at 16x33x16.
 
     **This case does not assert refinement, and its bounds are loose
-    on purpose.**  Both were tried, and a six-run sweep (``--seed``
-    3/5/7 x default/``--mean-free``) showed neither survives the seed:
+    on purpose.**  A six-run sweep (``--seed`` 3/5/7 x
+    default/``--mean-free``) shows neither a refinement assertion nor
+    a tight bound survives the seed:
 
     ======  =========  =======  =======  =======
     seed    mode       du1 (c)  du1 (f)  T_tot (f)
@@ -1101,12 +1098,11 @@ def test_budget_closure() -> None:
     7       mean-free  0.045    0.013    0.072
     ======  =========  =======  =======  =======
 
-    Fine ``du1`` spans 0.012 to 0.063 -- a 5.1x swing straddling the
-    old 0.04 bound in **both** modes, so the control was never clean
-    either; ``fine < coarse`` fails in two of the six runs (seed 3
-    default on ``du1``, seed 5 mean-free on ``T_tot``), again in both
-    modes.  Two rungs one seed apart cannot separate convergence from
-    the draw.
+    Fine ``du1`` spans 0.012 to 0.063, a 5.1x swing, and 0.013 to
+    0.044 with ``--mean-free`` alone; ``fine < coarse`` fails in two
+    of the six runs (seed 3 default on ``du1``, seed 5 mean-free on
+    ``T_tot``), again in both modes.  Two rungs one seed apart cannot
+    separate convergence from the draw.
 
     The convergence claim therefore lives where it has the evidence:
     ``lab/tests/test_twin_budget.py`` asserts it on three-rung ladders at
@@ -1151,8 +1147,8 @@ def test_budget_closure() -> None:
         f"coarse={coarse.components} fine={fine.components}"
     )
     # Bounds: ~3x over the worst of a six-run sweep (twin.seed 3/5/7 x
-    # both modes) -- see this function's docstring for why they are not
-    # the ~2x they used to be, and why nothing here asserts refinement.
+    # both modes) -- see this function's docstring for why they are
+    # looser than ~2x, and why nothing here asserts refinement.
     assert coarse["dU"] < 1e-3 and fine["dU"] < 1e-3
     assert fine["du1"] < 0.20 and fine["du2"] < 0.10
     assert fine["T_tot"] < 0.35

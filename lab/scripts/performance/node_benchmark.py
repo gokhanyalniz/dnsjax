@@ -563,8 +563,8 @@ def _run(row: Row, a: argparse.Namespace, index: int) -> dict:
         t0 = time.time()
         try:
             # errors="replace": thousands of ranks share one pipe, and a
-            # byte that is not UTF-8 there (job 15541627) made the strict
-            # decode raise and lose the whole row's output.
+            # byte that is not UTF-8 there made the strict decode raise
+            # and lose the whole row's output.
             proc = subprocess.run(
                 row.cmd,
                 cwd=wd,

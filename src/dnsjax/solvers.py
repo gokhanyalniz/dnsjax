@@ -101,8 +101,8 @@ against the device's peak bandwidth).
 **The partial-tile miscompile.**  When the tile does not divide the
 mode plane -- the common case, since ``Nkz = nz - 1`` is odd -- the
 boundary tile is partial and Triton masks its loads.  That masked path
-miscompiles on a real GPU: a grid with a partial boundary tile corrupts
-results across the grid, full-tile programs included,
+is observed to miscompile on a real GPU: a grid with a partial boundary
+tile corrupts results across the grid, full-tile programs included,
 nondeterministically (warp-scheduling dependent), for any nontrivial
 kernel (the masked double-index band loads ``l_ref[i, d]`` /
 ``u_ref[i, d]``, and even a single-index window-carry sweep), while
@@ -236,16 +236,17 @@ pipe             -5.6 %     -14.7 %
 
 All six are isolated-chain figures, which rank options backwards (the
 stored-layout entry above), so the table decides nothing on its own.
-The step decides it.  With the permuting sweep, Part A's fused
-``full - sweep`` was ``<= 0`` on CPU: the split and recombine cost
-nothing measurable inside the step, so there was no time for a hoist
-to win back.  With the mode-inner sweep they are 4.6 % of one ``Lk``
-solve, and Part A2 times the hoisted chain 1.6 % *slower* than the
-shipped one (plane Couette ``64 x 96 x 64``, one core; -0.25 % of the
-step).  The likely mechanism is the layout finding's: pre-materializing
-a representation that suits the two solves constrains layout assignment
-around them.  The two arms agree to ~1e-15, the bar here, since the
-hoist changes only the representation a value is carried in.
+The step decides it.  With the permuting sweep, the fused-step
+measurement (``full - sweep``) was ``<= 0`` on CPU: the split and
+recombine cost nothing measurable inside the step, so there was no time
+for a hoist to win back.  With the mode-inner sweep they are 4.6 % of
+one ``Lk`` solve, and timing the hoisted chain end to end gives it
+1.6 % *slower* than the current one (plane Couette ``64 x 96 x 64``,
+one core; -0.25 % of the step).  The likely mechanism is the layout
+finding's: pre-materializing a representation that suits the two
+solves constrains layout assignment around them.  The two arms agree
+to ~1e-15, the bar here, since the hoist changes only the
+representation a value is carried in.
 
 **Per-backend storage.**  A CPU run never reaches the kernel, so
 storing the reciprocated diagonal and the tile pad would only be undone
@@ -259,15 +260,7 @@ fixed harness pointed at each ``src`` in turn, 20 chained steps, 6
 pairs with the first discarded: +4.01 % mean, 3.6-4.7 % range, no
 monotone settling, and the ratio holding at 4.02 % in a pair where both
 arms ran 12 % slow.  ``num_c`` is 0 in all twelve tree-swap runs, so
-the restart and chained harnesses agree to 0.03 pp.  An earlier record
-of 1.4 / 9.9 / 22 % came from a prototype, not from the change: under
-one harness the two trees run 1279 and 1227 ms/step, where the recorded
-pair was 2745 / 2130 -- the *before* arm inflated 2.15x against the
-*after* arm's 1.74x, an asymmetry in the direction that manufactures a
-gain.  The likely cause: the CPU-native prototypes replaced
-:meth:`~PerModeBandedPallasOperator.from_mode_inner_factors`'s
-``shard_map`` with a bare ``moveaxis`` or an ``optimization_barrier``,
-slowing the baseline for a reason unrelated to the storage split.
+the restart and chained harnesses agree to 0.03 pp.
 
 The win is step-level, not solve-level: the same interleaved A/B on
 ``Hk_op.solve`` alone gives -0.3 % at plane Couette `$128^3$`, the crop
@@ -956,7 +949,8 @@ def _pallas_banded_solve(
     slices, reversed scan) cannot run on it.  ``bm0``/``bm1`` are powers of
     two so the tile loads are legal, and the mode plane is **padded up to
     whole ``(bm0, bm1)`` tiles** so no boundary tile is ever partial -- a
-    masked partial-tile band load miscompiles on real Triton (see below).
+    masked partial-tile band load is observed to miscompile on GPU (see
+    below).
 
     The ``U`` **diagonal is pre-inverted** (stored as `$1/U_{ii}$`), so the
     backward pass multiplies instead of dividing (`$N$` divisions ->
@@ -974,8 +968,8 @@ def _pallas_banded_solve(
 
     **Why the plane is padded.**  When the tile does not divide the mode
     plane, the boundary tile is partial and Triton masks its loads, and
-    that **masked partial-tile path miscompiles on a real GPU**: it
-    corrupts results *across the grid*, full-tile programs included,
+    that **masked partial-tile path is observed to miscompile on a real
+    GPU**: it corrupts results *across the grid*, full-tile programs included,
     nondeterministically, while interpret mode and the CUDA lowering
     both accept it (Design notes: "The partial-tile miscompile").  So the
     mode plane is padded up to whole tiles and the kernel only ever runs
@@ -1215,7 +1209,7 @@ def _pallas_banded_solve_t(
     ``u_ref[i - d, d]`` and `$(L^T)_{i, i+d} = L_{i+d, i}$` is
     ``l_ref[i + d, p - d]``.  Both are row-shifted, so they would need
     a clamped index plus a mask at the ends -- the masked-load shape
-    that miscompiles on real Triton.  Instead each pass carries a
+    observed to miscompile on GPU.  Instead each pass carries a
     ``p``-deep window of **accumulators for the rows ahead** and
     scatters into it as soon as a value is known, which reads every
     coefficient at the current row and mirrors the forward kernel's

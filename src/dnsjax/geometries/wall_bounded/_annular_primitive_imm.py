@@ -8,10 +8,10 @@ which never forms a pressure.  Setting the flag to ``False`` selects the
 influence-matrix method, which solves `$(u_z, u_+, u_-)$` against a
 pressure Poisson solve and enforces continuity only at the two walls.
 It is retained for reference and for reproducing older trajectories; a
-state it steps carries an `$O(1)$` *relative* discrete divergence.  The
-full comparison and the measured ledger: the :mod:`dnsjax.parameters`
-Design notes ("Consistent influence matrix") and the shared scheme
-record on
+state it steps carries a truncation-level discrete divergence, amplified
+at the walls (converging under refinement).  The full comparison and
+the measured ledger: the :mod:`dnsjax.parameters` Design notes
+("Consistent influence matrix") and the shared scheme record on
 :func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`.
 
 Everything here is reachable **only** when the flag is off, so

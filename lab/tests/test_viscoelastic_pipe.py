@@ -763,17 +763,12 @@ def test_consistent_imm_is_accepted() -> None:
 
     The pipe's own grid/scheme check stays.
 
-    The flag was rejected here for one commit, on a nonlinear blow-up
-    measured at `$\mathrm{Re} \approx 1$`.  That blow-up was real but
-    belonged to the cylindrical flag-on pass's lagged wall data, not to
-    this flow -- it reproduces at `$\beta = 1$` and in the Newtonian
-    pipe -- so rejecting it here while ``pipe`` offered the same scheme
-    was asymmetric.  It is fixed in
-    ``_cylindrical_stepping._imm_iteration_vw``.  This asserts the surface, not
-    the stability: no *validate* hook and no linear gate can see that
-    class of defect; the nonlinear guard is the
-    ``viscoelastic-pipe-consistent-imm`` entry in
-    ``tests/test_random_smoke.py``.
+    The flow offers ``res.consistent_imm`` exactly as ``pipe`` does.
+    This asserts the surface, not stability: no validate hook or
+    linear gate can see a nonlinear defect.  The nonlinear guards are
+    the ``viscoelastic-pipe`` (flag on, the default) and
+    ``viscoelastic-pipe-legacy-imm`` (flag off) entries of
+    ``lab/tests/test_random_smoke.py``.
 
     Called on a stand-in parameter object rather than the live
     singletons: this module configures those once at import, and a

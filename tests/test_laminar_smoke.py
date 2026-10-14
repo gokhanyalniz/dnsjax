@@ -31,8 +31,8 @@ still report ``err = 0``); ``tests/test_random_smoke.py`` drives that
 path.
 
 The suite also guards the ``dnsjax`` console script: a ``--help``
-preflight (exit 0, usage text, **no files created** -- the regression
-that motivated the entry-point refactor), a ``bare-launch`` pair
+preflight (exit 0, usage text, **no files created**: ``--help`` must
+never start a simulation), a ``bare-launch`` pair
 running the console script with **no** ``mpirun`` at all (a lone
 process starts no distributed runtime, so it must step to the same
 ``err`` / `$E'$` as the launched rows -- and must refuse to hold
@@ -383,7 +383,7 @@ SYSTEMS: list[dict] = [
     {
         # The legacy res.consistent_imm = False path: the primitive
         # (v, p) scheme must leave the laminar fixed point exactly
-        # fixed too.  Every entry above already covers the shipped
+        # fixed too.  Every entry above already covers the default
         # reconstruction scheme, whose every term is linear in u' and
         # so vanishes identically at u' = 0 -- err = 0 there is the
         # cheap structural proof that it adds nothing spurious (it is

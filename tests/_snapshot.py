@@ -877,13 +877,11 @@ def run_io_layout_case() -> str | None:
 
 
 def run_gds_detection_case() -> str | None:
-    """``_gds_available`` must answer for the *shipped* kvikIO API.
+    """``_gds_available`` must answer for the installed kvikIO API.
 
-    This check spent its life returning ``False`` on a cluster that
-    had kvikIO installed, because ``kvikio.defaults`` is a submodule
-    rather than an attribute of the package -- a failure invisible
-    from the outside, since "no GDS" is also the correct answer on a
-    node without the driver.  Stub kvikIO and drive every branch: the
+    ``kvikio.defaults`` is a submodule, not a package attribute; a
+    wrong lookup returns "no GDS", indistinguishable from a node
+    without the driver.  Stub kvikIO and drive every branch: the
     submodule bind, the cupy and nvidia-fs gates, each ``CompatMode``
     the enum can hold (a bare truth test misreads ``AUTO``), and a
     ``get`` that answers with something other than that enum -- which
@@ -906,11 +904,11 @@ def run_gds_detection_case() -> str | None:
     def install(value) -> None:
         """Put a fake kvikIO answering ``get("compat_mode")`` on path.
 
-        Deliberately faithful about the trap: the parent module gets
-        **no** ``defaults`` attribute, exactly like the installed
-        package before its submodule is imported, so reaching for
+        Deliberately faithful: the parent module gets **no**
+        ``defaults`` attribute, exactly like the installed package
+        before its submodule is imported, so reaching for
         ``kvikio.defaults`` through the package raises
-        ``AttributeError`` here as it did with the real package.
+        ``AttributeError`` here as it does with the real package.
         """
         kv = types.ModuleType("kvikio")
         kvd = types.ModuleType("kvikio.defaults")

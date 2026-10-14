@@ -97,13 +97,9 @@ SYSTEMS: list[dict] = [
     {
         # The legacy primitive (v, p) path on the pipe, from a
         # *resolved* rolls IC.  Every other entry here runs the default
-        # reconstruction scheme, so this one keeps the retired
-        # formulation under the localized-spot builder.  It predates
-        # the 2026-07-26 reformulation, when the *gated* scheme's
-        # composed D2 = D1*D1 was not grid-scale-dissipative and a
-        # grid-white draw was genuinely unstable, so a rolls IC was the
-        # only option; that limitation is long gone, and the entry
-        # stays as resolved-IC coverage of the legacy path.
+        # reconstruction scheme, so this one keeps the legacy
+        # formulation under the localized-spot builder, as
+        # resolved-IC coverage of the legacy path.
         "name": "pipe-legacy-imm",
         "args": [
             "--phys.system",

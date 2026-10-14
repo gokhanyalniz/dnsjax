@@ -6,8 +6,8 @@ whenever a spectral-in-`$y$` setup from the literature is reproduced
 in dnsjax: *the paper used N Chebyshev polynomials -- what ``res.ny``
 do I need, given that dnsjax differentiates `$y$` by finite
 differences?*  Guessing high wastes points; guessing low silently
-changes the physics (in a marginal box it changes turbulent
-lifetimes, not just the statistics).
+changes the physics (it can change the dynamics, not just the
+statistics).
 
 The metric
 ----------
@@ -43,7 +43,7 @@ knowing before turning knobs:
 - The CGL grid is *Chebyshev*-optimal, not FD-optimal.  Its
   `$\Delta y \sim 1/N^2$` wall clustering overspends at the wall
   (`$\Delta y^+ = 0.04$` at ``ny = 63``, `$Re_\tau = 33$` -- far
-  finer than anyone needs) while FD accuracy binds at the coarse
+  finer than wall resolution requires) while FD accuracy binds at the coarse
   centreline.  A mild ``geo.grid_type = "tanh"`` at
   ``grid_stretch = 1.0`` resolves ~20 % more modes at the same
   ``ny``, still with `$\Delta y^+ < 1$` at the wall.  It is not free:

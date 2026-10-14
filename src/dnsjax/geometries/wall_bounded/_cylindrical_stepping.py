@@ -84,74 +84,75 @@ flops, so they are memory-bound and the extra multiplies are free
 The promotion is also bit-identical to the split form, since
 `$(w + 0i)(a + bi)$` evaluates the zero cross-terms exactly.
 
-**Wall differences on the iterate.**  This pass lagged the two differences to
-`$t^n$` until 2026-08-01.  What the sums do not cancel is
+**Wall differences on the iterate.**  The two differences are taken on the
+iterate, not lagged to `$t^n$`, because the lag can go unstable.  What the
+sums do not cancel is
 `$(L_{s+}^{-1} - L_{s-}^{-1})\,d$`: the two spin families differ by `$4m/r^2$`
 in `$m_{\mathrm{eff}}^2$` against a Helmholtz scale `$1/(c\nu\Delta t)$`, so
-the leftover is small only while `$\nu/\Delta r$` is.  Being computed from the
-state, it fed the next step's wall data, closing a growth loop **across time
-steps**, where nothing damped or observed it.  Measured on ``pipe`` (`$32^2$`
-transverse modes, `$l_z = 5$`, `$\Delta t = 0.01$`, random IC of amplitude
-0.1), lagged against iterated, with a legacy-path control clean in every row:
+the leftover is small only while `$\nu/\Delta r$` is.  Lagged, it is computed
+from the state and feeds the next step's wall data, closing a growth loop
+**across time steps**, where nothing damps or observes it.  Measured on
+``pipe`` (`$32^2$` transverse modes, `$l_z = 5$`, `$\Delta t = 0.01$`, random
+IC of amplitude 0.1), lagged against iterated, with a legacy-path control
+clean in every row:
 
 - `$\mathrm{Re} = 1$` / `$n_r = 32$`: lagged non-finite at
   `$t = 0.37$`; iterated decays monotonically to 1.7e-4 over 100
   steps (legacy 1.6e-4).
 - `$\mathrm{Re} = 10$` / `$n_r = 32$`: lagged non-finite at
   `$t = 2.06$`; iterated clean, 3.0e-4 at `$t = 3$`.
-- `$\mathrm{Re} = 100$` / `$n_r = 64$`: lagged tracked the legacy
-  path to **six significant figures for 600 steps** and then departed
+- `$\mathrm{Re} = 100$` / `$n_r = 64$`: lagged tracks the legacy
+  path to **six significant figures for 600 steps** and then departs
   exponentially (0.65 against 1.5e-2 at `$t = 9$`); iterated tracks
   it throughout (1.733550e-2 against 1.733529e-2 at step 800).
 - `$\mathrm{Re} = 100$` / `$n_r = 128$`: lagged non-finite at
   `$t = 5.1$`; iterated 9.351495e-3 against the legacy path's
   9.351498e-3 at step 999 -- seven significant figures.
-- `$\mathrm{Re} = 1800$` / `$n_r = 128$`, the shipped
+- `$\mathrm{Re} = 1800$` / `$n_r = 128$`, the
   ``pipe-consistent-imm`` regime at a production wall-normal
   resolution: both forms clean and identical to seven significant
-  figures (2.758548e-1 at step 1999).  **The repair is a no-op
-  where the lag was already benign** -- and its price is nil:
-  identical ``pipe-consistent-imm`` temporal self-convergence to
-  four significant figures and a step time inside CPU noise
-  (measured on the pass before its difference halves were
-  carried; next entry).
+  figures (2.758548e-1 at step 1999).  **Iterating is a no-op
+  where the lag is benign** -- and its price is nil: identical
+  ``pipe-consistent-imm`` temporal self-convergence to four
+  significant figures and a step time inside CPU noise (measured
+  with the differences re-derived rather than carried; next
+  entry).
 
-Two properties of the old failure say what a guard for this class
-of defect has to look like.  Its growth rate was proportional to
-`$\nu$` and **independent of `$\Delta t$`** (a 10x smaller step
-diverged at the same physical time, so no step reduction helped),
-and its boundary was crossed by **refinement** at fixed
+Two properties of the lagged instability say what a guard for this
+class of defect has to look like.  Its growth rate is proportional
+to `$\nu$` and **independent of `$\Delta t$`** (a 10x smaller step
+diverges at the same physical time, so no step reduction helps),
+and its boundary is crossed by **refinement** at fixed
 `$\mathrm{Re}$`.  A fixed-horizon, fixed-resolution smoke entry can
 see neither; what catches it is a default-vs-legacy comparison at
-the intended `$(\mathrm{Re}, n_r)$`, read digit by digit.  It also
-had nothing to do with the polymer, though it was first found and
-misattributed on a viscoelastic pipe flow: that flow reproduced
-every row, including at `$\beta = 1$` where the polymer stress is
-decoupled from the velocity entirely, and raising `$\kappa$` 200x
-changed nothing.
+the intended `$(\mathrm{Re}, n_r)$`, read digit by digit.  The
+instability is independent of any extra stress a flow carries: a
+viscoelastic pipe flow reproduces every row, including at
+`$\beta = 1$` where the polymer stress is decoupled from the
+velocity entirely, and raising `$\kappa$` 200x changes nothing.
 
-Zeroing the differences instead of lagging them was also tried and
-is *worse* than the lag (non-finite at `$t \approx 0.35$` against
-`$0.37$`).
+Zeroing the differences instead of lagging them is *worse* than the
+lag (non-finite at `$t \approx 0.35$` against `$0.37$`).
 
-**Carrying the difference halves.**  Until 2026-09 the differences were dropped
-and re-derived kinematically from the reconstructed state at the next step,
-which made the pass first order wherever the `$O(\Delta t\,\varepsilon_h)$`
-error of :func:`_imm_iteration_vw` dominates.  It did at small `$n_r$`:
+**Carrying the difference halves.**  Re-deriving the differences kinematically
+from the reconstructed state at each step, instead of carrying them, makes the
+pass first order wherever the `$O(\Delta t\,\varepsilon_h)$` error of
+:func:`_imm_iteration_vw` dominates.  It does at small `$n_r$`: re-derived,
 self-convergence from a relaxed state (8x17x8, Re 100) measured orders 0.96 /
 1.01 / 1.08 and 175x the annulus's error at `$\Delta t = 0.01$` (7.9e-4 against
 4.5e-6), with the corrector at `$10^{-12}$`; still first order at `$n_r = 33$`,
 second order by `$n_r = 65$`.  The Cartesian and annular passes discard nothing
-that feeds back and were clean order 2 under the same protocol.  Carried, the
+that feeds back and are clean order 2 under the same protocol.  Carried, the
 same configuration measures 2.00 / 2.00 / 2.02, its errors 8x smaller at
 `$\Delta t = 0.02$` and 64x at `$0.0025$` (1.88e-4 ...  2.89e-6); carrying
 either half alone leaves it first order (0.98 / 1.02 / 1.09 and 0.95 / 1.01 /
 1.08).  The gap between the carried halves and the ones the velocity implies,
 20 steps from a relaxed state, is 1.1e-1 / 1.2e-2 / 1.1e-3 relative at `$n_r$`
 = 17 / 33 / 65.  Without the re-anchoring, a weakly damped mode of the pipe's
-step (present before the carry, at low `$\mathrm{Re}$` on fine grids) let the
-last iterate's residual accumulate: at Re 100 / `$n_r = 128$` and the default
-tolerance it moved `$E'$` by 1.7e-3 after 1000 steps.  Re-anchored, that run
+step (present in the re-derived pass too, at low `$\mathrm{Re}$` on fine
+grids) lets the last iterate's residual accumulate: at Re 100 /
+`$n_r = 128$` and the default tolerance it moves `$E'$` by 1.7e-3 after 1000
+steps.  Re-anchored, that run
 sits 1.6e-5 from its own `$10^{-12}$` result, and at the default tolerance
 (`$10^{-5}$`) the order study reaches the corrector's ordinary floor at its
 smallest step (3.7e-6 against 2.9e-6), still 8-50x below the re-derived pass at

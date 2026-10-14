@@ -40,7 +40,7 @@ docstrings):
 2. **Turbulent mean.**  :func:`.probes.mean_profile` +
    ``write_profile_file`` turn the ``(0,0)`` probe
    into a total mean-profile file (cut the transient with ``t_min``;
-   sanity-check ``re_tau``).
+   check ``re_tau``).
 3. **Linear operator about the mean.**  ``python -m
    dnsjax.analysis.transient_growth --tg.profile mean.txt
    --tg.modes ... --tg.save_operator True``: optimal energy growth

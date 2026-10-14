@@ -25,8 +25,8 @@ paths:
   whether their data predates a change.
 - A comment says what the next lines do, or why, in a sentence or two;
   longer reasoning is a Design notes entry.
-- Describe dnsjax on its own terms: credit a borrowed method to its
-  published source, and never describe the code it came from.
+- Describe dnsjax on its own terms, and credit each method to its
+  published source.
 - Language, in docstrings, comments and the `description=` / `help=`
   strings that `--help` renders, is that of the human docs: Oxford
   spelling (-ize; British -our, -re, -lling), plain words (no "oracle",

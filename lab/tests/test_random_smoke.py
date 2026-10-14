@@ -123,26 +123,13 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # The pipe spin quad carrying the 9-component total field.
-        # This composition was briefly rejected on a flag-on blow-up
-        # measured while porting the flow -- at the Re ~ 1 the flow
-        # then inherited from the annulus.  The blow-up is real but
-        # is *not* viscoelastic: it reproduces at beta = 1 (polymer
-        # decoupled from the velocity) and in the Newtonian pipe, and
-        # was a defect in the cylindrical reconstruction pass -- its
-        # two free wall differences were lagged to t^n -- since fixed
-        # (the measurements: the ``_cylindrical_stepping`` Design
-        # notes).  This entry
-        # runs the flow's own default Re = 1000, alongside the
-        # Newtonian ``pipe-legacy-imm`` entry's 1800.  Note what an
-        # entry of this shape does NOT guard -- and the warning now
-        # applies to the *shipped* formulation, since it is the
-        # default: that defect agreed with its control to six
-        # significant figures for 600 steps before departing, and its
-        # boundary was crossed by *refinement* at fixed Re, which a
-        # resolution-pinned smoke entry cannot follow.  The guard for
-        # that class is a default-vs-legacy comparison at the intended
-        # (Re, nr), read digit by digit.
+        # The pipe spin quad carrying the 9-component total field,
+        # with ``res.consistent_imm`` off, at the flow's default
+        # Re = 1000 (the Newtonian ``pipe-legacy-imm`` entry runs
+        # 1800).  A resolution-pinned smoke entry cannot detect
+        # defects that appear only under wall-normal refinement at
+        # fixed Re; those need a default-vs-legacy comparison at the
+        # intended (Re, nr).
         "name": "viscoelastic-pipe-legacy-imm",
         "args": [
             "--phys.system",

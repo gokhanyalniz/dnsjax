@@ -24,7 +24,7 @@ NX, NY, NZ = 8, 17, 8
 NY_PERIODIC = 16
 LX, LZ = 5.0, 5.0
 AMP, SMOOTH, SEED = 0.1, 0.4, 1
-# The wall-normal pair of the random IC, at the shipped defaults
+# The wall-normal pair of the random IC, at the model defaults
 # (``init.random_wall_smoothness`` / ``random_wall_confinement``).
 WALL_SMOOTH, WALL_CONF = 0.4, 0.14
 
@@ -74,7 +74,7 @@ LEAVES = {
 }
 
 # ``LEAVES`` above lists the *legacy* ``res.consistent_imm = False``
-# leaf set; the two tables below carry the difference to the shipped
+# leaf set; the two tables below carry the difference to the model
 # default.  A missing key here would be silent: ``set_dt`` only assigns
 # what the rebuild returns, so a stale column would pair a new-dt
 # ``Hk_op`` with an old-dt response.

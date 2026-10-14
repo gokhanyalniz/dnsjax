@@ -40,7 +40,7 @@ half of the same name in `lab/tests/`.
 - A script whose children stream output uses `_live.run_live` and
   `_live.report`. Shared response fixtures:
   `lab/tests/response/_common.py`.
-- A launch across two hosts fakes the second one with
+- A launch across two hosts simulates the second one with
   `_fake_host.py` (gloo or the MPI collectives alike).
 - A script covering core and lab flows is split in two of one name:
   the shared runner in `tests/_<name>.py`, free of side effects at
@@ -91,8 +91,8 @@ Parameters, bootstrap, mesh, seeds:
 - `test_param_surface.py` (both suites: registry, surfaces and their
   `--help`, the total-field axis), `test_bootstrap.py`,
   `test_seeding.py` (both suites, `--unit-only`).
-- `test_device_grid.py` (`--unit-only`): the mesh across nodes, two
-  hosts faked on one machine under `mpirun`.
+- `test_device_grid.py` (`--unit-only`): the mesh across nodes, a
+  simulated second host under `mpirun`.
 - `test_host_placement.py` (both suites, `mpirun`, `--only`): no host
   array reaches the mesh through JAX's cross-process gather
   (`sharding.Sharding.distribute`).

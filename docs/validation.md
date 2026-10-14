@@ -1,8 +1,8 @@
 # Validation
 
 What `dnsjax` is checked against, and which test pins each claim. Every
-row here is executed by the suite — nothing on this page is a number
-someone typed once. Start at the [README](../README.md) for the solver
+row here is executed by the suite: every number on this page is checked
+by a test. Start at the [README](../README.md) for the solver
 itself and at [`numerics.md`](numerics.md) for the formulation
 being checked.
 

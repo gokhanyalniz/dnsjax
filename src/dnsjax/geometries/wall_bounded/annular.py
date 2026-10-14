@@ -126,11 +126,12 @@ what makes the scheme stable: the ``cartesian`` Design notes, route 4) and
 `$\omega_r$` -- whose diffusion couples to `$u_\theta$` and `$\omega_\theta$`,
 outside every linear combination of the pair; closing it through the solenoidal
 constraint reimports composed `$D_1 \mathrm{diag} D_1$` operators, i.e. the
-band and truncation regression this rewrite removed.  The exactly-decoupled
-alternatives were evaluated and are all worse: `$(\omega_+, \omega_-)$`
-degenerates at `$k_z = 0$` to functions of `$u_z$` alone (leaving `$u_r$`
-undetermined on the streak plane), abandons the Kim-Moin-Moser structure, and
-needs a wide composed `$u_z$` BVP plus a `$4 \times 4$` influence matrix;
+band and truncation regression the reconstruction avoids.  The
+exactly-decoupled alternatives were evaluated and are all worse:
+`$(\omega_+, \omega_-)$` degenerates at `$k_z = 0$` to functions of `$u_z$`
+alone (leaving `$u_r$` undetermined on the streak plane), abandons the
+Kim-Moin-Moser structure, and needs a wide composed `$u_z$` BVP plus a
+`$4 \times 4$` influence matrix;
 `$((\Delta u)_+, (\Delta u)_-)$` has eight chain boundary conditions against
 six physical ones; mixed chiral pairs `$(\Phi_+, \omega_-)$` are
 chirality-asymmetric, so Hermitian mode pairs would evolve under different
@@ -1708,13 +1709,14 @@ def _imm_iteration_vw(
     `$\le 1$`) -- and in all three it is the only wall quantity taken
     from `$t^n$`: the lagged spin partners above and the pipe's
     surplus wall differences both ride the corrector iterate.
-    Carrying `$\Phi$` would mean a third representation of the state
-    for the sake of two rows, which was tried on Cartesian and
-    reverted.  (The pipe does carry its quad's two *difference*
-    halves, for another reason -- the velocity does not determine
-    them, and re-deriving them made it first order in time at coarse
-    radial resolution -- and still re-anchors their wall data on the
-    accepted state: ``_cylindrical_stepping._imm_iteration_vw``.)
+    Carrying `$\Phi$` would mean a third representation of the state,
+    which costs more than two rows are worth (the ``cartesian`` Design
+    notes, "A second solver basis (rejected)").  (The pipe does carry
+    its quad's two *difference* halves, for another reason -- the
+    velocity does not determine them, and re-deriving them makes it
+    first order in time at coarse radial resolution -- and still
+    re-anchors their wall data on the accepted state:
+    ``_cylindrical_stepping._imm_iteration_vw``.)
 
     Mean mode and padding
     ~~~~~~~~~~~~~~~~~~~~~
@@ -1912,7 +1914,7 @@ def _imm_iteration(
     Why there are two, and why the second one is *this* one, is
     derived once for all three geometries in the Cartesian dispatcher
     :func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`:
-    the primitive scheme's stepped state carries an `$O(1)$` relative
+    the primitive scheme's stepped state carries a truncation-level
     discrete-divergence residual (a pressure-operator mismatch, a
     `$[D_1, D_2]$` commutator and a boundary term, the last two
     boundary-amplified by `$D_1[1,0] \sim N_y^2$`), and of the five
@@ -1921,10 +1923,10 @@ def _imm_iteration(
     nonlinear integration.  Here that record applies verbatim with one
     cylindrical amendment: route 1's operator-side identity
     (`$D_2 := D_1 D_1$` plus a `$4 \times 4$` Kleiser-Schumann
-    closure) was this geometry's shipped mechanism until 2026-07-26 and
-    reached `$d \sim 7\times10^{-5}$` -- five orders short of the
-    Cartesian result, because `$D_2 := D_1 D_1$` cannot also make the
-    *metric* commutator `$[D_1, 1/r]$` vanish.  The reconstruction has
+    closure) reaches only `$d \sim 7\times10^{-5}$` on this
+    geometry -- five orders short of the Cartesian result, because
+    `$D_2 := D_1 D_1$` cannot also make the *metric* commutator
+    `$[D_1, 1/r]$` vanish.  The reconstruction has
     no such floor: it needs no operator identity at all, so the
     residual is machine-eps and flat under refinement.
     """

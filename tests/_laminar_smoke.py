@@ -68,8 +68,8 @@ CFL_X_LAMINAR = SMOKE_DT * SMOKE_NX / SMOKE_LX
 #   Poiseuille:  max|(1 - y^2) - 2/3| = 2/3 at the y = +/-1 walls.
 # Couette keeps U_grid = 0 (max|y| = 1), i.e. the unchanged
 # CFL_X_LAMINAR.  Both maxima sit exactly on grid nodes, so (unlike the
-# laboratory-frame pipe, whose max between nodes was only range-checkable)
-# these are tight equalities.
+# laboratory-frame pipe's, which falls between nodes and could only be
+# range-checked) these are tight equalities.
 CFL_GRID_LAMINAR_PIPE = 0.5 * CFL_X_LAMINAR
 CFL_GRID_LAMINAR_POISEUILLE = (2.0 / 3.0) * CFL_X_LAMINAR
 # Taylor-Couette laminar azimuthal CFL: dt * max(U_theta/r) * nz/(2 pi)
@@ -329,10 +329,9 @@ def check_perturbation(stdout: str, name: str) -> tuple[float, float]:
 def check_console_help() -> None:
     """``dnsjax --help`` must print usage, exit 0, and touch nothing.
 
-    Regression guard for the pre-refactor console script, which had no
-    reachable CLI parse and would have silently started a default
-    simulation on ``--help``.  Runs without ``mpirun`` (the help path
-    exits before any JAX / distributed init).
+    A console script with no reachable CLI parse would silently start
+    a default simulation on ``--help``.  Runs without ``mpirun`` (the
+    help path exits before any JAX / distributed init).
     """
     script = console_script()
     if script is None:

@@ -25,7 +25,7 @@ NX, NY, NZ = 8, 17, 8
 NY_PERIODIC = 16
 LX, LZ = 5.0, 5.0
 AMP, SMOOTH, SEED = 0.1, 0.4, 1
-# The wall-normal pair of the random IC, at the shipped defaults
+# The wall-normal pair of the random IC, at the model defaults
 # (``init.random_wall_smoothness`` / ``random_wall_confinement``).
 WALL_SMOOTH, WALL_CONF = 0.4, 0.14
 # Machine-precision bound for the split, relative to max|rhs|.
@@ -242,10 +242,10 @@ def worker(system: str, case: dict) -> None:
             )
         diff_mf = np.max(np.abs(l_bf_on - (l_bf + l_mf)))
         assert diff_mf <= SPLIT_RTOL * scale, (
-            f"{system}: mean-flow coupling != manual L_mf oracle "
+            f"{system}: mean-flow coupling != manual L_mf reference "
             f"(max diff {diff_mf:.3e}, scale {scale:.3e})"
         )
-        print(f"{system}: L_mf matches oracle to {diff_mf / scale:.2e}")
+        print(f"{system}: L_mf matches reference to {diff_mf / scale:.2e}")
 
         if cartesian:
             # Curl is mode-diagonal: the mean of the spectral curl is
@@ -256,7 +256,7 @@ def worker(system: str, case: dict) -> None:
             np.testing.assert_allclose(om_prof[0], D1 @ prof[2], atol=1e-13)
             np.testing.assert_allclose(om_prof[2], -(D1 @ prof[0]), atol=1e-13)
             assert np.max(np.abs(om_prof[1])) <= 1e-15
-            print(f"{system}: mean of curl == curl of mean (D1 oracle)")
+            print(f"{system}: mean of curl == curl of mean (D1 reference)")
 
         if spec.total_field:
             # Total-field flow: base_flow = 0 => without the mean

@@ -11,11 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(
-    0,
-    "/tmp/claude-1000/-home-gokhan-codes-dnsjax/"
-    "47707522-19ca-4dcf-8f53-7ef5773605d1/scratchpad",
-)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from doc_ranges import doc_ranges  # noqa: E402
 
 ROOT = str(Path(__file__).resolve().parents[3])  # the repository root
@@ -52,6 +48,9 @@ def oxford(word):
 files = subprocess.run(
     ["git", "ls-files", "*.py"], cwd=ROOT, capture_output=True, text=True
 ).stdout.split()
+# This script's own docstring names the spellings it replaces.
+SELF = Path(__file__).resolve()
+files = [f for f in files if Path(ROOT, f).resolve() != SELF]
 total = 0
 for f in files:
     path = f"{ROOT}/{f}"

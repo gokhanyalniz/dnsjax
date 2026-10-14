@@ -79,9 +79,9 @@ _ROLLS = [
     "8.0",
 ]
 #: ``(label, system, extra CLI flags)``.  Each system runs both
-#: formulations: ``default`` is the shipped reconstruction scheme,
+#: formulations: ``default`` is the default reconstruction scheme,
 #: ``legacy`` the primitive `$(v, p)$` one, both passed explicitly so
-#: the pair stays a contrast if the model default ever moves again.
+#: the pair stays a contrast if the model default changes.
 CONFIGS = [
     (
         "plane-couette default",
@@ -339,7 +339,7 @@ def _check_held_bulks(label: str, flags: list[str], cols: dict) -> str | None:
 #: the wall-shear inference converging in ``ny`` *and* in ``t``.
 _APPLIED_NY = (33, 49, 65, 97)
 #: Run long enough for the driving to develop, and judge only the
-#: developed window.  This is not fussiness: from a random IC the
+#: developed window: from a random IC the
 #: applied `$-\Pi$` is ~1e-6, so its work is ~0.2 % of ``I`` and a
 #: short run would pass however wrong the inference was.  By ``t = 40``
 #: it is ~1e-3, i.e. ~60 % of ``I`` -- only there does the comparison
@@ -391,8 +391,8 @@ def _check_applied_vs_inferred() -> str | None:
     nonlinear term -- continuously zero, a finite wall-normal
     truncation residual discretely.  The corrector's **applied** value
     is a different, exact quantity, recorded in ``stats.dat`` as
-    ``-dPds'`` since the driving column shipped, so the total-field
-    budget can be closed both ways and the two compared.
+    ``-dPds'``, so the total-field budget can be closed both ways and
+    the two compared.
 
     Measured here (plane-Poiseuille MFU, ``Re = 3000``, ``nx = nz =
     16``, judged over the developed window ``t`` in ``[40, 60]``):
@@ -416,7 +416,7 @@ def _check_applied_vs_inferred() -> str | None:
     But the *inferred* `$\Pi$` closes the budget **better** than the
     applied one at every resolved rung.  That is not a statement about
     which estimate is right -- the applied force is the exact input
-    rate, full stop -- but about ``I - D`` being an incomplete discrete
+    rate -- but about ``I - D`` being an incomplete discrete
     budget.  Writing
     `$I_{ws} = I_{app} - \tfrac23\,\mathrm{bulk}(\bar N_s)$`, the true
     discrete defect of `$dE/dt = I_{app} - D$` is the nonlinear term's

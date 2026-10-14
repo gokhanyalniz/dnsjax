@@ -509,9 +509,9 @@ def test_aggregation() -> None:
             "column set differs", lambda: aggregate_members(tree)
         )
 
-        # A grid the same length but displaced in phase -- what a
-        # parent snapshot off the cadence grid used to produce -- is
-        # told apart from a different horizon, and ``align_atol``
+        # A grid the same length but displaced in phase (a parent off
+        # the cadence grid under an absolute-step anchor) is told
+        # apart from a different horizon, and ``align_atol``
         # stacks it as recorded, reporting how far apart.  As the
         # driver wrote them, which is a whole number of steps: here a
         # 0.001 step sampled every 10, parent 4 steps off the others'.

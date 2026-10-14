@@ -29,7 +29,7 @@ subprocess smoke tests cannot check directly:
   ``step_cnab2(state, carry)`` (the second element) is independent of
   the ``carry`` argument -- the ``__main__`` priming call
   ``step_cnab2(state, zeros)`` seeds the true
-  `$N_{nl}(u^0)$` regardless of the dummy carry.
+  `$N_{nl}(u^0)$` regardless of the placeholder carry.
 - **FFT-count guards** (jaxpr traversal): outside the ``lax.cond``
   fallback branch, one ``step_cnab2`` costs exactly one nonlinear
   RHS evaluation's FFTs (**1 FFT eval/step**); the implicit-coupling

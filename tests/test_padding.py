@@ -44,9 +44,9 @@ component-axis concatenate of sharded outputs).
    checks sharded via ``device_put``.
 6. ``odd_real``: single device, nx = 22 -- the natural real-FFT pad
    ``33`` is odd, and an inverse real FFT returns an even length
-   unless told otherwise, so an odd ``nx_padded`` used to leave a
-   physical grid one point shorter than every consumer read it as
-   (and smooth-rounded the wrong length: 35 reported, 34 = 2 * 17
+   unless told otherwise, so an odd ``nx_padded`` would give a
+   physical grid one point shorter than every consumer reads it as
+   (and smooth-round the wrong length: 35 reported, 34 = 2 * 17
    transformed).  It is bumped to the even 7-smooth 36, and every
    case checks that the physical ``x`` length *is* ``nx_padded``.
 7. ``smooth``: single device, nz = 94 -- the natural pad

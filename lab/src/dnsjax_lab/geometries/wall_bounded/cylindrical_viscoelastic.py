@@ -152,9 +152,10 @@ gave this flow -1.8 % at ``num_c = 0`` and the annular flow -0.7 % at
 ``num_c = 0`` *and* -0.7 % again at ``num_c = 3-4`` (chained, so the field
 develops).  Every one of those sits inside a 5-25 % within-arm spread (11-25 %
 on the annulus), and the two operating points agreeing to 0.0 pp on the annulus
-is what makes "wash" the right reading rather than "unresolved".  An sPTT step
-is dominated by its ~36-field transform batch, not by FD GEMMs, so halving one
-FD stage does not move the clock.  Chaining *this* flow at `$64^3$` gives no
+is what makes "no measurable effect" the right reading rather than
+"unresolved".  An sPTT step is dominated by its ~36-field transform
+batch, not by FD GEMMs, so halving one FD stage does not move the clock.
+Chaining *this* flow at `$64^3$` gives no
 usable measurement: the corrector collapses from 10 to 0 mid-run and the step
 drops 3.7x, so the arms get sampled at different points of a relaxing transient
 (260 % within-arm spread); the annulus supplies the developed-field point.  The

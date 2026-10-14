@@ -817,7 +817,7 @@ Figure geometry
 The abscissa is sized by its decade count: the axes box is
 `$\text{decade} \times D_\lambda$` wide for the `$D_\lambda$` decades
 of the plotted limits, leaving only the scale free.  ``--width`` sets
-it (default 6.61546 in, the write-up's ``\linewidth``) and
+it (default 6.61546 in, a ``\linewidth`` of that size) and
 ``--decade`` sets the decade length directly instead.
 
 ``--width`` fits that length to a figure of ``--ncols`` columns, the
@@ -866,7 +866,7 @@ dependency group::
 
     uv run --group plots python lab/scripts/twin_spectral_maps.py \
         --members RUN1 RUN2 --out FIGDIR \
-        --re 4200 --re-tau 178.62135279727977 --stride 10
+        --re 4200 --re-tau 178.6 --stride 10
 
 Every number above is a knob; ``--help`` lists the rest.
 
@@ -877,7 +877,7 @@ As a library (in a notebook, one stream at a time)::
         make_spacetime, open_series)
 
     s = open_series(["twin1", "twin2"], "twin_ybudget", stride=10)
-    opts = MapOptions(Units(re=4200.0, re_tau=178.62135279727977))
+    opts = MapOptions(Units(re=4200.0, re_tau=178.6))
     m = make_map(s, "prod_x", frame=24, options=opts)
     draw_map(ax, m, units=opts.units)
 
@@ -889,7 +889,7 @@ The whole-run families on a long run, without redrawing its frames::
 
     uv run --group plots python lab/scripts/twin_spectral_maps.py \
         --members RUN1 RUN2 --out FIGDIR --re 4200 \
-        --re-tau 178.62135279727977 --stride 1 --last 150 \
+        --re-tau 178.6 --stride 1 --last 150 \
         --no-frames --growth --front --moment-budget
 
 :func:`open_series` memory-maps each member and reads only the
@@ -1103,7 +1103,7 @@ LOG_DECADES: float = 6.0
 
 #: Bands per decade of that scale.  Fine enough to read as a
 #: continuous ramp, since only the decade boundaries are labelled and
-#: drawn as contour lines -- a line per band would be mush.
+#: drawn as contour lines -- a line per band would be illegible.
 _LOG_BANDS_PER_DECADE: int = 8
 
 #: Fields that are non-negative **by construction**, keyed by the base
@@ -1215,10 +1215,10 @@ GROWTH_R_MAX: float = 0.95
 #: of :data:`MAP_PANELS` (module docstring, "Figure geometry").
 BUDGET_NCOLS: int = 3
 
-#: Panel labels for the budget terms in the write-up's notation, as
-#: ``(sign, symbol)``: each panel is the term's contribution to
-#: `$\partial_t E_\Delta$`, and a contribution's minus sign leads its
-#: title, ahead of any premultiplier (:func:`field_title`).
+#: Panel labels for the budget terms, as ``(sign, symbol)``: each
+#: panel is the term's contribution to `$\partial_t E_\Delta$`, and a
+#: contribution's minus sign leads its title, ahead of any
+#: premultiplier (:func:`field_title`).
 TERM_LABELS: dict[str, tuple[str, str]] = {
     "prod": ("", r"\mathcal{P}_\Delta"),
     "prod_mean": ("", r"\mathcal{P}_\Delta^{\mathbf{U}}"),
@@ -1283,14 +1283,14 @@ TRACKED: frozenset[str] = frozenset(
 )
 
 #: LaTeX preamble under ``--usetex``: STIX Two text and maths with Lato
-#: sans, the fonts of the document the figures are sized for.
+#: sans, the fonts of the page the figures are sized for.
 LATEX_PREAMBLE: str = r"""
 \usepackage[p]{stickstootext}
 \usepackage[scaled=1.05,stix2,vvarbb]{newtxmath}
 \usepackage[defaultsans,proportional,scale=0.955]{lato}
 """
 
-#: Text width of that document, in inches (its ``\linewidth``).
+#: Text width of that page, in inches (its ``\linewidth``).
 PAGE_LINEWIDTH: float = 6.61546
 
 #: Panel margins, in inches, at the default font size.  The layout is
@@ -1336,7 +1336,7 @@ _TRACK_EDGE: float = 0.8
 _TRACK_HALO: float = 1.2
 
 #: The track figure's lines, one per tracked panel in panel order
-#: (:func:`track_figure`): the write-up's categorical order, checked
+#: (:func:`track_figure`): four of the Okabe-Ito colours, checked
 #: for colour-vision separation on white (worst pair `$\Delta E$` 11.0
 #: deutan, 8.6 tritan, 15.6 normal), each paired with a dash pattern so
 #: identity never rests on hue alone -- the orange sits at 2.3:1
@@ -1358,12 +1358,12 @@ _TRACK_HEIGHT: float = 4.6
 _ROW_HEIGHT: float = 1.55
 
 #: The moment budget's seven term groups (:data:`MOMENT_TERMS`), in
-#: order: the data-viz reference palette's seven categorical slots,
-#: validated for colour-vision separation on white (worst adjacent pair
-#: `$\Delta E$` 9.1 protan, normal-vision floor 19.6).  Three sit below
-#: 3:1 contrast against the page, so each also carries a dash pattern
-#: and the legend names every line; their sum is black and the
-#: finite-difference check a grey dashed line.
+#: order: seven categorical colours checked for colour-vision
+#: separation on white (worst adjacent pair `$\Delta E$` 9.1 protan,
+#: normal-vision floor 19.6).  Three sit below 3:1 contrast against
+#: the page, so each also carries a dash pattern and the legend names
+#: every line; their sum is black and the finite-difference check a
+#: grey dashed line.
 _TERM_SERIES: tuple[str, ...] = (
     "#2a78d6",
     "#eb6834",
@@ -2793,7 +2793,7 @@ def panel_symbol(
     r"""``(sign, symbol)`` of the quantity one map panel draws.
 
     Before any premultiplier or normalization: a balance term's
-    write-up symbol and the sign of its contribution
+    symbol and the sign of its contribution
     (:data:`TERM_LABELS`), or a spectrum's `$E$` with its marginal and
     component -- a shape panel's being those of the field it redraws
     (:func:`shape_source`).  What :func:`field_title` builds a title on
@@ -3167,7 +3167,7 @@ def _sign_note(
     verdict = (
         "round-off, i.e. truncation"
         if ratio < SIGN_TOLERANCE
-        else "ABOVE round-off -- worth a look"
+        else "above round-off; inspect"
     )
     if not positive:
         return (
@@ -3412,7 +3412,7 @@ def _decade_ticks(levels: np.ndarray) -> np.ndarray:
     """The whole decades inside a logarithmic scale's range.
 
     Its colour-bar ticks and its contour lines both: a line per band
-    would be mush, and a decade is the one spacing a log scale can be
+    would be illegible, and a decade is the one spacing a log scale can be
     read against.  Falls back to the range's ends where it spans less
     than a decade.
     """
@@ -3503,7 +3503,7 @@ def draw_map(
         else:
             # ``extend`` only where something can land above the
             # top level: without ``--quantile`` the levels cover the
-            # data, and an arrowed colour bar would be a lie.
+            # data, and an arrowed colour bar would be misleading.
             filled = ax.contourf(
                 map_.lam,
                 y,
@@ -5487,7 +5487,7 @@ def render_spacetime(
     ranges and the same fold under the two colour scales; the
     logarithmic one is skipped, with a line saying so, for a series
     any of whose panels is signed -- a budget term's `$k$`-sum changes
-    sign, and a logarithmic scale of it would be a lie.
+    sign, and a logarithmic scale of it would be misleading.
 
     A selection of fewer than two sample times has no time axis to
     draw and is skipped whole, with its own line: that is a
@@ -5867,7 +5867,7 @@ def _moment_cells(
     energy: the distribution of energy itself, not of a map.  A
     marginal's columns are `$m \ge 1$`, ascending in `$m$` as stored,
     with `$\ln\lambda$` in the plotted units; the wall-distance budget
-    sums every column into one, at a dummy `$\ln\lambda = 0$`.
+    sums every column into one, at a placeholder `$\ln\lambda = 0$`.
     Both coordinates are in the plotted units, which shifts a mean and
     moves no rate.
     """
@@ -7674,7 +7674,7 @@ def render_growth(
 
 
 def apply_rcparams(usetex: bool, font_size: float = 11.0) -> None:
-    """The write-up's matplotlib style (fonts, preamble, exact size).
+    """The figures' matplotlib style (fonts, preamble, exact size).
 
     ``savefig.bbox`` is deliberately **not** ``"tight"``: the layout
     budgets its own margins in inches (:func:`panel_geometry`), and

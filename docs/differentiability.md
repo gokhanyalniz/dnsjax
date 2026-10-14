@@ -85,15 +85,14 @@ executed *through* `.solve`'s `shard_map` in interpret mode with the
 kernel branch forced, and finite-differenced there, so the rule is known
 to compose and not merely to be right in isolation.
 
-Two things stay unverified until the probe runs on a GPU. Triton's real
-lowering of the transposed kernel — the forward kernel shipped on the
-same footing, and the partial-tile miscompile it once hit is invisible to
-both interpret mode and a lowering check. And the *differentiated*
-sharded region's cuda lowering, which cannot be checked on a machine with
-no GPU at all: `shard_map`'s transpose compares cotangent shardings, and
-against the abstract GPU mesh the other lowering guards use they do not
-compare equal. The forward region and the transposed kernel are each
-lowered for cuda separately.
+Two things remain to be verified on a GPU. First, Triton's lowering of
+the transposed kernel: neither interpret mode nor a lowering check can
+see a miscompile such as the partial-tile one that whole-tile padding
+avoids. Second, the *differentiated* sharded region's cuda lowering,
+which cannot be checked without a GPU: `shard_map`'s transpose
+compares cotangent shardings, and against the abstract GPU mesh the
+other lowering guards use they do not compare equal. The forward region
+and the transposed kernel are each lowered for cuda separately.
 
 If you would rather not depend on any of that, `solver.pallas_kernel =
 false` takes the portable sweep on a GPU as well, and that path

@@ -221,9 +221,9 @@ there for its release to free anything.
 **Peak versus resident host memory.**  A high-water mark keeps any
 start-up transient: on ARCHER2 (hardware: ``docs/scaling.md``) one at
 1.46 GiB a rank stood over 0.95-1.3 GiB of stepping on every 4-node
-layout (``sharding.Sharding.distribute``), and was read as the run's
-footprint.  Hence the second closing line, the resident memory at the
-end, which is what the run settles at.
+layout (``sharding.Sharding.distribute``).  Hence the second closing
+line, the resident memory at the end, which is what the run settles
+at.
 
 **A sharper relaminarization signal (not implemented).**  The
 laminarization stop compares ``E'`` with a threshold.  The norm of
@@ -405,8 +405,8 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
         # is the parity of the **physical** `$m = m_0 j$` (the wedge
         # factor matters: with an even ``geo.m0`` every physical mode
         # is even) and which spans the **padded** m axis -- the axis
-        # the loaded state is actually laid out on.  Re-deriving it
-        # here from ``complex_harmonics`` disagreed with both.
+        # the loaded state is actually laid out on.  (Re-deriving it
+        # from ``complex_harmonics`` would disagree with both.)
         from .geometries.wall_bounded.cylindrical import fourier
 
         n_comp = state.shape[0]

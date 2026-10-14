@@ -27,13 +27,13 @@ Two questions, both measured rather than argued.
 Measured
 --------
 Closure residuals, **max over ``twin.seed`` 3/5/7** at each rung
-(20 budget samples each).  The ``pp-cbv`` block was re-measured at
-the current partner construction; **the other four blocks predate
-it** -- the `$(0,0)$` perturbation became `$\Pi$`-preserving after
-they were taken, which changes the partner for a given ``twin.seed``
-and so every residual here.  They are kept because the bounds below
-were fitted to them and still hold with room; re-measure before
-tightening any of them.
+(20 budget samples each).  The ``pp-cbv`` block was measured with
+the current partner construction, whose `$(0,0)$` perturbation
+preserves `$\Pi$`; the other four were measured with a construction
+that did not, which draws a different partner for a given
+``twin.seed`` and so changes every residual.  The bounds below are
+set against all five blocks; re-measure a block before tightening
+its bound.
 
 ===========  ====  =======  =======  =======  =======
 config       ny    dU       du1      du2      T_tot

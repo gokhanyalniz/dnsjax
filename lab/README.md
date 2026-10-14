@@ -4,7 +4,8 @@ The second package in this repository: features developed alongside
 the [`dnsjax`](../README.md) solver and kept out of its releases. It is
 never published — no PyPI upload, no Zenodo archive (its `pyproject.toml`
 carries the `Private :: Do Not Upload` classifier, which PyPI refuses)
-— and lives in this repository only.
+— and is distributed only through this repository and the archive of
+it attached to each GitHub release.
 
 The lab plugs into the solver through the same entry points any
 package would use ([`docs/extending.md`](../docs/extending.md)): its
@@ -79,9 +80,8 @@ Functionality checks, in [`scripts/diagnostics/`](scripts/diagnostics/):
 | `pallas_tiling_diagnostic.py` | GPU harness that bisects the partial-tile Triton miscompile the kernel's whole-tile padding avoids |
 | `gds_probe.py` | cluster diagnostic for the snapshot write path through GPUDirect Storage |
 
-The gate for a refactor that must change nothing, in
-[`scripts/refactor/`](scripts/refactor/) (it proved each step of the
-core/lab split):
+A regression check for behaviour-preserving refactors, in
+[`scripts/refactor/`](scripts/refactor/):
 
 | Script | What it does |
 |---|---|

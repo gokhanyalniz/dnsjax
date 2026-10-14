@@ -19,10 +19,9 @@ The cases build every core flow family and step it a few times:
 Cartesian, resumed onto a changed ``ny`` (the regrid matrix), with
 adaptive ``dt`` and ``[lowres]``, and in single precision; Kolmogorov
 from localized rolls; the pipe, and with cnab2; Taylor-Couette, and on
-its ``m0 = 2`` wedge.  In single
-precision the check itself failed every multi-process setup: it
-compares the gathered copies, canonicalized to float32, with the
-float64 host originals, so no float64 array survives it.
+its ``m0 = 2`` wedge.  In single precision the check cannot pass at
+all: it compares the gathered copies, canonicalized to float32, with
+the float64 host originals, so no float64 array survives it.
 
 Run as a script (``--only`` takes case names; a ``-regrid`` case
 brings the case it reads from along)::

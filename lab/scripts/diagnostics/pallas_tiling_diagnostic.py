@@ -1,22 +1,23 @@
 """GPU diagnostic: bisect the mode-tiled Pallas banded-kernel miscompile.
 
-``_pallas_banded_solve`` (``solvers.py``) was correct in Pallas interpret
-mode and lowered cleanly for ``cuda``, yet returned wrong/NaN results on a
-**real GPU** for ``pallas_block_m1 > 1`` -- even with the cross-pass
-``debug_barrier`` in place. This script isolated the cause: the **masked
-partial-tile path** miscompiles on real Triton.  In a grid with a partial
-boundary tile it corrupts results **across the grid (even full-tile
-programs)**, **nondeterministically** (warp-scheduling dependent), for any
+``_pallas_banded_solve`` (``solvers.py``) is correct in Pallas interpret
+mode and lowers cleanly for ``cuda``, but without padding it returns
+wrong/NaN results on a **real GPU** for ``pallas_block_m1 > 1`` -- even
+with the cross-pass ``debug_barrier`` in place. This script isolates the
+cause: an observed miscompile of masked partial tiles on GPU (the
+**masked partial-tile path**).  In a grid with a partial boundary tile
+it corrupts results **across the grid (even full-tile programs)**,
+**nondeterministically** (warp-scheduling dependent), for any
 nontrivial kernel -- masked double-index band loads (``l_ref[i, d]``) *and*
 a single-index window-carry sweep (``window_carry``).  Only trivial
 copy/round-trip kernels survive; full tiles (no partial boundary anywhere)
 are always correct at ``(2, 32)``.
 
-The kernel now **pads the mode plane up to whole tiles** so it only ever
-runs the correct full-tile path.  This script remains the regression
-confirmation: the ``full`` probe (the real solve, which pads) passes on
+The kernel therefore **pads the mode plane up to whole tiles** so it only
+ever runs the correct full-tile path.  This script is the regression
+check: the ``full`` probe (the real solve, which pads) passes on
 partial planes, while the un-padded construct micro-kernels still XFAIL on
-partial planes -- the underlying Triton bug they isolate (see the verdict
+partial planes -- the observed miscompile they isolate (see the verdict
 legend at the end of the run).
 
 It runs a ladder of minimal ``pallas_call(interpret=False)`` probes -- each
@@ -34,8 +35,8 @@ Run **on a GPU** (single device, no mpirun)::
 
 Without a GPU it falls back to a **lowering-only** check
 (``lower(lowering_platforms=("cuda",))``) so the probes can be validated
-before a GPU run. **Paste the full stdout back** for
-diagnosis.
+before a GPU run.  Save the full stdout (e.g. ``| tee run.log``); it is
+the report.
 
 Probes (ladder; ``b`` is per-mode-scaled so cross-lane contamination is
 visible):
@@ -78,7 +79,7 @@ from dnsjax.parameters import (
     params,
 )
 
-# Select the JAX backend from --dist.platform (default cpu) BEFORE
+# Select the JAX backend from --dist.platform (default cpu) before
 # importing any dnsjax module that captures it (sharding / solvers), so
 # ``... --dist.platform cuda`` executes the probes on a real GPU and the
 # device banner is unambiguous.  It is parsed early here (before this
@@ -394,7 +395,7 @@ def _build_probe(name, dims, bm0, bm1, interpret=False):
         return fn, (d["Lp"], d["Up"], b), _scaled(x, d["scale"])
 
     if name == "full_vmap_shared":
-        # The Cartesian shared-``Hk`` dispatch: ONE operator vmapped
+        # The Cartesian shared-``Hk`` dispatch: one operator vmapped
         # over the RHS component axis (``.solve``'s
         # ``in_axes=(None, None, 0)`` branch) -- the only production
         # pattern that batches ``pallas_call`` with **unmapped** factor
@@ -462,9 +463,10 @@ MUST_PASS = frozenset(
         "full_vmap_shared",
     }
 )
-# Probes that run the raw Triton partial-tile bug WITHOUT padding, so they
-# are *expected* to fail (XFAIL) on `partial` planes -- nondeterministically,
-# and corrupting even full-tile programs in a grid with a partial boundary.
+# Probes that exercise the observed partial-tile miscompile without
+# padding, so they are *expected* to fail (XFAIL) on `partial` planes --
+# nondeterministically, and corrupting even full-tile programs in a grid
+# with a partial boundary.
 # They must still PASS on `full` planes (no partial boundary anywhere).
 BUG_DEMO = frozenset(
     {"bcast_none", "bcast_auto", "window_carry", "forward_only"}
@@ -474,8 +476,8 @@ BUG_DEMO = frozenset(
 def _expected_fail(probe: str, mlabel: str) -> bool:
     """Whether a probe failure is the expected XFAIL.
 
-    A bug-demo probe on a partial plane is (the raw Triton partial-tile
-    miscompile, which the real solve pads around).  Any other failure --
+    A bug-demo probe on a partial plane is (the observed partial-tile
+    miscompile on GPU, which the real solve pads around).  Any other failure --
     a must-pass probe, or a bug-demo probe on a full plane -- is a real
     regression.
     """
@@ -532,7 +534,7 @@ def main() -> None:
         "--interpret",
         action="store_true",
         help="run probes in Pallas interpret mode on CPU (validates the "
-        "harness/references; does NOT reproduce the GPU miscompile)",
+        "harness/references; does not reproduce the GPU miscompile)",
     )
     args = ap.parse_args()
 
@@ -543,8 +545,8 @@ def main() -> None:
     if interpret:
         print(
             "INTERPRET mode -> probes run in pure-JAX interpret on CPU. "
-            "Validates the harness + references only; it CANNOT reproduce "
-            "the real-Triton miscompile (expect all PASS).\n"
+            "Validates the harness + references only; it cannot reproduce "
+            "the GPU miscompile (expect all PASS).\n"
         )
     elif gpu:
         print("GPU backend -> EXECUTING probes on real Triton.\n")
@@ -602,7 +604,7 @@ def main() -> None:
                             f"@ (n,k,kz,kx)={loc}"
                         )
                         if _expected_fail(probe, mlabel):
-                            # Expected: the raw Triton partial-tile bug.
+                            # Expected: the observed partial-tile miscompile.
                             xfails[probe] += 1
                             print(f"{tag} -> XFAIL {detail}")
                         else:
@@ -673,9 +675,12 @@ def _summary(xfails, regs, runs, first_reg, results, modes, tiles) -> None:
         "(bcast_*/"
     )
     print(
-        "  window_carry/forward_only) XFAIL on partial planes = the raw Triton"
+        "  window_carry/forward_only) XFAIL on partial planes = the observed"
     )
-    print("  partial-tile bug the real solve pads around (not a regression).")
+    print(
+        "  partial-tile miscompile the real solve pads around (not a "
+        "regression)."
+    )
 
     print("\nSUMMARY (probe: reg / xfail / runs)")
     for pr in PROBES:
@@ -692,14 +697,14 @@ def _summary(xfails, regs, runs, first_reg, results, modes, tiles) -> None:
     # Interpretation legend.  The real solve (`full`, calling
     # `_pallas_banded_solve`) pads the mode plane to whole tiles, so it is
     # correct on partial planes; the construct micro-kernels below it do
-    # NOT pad, so they still expose the raw Triton bug they isolate.
+    # not pad, so they still expose the miscompile they isolate.
     print("\nInterpretation (pad-to-full-tiles fix in _pallas_banded_solve):")
     print(
         "  * 'full' PASS on partial planes -> dnsjax solve correct "
         "(pads to full tiles)."
     )
     print(
-        "  * bug-demo XFAIL on partial -> raw Triton partial-tile bug "
+        "  * bug-demo XFAIL on partial -> observed partial-tile miscompile "
         "(corrupts even"
     )
     print(

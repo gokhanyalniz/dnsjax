@@ -1,8 +1,8 @@
 r"""GPU diagnostic: where does the Pallas banded solve's time go?
 
-The mode-inner ``.solve`` contract was bit-identical yet gave **0%**
-speedup on a real GPU.  This script measures *why*, answering two
-questions for the ``pallas`` backend on real hardware:
+Why does the bit-identical mode-inner ``.solve`` contract not speed
+up the GPU solve?  This script measures the answer, testing two
+hypotheses for the ``pallas`` backend on real hardware:
 
   H1  Is the per-solve time dominated by the **unavoidable** complex ->
       real split/recombine around the Triton kernel (which the contract
@@ -35,9 +35,9 @@ Part A2 the **split-real hoist**: Part A sizes the plumbing inside one
 Part B  full ``predict_and_fully_correct`` step time vs the isolated
         ``Lk`` and ``Hk`` solve times -- the solve's share of the step.
         Then (Cartesian) a **stage-level ``_imm_iteration`` breakdown**
-        that sizes the influence-matrix boundary correction -- the part
-        the openpipeflow wiki calls "negligible" -- against the rest of
-        the implicit CN update (assembly GEMMs + banded solves), and the
+        that sizes the influence-matrix boundary correction against
+        the rest of the implicit CN update (assembly GEMMs + banded
+        solves), which runs every corrector iteration too, and the
         corrected **cnab2 composition** (wall-bounded cnab2 still runs a
         ``2 + c``-apply FFT-free IMM corrector, so its ``FFT RHS`` count
         drops ``2 + c -> 1`` but its IMM count does not).
@@ -66,11 +66,11 @@ baked into the operator at construction, so it cannot vary in-process)::
         --dist.platform cuda \
         --pallas-block-m0 $m0 --pallas-block-m1 $m1 --steps 40; done; done
 
-Resolution x tile sweep to pick sane tile defaults across a range.
+Resolution x tile sweep to pick sensible tile defaults across a range.
 ``--solve-only`` times just the ``Lk``/``Hk`` solves (the tile affects
 only the solve; the FFT-bound step is tile-independent and costly at
 large planes) and prints a greppable ``SUMMARY`` line -- collect them
-with ``grep '^SUMMARY'`` instead of pasting full dumps::
+with ``grep '^SUMMARY'`` instead of reading full dumps::
 
     for ny in 48 96 128; do for nz in 64 128 256 512; do \
       for m0 in 1 2; do \
@@ -90,7 +90,7 @@ resolution (numerics only) to validate the harness end-to-end.
 ``--steps-only N`` runs ``N`` steps and exits, skipping Parts A/B/C:
 a clean driver to wrap in an external profiler (e.g.
 ``nsys profile --stats=true``).
-**Paste the full stdout back** for diagnosis.
+Save the full stdout (e.g. ``| tee run.log``); it is the report.
 """
 
 from __future__ import annotations
@@ -572,9 +572,9 @@ def _part_a(flow, sharding, reps: int, hbm: tuple[float | None, str]) -> None:
         f"sum(pieces)/full = {summ / t_full:4.2f}."
     )
     print(
-        "  A ratio >1 means the isolated ops OVER-count (each pays a launch "
-        "+ a full\n  HBM round-trip it does NOT pay when fused into the "
-        "solve).  The TRUE cost of"
+        "  A ratio >1 means the isolated ops over-count (each pays a launch "
+        "+ a full\n  HBM round-trip it does not pay when fused into the "
+        "solve).  The true cost of"
     )
     print(
         f"  the split+recombine fused in the solve is full - kernel = "
@@ -586,12 +586,12 @@ def _part_a(flow, sharding, reps: int, hbm: tuple[float | None, str]) -> None:
     )
     if kern_frac >= 0.70:
         print(
-            "  => The solve is KERNEL-bound; the plumbing (and the removed "
-            "transpose,\n     fused into it) is ~free -- THAT is why the "
-            "contract change gave 0%, not\n     because the split "
-            "dominates.  The kernel sits far below peak BW, so it\n     is "
+            "  => The solve is kernel-bound; the plumbing (and the removed "
+            "transpose,\n     fused into it) is ~free, which is why the "
+            "contract change cannot speed it\n     up; the split does not "
+            "dominate.  The kernel sits far below peak BW, so it\n     is "
             "limited by the sequential banded recurrence / occupancy, not "
-            "bandwidth.\n     A faster SOLVE needs the kernel itself: tune "
+            "bandwidth.\n     A faster solve needs the kernel itself: tune "
             "pallas_block_m0/m1, or parallelize along Ny.\n     But first: "
             "Part B -- is the solve even the step's bottleneck?"
         )
@@ -603,7 +603,7 @@ def _part_a(flow, sharding, reps: int, hbm: tuple[float | None, str]) -> None:
             "field split-real across an IMM apply, or batch the launches."
         )
     print(
-        "  NOTE: this sizes ONE solve.  It does not count the "
+        "  Note: this sizes one solve.  It does not count the "
         "split/recombine pairs a\n  step pays, so it does not size the "
         "hoist -- Part A2 does that directly.  And\n  see Part B for "
         "whether the solve matters to the step at all."
@@ -860,7 +860,7 @@ def _part_a2(system, flow, sharding, reps, t_step, n) -> None:
             f"{_ms(t_step)} step."
         )
     print(
-        "  Upper bound for THIS hoist only: the pipe's second Hk batch "
+        "  Upper bound for this hoist only: the pipe's second Hk batch "
         "is not\n  modelled, and the apply_y_matrix crossings the census "
         "counts are a\n  separate (larger) candidate."
     )
@@ -874,12 +874,10 @@ def _imm_stage_breakdown(
 ) -> None:
     r"""Cartesian: split one ``_imm_iteration`` into its stages.
 
-    Sizes the **influence-matrix boundary correction** -- the
-    openpipeflow-wiki "negligible" per-step overhead -- against the rest
-    of the implicit Crank-Nicolson update (assembly ``D1``/``D2`` GEMMs
-    + the ``Lk``/``Hk`` banded solves), which is the work openpipeflow
-    *also* runs every corrector iteration and the wiki does **not**
-    count as influence-matrix overhead.
+    Sizes the **influence-matrix boundary correction** against the
+    rest of the implicit Crank-Nicolson update (assembly ``D1``/``D2``
+    GEMMs + the ``Lk``/``Hk`` banded solves), which also runs every
+    corrector iteration but is not influence-matrix overhead.
 
     The two ``res.consistent_imm`` formulations are different
     algorithms with different stages, so each has its own transcription
@@ -1008,7 +1006,7 @@ def _stages_vp(
 
     t_sum = t_prhs + t_lk + t_hrhs + t_hk + t_infl
     print(
-        "\n  IMM stage breakdown (Cartesian, LEGACY primitive (v, p) "
+        "\n  IMM stage breakdown (Cartesian, legacy primitive (v, p) "
         "scheme; each runs n times/step):"
     )
     print(f"    Poisson RHS asm (D1 GEMM+div+_lk+CN)  {_ms(t_prhs)}")
@@ -1017,7 +1015,7 @@ def _stages_vp(
     print(f"    Hk banded solve (3 components)        {_ms(t_hk)}")
     print(
         f"    influence correct + recombine         {_ms(t_infl)}  "
-        "<- openpipeflow-wiki 'negligible' part"
+        "<- influence-matrix correction"
     )
     print(
         f"    {'-' * 52}\n"
@@ -1029,11 +1027,10 @@ def _stages_vp(
         f"_imm_iteration, {100 * n * t_infl / t_step:.1f}% of the step."
     )
     print(
-        "    => THAT is the wiki's 'negligible' influence-matrix overhead,"
-        " and it\n       IS negligible here too.  The rest of the IMM is "
-        "the implicit CN\n       update (assembly GEMMs + Lk/Hk banded "
-        "solves) openpipeflow also\n       runs every corrector iteration"
-        " -- the wiki does not count THAT."
+        "    => That is the influence-matrix overhead proper.  The rest"
+        " of the IMM is\n       the implicit CN update (assembly GEMMs +"
+        " Lk/Hk banded solves),\n       which runs every corrector"
+        " iteration too."
     )
 
 
@@ -1054,8 +1051,8 @@ def _stages_vw(
     - the influence correction (stages 5-7) additionally reconstructs
       the tangential pair, which is the work that makes the discrete
       divergence vanish -- so it is doing strictly more than the
-      primitive scheme's rank-2 recombination, and the "negligible
-      boundary correction" reading has to be made against that.
+      primitive scheme's rank-2 recombination, and its share of the
+      iteration has to be read against that.
     """
     import jax.numpy as jnp
 
@@ -1138,7 +1135,7 @@ def _stages_vw(
     print(
         "    => The boundary work is still a small share; the rest is the"
         "\n       implicit CN update (assembly GEMMs + Hk/Lk banded solves)"
-        " that\n       openpipeflow also runs every corrector iteration."
+        " that\n       runs every corrector iteration too."
         "  Note this\n       scheme folds the tangential reconstruction "
         "into that share, and\n       runs one banded solve fewer per mode"
         " than the legacy path\n       (--legacy-imm to time that one)."
@@ -1770,7 +1767,7 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
         )
     )
     t_step, c, _ = _bench_step(m.predict_and_fully_correct, state, steps)
-    n = 2 + c  # RHS evals AND IMM applies per step (predict + correct loop)
+    n = 2 + c  # RHS evals and IMM applies per step (predict + correct loop)
     print(
         f"  predict_and_fully_correct     {_ms(t_step)}   "
         f"(c={c} corrector iters => n={n} RHS evals + {n} IMM applies)"
@@ -1851,8 +1848,8 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
 
     # Stage-level IMM breakdown: where the non-solve part of
     # _imm_iteration goes, per geometry.  Cartesian additionally sizes
-    # the influence-matrix correction (the openpipeflow-wiki
-    # "negligible" claim, measured); the curvilinear arms exist to
+    # the influence-matrix correction against the implicit CN update;
+    # the curvilinear arms exist to
     # attribute the pipe's ~2x _imm_iteration at equal solve cost --
     # see _imm_stage_breakdown.
     if t_lk is not None:
@@ -1871,12 +1868,12 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
         )
 
     t_cnab2 = None
-    # Scheme A/B.  cnab2 does ONE FFT RHS eval per step, but -- for
-    # wall-bounded flows -- STILL runs a (2 + c)-apply IMM corrector
+    # Scheme A/B.  cnab2 does one FFT RHS eval per step, but -- for
+    # wall-bounded flows -- still runs a (2 + c)-apply IMM corrector
     # (the FFT-free base-flow-coupling loop, ``_cnab2_lbf_core``): the
     # predictor + first correction + c coupling iterations, each a full
     # ``_imm_iteration``, plus a (2 + c) FFT-free ``_l_bf`` re-eval.  So
-    # cnab2 cuts the FFT-RHS count 2+c -> 1 but pays the SAME IMM count
+    # cnab2 cuts the FFT-RHS count 2+c -> 1 but pays the same IMM count
     # as iterative-cn; with IMM ~ FFT on the GPU, that is why the step
     # speedup is modest, not ~3x.  The IMM cost per apply is
     # ``res.consistent_imm``-dependent (the default runs one banded
@@ -1884,7 +1881,7 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
     # for whichever formulation is configured.
     if hasattr(m, "step_cnab2"):
         t_cnab2, cc, _ = _bench_step_cnab2(m.step_cnab2, state, steps)
-        n_cn = 2 + cc  # IMM applies AND _l_bf evals per cnab2 step
+        n_cn = 2 + cc  # IMM applies and _l_bf evals per cnab2 step
         t_lbf = None
         if hasattr(geom, "_l_bf"):
             t_lbf = _bench(
@@ -1975,14 +1972,14 @@ def _summary_line(system: str, args, flow, times: dict) -> None:
 
 
 def _solve_sweep(system: str, args, flow, sharding, reps: int) -> None:
-    r"""Time ONLY the isolated ``Lk``/``Hk`` banded solves.
+    r"""Time only the isolated ``Lk``/``Hk`` banded solves.
 
     The tile choice affects *only* the solve (the step is FFT-bound and
     tile-independent), and the full FFT/step is expensive at large mode
     planes, so this skips Parts A/C and the full step/cnab2: it builds
     the operators (cheap, `$O(N_y\,p\,\text{modes})$`) and times the two
     solves the IMM runs.  Cheap at arbitrarily large ``nx``/``nz`` --
-    the driver for a resolution x tile sweep deciding sane tile
+    the driver for a resolution x tile sweep deciding sensible tile
     defaults.  Emits a ``SUMMARY`` line.
     """
     from dnsjax.solvers import PerModeBandedPallasOperator
@@ -2212,7 +2209,7 @@ def main() -> None:
     ap.add_argument(
         "--solve-only",
         action="store_true",
-        help="time ONLY the isolated Lk/Hk banded solves and emit a "
+        help="time only the isolated Lk/Hk banded solves and emit a "
         "SUMMARY line (skips Parts A/C + the full step/cnab2).  Cheap at "
         "large nx/nz -- the tile-vs-resolution sweep driver.",
     )
@@ -2382,7 +2379,8 @@ def main() -> None:
     _summary_line(args.system, args, flow, times)
     print("\n" + "=" * 72)
     print(
-        "Done.  Paste the full stdout back.  Key numbers: Part A "
+        "Done.  Save the full stdout (e.g. | tee run.log); it is the "
+        "report.\nKey numbers: Part A "
         "'split+recombine\n% of the solve' (H1; on CPU 'full - sweep') "
         "and Part B\n'c*(Lk+Hk) / step' (H2)."
     )

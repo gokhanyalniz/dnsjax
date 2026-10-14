@@ -10,8 +10,8 @@ Tests cover:
 5. ``_lk_matvec`` vs per-mode NumPy reference.
 6. Pallas band-vs-dense parity (banded storage == ``banded(dense)``,
    no-pivot banded solve == dense solve) for ``Lk``/``Hk`` and the two
-   ``res.consistent_imm`` operators -- also the regression guard for
-   the parity-reduced builders' refactor onto the shared
+   ``res.consistent_imm`` operators -- also the guard on the
+   parity-reduced builders' use of the shared
    ``solvers._assemble_banded_operator`` helpers.
 6b. The pipe's ``res.consistent_imm`` structure: the spin pair really
     diagonalizes the vector Laplacian onto the existing
@@ -386,7 +386,7 @@ def test_pallas_vs_dense_on_cylindrical_operators() -> None:
     Lk/Hk_plus/Hk_minus/Hk_z.
 
     Guards the parity-reduced Pallas band assembly
-    (``_build_{Lk,Hk}_band_gpu``, refactored onto the shared
+    (``_build_{Lk,Hk}_band_gpu``, built on the shared
     ``solvers._assemble_banded_operator``): the banded operator equals
     ``banded(dense)`` exactly and the no-pivot banded sweep reproduces
     the dense solve on a complex RHS.

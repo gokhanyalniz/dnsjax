@@ -184,7 +184,8 @@ def case_surface_strictness() -> None:
         except ValidationError:
             check(True, f"pipe rejects {bad}")
 
-    # plane-couette: no driving on the surface (amendment: cbv banned).
+    # plane-couette: no driving on the surface (constant_bulk_velocity
+    # is refused).
     couette = spec_for("plane-couette")
     couette_model = PS.build_surface_model(couette, settings=False)
     try:

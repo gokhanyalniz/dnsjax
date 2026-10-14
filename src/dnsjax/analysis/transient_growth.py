@@ -217,8 +217,8 @@ Conventions and choices
 
 Choosing the knobs
 ------------------
-The defaults suit the five systems at moderate `$Re$`; every failure
-mode below is guarded per mode with an explicit error.
+The defaults suit the supported systems at moderate `$Re$`; every
+failure mode below is guarded per mode with an explicit error.
 
 - ``--tg.dt`` (0.01): the probe step sets *conditioning* and the
   *resolved spectral window*, not accuracy.  Only eigenvalues with

@@ -209,7 +209,7 @@ def test_abase_matvec_matches_dense() -> None:
     u = jnp.asarray(u_np)
 
     # Reference composed by hand, **not** from ``flow.A_base``: the
-    # matvec now applies the precomputed operator in one GEMM, so
+    # matvec applies the precomputed operator in one GEMM, so
     # referencing that same array would only test ``apply_y_matrix``.
     ref_op = np.asarray(tc_flow.D2.dense) + np.diag(
         np.asarray(tc_flow.inv_r)
@@ -688,8 +688,7 @@ def test_annular_custom_grid() -> None:
 
     It keeps the file's nodes and takes the ``fd_order`` composite rule
     times the Jacobian: exact for `$\int r^{d+1} dr$` up to
-    `$d + 1 = p$`.  (The branch once chose no quadrature and raised
-    ``UnboundLocalError``.)
+    `$d + 1 = p$`.
     """
     import tempfile
     from pathlib import Path

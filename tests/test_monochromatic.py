@@ -17,8 +17,8 @@ divergence-free band-limited state:
   dropping it under-counts a generic field's dissipation by ~2x.
 
 All references sum the *stored* modes with the ``k_metric`` weight,
-which the module docstring's earlier NumPy study verified equals both
-the full-spectrum Parseval sum and the physical-space
+which makes them equal both the full-spectrum Parseval sum and the
+physical-space
 `$\langle|\nabla u|^2\rangle$`.  The laminar limit (zero perturbation)
 is pinned too: `$E = E_{\mathrm{lam}}$`, `$I = D = I_{\mathrm{lam}}$`,
 `$E' = 0$`.
