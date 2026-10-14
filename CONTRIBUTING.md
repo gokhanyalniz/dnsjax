@@ -139,6 +139,11 @@ module docstring that owns a detail rather than restating it, which is
 what keeps that affordable. `docs/pypi/README.md`, the README as PyPI
 shows it, is regenerated rather than edited (Releases, below).
 
+The mechanical checks of the prose, from links and anchors and
+backticked names against the tree to docstring style, Oxford spelling,
+parse-validated command lines and a proof that a change is docs-only,
+live in `lab/scripts/docs/`; each script's docstring is its manual.
+
 Nothing committed carries a placeholder: no `TODO(author)`, no draft
 block, no section waiting on a number. Content that cannot be finished
 truthfully is left out until it can be.

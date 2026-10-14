@@ -102,6 +102,22 @@ release is cut: [`CONTRIBUTING.md`](../CONTRIBUTING.md#releases)):
 | `pypi_readme.py` | writes `docs/pypi/README.md`, the README as PyPI shows it, with absolute links and images and plain-text math; `--check` fails on a stale copy |
 | `ci_job.py` | runs one GitHub workflow job's steps locally, in a throwaway clone of a commit — `core-only` checks a release's artefacts before anything is pushed |
 
+Documentation checks, in [`scripts/docs/`](scripts/docs/), mechanical
+and read-only unless the row says otherwise:
+
+| Script | What it does |
+|---|---|
+| `check_links.py` | relative links and `#anchors` of the given Markdown files, by GitHub's slug rules |
+| `check_refs.py` | every backticked module, symbol, class member, parameter field, flag and path in docstrings, comments and docs resolves in the tree; `check_snake.py` reuses its index to list the backticked `snake_case` tokens that name nothing |
+| `check_docstrings.py` | escape, math-form, doubled-word and tone-word checks over the tracked Python tree; `lint_docs.py` the same for named files, plus multi-line summaries and split Sphinx roles |
+| `check_returns.py` | return-tuple arity and documented parameters against each signature |
+| `docs_only.py` | proves a change against a base ref touches docstrings, comments and `description=` strings only |
+| `parse_cmds.py` | parse-validates one documented command line (solver, twin or TOML) without JAX |
+| `check_render.py` | renders a Markdown file through GitHub's API (a request per file) and compares its math with the source |
+| `oxford.py`, `reflow.py`, `underline.py` | rewrite documentation ranges in place (`doc_ranges.py` finds them): Oxford spelling (`--dry` previews), one reflowed paragraph, section underlines |
+| `doc_inventory.py` | per-file dumps of docstrings and comments and the public docstrings missing, written under the current directory |
+| `crossref.py` | bibliographic metadata for a DOI or a free-text query, from Crossref |
+
 ## Tests
 
 36 standalone scripts in [`tests/`](tests/), laid out like the

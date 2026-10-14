@@ -113,3 +113,27 @@ fixed on purpose.
   `README.md` (`--check`, in CI's lint job).
 - `release/ci_job.py`: run one CI workflow job's steps locally in a
   throwaway clone (`core-only`: a release's checks; `--with pyyaml`).
+- `docs/check_links.py`: relative links and `#anchors` of the given
+  Markdown files (GitHub slugs).
+- `docs/check_refs.py`: every backticked module, symbol, member,
+  parameter field, flag and path in the tree's docstrings, comments and
+  docs resolves; its index serves `docs/check_snake.py`, the backticked
+  snake_case tokens that name nothing.
+- `docs/check_docstrings.py`: raw-string, math-form, doubled-word and
+  tone-word checks over the tracked Python tree; `docs/lint_docs.py`,
+  the same for the given files plus summary lines and split roles.
+- `docs/check_returns.py`: return arity and documented parameters
+  against each signature.
+- `docs/docs_only.py`: proves a diff against a base ref changes
+  docstrings, comments and `description=` strings only.
+- `docs/parse_cmds.py`: parse-validates one documented command line
+  (solver, twin or a TOML), JAX-free.
+- `docs/check_render.py`: renders Markdown through GitHub's API (a POST
+  per file) and compares its math with the source.
+- `docs/oxford.py` (`--dry`), `docs/reflow.py`, `docs/underline.py`:
+  mechanical rewrites of documentation ranges (`docs/doc_ranges.py`):
+  Oxford spelling, one reflowed paragraph, section underlines.
+- `docs/doc_inventory.py`: per-file docstring and comment dumps and the
+  missing public docstrings, written under the cwd.
+- `docs/crossref.py`: bibliographic metadata of a DOI or a query from
+  Crossref.

@@ -539,7 +539,7 @@ def _strip_frames(text: str) -> str:
 
 
 def hlo_fingerprint(hlo_dir: Path) -> dict:
-    """{module name: [sha of normalised optimised HLO, ...]}."""
+    """{module name: [sha of normalized optimized HLO, ...]}."""
     import hashlib
 
     out: dict[str, list[str]] = {}
