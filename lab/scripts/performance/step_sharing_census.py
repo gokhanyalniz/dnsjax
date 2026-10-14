@@ -33,11 +33,10 @@ core geometry's (a lab flow's, e.g.
 ``dnsjax_lab.geometries.wall_bounded._viscoelastic_stepping``).
 
 Measured at that default resolution: plane Couette shares 2 of the 6
-GEMMs of a pass, the pipe 7 of 17, and Taylor-Couette none of 6 --
-stage 1 of ``annular._imm_iteration_vw`` batches `$u_r^n$` with the
-iterate's `$u_\theta$` in one ``A_base`` GEMM, which makes `$\varphi^n$`
-and the whole stage-4 ``A_pair`` GEMM dataflow-varying.  Splitting that
-batch in two shares 2 GEMMs (3 field-GEMMs) per step.
+GEMMs of a pass, the pipe 7 of 17, Taylor-Couette and Dean 2 of 7, and
+the sPTT Dean pass (``--stepping`` as above) 3 of 8.  A GEMM that
+batches a step-invariant column with a varying one shares neither: the
+``annular`` Design notes, "Step-invariant GEMMs".
 """
 
 from __future__ import annotations
