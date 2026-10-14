@@ -34,10 +34,10 @@ class ProbesParams(BaseModel):
     binary ``probes.bin`` (+ a ``probes.json`` schema sidecar).
     ``modes`` is an ``"i2,i3;i2,i3;..."`` list of stored-layout
     indices (axis 2 = complex slot, axis 3 = real-FFT slot -- the
-    transient-growth CLI ``--modes`` convention); the mean mode
+    transient-growth CLI's ``--tg.modes`` convention); the mean mode
     ``(0,0)`` is allowed (it records the instantaneous mean profile).
     Wall-bounded systems only.  ``it_probes`` trades time resolution
-    for disk (a record is ``8 + K*C*ny*2`` values); the buffered
+    for disk (a record is ``8 + 2*K*C*ny*itemsize`` bytes); the buffered
     writer makes any cadence cheap at runtime.  Format, buffering,
     and the reader: the :mod:`dnsjax_lab.extensions.probes` and
     :mod:`dnsjax_lab.analysis.response.probes` docstrings.
@@ -356,6 +356,6 @@ FORCE_EXTENSION = register_extension(
     )
 )
 
-#: Live merged built-in sections (analogous to the global ``params``).
+#: The live merged sections (analogous to the global ``params``).
 probes_params: ProbesParams = PROBES_EXTENSION.values
 force_params: ForceParams = FORCE_EXTENSION.values

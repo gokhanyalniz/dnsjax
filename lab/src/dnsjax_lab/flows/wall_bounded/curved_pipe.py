@@ -28,8 +28,9 @@ Consequences for the diagnostics:
   on a viscous timescale, and is reached by running the code.
 - `$E'$` is therefore **not** a deviation from a laminar profile but the
   kinetic energy of the `$k_s \neq 0$` (streamwise-varying) modes.  It
-  vanishes identically on any 2D or steady state, needs no reference
-  profile, and is exactly the transition indicator here, so
+  vanishes identically on every `$k_s = 0$` state (the 2D Dean state
+  among them), needs no reference profile, and is exactly the
+  transition indicator here, so
   ``stop.check_laminarization`` reads "relaminarized to 2D".
 
 The module exports the flow-module surface that
@@ -52,6 +53,14 @@ residual.  Measured against ``pipe``'s own gradient-form `$D$` at
 40 and `$1.9\times10^{-6}$` at 64 (``fd_order`` 6), while every other
 reported quantity agrees with ``pipe`` to ten digits there: the gap is
 a usable under-resolution diagnostic.
+
+**The driving inference's wall term.**  Read off the physical `$u_s$`
+instead of the carried `$w_s$`, the constant-flux driving inference
+of :func:`_applied_driving` drops the
+`$(\kappa/2)\,\partial_r(u_{s,1} + u_{s,-1})$` the `$\cos\theta$`
+harmonic contributes, and runs about 1 % low at `$\kappa = 0.1$`
+(measured on a steady Dean state against the corrector's applied
+value).
 """
 
 from dataclasses import dataclass
@@ -64,7 +73,6 @@ from dnsjax.geometries.wall_bounded._base import (
     extract_mean_mode,
     from_pm_basis,
     get_inprod,
-    integrate_scalar,  # noqa: F401 — re-exported
     to_pm_basis,
 )
 from dnsjax.geometries.wall_bounded._cylindrical_stepping import (
@@ -122,12 +130,14 @@ def _carried_velocity(state: Array, flow_: CurvedPipeFlow) -> Array:
     r"""Physical `$(u_s, u_r, u_\theta)$` -> the carried state.
 
     Applies the metric weight `$w_s = h\,u_s$` before the `$u_\pm$`
-    rotation.  Pseudo-spectral (one transform round trip on one field),
-    so it is the exact inverse of :func:`_physical_velocity` up to the
-    collocation error the dealiasing rule already bounds -- an `$m\pm1$`
-    Galerkin product would instead lose the outgoing top mode.
+    rotation, as the exact `$m \pm 1$` shift :func:`_metric_weight`
+    (`$h$` has three azimuthal harmonics, so no transform is needed:
+    the collocation product on the padded grid is alias-free and,
+    truncated back, gives the same coefficients to round-off).  Its
+    inverse, :func:`_physical_velocity`, divides by `$h$`, which does
+    need the transform.
     """
-    weighted = phys_to_spec_2d(spec_to_phys_2d(state[:1]) * flow_.h_phys)
+    weighted = _metric_weight(state[:1], flow_)
     return to_pm_basis(jnp.concatenate([weighted, state[1:]]))
 
 
@@ -279,10 +289,10 @@ def _energy_3d(
     r"""Kinetic energy of the streamwise-varying modes.
 
     `$E' = \tfrac12\langle u, h u\rangle$` restricted to `$k_s \neq 0$`
-    -- identically zero on every two-dimensional (and hence on every
-    steady) state of this flow, and nonzero exactly when the flow has
-    developed streamwise structure.  The single definition shared by
-    :func:`get_stats` and the laminarization read
+    -- identically zero on every two-dimensional (`$k_s = 0$`) state of
+    this flow, the Dean state included, and nonzero exactly when the
+    flow has developed streamwise structure.  The single definition
+    shared by :func:`get_stats` and the laminarization read
     :func:`get_perturbation_energy`.
     """
     varying = state * (1.0 - flow_.kz0_mask)
@@ -331,9 +341,8 @@ def _applied_driving(
     at the wall is `$h\,\partial_r u_s$`, whose poloidal mean keeps
     the `$(\kappa/2)\,\partial_r(u_{s,1} + u_{s,-1})$` of the
     `$\cos\theta$` harmonic -- the inner/outer shear asymmetry that
-    Dean flow makes `$O(1)$`.  Read off `$u_s$` instead, the inference
-    runs ~1 % low at `$\kappa = 0.1$` (measured on a steady Dean state
-    against the corrector's applied value).
+    Dean flow makes `$O(1)$` (Design notes: "The driving inference's
+    wall term").
     """
     if FORCE_S != 0.0:
         # A constant pressure gradient applies exactly what the RHS
@@ -476,27 +485,9 @@ def add_curved_pipe_laminar(state: Array) -> Array:
     no-slip; the perturbation it is added to, the random draw or the
     localized rolls, has already been mapped onto toroidal continuity
     (:func:`~dnsjax_lab.flows.wall_bounded.curved_pipe.toroidal_map`).
+    The profile is :func:`init_state`'s.
     """
-    from jax import numpy as jnp
-
-    from dnsjax.geometries.wall_bounded.cylindrical import (
-        build_cylindrical_grid,
-        fourier,
-    )
-    from dnsjax.sharding import sharding
-
-    rs, *_ = build_cylindrical_grid(
-        params.res.ny,
-        params.res.fd_order,
-        params.geo.wall_grid,
-        params.geo.grid_type,
-        params.geo.grid_stretch,
-    )
-    profile = 1.0 - rs**2
-    u_spec = jnp.where(fourier.mean_mask, profile[:, None, None], 0.0)
-    zeros = jnp.zeros_like(u_spec, dtype=sharding.complex_type)
-    laminar = jnp.stack([u_spec.astype(sharding.complex_type), zeros, zeros])
-    return state + laminar
+    return state + init_state()
 
 
 def generate_curved_pipe_rolls(

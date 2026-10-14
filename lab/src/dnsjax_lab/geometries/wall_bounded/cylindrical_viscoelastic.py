@@ -141,7 +141,7 @@ advection / mean-shear stretching + linear relaxation (all gated /
 structured so the explicit AB2 remainder is the pure
 fluctuation-fluctuation nonlinearity plus the nonlinear relaxation) --
 and advances that remainder explicitly.  It reproduces ``iterative-cn``
-to O(`$\Delta t^2$`) at ~1 FFT/step versus ~4.
+to `$O(\Delta t^2)$` at ~1 FFT/step versus ~4.
 
 Design notes
 ------------
@@ -174,9 +174,6 @@ import numpy as np
 from jax import Array
 from jax import numpy as jnp
 
-from dnsjax.geometries.wall_bounded._base import (
-    integrate_scalar,  # noqa: F401 -- for the flow module
-)
 from dnsjax.geometries.wall_bounded.cylindrical import (
     CFL_NAMES,
     CylindricalFlow,
@@ -200,8 +197,6 @@ from dnsjax.solvers import (
     _banded_from_dense,
 )
 from dnsjax_lab.geometries.wall_bounded._viscoelastic_common import (
-    C_FROB_SQRT_SPIN,  # noqa: F401 -- re-exported
-    N_VE_COMPONENTS,  # noqa: F401 -- re-exported
     PHYS_COMBO_SPIN,
     TENSOR_SPIN,
     from_spin_basis,
@@ -520,12 +515,13 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
         **precomputed** parity-reduced pair (``CylindricalFlow.A_base_pos`` /
         ``A_base_ghost``), not a `$D_2$` matvec, a `$D_1$` matvec and a
         field-sized `$1/r$` multiply-add between them: `$D_1 c$` has no other
-        consumer here (the tensor's own radial derivatives are separate,
-        narrower stacks -- ``dr_batch`` and ``div_c_radial_derivatives``),
-        which is the premise the curvilinear fusion needs.  6 full-width
-        field-GEMMs instead of 12, and one fewer ``(N_r, 6, N_m, N_{k_z})``
-        transient, kept although it buys no measurable CPU time (Design notes:
-        "Fusing `$A_{\mathrm{base}}$` on the tensor slots").
+        consumer here (the tensor's own radial derivatives are separate
+        stacks -- ``rhs_radial_derivatives`` and
+        ``div_c_radial_derivatives``), which is the premise the
+        curvilinear fusion needs.  6 full-width field-GEMMs instead of 12,
+        and one fewer ``(N_r, 6, N_m, N_{k_z})`` transient, kept although
+        it buys no measurable CPU time (Design notes: "Fusing
+        `$A_{\mathrm{base}}$` on the tensor slots").
         """
         par = _parity_signs(TENSOR_SPIN, fourier_)
         # y-leading (Nr, 6, Nm, Nkz): the transpose-free GEMM layout.

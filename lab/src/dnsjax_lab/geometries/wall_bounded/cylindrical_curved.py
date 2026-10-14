@@ -160,7 +160,7 @@ the product (harmonics `$|n| \le 2M$`) folds back onto the stored
 which decay like `$|q|^j$` with `$q \approx -\kappa/2$` at the wall.
 ``phys.curvature_padding`` (on by default) therefore raises the
 azimuthal grid to `$N = 3M + J$`, with `$J$` from
-:func:`~dnsjax.harmonics.curvature_dealiasing_pad` the smallest pad
+:func:`~dnsjax_lab.harmonics.curvature_dealiasing_pad` the smallest pad
 whose aliasing bound lies below the working precision's unit roundoff.
 The pad is additive and independent of the resolution because that
 bound holds for any product, resolved or not; the `$3M$` is the 3/2
@@ -203,6 +203,14 @@ the dealiasing grids), one random state's right-hand side at
 on the 3/2 rule's 18 azimuthal points and 2.2e-15 on the padded 25.
 The cost is `$J - 3$` azimuthal points before rounding, e.g. 192 to
 200 at ``ntheta = 128``.
+
+**The divergence defect's form.**  ``divergence_defect`` takes
+`$r D_1 x + x$` for `$\partial_r(r x)$` rather than `$D_1(r x)$`: the
+two agree analytically and differ by the FD truncation error, and the
+reconstruction annihilates the *discrete* `$-(D_1 w_r + w_r/r)$`.
+Measured, `$D_1(r x)$` leaves an `$O(\kappa)\times$` truncation
+continuity residual that refinement does not remove, where the
+scheme's form is machine epsilon.
 """
 
 import math
@@ -272,7 +280,6 @@ FORCE_S: float = (
 BULK_TARGET: float = 0.5
 
 
-@register_dataclass_pytree
 def _straight_divergence(
     state_rthz: Array,
     fourier_: Fourier,
@@ -321,6 +328,7 @@ def _grad_pm(
     )
 
 
+@register_dataclass_pytree
 @dataclass
 class CurvedCylindricalFlow(CylindricalFlow):
     r"""Straight-pipe flow data plus the toroidal metric.
@@ -740,13 +748,8 @@ class CurvedCylindricalFlow(CylindricalFlow):
 
             The reconstruction builds its continuity row as
             `$\chi = -(D_1 w_r + w_r/r)$`, so the defect has to be
-            `$r D_1 x + x$` and not `$D_1(r x)$`.  The two agree
-            analytically and differ by the FD truncation error, and it
-            is the *discrete* divergence the reconstruction annihilates
-            exactly: measured, the other form leaves an
-            `$O(\kappa)\times$` truncation continuity residual that
-            refinement does not remove, where this one is machine
-            epsilon.
+            `$r D_1 x + x$` and not `$D_1(r x)$` (Design notes: "The
+            divergence defect's form").
             """
             return (
                 r_col * _parity_y_matvec(self.D1_pos, self.D1_ghost, x, psv)

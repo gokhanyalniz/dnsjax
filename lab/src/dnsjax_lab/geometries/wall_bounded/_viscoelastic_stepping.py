@@ -25,7 +25,7 @@ Adapter surface
 Each viscoelastic flow class provides, beyond the data fields the
 functions below read directly (``inv_r``, ``inv_r2``, ``inv_r_padded``,
 ``tensor_spin``, ``Hc_op``, ``Lk_op``, ``dt``, ``y_weights``,
-``base_flow_adv_padded``, ``cfl_inv_spacing``):
+``base_flow_adv_padded``, ``cfl_inv_spacing``, ``n_carried``):
 
 ===============================  ====================================
 member                           what it owns
@@ -429,7 +429,8 @@ def _get_rhs_core(
 
     The nine radial derivatives (3 velocity + 6 conformation combos)
     are one batched GEMM (``flow.rhs_radial_derivatives``; a
-    parity-reduced GEMM *pair* on the pipe), and at the default
+    parity-reduced GEMM *pair* on the pipe), which the polymer-stress
+    divergence reuses rather than forming its own, and at the default
     ``solver.rhs_transform_chunks = 1`` the inverse/forward transforms
     are each a **single batched** FFT over all fields (pinned by
     ``test_fused_rhs_transform_count``).
@@ -508,10 +509,22 @@ def _get_rhs_core(
         out_spec[0], out_spec[1], out_spec[2], fourier_
     )
 
-    # FFT-free polymer-stress divergence coef * div(c).
+    # FFT-free polymer-stress divergence coef * div(c).  Its three
+    # radial derivatives are dr_c's slots 0, 2, 3 (c_rr, c_rth, c_rz, on
+    # the parity bands ``_div_c``'s own matvec would use), so no second
+    # D1 GEMM is spent on them.
     coef = (1.0 - params.phys.beta) / (params.phys.re * wi)
-    div_r, div_th, div_z = _div_c(
-        cs_rr, cs_thth, cs_rth, cs_rz, cs_thz, cs_zz, fourier_, flow_
+    div_r, div_th, div_z = div_c_assemble(
+        jnp.stack([dr_c[0], dr_c[2], dr_c[3]]),
+        cs_rr,
+        cs_thth,
+        cs_rth,
+        cs_rz,
+        cs_thz,
+        cs_zz,
+        im,
+        ikz,
+        inv_r,
     )
     NL_z = NL_z + coef * div_z
     NL_r = NL_r + coef * div_r

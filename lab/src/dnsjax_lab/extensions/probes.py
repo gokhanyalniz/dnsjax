@@ -9,12 +9,14 @@ real-FFT slot; :func:`dnsjax.harmonics.parse_mode_pairs`) -- every
 ``.dat`` diagnostic streams.  Wall-bounded systems only (the state
 layout is ``(C, N_y, N_{k_2}, N_{k_3})``); on ``curved-pipe`` the
 component-0 column is the carried `$w_s = h\,u_s$`, not `$u_s$`
-(:class:`dnsjax.extensions.ProbesParams`).  Unlike the transient-growth
+(:class:`dnsjax_lab.extensions.ProbesParams`).  Unlike the transient-growth
 CLI, the mean mode ``(0,0)`` **is** allowed: its record is the
-instantaneous mean profile of the perturbation (add the closed-form
-laminar profile for the total; see the reader).
+instantaneous mean profile of the stored field -- the perturbation on a
+base-flow system, whose closed-form laminar profile gives the total
+(the reader's ``mean_profile`` adds it for plane Couette and plane
+Poiseuille), and the total itself on a force-driven one.
 
-Why a fourth stream: a mode time series at `$O(10^5$--$10^6)$` samples
+Why a fourth stream: a mode time series at `$O(10^5)$` to `$O(10^6)$` samples
 is far beyond what per-snapshot output can carry (a snapshot per sample
 is ~three orders of magnitude more bytes), while the scalar ``.dat``
 text streams cannot hold complex per-`$y$` profiles.  The probe stream
@@ -116,7 +118,7 @@ FORMAT_VERSION: int = 3
 _MATCH_KEYS: tuple[str, ...] = (
     "format_version",
     "modes",
-    # Not the indices alone: a resume may now change ``res.nx`` /
+    # Not the indices alone: a resume may change ``res.nx`` /
     # ``res.nz`` (the Fourier axes are regridded at load --
     # ``snapshot._from_io_layout_core``), and on the wrap-ordered
     # `$k_z$` axis a stored *index* in the negative block then denotes

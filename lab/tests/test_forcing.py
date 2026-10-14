@@ -359,7 +359,7 @@ def test_resume_skip_and_mismatch() -> None:
 
         # The resumed forcer's first draw is the 4th of a fresh rng.
         # ``init.it0`` is what makes it a resume: the stream must hold
-        # exactly it0 // it_force records, or it belongs to another
+        # exactly ceil(it0 / it_force) records, or it belongs to another
         # point of the trajectory.
         params.init.it0 = 3 * force_params.it_force
         try:
@@ -376,6 +376,12 @@ def test_resume_skip_and_mismatch() -> None:
                 assert "does not belong to this state" in str(e), e
             else:
                 raise AssertionError("stale resume point accepted")
+
+            # A snapshot between kicks (a run's final one, off the
+            # kick cadence) has been through every kick at it < it0:
+            # the four records, at it0 = 3 it_force + 1.
+            params.init.it0 = 3 * force_params.it_force + 1
+            StochasticForcer(_zero_state(), tmp)
         finally:
             params.init.it0 = 0
         rng = np.random.default_rng(SEED)

@@ -49,9 +49,10 @@ _ALIAS_FIELDS = tuple(
     if f.key != ("geo", "m0")
 )
 
-#: Both opt-in corrector variants are driven by ``_l_bf``, which the
-#: curved pipe cannot form without an FFT-free `$1/h$` (see
-#: ``_validate``), so neither is offered and ``_l_bf`` is never called.
+#: The split corrector and the implicit mean coupling are both read
+#: through ``_l_bf``, which the curved pipe cannot form without an
+#: FFT-free `$1/h$` (``DEFERRED_SPLIT``), so neither is offered and
+#: ``_l_bf`` is never called.
 _DEFERRED_STEP = {
     ("step", "split_corrector"),
     ("step", "implicit_mean_coupling"),
@@ -104,11 +105,12 @@ def _validate(params, derived) -> None:
             f"{params.step.scheme!r}): the curvature terms in the "
             "continuity rows, like the pipe's two free wall values, "
             "must be read on the corrector iterate, and cnab2's "
-            "FFT-free corrector has nothing to iterate here -- with "
-            "no base flow its coupling term is identically zero, so "
-            "both would be lagged across the time step (the "
-            "instability in the _cylindrical_stepping Design notes, "
-            "'Wall differences on the iterate')."
+            "FFT-free corrector would iterate the linear coupling "
+            "_l_bf, which this flow cannot form without dividing by "
+            "the metric in spectral space -- so both would be lagged "
+            "across the time step (the instability in the "
+            "_cylindrical_stepping Design notes, 'Wall differences on "
+            "the iterate')."
         )
     if not params.res.consistent_imm:
         raise ValueError(

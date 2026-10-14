@@ -103,7 +103,7 @@ from dnsjax_lab.geometries.wall_bounded.annular_viscoelastic import (
     build_viscoelastic_stepper,
     fourier,
     from_solver_basis,  # noqa: F401 — re-exported (basis boundary)
-    get_norm2_conformation,  # noqa: F401 -- available for callers
+    get_norm2_conformation,
     to_solver_basis,  # noqa: F401 — re-exported (basis boundary)
     viscoelastic_laminar_profiles,
 )
@@ -409,38 +409,11 @@ def add_viscoelastic_laminar(vel_state: Array) -> Array:
     `$(u_z, u_r, u_\theta, c_{zz}, c_{rz}, c_{\theta z}, c_{rr},
     c_{\theta\theta}, c_{r\theta})$`.
     Used by the localized-rolls IC (a velocity-only perturbation); the
-    random IC builds its 9 components directly.
+    random IC builds its 9 components directly.  The laminar pair is
+    :func:`init_state`'s.
     """
-    from jax import numpy as jnp
-
-    from dnsjax.geometries.wall_bounded.annular import (
-        build_annular_grid,
-        fourier,
-    )
-    from dnsjax_lab.geometries.wall_bounded.annular_viscoelastic import (
-        viscoelastic_laminar_profiles,
-    )
-
-    r1 = derived_params.r_inner
-    r2 = derived_params.r_outer
-    rs, D1, *_ = build_annular_grid(
-        params.res.ny,
-        params.res.fd_order,
-        params.geo.wall_grid,
-        params.geo.grid_type,
-        params.geo.grid_stretch,
-        r_inner=r1,
-        r_outer=r2,
-    )
-    prof = viscoelastic_laminar_profiles(
-        rs, D1, r1, r2, params.phys.wi, params.phys.epsilon
-    )
-    prof_jax = jnp.asarray(prof, dtype=vel_state.dtype)
-    laminar = jnp.where(
-        fourier.mean_mask[None], prof_jax[:, :, None, None], 0.0
-    )
-    total_vel = vel_state + laminar[:3]
-    return jnp.concatenate([total_vel, laminar[3:]])
+    laminar = init_state()
+    return jnp.concatenate([vel_state + laminar[:3], laminar[3:]])
 
 
 # Viscoelastic conformation noise: every physical tensor
@@ -480,9 +453,6 @@ def generate_viscoelastic_dean(
         get_norm2_annular,
     )
     from dnsjax.snapshot import assemble_local_shards
-    from dnsjax_lab.geometries.wall_bounded.annular_viscoelastic import (
-        viscoelastic_laminar_profiles,
-    )
 
     nx = params.res.nx
     Nr = params.res.ny
@@ -583,14 +553,7 @@ def generate_viscoelastic_dean(
     state = jnp.concatenate([state[:3] * scale_v, state[3:] * scale_c])
 
     # Add the laminar pair at the mean mode (total-field IC).
-    prof = viscoelastic_laminar_profiles(
-        rs, D1, r1, r2, params.phys.wi, params.phys.epsilon
-    )
-    prof_jax = jnp.asarray(prof, dtype=state.dtype)
-    laminar = jnp.where(
-        fourier.mean_mask[None], prof_jax[:, :, None, None], 0.0
-    )
-    return state + laminar
+    return state + init_state()
 
 
 def init_random_state(
