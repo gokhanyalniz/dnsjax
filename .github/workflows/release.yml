@@ -115,6 +115,8 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+          # A rehearsal may repeat a version; the real publish may not.
+          skip-existing: true
 
       - name: Publish to PyPI
         if: github.event_name == 'push'
