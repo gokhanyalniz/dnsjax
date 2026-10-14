@@ -344,22 +344,13 @@ The numerics follow these references:
   165–173, Vieweg (1980). The influence-matrix method.
 - J. Kim, P. Moin and R. Moser, *Turbulence statistics in fully developed
   channel flow at low Reynolds number*, J. Fluid Mech. **177**, 133–166
-  (1987). The wall-normal velocity–vorticity formulation.
-- L. S. Tuckerman, *Divergence-free velocity fields in nonperiodic
-  geometries*, J. Comput. Phys. **80**, 403–441 (1989). The influence
-  matrix for the split fourth-order wall-normal velocity equation.
-- P. Luchini and M. Quadrio, *A low-cost parallel implementation of direct
-  numerical simulation of wall turbulence*, J. Comput. Phys. **211**,
-  551–571 (2006). Wall-normal finite differences in a velocity–vorticity
-  solver.
+  (1987). The wall-normal velocity–vorticity formulation, and the split
+  of its fourth-order equation into two second-order solves.
 - B. Fornberg, *Calculation of weights in finite difference formulas*, SIAM
   Review **40**(3), 685–691 (1998). Finite-difference weights on non-uniform
   grids.
 - L. N. Trefethen, *Spectral Methods in MATLAB*, SIAM (2000). Clenshaw–Curtis
   quadrature and spectral differentiation.
-- J. A. C. Weideman and S. C. Reddy, *A MATLAB differentiation matrix suite*,
-  ACM Trans. Math. Softw. **26**(4), 465–519 (2000). Differentiation and
-  interpolation matrices.
 
 ## The lab
 

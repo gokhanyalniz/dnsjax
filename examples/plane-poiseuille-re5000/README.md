@@ -52,3 +52,6 @@ on the viscous timescale.
 
 All four examples' sizes are collected in
 [`examples/README.md`](../README.md).
+
+**Reference.** S. A. Orszag, *Accurate solution of the Orr–Sommerfeld
+stability equation*, J. Fluid Mech. **50**, 689–703 (1971).

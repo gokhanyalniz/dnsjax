@@ -17,9 +17,8 @@ Three test layers, run from the parent process:
 Published values (each a single mode; digits are the paper values,
 matched here on the solver's FD-in-``y`` discretization to ~2 %):
 
-* plane-Poiseuille ``Re=1000``, ``(alpha,beta)=(0,2.044)``:
-  ``G_max ~ 196`` at ``t ~ 76`` (Reddy & Henningson 1993; Butler &
-  Farrell 1992).
+* plane-Poiseuille ``Re=1000``, ``(alpha,beta)=(0,2.05)``:
+  ``G_max ~ 196`` at ``t ~ 76`` (Reddy & Henningson 1993, p. 231).
 * plane-Couette ``Re=1000``, ``(alpha,beta)=(0.035,1.60)``:
   ``G_max ~ 1185`` at ``t ~ 117`` (Butler & Farrell 1992).
 * pipe ``Re=3000``, ``m=1``, streamwise-independent (``alpha=0``):
@@ -30,11 +29,11 @@ matched here on the solver's FD-in-``y`` discretization to ~2 %):
   eta=1/2`` case is linearly **unstable** (positive spectral abscissa --
   the centrifugal Taylor-vortex onset); (b) the ``eta=0.881, Re_i=591,
   Re_o=-2588`` counter-rotating case has its global optimum at
-  ``n=10, k=1.994`` with ``G_max = 71.58`` (Maretzke, Hof & Avila 2014,
-  table 3, cross-validated against Meseguer 2002). dnsjax ``re1``/``re2``
-  equal Maretzke ``Re_i``/``Re_o`` (both use the gap width as the length
-  scale); ``G_max`` is a dimensionless energy ratio, so the advective-
-  vs-viscous time normalization is immaterial to it.
+  ``n=10, k=1.997`` with ``G_max = 71.58`` (Maretzke, Hof & Avila 2014,
+  table 3, row 1). dnsjax ``re1``/``re2`` equal Maretzke
+  ``Re_i``/``Re_o`` (both use the gap width as the length scale);
+  ``G_max`` is a dimensionless energy ratio, so the advective-vs-viscous
+  time normalization is immaterial to it.
 
 ``--slow`` adds the Orszag (1971) plane-Poiseuille eigenvalue
 (``Re=1e4, alpha=1``): the extracted generator's leading eigenvalue has
@@ -363,7 +362,7 @@ def _test_export() -> None:
 
 
 def _anchor_pp() -> None:
-    print("  plane-Poiseuille Re=1000 (0, 2.044):")
+    print("  plane-Poiseuille Re=1000 (Reddy & Henningson 1993, p. 231):")
     with tempfile.TemporaryDirectory() as d:
         p = Path(d)
         _write_laminar("plane-poiseuille", p / "l.txt")
@@ -384,7 +383,7 @@ def _anchor_pp() -> None:
                 "--res.fd_order",
                 "6",
                 "--geo.lz",
-                "3.073985",
+                "3.064968",
                 "--tg.modes",
                 "1,0",
                 "--tg.t_max",
@@ -521,12 +520,11 @@ def _anchor_tc() -> None:
             f"    unstable mode spectral abscissa "
             f"{float(z['spectral_abscissa'][0]):.4g} > 0  OK"
         )
-        # (b) Maretzke et al. 2014, table 3 (row 1; cross-validated
-        # against Meseguer 2002): eta=0.881, Re_i=591, Re_o=-2588 -> the
-        # global optimum is at n=10, k=1.994 with G_max=71.58.  The
-        # axial length lz is set so mode i3=1 gives the axial
-        # wavenumber k=1.994; ntheta=22 makes the azimuthal mode m=10
-        # available at i2=10.
+        # (b) Maretzke et al. 2014, table 3, row 1: eta=0.881,
+        # Re_i=591, Re_o=-2588 -> the global optimum is at n=10,
+        # k=1.997 with G_max=71.58.  The axial length lz = 2 pi / 1.997
+        # makes mode i3=1 that wavenumber; ntheta=22 makes the
+        # azimuthal mode m=10 available at i2=10.
         _write_laminar(
             "taylor-couette", p / "m.txt", re1=591.0, re2=-2588.0, eta=0.881
         )
@@ -551,7 +549,7 @@ def _anchor_tc() -> None:
                 "--res.fd_order",
                 "8",
                 "--geo.lz",
-                "3.15108",
+                "3.146312",
                 "--tg.modes",
                 "10,1",
                 "--tg.t_max",

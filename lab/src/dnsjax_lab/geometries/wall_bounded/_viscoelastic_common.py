@@ -47,8 +47,6 @@ Sureshkumar & Khomami, *J. Non-Newtonian Fluid Mech.* **138**, 111--133,
 2006), imposed in the equivalent form `$\nabla^2\mathbf{c} = 0$` as each
 wall row of the conformation solve (:func:`narrow_abase_wall_row`); at
 `$\kappa = 0$` the transport is hyperbolic and takes no wall condition.
-The two-dimensional precursor of the system is Morozov,
-*Phys. Rev. Lett.* **129**, 017801 (2022).
 
 State layout
 ------------

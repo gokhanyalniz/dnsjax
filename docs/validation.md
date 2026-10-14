@@ -17,10 +17,10 @@ in $y$) to about **2 %** or better:
 
 | Flow | Control parameters | Mode | Published $G_{\max}$ | at $t$ | Source |
 |---|---|---|---|---|---|
-| Plane-Poiseuille | $Re = 1000$ | $(\alpha, \beta) = (0,\ 2.044)$ | $\approx 196$ | $\approx 76$ | Reddy & Henningson 1993; Butler & Farrell 1992 |
+| Plane-Poiseuille | $Re = 1000$ | $(\alpha, \beta) = (0,\ 2.05)$ | $\approx 196$ | $\approx 76$ | Reddy & Henningson 1993, p. 231 |
 | Plane-Couette | $Re = 1000$ | $(\alpha, \beta) = (0.035,\ 1.60)$ | $\approx 1185$ | $\approx 117$ | Butler & Farrell 1992 |
 | Pipe | $Re = 3000$ | $m = 1$, $\alpha = 0$ | $649$ | $147$ | Schmid & Henningson 1994, p. 217 |
-| Taylor–Couette | $\eta = 0.881$, $Re_1 = 591$, $Re_2 = -2588$ | $n = 10$, $k = 1.994$ | $71.58$ | — | Maretzke, Hof & Avila 2014, table 3 |
+| Taylor–Couette | $\eta = 0.881$, $Re_1 = 591$, $Re_2 = -2588$ | $n = 10$, $k = 1.997$ | $71.58$ | — | Maretzke, Hof & Avila 2014, table 3 |
 
 Two further checks ride along: the centrifugally unstable
 Taylor–Couette case ($Re_1 = 100$, $Re_2 = 0$, $\eta = 1/2$) must come
