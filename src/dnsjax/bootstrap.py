@@ -112,11 +112,11 @@ it, carry 5.x.
 through MPI rather than gloo is the faster choice on a cluster and
 costs nothing to arrange, since a multi-device CPU run is one process
 per device and so under ``mpirun`` by definition.  Two conditions come
-with it.  Nothing may touch ``MPI_Init`` before XLA: XLA's is unguarded
-and ignores its own return value, so a process that had already
-initialized MPI aborts (Open MPI 4.1.6: ``mpi_init: invoked multiple
-times``).  And CPU async dispatch has to go: XLA's MPI backend requires
-every communicator request to come from the thread that called
+with it.  Nothing may touch ``MPI_Init`` before XLA: XLA calls it
+unconditionally, so a process that had already initialized MPI
+aborts (Open MPI 4.1.6: ``mpi_init: invoked multiple times``).  And
+CPU async dispatch has to go: XLA's MPI backend requires every
+communicator request to come from the thread that called
 ``MPI_Init``, while PjRt's CPU client hands an executable to its own
 thread pool as soon as the inputs are not already available.  That
 only starts once a run has real work in flight, so the failure looks

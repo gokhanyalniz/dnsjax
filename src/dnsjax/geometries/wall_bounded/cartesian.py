@@ -93,16 +93,15 @@ influence values -- leaves the one-step map at spectral radius
 `$N_y \in [25, 97]$`, `$k^2 \in [0.04, 4\times10^3]$`,
 `$\Delta t \in [10^{-4}, 10^{-1}]$`.
 
-**A second solver basis, shipped and removed.**  Carrying
+**A second solver basis (rejected).**  Carrying
 `$(\varphi, v, \omega_y)$` as a second solver basis to keep the wall
-values exactly was shipped (2026-07-25) and removed (2026-07-27).  It
-cost a third representation of the state, field-wide basis
-conversions in the probe and forcing extensions and ``__main__``, an
-extra pair of `$\varphi$` influence columns as
-`$\Delta t$` leaves, a state/RHS basis mismatch the stepper had to be
-careful around, and an entry projection that silently dropped a
-kick's non-solenoidal part -- for two wall rows the resume path threw
-away regardless, since snapshots store physical components.
+values exactly costs a third representation of the state, field-wide
+basis conversions in the probe and forcing extensions and
+``__main__``, an extra pair of `$\varphi$` influence columns as
+`$\Delta t$` leaves, a state/RHS basis mismatch the stepper has to be
+careful around, and an entry projection that would silently drop a
+kick's non-solenoidal part -- for two wall rows the resume path
+discards anyway, since snapshots store physical components.
 """
 
 import copy
@@ -1551,7 +1550,7 @@ def _imm_iteration_vw(
     few ulps and *flat* under refinement, rather than an
     `$O(h^p)$` truncation residual.  Nothing in the state is
     filtered, projected or written after the reconstruction; anything
-    that were would destroy the identity (the one real footgun --
+    that were would destroy the identity (the one hazard --
     it is why the mean-mode bulk corrections, which *do* write
     `$u$` and `$w$`, are confined to the `$k^2 = 0$` plane the
     reconstruction never touches).
@@ -1650,7 +1649,7 @@ def _imm_iteration_vw(
 
     Carrying `$(\varphi, v, \omega_y)$` as a second solver basis to
     keep `$\alpha$` exactly costs far more than the two wall rows are
-    worth (Design notes: "A second solver basis, shipped and removed").
+    worth (Design notes: "A second solver basis (rejected)").
     *Zeroing* those rows, by contrast, would be a **broken** scheme
     rather than a fallback: it deletes `$O(1)$` near-wall data from
     the explicit bilaplacian.
@@ -1810,12 +1809,14 @@ def _imm_iteration(
         + \underbrace{D_1 s}_{\text{boundary}} ,
 
     so a stepped state carries `$d \approx \Delta t\,(\ldots)$` --
-    **O(1) relative**, because `$D_1[1, 0] \sim N_y^2$` on a CGL grid
-    turns the boundary term into an O(1) residual.  Measured, the
-    pressure mismatch `$(D_2 - D_1^2)p_P$` is five to ten orders
-    smaller and inert -- but the commutator is **not**: `$[D_1, D_2]$`
-    inherits the direct-fit `$D_2$`'s `$O(N_y^2)$` near-wall entries,
-    so it is boundary-amplified like `$D_1 s$`.
+    **boundary-amplified**, because `$D_1[1, 0] \sim N_y^2$` on a CGL
+    grid magnifies the wall-row term `$D_1 s$`: a truncation-level
+    divergence that converges under refinement, but is concentrated
+    at the walls.  Measured, the pressure mismatch `$(D_2 - D_1^2)p_P$`
+    is five to ten orders smaller and inert -- but the commutator is
+    **not**: `$[D_1, D_2]$` inherits the direct-fit `$D_2$`'s
+    `$O(N_y^2)$` near-wall entries, so it is boundary-amplified like
+    `$D_1 s$`.
 
     The `$v$`-`$\omega_y$` route removes all three terms *by
     construction* rather than by making the operators satisfy

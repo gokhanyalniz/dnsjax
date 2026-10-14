@@ -137,7 +137,7 @@ def main() -> None:
     print("[CLI features]", flush=True)
     cli_smoke(SYSTEM, **SMOKE)
     if not args.fast:
-        print("[literature anchors]", flush=True)
+        print("[published values]", flush=True)
         _anchor_qk()
     print("ALL PASSED")
 

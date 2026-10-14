@@ -41,9 +41,8 @@ own *metric* adds a geometry module as well: on the cylindrical
 geometry it overrides `CylindricalFlow`'s metric hooks (no-ops on the
 straight pipe), and its spec names the metric's analysis counterpart
 (`analysis_metric`) and, where they differ, its component and axis
-names (`components`, `axis_names`). The hooks are `CylindricalFlow`'s
-metric methods, no-ops on the straight pipe, and the `FlowSpec`
-docstring states the cylindrical contract.
+names (`components`, `axis_names`). The `FlowSpec` docstring states
+the cylindrical contract.
 
 A spec declares which shared parameter fields apply to the flow, the
 public names of any aliased ones (`nr` for the internal `res.ny`, and

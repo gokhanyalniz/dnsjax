@@ -3,14 +3,14 @@ r"""The device grid across nodes (:func:`dnsjax.sharding.device_grid`).
 Under the distributed runtime every device carries a ``slice_index``,
 which XLA assigns one per host, telling hosts apart by their boot id
 (``/proc/sys/kernel/random/boot_id``).  ``jax.make_mesh`` refuses a
-device set spanning several slices, so every multi-node launch once
-died building the mesh -- a failure no run on one machine could show.
+device set spanning several slices, so a multi-node launch building
+its mesh that way would die -- a failure no single-host run can show.
 
 1. Unit (``--unit-only``): the grid on stub devices -- one node in id
    order; two nodes with block-numbered and with interleaved ranks,
    each node one block of rows either way; one row across both nodes;
    two rows per node; unequal nodes; and :func:`node_spans` on each.
-2. Two hosts on one machine, under ``mpirun``: the ranks of the second
+2. A simulated second host, under ``mpirun``: the ranks of the second
    host run with another boot id bound over the real one, so XLA counts
    two hosts (``_fake_host.py``).  The ``(2, 2)`` random-IC smoke runs
    on one host, on two with ranks 2 and 3 on the second, and on two
@@ -191,7 +191,7 @@ _LAYOUTS = [
 
 
 def _run_smoke(second_host: str, boot_id: Path, workdir: str) -> str:
-    """Launch the smoke with *second_host* ranks on the fake host."""
+    """Launch the smoke with *second_host* ranks on the simulated host."""
     env = {
         **os.environ,
         "JAX_CPU_COLLECTIVES_IMPLEMENTATION": "gloo",

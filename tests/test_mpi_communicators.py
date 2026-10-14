@@ -14,7 +14,7 @@ thread, first on the solver mesh, where each must work:
 
 - **in-program maxima**: ``solvers._factor_checked`` with the
   cross-device maxima of its measures taken in the same program, the
-  version that failed on every rank of every launch;
+  pattern that puts a collective off the MPI thread;
 - **pending input**: a program compiled ahead and dispatched while its
   input is still being copied, for each kind of collective the solver
   issues -- an ``all_to_all`` and a ``ppermute`` along each axis, a
@@ -24,7 +24,7 @@ Then, as controls, the same two patterns over the mesh's diagonal
 pairs, a device group the solver never uses and so nothing opened:
 each must be refused, or the cases above prove nothing.
 
-A second launch puts the odd ranks on a faked second host
+A second launch puts the odd ranks on a simulated second host
 (``_fake_host.py``).  The mesh then groups each node's devices, an
 order of its own, while ``jax.experimental.multihost_utils`` -- the
 wall-clock stop's ``any_process``, the snapshot barrier, the closing
@@ -34,7 +34,7 @@ a pending ``psum`` over that group must work, and ``any_process`` agree
 on every rank; a pending ``psum`` over the reversed order, which
 nothing opens, is the control.  Each reduces one row of its copied
 block, the copy alone keeping the input pending: a 32 MiB message
-stalls between the faked hosts, whose ranks Open MPI's shared memory
+stalls between the simulated hosts, whose ranks Open MPI's shared memory
 cannot reach by single copy across user namespaces.  Where the
 namespaces cannot be made the launch is skipped with a notice.
 
@@ -199,7 +199,7 @@ def _child(two_hosts: bool) -> None:
 
     def psum_w(b):
         # One row of the block: a message of 32 MiB stalls between the
-        # faked hosts (Open MPI's shared memory has no single-copy path
+        # simulated hosts (Open MPI's shared memory has no single-copy path
         # across user namespaces), and the copy alone keeps the input
         # pending.
         return jax.lax.psum(b[:1], "w")
@@ -320,7 +320,7 @@ def _judge(
         elif control and "ok" in statuses:
             reason = (
                 "ran on the launching thread, so the cases above prove "
-                "nothing: the test went blind"
+                "nothing: the test can no longer detect the failure"
             )
         else:
             bad = next(d for s, d in got if s != want)

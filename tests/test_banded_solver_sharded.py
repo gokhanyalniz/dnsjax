@@ -15,11 +15,10 @@ single-device suite (``test_banded_solver.py``) structurally cannot:
 2. **shard_map-local ``.solve``** on sharded mode axes: dense-reference
    parity for real + complex RHS, single + stacked operators, and both
    ``component_axis`` layouts, plus the result sharding matching the
-   RHS sharding.  This is the exact path that raised
-   ``ShardingTypeError`` when the tile padding was attempted on the
-   global view (slicing a sharded mode axis back to the true plane
-   needs collectives; the shard_map body makes all pad/crop
-   bookkeeping local).
+   RHS sharding.  Tile padding on the global view would raise
+   ``ShardingTypeError`` on this path (slicing a sharded mode axis
+   back to the true plane needs collectives); the shard_map body
+   makes all pad/crop bookkeeping local.
 
 3. **The wall-normal stencil** (``solver.wall_normal_matvec``,
    ``_base.YMatrix``): its slices, broadcasts and concatenation run
@@ -36,8 +35,8 @@ entries of ``test_random_smoke.py`` and ``test_laminar_smoke.py``
 path cannot be built on a CPU-only machine: the body's backend dispatch
 (``jax.default_backend()``) correctly traces the CPU sweep here even
 when lowering for ``cuda`` (verified -- the AOT lowering itself
-succeeds on the mesh), so real multi-GPU kernel execution is the
-cluster-validation item.
+succeeds on the mesh), so real multi-GPU kernel execution is not
+covered by this offline suite.
 
 Run as a script via
 ``uv run python tests/test_banded_solver_sharded.py``.
@@ -261,8 +260,8 @@ if __name__ == "__main__":
     print(
         "Sharded Pallas banded-solve tests: offline, 4 forced CPU "
         "devices simulating a (2, 2) mesh (the device banner above is "
-        "CPU by design; real multi-GPU kernel execution is the "
-        "cluster-validation item -- see the module docstring).",
+        "CPU by design; real multi-GPU kernel execution is not "
+        "covered by this offline suite -- see the module docstring).",
         flush=True,
     )
     tests = [v for k, v in globals().items() if k.startswith("test_")]

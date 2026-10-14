@@ -8,10 +8,11 @@ Canuto, Hussaini, Quarteroni & Zang 1988, sec. 7.3) is derived for
 *continuous* differentiation operators.  Discretely it needs
 `$\nabla\cdot\nabla = L_k$` (i.e. `$D_1 D_1 = D_2$`) and
 `$[D_1, D_2] = 0$`, and -- separately -- an accounting of the momentum
-wall rows the Dirichlet replacement discards.  With none of that,
-a stepped state's discrete divergence is **O(1) relative**: not a bug,
-but not zero either.  That is the legacy ``res.consistent_imm = False``
-path.  The **default** fixes it in all three geometries by
+wall rows the Dirichlet replacement discards.  With none of that, a
+stepped state carries a truncation-level discrete divergence,
+amplified at the walls (converging under refinement): not a bug, but
+not zero either.  That is the legacy ``res.consistent_imm = False``
+path.  The **default** removes it in all three geometries by
 *reformulating* -- advancing the wall-normal velocity and vorticity and
 reconstructing the tangential components, so continuity is algebra
 rather than something a solve has to deliver (see the ``Resolution``
@@ -31,24 +32,21 @@ What is asserted: under the default, continuity holds *by algebra* at
 every row and for any operator, grid or axis fit, so all three
 geometries must sit at round-off -- and, unlike an `$h^p$` truncation
 residual, **at every `$N_y$`**, which is why the default bounds are
-asserted across the whole ``--ny`` sweep.  Before 2026-07-26 the
-annulus and the pipe used operator identities instead and were pinned
-at `$8\times10^{-6}$` / `$5.6\times10^{-5}$`, floors set by a
-commutator each could not remove; the reformulation has no such floor.
+asserted across the whole ``--ny`` sweep.  Operator identities would
+instead leave the annulus and the pipe at `$8\times10^{-6}$` /
+`$5.6\times10^{-5}$`, floors set by a commutator each cannot remove;
+the reconstruction has no such floor.
 The plane-couette legacy case additionally reports the momentum side of
 the trade (see ``_worker``): what relocating the residual out of
 continuity costs in momentum units.
 
-The pipe uses the deterministic axis-regular rolls IC.  That is no
-longer a *requirement* (the composed `$D_2$` that made a grid-white
-draw unstable is gone -- ``tests/test_random_smoke.py`` carries
-random-IC pipe entries); it stays because a grid-white draw near the
-axis swamps the legacy-case measurement with under-resolved-noise
-divergence.
+The pipe uses the deterministic axis-regular rolls IC.  A random IC
+steps stably too (``tests/test_random_smoke.py`` carries random-IC
+pipe entries), but a grid-white draw near the axis swamps the
+legacy-case measurement with under-resolved-noise divergence.
 
 A final ``--pipe-accepts`` subprocess asserts the flag is *settable*
-on the pipe surface at all (it was a deferred hard error before the
-spin-quad formulation landed).
+on the pipe surface at all.
 
 Each case needs its own process: the parameter singletons and the
 jitted steppers capture ``params`` at import / trace time.
@@ -208,7 +206,7 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
         from dnsjax.ic.random_field import generate_random_state
 
         state = generate_random_state(0.2, 0.4, 0.4, 0.14, 7)
-    # A random IC produces an O(1) divergence in a single step; the
+    # A random IC produces a clear legacy divergence in one step; the
     # axis-regular rolls IC (pipe) starts divergence-free and its
     # projection-splitting divergence accumulates over a few steps, so
     # the pipe is stepped a short horizon to expose a clear signal.
@@ -294,9 +292,9 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
         #   states directly gives 2.4e-3 / 3.2e-5, ~20x smaller (the
         #   ``parameters`` Design notes).  Either way it is
         #   truncation-level and refines, and -- the point of the
-        #   reformulation -- no solve reads it back, so it does not
-        #   re-excite (the post-hoc projection that relocated the same
-        #   residual *while* the solve still imposed chi-momentum was
+        #   reconstruction -- no solve reads it back, so it does not
+        #   re-excite (a post-hoc projection relocating the same
+        #   residual *while* the solve still imposes chi-momentum is
         #   violently unstable; the ``_imm_iteration`` docs).
         #
         # Interior rows and the k = 0 plane excluded, like the
@@ -382,9 +380,8 @@ def main(ny: int) -> None:
     passed, failures = 0, []
     # The *legacy* bounds are pinned at ``NY`` only; ``--ny`` is a
     # *diagnostic* sweep for them (see the module docstring), reported
-    # and not asserted, because they are absolute numbers that move
-    # with resolution -- and, since the wall-normal smoothness envelope
-    # landed, move a long way.  The default bounds are ny-independent
+    # and not asserted, because they are absolute numbers that move a
+    # long way with resolution.  The default bounds are ny-independent
     # and always asserted.
     asserted = ny == NY
     if not asserted:

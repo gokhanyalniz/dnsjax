@@ -181,11 +181,10 @@ is priced by its cadence alone:
   `$50$` GB in all at a `$1024\times257\times256$` double-precision
   plane-Poiseuille target, on that schedule.  If it ever binds, the
   two ways to trade transforms for footprint are in that module's
-  Design notes, "Footprint knobs".  In *time* it is equally
-  unsubtle: one sample costs
-  `$\sim\!0.9$` of a twin step (measured, size-independent over
-  `$48^3$`-`$64^3$`), so ``it_budget = 1`` nearly doubles the
-  run and `$10$` costs `$\sim\!9\,\%$`.
+  Design notes, "Footprint knobs".  Its time cost is as direct: one
+  sample costs `$\sim\!0.9$` of a twin step (measured,
+  size-independent over `$48^3$`-`$64^3$`), so ``it_budget = 1``
+  nearly doubles the run and `$10$` costs `$\sim\!9\,\%$`.
 - ``it_ybudget`` costs memory in **two** places, and the
   per-sample transient is the one that is easy to miss.
   *Resident*: :class:`dnsjax_lab.twin.pressure.DifferencePressure`
@@ -263,8 +262,8 @@ directions, and 5 % below `$\lambda^+ = 20$`, where viscosity removes
 it before the reference flow can act on it.  A minimal flow unit has
 no room below itself: the minimal box of Hamilton, Kim & Waleffe
 (1995; `$Re_\tau \approx 34$`) keeps 0.4, where this default would put
-the peak at `$\lambda^+ \sim 10$`.  A member recorded at the earlier
-default 0.4 resumes only with ``--twin.smoothness 0.4``.
+the peak at `$\lambda^+ \sim 10$`.  A member recorded with
+`$s = 0.4$` resumes only with ``--twin.smoothness 0.4``.
 """
 
 import json
@@ -776,7 +775,8 @@ def _validate_twin(values: TwinParams, params) -> None:
                 "(no twin run is configured)."
             )
         return
-    # Configured: Cartesian wall-bounded only, fixed dt, sane ranges.
+    # Configured: Cartesian wall-bounded only, fixed dt, sensible
+    # ranges.
     # The range checks repeat the Field constraints because direct
     # assignment to the values singleton bypasses pydantic (the
     # validate_extensions contract).
@@ -1273,8 +1273,8 @@ def run(
                 # shares the reference's bulk velocity exactly and the
                 # difference field's mean profile is a genuine
                 # perturbation direction rather than a bookkeeping
-                # artefact.  ``--twin.mean_flow False`` gives the
-                # mean-free partner this used to hardcode.
+                # artefact.  ``--twin.mean_flow False`` gives a
+                # mean-free partner.
                 twin_params.mean_flow,
             )
             if grid_before is not None and not np.allclose(
@@ -1319,20 +1319,17 @@ def run(
     # clock every consumer of these streams reads is the relative one
     # `$t - t_\mathrm{parent}$` (``twin.json``'s ``parent_t``;
     # :func:`dnsjax_lab.analysis.twin.ensemble.aggregate_members`,
-    # ``lab/scripts/twin_spectral_maps.py``).  Anchoring on ``it`` instead
-    # put a member's whole relative grid out of phase by
-    # ``(-parent_it mod cadence) * dt`` -- a number set by the
-    # bookkeeping index of the snapshot it was harvested from -- so an
-    # ensemble whose parents carried different residues shared only
-    # `$t = 0$` and could not be averaged at all.  ``parent_it``
+    # ``lab/scripts/twin_spectral_maps.py``).  Anchoring on ``it``
+    # would put a member's relative grid out of phase by
+    # ``(-parent_it mod cadence) * dt``, so members whose parents carry
+    # different residues would share only `$t = 0$`.  ``parent_it``
     # rather than ``init.it0``: it is the same number across a paired
     # resume, so one member has one grid for its whole life, and a
     # resume seam costs at most the unconditional ``t0`` row
     # (:func:`dnsjax_lab.analysis.twin.series.uniform_grid` masks it).
-    # A member *recorded* before this changed keeps its old phase in
-    # the rows it already holds: resuming one appends on the new grid,
-    # leaving a phase seam that ``uniform_grid`` resolves in favour of
-    # whichever segment is longer.
+    # A stream whose existing rows sit on another phase gains a phase
+    # seam on resume, which ``uniform_grid`` resolves in favour of the
+    # longer segment.
     sample_it0: int = int(
         old["parent_it"] if resumed_pair else params.init.it0
     )

@@ -44,8 +44,8 @@ paths:
   - localized rolls stay mean-free, bar the curved pipe's (next).
   - the curved pipe's random IC and localized rolls keep the `(0, 0)`
     means of `u_r` and `u_θ` that `curved_pipe.toroidal_map` gives
-    them: toroidal continuity slaves them to the other modes, so do
-    not zero them; their `u_s` mean, which carries the flux, stays
+    them: toroidal continuity determines them from the other modes, so
+    do not zero them; their `u_s` mean, which carries the flux, stays
     zero.
 
   Guards: `tests/test_mean_mode.py`, `test_localized_rolls.py` (both

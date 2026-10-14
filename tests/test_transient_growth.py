@@ -736,7 +736,7 @@ def main() -> None:
     _test_export()
 
     if not args.fast:
-        print("[literature anchors]", flush=True)
+        print("[published values]", flush=True)
         anchors = {
             "plane-poiseuille": _anchor_pp,
             "plane-couette": _anchor_pc,

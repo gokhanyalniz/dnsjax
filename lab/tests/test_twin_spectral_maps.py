@@ -206,9 +206,10 @@ from matplotlib.contour import ContourSet  # noqa: E402
 # ── Fixtures ─────────────────────────────────────────────────────────
 
 #: A plane-Poiseuille-shaped configuration, small enough that every
-#: case is a handful of arrays.  ``RE_TAU`` is the measured number of
-#: the KMM4200 ensemble, so the printed inner units look like a run's.
-RE, RE_TAU = 4200.0, 178.62135279727977
+#: case is a handful of arrays.  ``RE_TAU``: a representative
+#: plane-Poiseuille value at Re = 4200, so the printed inner units look
+#: like a run's.
+RE, RE_TAU = 4200.0, 178.6
 U_TAU = RE_TAU / RE
 NY, NKZ, NKX = 33, 6, 5
 LX, LZ, VOLUME_FAC = 4.0, 2.0, 2.0
@@ -899,8 +900,8 @@ def test_open_series() -> None:
             tsm.open_series([root / "seam"], "twin_yspectra").t_rel.size == 8
         )
 
-        # A member displaced by half a cadence -- what a parent
-        # snapshot off the cadence grid used to produce -- is refused
+        # A member displaced by half a cadence (a parent off the
+        # cadence grid under an absolute-step anchor) is refused
         # with the offset, not silently reduced to whatever frames
         # coincide.  ``--align-atol`` accepts it, up to half a cadence
         # and no further, and says how far apart it then pairs.

@@ -308,7 +308,7 @@ def test_pallas_interpret_matches_cpu_path() -> None:
     exercising the mode-tiled forward/back ``fori_loop`` sweep (band
     offsets, the reciprocated-diagonal vs super-band split-by-index, the
     y stash) and, crucially, the **pad-to-full-tiles** path: the
-    ``(bm0, bm1) = (2, 32)`` tile (now the default, set explicitly here)
+    ``(bm0, bm1) = (2, 32)`` tile (the default, set explicitly here)
     divides neither ``(3, 2)`` nor ``(5, 40)``, so the kernel zero-pads
     the mode plane up to whole tiles, solves, and crops -- the pad/crop
     result is checked against the CPU sweep.  Factors are converted to the
@@ -501,14 +501,14 @@ def test_pallas_cuda_lowering() -> None:
     """The Triton kernel lowers for the GPU target (compile-only).
 
     Lowers ``_pallas_banded_solve(interpret=False)`` for ``cuda`` and
-    asserts a Triton custom call is produced.  This is the compile stage
-    that rejected the earlier kernel designs (f64 TMA, non-power-of-two
-    block loads, value slices / reversal / scan ``xs``); the mode-tiled
-    ``fori_loop`` kernel passes it.  Triton IR generation needs no GPU,
-    so this runs on any CPU-only machine -- a regression guard for the
-    class of errors a real GPU run hit.  ``Ny`` and ``p`` are
+    asserts a Triton custom call is produced.  This compile stage
+    rejects f64 TMA, non-power-of-two block loads, value slices,
+    reversal and scan ``xs``, none of which the mode-tiled
+    ``fori_loop`` kernel uses.  Triton IR generation needs no GPU, so
+    this runs on any CPU-only machine and guards a class of errors
+    otherwise seen only on a GPU.  ``Ny`` and ``p`` are
     deliberately non-powers-of-two (the band axes), and the
-    ``(bm0, bm1) = (2, 32)`` tile (now the default, set explicitly here)
+    ``(bm0, bm1) = (2, 32)`` tile (the default, set explicitly here)
     does not divide ``(Nkz, Nkx)``, so the kernel zero-pads the plane up to
     whole tiles; this guards the padded-plane lowering.  The factors are in
     the kernel's mode-inner layout; the Explicit mesh is cleared as in the
@@ -522,7 +522,7 @@ def test_pallas_cuda_lowering() -> None:
 
     ``p`` is a **static loop bound** in the kernel, so every band width
     a caller can produce needs its own lowering: ``p = 3`` for a typical
-    geometry band and ``p = 11`` for a wide one.  No shipped
+    geometry band and ``p = 11`` for a wide one.  No solver
     configuration needs 11 (every geometry is at ``fd_order`` under both
     ``res.consistent_imm`` settings); it stays as backend capability
     coverage."""
@@ -574,10 +574,10 @@ def test_pallas_cuda_lowering_sharded_solve() -> None:
     cannot cover (it calls the kernel standalone), and where trace-time
     rules differ: under shard_map's default ``check_vma=True`` the
     kernel's ``ShapeDtypeStruct`` out-shape must carry a
-    ``manual_axis_type`` or tracing raises.  That failure mode crashed
-    every real-GPU pallas run at flow construction while the whole CPU
-    suite stayed green (the CPU branch never calls ``pallas_call``);
-    ``.solve`` now opts out via ``check_vma=False`` (the region is
+    ``manual_axis_type`` or tracing raises -- on the kernel path only,
+    which the CPU branch never reaches (it never calls
+    ``pallas_call``), so no CPU run of the solver would see it.
+    ``.solve`` opts out via ``check_vma=False`` (the region is
     communication-free).  This guards the composition end to end --
     stored pre-padded factors, complex re/im split, Explicit-mesh
     shard_map wiring.
@@ -635,7 +635,7 @@ def test_pallas_adjoint_composes_in_solve() -> None:
     *second* ``pallas_call`` to that region.  This forces the kernel
     branch and runs both sweeps in interpret mode
     (``solvers._force_interpret``), so the whole composition actually
-    executes on this machine, and finite-differences the result.
+    executes on CPU, and finite-differences the result.
 
     It is an execution check rather than a lowering one on purpose:
     ``shard_map``'s transpose compares cotangent *shardings*, and

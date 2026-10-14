@@ -79,8 +79,8 @@ _SCRIPTS: list[Row] = [
     ("test_wall_normal_matvec.py", (), (), 1800),
     ("test_temporal_order.py", (), SLOW, 3600),
     ("test_energy_budget.py", (), MPI + SLOW, 3600),
-    # Three (2, 2) launches of a few steps, two of them over a faked
-    # second host; about a minute.
+    # Three (2, 2) launches of a few steps, two of them over a
+    # simulated second host; about a minute.
     ("test_device_grid.py", (), MPI, 1800),
     ("test_driving.py", (), SLOW, 2400),
     # ~2.5 min: nine 2-rank launches of a few steps each (every core
@@ -88,8 +88,8 @@ _SCRIPTS: list[Row] = [
     # wedge, a regrid resume) -- not a SLOW row.
     ("test_host_placement.py", (), MPI, 1800),
     ("test_laminar_smoke.py", (), MPI + SLOW, 3600),
-    # Under 10 s: two 4-rank launches, the second over a faked second
-    # host, no stepping -- not a SLOW row.
+    # Under 10 s: two 4-rank launches, the second over a simulated
+    # second host, no stepping -- not a SLOW row.
     ("test_mpi_communicators.py", (), MPI, 1800),
     # Multi-device, and specifically on the np1 (k_x / axial) axis:
     # every entry runs at the runner default --np 1 otherwise, which

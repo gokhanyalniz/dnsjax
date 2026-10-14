@@ -13,12 +13,13 @@ peak of every 4-node layout (``sharding.Sharding.distribute`` has the
 numbers).  Host arrays reach the mesh through ``distribute`` instead,
 which builds each process's shards from its own copy.
 
-Each case runs an entry point (the solver, or a plugin's driver) on two ranks
-(``mpirun -np 2``) with a recorder on ``assert_equal``, installed as
-the runtime comes up, and then places one host array the old way as a
-positive control: a case whose recorder never sees the control fails
-(the check moved and this test went blind), as does any other recorded
-payload over :data:`LIMIT` bytes.  The expected small one is
+Each case runs an entry point (the solver, or a plugin's driver) on
+two ranks (``mpirun -np 2``) with a recorder on ``assert_equal``,
+installed as the runtime comes up, and then places one host array
+through ``jax.device_put`` as a positive control: a case whose
+recorder never sees the control fails (the check moved and this test
+can no longer detect it), as does any other recorded payload over
+:data:`LIMIT` bytes.  The expected small one is
 ``snapshot._barrier``'s 4-byte name hash
 (``multihost_utils.sync_global_devices``), on the snapshot writes.
 
@@ -41,8 +42,8 @@ import numpy as np
 from _live import report, run_live
 
 #: Largest recorded payload, in bytes, that does not fail a case: one
-#: scalar, so that every host *array* placed the old way fails, however
-#: small the test grid makes it.
+#: scalar, so that every host *array* placed by ``jax.device_put``
+#: fails, however small the test grid makes it.
 LIMIT = 8
 
 # Every case: a few steps of a small box; the initial snapshot is kept

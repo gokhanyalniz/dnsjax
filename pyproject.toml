@@ -6,7 +6,7 @@ description = "A GPU-accelerated pseudo-spectral solver for direct numerical sim
 # from README.md by lab/scripts/release/pypi_readme.py.
 readme = "docs/pypi/README.md"
 authors = [
-    { name = "Gökhan Yalnız", email = "g.yalniz@imperial.ac.uk" }
+    { name = "Gökhan Yalnız" }
 ]
 requires-python = ">=3.12"
 license = "MIT"
@@ -27,7 +27,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: GPU :: NVIDIA CUDA",
     "Intended Audience :: Science/Research",
-    "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",

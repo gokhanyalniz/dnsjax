@@ -3,7 +3,7 @@ name = "dnsjax-lab"
 version = "0.1.0"
 description = "Features of dnsjax in development, kept out of its releases: further flows, twin runs and response analysis."
 authors = [
-    { name = "Gökhan Yalnız", email = "g.yalniz@imperial.ac.uk" }
+    { name = "Gökhan Yalnız" }
 ]
 requires-python = ">=3.12"
 license = "MIT"

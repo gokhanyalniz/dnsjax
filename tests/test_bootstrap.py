@@ -334,7 +334,7 @@ def case_coordinator_port() -> None:
         (first, second, job_only),
     )
 
-    # These are real namespaces off this machine, and they are why the
+    # These are real Open MPI namespaces, and they are why the
     # seed is checksummed: an Open MPI namespace is an ORTE job id plus
     # one and job ids are multiples of 2^12, so reducing the seed
     # modulo the port range directly hands *every* launch port 61441.
@@ -364,8 +364,8 @@ def case_coordinator_port() -> None:
         (as_rank_3, as_rank_0),
     )
 
-    # Open MPI 5 spells the namespace "prterun-<host>-<pid>@<n>" (the
-    # format verbatim off a 5.0.10 PBS job, host anonymized), so the
+    # Open MPI 5 spells the namespace "prterun-<host>-<pid>@<n>" (as
+    # Open MPI 5.0.10 writes it), so the
     # rule may not assume a number at all -- and two launches on one
     # node differ only in the pid.
     prterun = {}
@@ -456,30 +456,30 @@ def case_coordinator_host() -> None:
     # that plugin stopped firing).
     uris = {
         "OMPI_MCA_orte_hnp_uri": (  # noqa: SIM112
-            "1531576320.0;tcp://10.96.0.1,10.148.0.1:34911"
+            "1531576320.0;tcp://192.0.2.1,198.51.100.1:34911"
         ),
         "PRTE_MCA_prte_hnp_uri": (  # noqa: SIM112
-            "prterun-node01-32@0;tcp://10.96.0.2:1234"
+            "prterun-node01-32@0;tcp://192.0.2.2:1234"
         ),
     }
     for name, uri in uris.items():
         with _env(**{name: uri}):
             got = bootstrap._coordinator_host(_ranks(8, 4))
             check(
-                got == ("10.96.0.1" if "orte" in name else "10.96.0.2"),
+                got == ("192.0.2.1" if "orte" in name else "192.0.2.2"),
                 f"{name} gives the launch node",
                 got,
             )
     with _env(
         **{
             "OMPI_MCA_orte_hnp_uri": (
-                "1314521088.0;tcp6://[fe80::b9b:ac5d,2620:10d::2]:43370"
+                "1314521088.0;tcp6://[fe80::1,2001:db8::2]:43370"
             )
         }
     ):
         got = bootstrap._coordinator_host(_ranks(8, 4))
         check(
-            got == "fe80::b9b:ac5d",
+            got == "fe80::1",
             "the tcp6 form of the daemon URI parses too",
             got,
         )

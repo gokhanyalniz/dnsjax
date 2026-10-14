@@ -43,7 +43,7 @@ real band onto a complex field cost a further ~10 % of the step at the
 first size against the part-by-part form.
 
 **One collective for several mean modes.**  :func:`extract_mean_modes`
-measured a wash on CPU: an interleaved tree-swap A/B against the
+measured no difference on CPU: an interleaved tree-swap A/B against the
 two-call / stacked form, plane Poiseuille `$128 \times 129 \times
 128$`, ``cnab2``, ``constant_bulk_velocity``, 21 steps, three pairs
 with the order alternated and the first discarded, gave 4 ranks 354.3

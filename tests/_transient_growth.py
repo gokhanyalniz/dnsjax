@@ -22,9 +22,9 @@ MODULE = "dnsjax.analysis.transient_growth"
 #: Appended to every published-value run by ``--legacy-imm``, which
 #: selects the primitive `$(v, p)$` scheme (``res.consistent_imm =
 #: False``) in *every* wall-bounded geometry.  By default those runs
-#: use the shipped reconstruction scheme and check it against the
+#: use the default reconstruction scheme and check it against the
 #: published digits -- the strongest available statement that the
-#: reformulation did not perturb the linear physics (the eigenvalue
+#: reconstruction leaves the linear physics unchanged (the eigenvalue
 #: content of the operator these runs measure is exactly what an
 #: Orr-Sommerfeld/Squire check would test).  Measured agreement between
 #: the two propagators: 4-6 significant figures on every case, so

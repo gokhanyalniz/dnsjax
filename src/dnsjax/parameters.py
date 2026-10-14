@@ -31,7 +31,9 @@ still fall inside a node -- and the node-aligned ``(n, 128)`` the
 slowest that fit, 25 % behind on two nodes and 22 to 25 % on four (one
 node: ``(2, 64)`` 30 % behind ``(128, 1)``).  ``(128, n)`` kept its
 lead to 32 nodes, the runner-up ``(64, 2n)`` 2 to 8 % behind from 2
-nodes on, and ``(1, 256)`` did not fit in two nodes' memory.
+to 16 nodes and behind every 32-node ``(128, n)`` run but one outlier
+(``docs/scaling.md``), and ``(1, 256)`` did not fit in two nodes'
+memory.
 
 **One thread per rank.**  The rule is a design decision, and
 measurement only checks that nothing argues against it.  Plane Couette
@@ -40,7 +42,7 @@ measurement only checks that nothing argues against it.  Plane Couette
 case at 1 rank runs 17.3 / 18.1 s/t at 1 thread against 17.6 / 18.0 at
 16 (interleaved, on a 16-core machine).  Threads buy nothing at a
 realistic per-rank block size and can cost, and a faster threaded arm
-would not change the rule, so timing one again is waste.
+would not change the rule, so it is not re-measured.
 
 **Consistent influence matrix (``res.consistent_imm``).**  The
 primitive influence-matrix method's continuity argument
@@ -51,16 +53,17 @@ identities have to hold for the stepped state's divergence to vanish,
 `$[D_1, D_2] = 0$`; independent Fornberg fits satisfy neither, and
 replacing the momentum wall rows by Dirichlet rows leaves an
 unaccounted residual that the divergence's own `$D_1$` spreads into
-the interior.  So a state the legacy path steps carries a discrete
-divergence that is `$O(1)$` *relative*: a convergent truncation error,
-physically inert for resolved fields, but not zero.
+the interior.  So a state the legacy path steps carries a
+truncation-level discrete divergence, amplified at the walls: it
+converges under refinement (*Efficacy* below) and is physically inert
+for resolved fields, but it is not zero.
 
-The default -- one mechanism in all three geometries since 2026-07-26
--- advances the **wall-normal velocity and vorticity** instead of the
-three velocity components and *reconstructs* the tangential pair from
-them.  Continuity is then an algebraic identity, exact at every row
-including the walls, for any operator, grid or axis fit, and the
-pressure is eliminated discretely, never formed.  `$D_1$` and `$D_2$`
+The default -- one mechanism in all three geometries -- advances the
+**wall-normal velocity and vorticity** instead of the three velocity
+components and *reconstructs* the tangential pair from them.
+Continuity is then an algebraic identity, exact at every row including
+the walls, for any operator, grid or axis fit, and the pressure is
+eliminated discretely, never formed.  `$D_1$` and `$D_2$`
 stay individually Fornberg-fit and the band stays at ``fd_order``.
 The wall-normal-velocity equation is the pressure-eliminated
 fourth-order one, integrated as two second-order banded solves that
@@ -148,10 +151,10 @@ work on an exactly solenoidal field.  There is no operator price (same
 *drops*; against that, `$L(Lv)$` is applied in the explicit half, and
 the reconstruction's `$1/k^2$` (`$1/(k_z^2 + m^2/r^2)$` in the
 cylindrical geometries) amplifies the gravest mode by `$1/k_{\min}$`
-(`$O(1-10)$` for sane boxes).
+(`$O(1-10)$` for typical boxes).
 
-*Rejected alternatives.*  (1) **Operator-side identities**, shipped on
-the annular and pipe geometries before the default:
+*Rejected alternatives.*  (1) **Operator-side identities**, implemented
+on the annular and pipe geometries before the default:
 `$D_2 := D_1 D_1$` plus the CHQZ (7.3.51)-(7.3.58) boundary closure.
 It works, but cannot reach round-off in a cylindrical geometry (the
 metric commutator `$[D_1, 1/r] \ne -1/r^2$` survives; on the pipe a
@@ -441,10 +444,10 @@ class Distribution(BaseModel):
     hardware (a benchmark of the solve on a multi-GPU node).
     The single-process form avoids cross-process NCCL
     entirely -- the reliable choice on single-node
-    allocations whose multi-process collective stack is
-    broken (observed: JAX 0.10.2 + NCCL 2.30 H100 nodes
-    hang in the first execution of a large multi-collective
-    program while every small-program collective works).
+    allocations where multi-process collectives hang
+    (observed with JAX 0.10.2 and NCCL 2.30 on H100 nodes:
+    the first execution of a large multi-collective program
+    hangs while every small-program collective works).
     Multi-node runs necessarily remain multi-process; use
     one task per node spanning that node's GPUs.
 
@@ -555,8 +558,8 @@ class Distribution(BaseModel):
 
     This holds only while XLA is the first thing in the process to
     initialize MPI, which is why the rank bootstrap above reads the
-    environment rather than asking an MPI library -- the failure modes
-    are ugly and late, see ``bootstrap._select_cpu_collectives``.
+    environment rather than asking an MPI library -- the failures are
+    late and obscure, see ``bootstrap._select_cpu_collectives``.
     """
 
     np0: int = Field(
@@ -661,12 +664,12 @@ class Physics(BaseModel):
     # (the advecting velocity drops to ``U - U_grid``) -- though not
     # cnab2's explicit self-advection CFL, which is set by the
     # frame-invariant ``u' x omega'``.  NOT the
-    # rotational-form splitting `omega' x c + grad(c . u')` of the
-    # removed first implementation, whose explicit `c d/dy u'` piece
-    # was wall-stiff and blew up.  When ``None`` (default) it resolves
-    # to the laminar bulk velocity in the grid direction (1/2 for both
-    # pipes, 2/3 plane-Poiseuille, 0 otherwise); see
-    # ``update_parameters`` and ``derived_params.u_grid``.  Only
+    # rotational-form splitting `omega' x c + grad(c . u')` (whose
+    # explicit `c d/dy u'` piece is wall-stiff and unstable).  When
+    # ``None`` (default) it resolves to the laminar bulk velocity in
+    # the grid direction (1/2 for both pipes, 2/3 plane-Poiseuille, 0
+    # otherwise); see ``update_parameters`` and
+    # ``derived_params.u_grid``.  Only
     # meaningful for wall-bounded systems (periodic flows reject it).
     # A changed ``u_grid`` on resume is trajectory-defining (the stored
     # fields drift between frames); pre-feature snapshots resume into
@@ -866,8 +869,9 @@ class Resolution(BaseModel):
     # (Design notes: "Consistent influence matrix").  ``False`` selects
     # the legacy primitive Kleiser-Schumann `$(v, p)$` scheme (each
     # geometry's ``_<geometry>_primitive_imm.py``): kept, tested and
-    # supported, but not recommended, since a state it steps carries an
-    # `$O(1)$` *relative* discrete divergence.  Two reasons remain to
+    # supported, but not recommended, since a state it steps carries a
+    # truncation-level discrete divergence, amplified at the walls
+    # (converging under refinement).  Two reasons remain to
     # select it: reproducing a trajectory computed before the default
     # moved, and a **deep annulus** (small ``geo.eta``) at tight
     # ``step.corrector_tolerance``, where the `$(u_r, \omega_r)$` pair's
@@ -888,8 +892,9 @@ class Resolution(BaseModel):
             "truncation-level tangential-momentum residual no solve "
             "reads back.  False selects the legacy primitive (v, p) "
             "Kleiser-Schumann scheme instead, whose stepped state "
-            "carries an O(1) relative discrete divergence; it is "
-            "kept for reference and is not recommended.  "
+            "carries a truncation-level discrete divergence, "
+            "amplified at the walls (converging under refinement); "
+            "it is kept for reference and is not recommended.  "
             "Trajectory-defining, and inherited from a resumed "
             "snapshot like every other [res] field -- so a run "
             "continued from a snapshot written before this became "
@@ -1036,7 +1041,7 @@ class Initiation(BaseModel):
         ),
     )
     # Wall-bounded only, like ``random_wall_smoothness``.  Zero is the
-    # pre-2026-09-03 behaviour -- one wall window for every mode -- and
+    # single-window behaviour -- one wall window for every mode -- and
     # is the parameter's own limit rather than a sentinel, which is why
     # the knob is this reciprocal and not the wall-distance ratio
     # ``1 / a`` the maths is naturally written in: a layer that sets a
@@ -1472,8 +1477,8 @@ class TimeStepping(BaseModel):
     step and lose only `$4/x$` of their amplitude, less on every
     refinement, at lower ``Re`` and at larger ``dt``.  A smooth flow
     barely excites such a mode, but a grid-scale wall residual injected
-    every step accumulates in it -- as the pipe's carried spin-quad
-    differences once did (the ``_cylindrical_stepping`` Design notes).
+    every step accumulates in it -- as an iterate residual carried
+    across steps can (the ``_cylindrical_stepping`` Design notes).
 
     Off-centring bounds it: `$|\mu| \to (1-c)/c$` as `$x \to \infty$`,
     so ``1 - |mu|`` stays above about ``4 (c - 1/2)`` at any resolution,
@@ -1868,10 +1873,10 @@ class Solver(BaseModel):
     # sweep across the tile.  ``1`` is one program per mode; ``> 1``
     # coalesces mode loads and fills more SIMD lanes (default 2: the
     # H100 tuning, 4 warps/program).  The mode plane is padded up to
-    # whole tiles (a masked partial-tile band load miscompiles on real
-    # Triton -- see ``solvers._pallas_banded_solve``): factors once at
-    # construction, the RHS per solve.  The padded modes cost memory
-    # and solve work proportional to the roundup fraction --
+    # whole tiles (a masked partial-tile band load is observed to
+    # miscompile on GPU -- see ``solvers._pallas_banded_solve``):
+    # factors once at construction, the RHS per solve.  The padded
+    # modes cost memory and solve work proportional to the roundup fraction --
     # negligible at DNS mode counts, but worth shrinking the tile for
     # when the plane is small relative to it (e.g. ``nx/2 < 32``).
     pallas_block_m0: int = Field(

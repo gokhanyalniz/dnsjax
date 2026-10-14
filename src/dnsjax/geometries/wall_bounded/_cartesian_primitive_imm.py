@@ -8,8 +8,9 @@ which never forms a pressure.  Setting the flag to ``False`` selects the
 influence-matrix method, which solves the three velocity components
 against a pressure Poisson solve and enforces continuity only at the two
 walls.  It is retained for reference and for reproducing older
-trajectories; a state it steps carries an `$O(1)$` *relative* discrete
-divergence.  The full comparison and the measured ledger: the
+trajectories; a state it steps carries a truncation-level discrete
+divergence, amplified at the walls (converging under refinement).  The
+full comparison and the measured ledger: the
 :mod:`dnsjax.parameters` Design notes ("Consistent influence matrix")
 and :func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`;
 the four other repairs that were tried and retired: the

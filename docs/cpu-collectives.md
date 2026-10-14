@@ -42,8 +42,8 @@ its peers take MPI, and the run then hangs.
 On macOS the search cannot fire at all — it scans `LD_LIBRARY_PATH` for a
 `.so`, where macOS has `DYLD_LIBRARY_PATH`, a `.dylib` convention, and
 SIP stripping that variable from spawned processes — so set
-`MPITRAMPOLINE_LIB` explicitly there, and expect to find out whether the
-macOS wheel carries the MPI collectives at all, which is untested.
+`MPITRAMPOLINE_LIB` explicitly there. Whether the macOS jaxlib wheel
+includes the MPI collectives at all is untested.
 
 ## A distribution's Python
 
@@ -72,8 +72,8 @@ as is every `gloo` run. Three ways round it:
 ## Why the ordering matters
 
 All of this works because nothing in a `dnsjax` run touches MPI before
-XLA does — XLA initializes it without checking whether it is already up,
-so anything that gets there first breaks the run. Worth knowing only if
+XLA does — XLA calls `MPI_Init` itself, so an earlier initialization
+aborts the run. Worth knowing only if
 you add something that might. The rank bootstrap, the single-process
 skip and the collectives auto-selection live in
 `configure_jax_runtime` (`src/dnsjax/bootstrap.py`); the environment

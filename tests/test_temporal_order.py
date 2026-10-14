@@ -27,7 +27,7 @@ in-process on 1 forced CPU device (no ``mpirun``), one subprocess per
   proxy above cancels the shared projection error, so it cannot judge
   a formulation that *removes* that error.  This study instead
   measures each configuration's own self-convergence, asserts that
-  the shipped default is second order (every slope at least
+  the default is second order (every slope at least
   ``DEFAULT_ORDER_MIN``), and that it strictly improves both the error
   size and its decay rate over the legacy primitive path (measured at
   ``dt = 0.01``: legacy 1.4e-2 at orders 0.54 / 0.76 -> default
@@ -48,11 +48,11 @@ in-process on 1 forced CPU device (no ``mpirun``), one subprocess per
   identically un-lagged and the quad's two difference halves carried
   across steps.  It is the one geometry where the two formulations
   differ in *which* operator families the corrector iterates on, so
-  neither study above implies its order -- and the one this study
-  caught at first order: re-deriving the difference halves from the
-  velocity every step held the pipe there at this resolution
-  (the ``_cylindrical_stepping`` Design notes).  Measured: legacy 1.1e-2 at
-  0.87 / 0.97 -> default 4.1e-5 at 2.02 / 2.07.
+  neither study above implies its order: re-deriving the difference
+  halves from the velocity every step would hold it at first order
+  at this resolution (the ``_cylindrical_stepping`` Design notes).
+  Measured: legacy 1.1e-2 at 0.87 / 0.97 -> default 4.1e-5 at
+  2.02 / 2.07.
 
 Every wall-bounded run first **relaxes** the random IC: 0.05 time
 units at ``dt = 5e-4`` (``set_dt``, no recompile), then its own study
@@ -60,11 +60,11 @@ units at ``dt = 5e-4`` (``set_dt``, no recompile), then its own study
 tangential velocity satisfies the *discrete* constraints only to
 truncation, and the first steps project that mismatch out -- an
 `$O(\Delta t)$` global error of the IC, not of the scheme.  Started
-from the raw IC, the default formulation measured order ~1.2 here
-(3.6e-5 at ``dt = 0.01``), which this test once attributed to the
-projection splitting and accepted; from the relaxed IC it is second
-order in all three geometries, and only the legacy path's genuine
-splitting error keeps it below.
+from the raw IC, the default formulation measures order ~1.2 here
+(3.6e-5 at ``dt = 0.01``), an error of the IC and not a projection
+splitting; from the relaxed IC it is second order in all three
+geometries, and only the legacy path's genuine splitting error keeps
+it below.
 
 Every run pins ``step.implicitness = 0.5``, the exact trapezoidal
 rule, so the studies measure the schemes' formal order.  The model
@@ -79,16 +79,11 @@ pipe is where that stiff mode is least damped.
 
 Corrector-bearing runs use a tight tolerance (``1e-9``) so
 fixed-point error does not pollute the truncation-error measurement,
-and every step **asserts** its corrector converged -- an unconverged
-corrector silently degrades a step to first order.  That is exactly
-what the Kolmogorov icn cross-check once recorded: its error sat
-orders of magnitude above cnab2's and fell at order ~1, which this
-test attributed to a projection floor.  The cause was the
-triply-periodic corrector itself, whose incremental update re-added
-its increment on every pass after the first (fixed 2026-09; the
-direct form's rationale is on ``triply_periodic._correct_component``)
--- so a Kolmogorov icn error well above cnab2's is now a regression,
-and asserted as one.
+and every step **asserts** its corrector converged.  An unconverged
+or mis-incremented corrector silently degrades a step to first order,
+so a Kolmogorov icn error well above cnab2's at equal ``dt`` is
+asserted as a regression (the corrector's direct form and its
+rationale: ``triply_periodic._correct_component``).
 
 cnab2 self-starts exactly like ``__main__``: prime the AB2 history
 with a discarded ``step_cnab2(copy(u0), zeros)`` call, take the first
@@ -159,7 +154,7 @@ NX, NY, NZ = 8, 17, 8
 NY_PERIODIC = 16
 LX, LZ = 5.0, 5.0
 SMOOTH, SEED = 0.4, 1
-# The wall-normal pair of the random IC, at the shipped defaults
+# The wall-normal pair of the random IC, at the model defaults
 # (``init.random_wall_smoothness`` / ``random_wall_confinement``).
 WALL_SMOOTH, WALL_CONF = 0.4, 0.14
 
@@ -206,8 +201,7 @@ TOL_ASSERT = 1e-7
 # Accepted slope band for order 2 (log2 error ratio per dt halving).
 ORDER_LO, ORDER_HI = 1.6, 2.4
 # Kolmogorov iterative-CN error bound, as a multiple of cnab2's at the
-# same dt (measured ~0.2x; the pre-fix corrector put it orders of
-# magnitude higher -- module docstring).
+# same dt (measured ~0.2x; module docstring).
 KOLM_ICN_RATIO = 1.0
 
 STUDIES = [
@@ -652,15 +646,14 @@ def main() -> None:
 
         if "taylor-couette-consistent-imm" in studies:
             # The annular/cylindrical half of the study above, and the
-            # detector for the one genuinely new time-discretization
-            # element the 2026-07-26 reformulation introduced: the
-            # spin coupling lagged to the corrector iterate, and the
+            # detector for the time-discretization elements the
+            # default formulation adds over the legacy path: the spin
+            # coupling lagged to the corrector iterate, and the
             # `$\Phi^n$` wall rows recomputed from the carried
             # `$u_\pm$` state.  Either would show here as a lost
-            # order.  (An earlier design lagged the *recovery*
-            # coupling too; that variant measured as a small
-            # wrong-constant first-order shift, which this study is
-            # sized to see.)
+            # order.  (Lagging the *recovery* coupling too measures
+            # as a small wrong-constant first-order shift, which this
+            # study is sized to see.)
             print("=== taylor-couette: consistent_imm self-convergence ===")
             _consistent_imm_contrast(
                 tdir,
@@ -680,9 +673,9 @@ def main() -> None:
             # *which* operator families the corrector iterates on, so
             # its order is not implied by either study above.
             # Measured: legacy 1.1e-2 at orders 0.87 / 0.97 -> default
-            # 4.1e-5 at 2.02 / 2.07; before the difference halves were
-            # carried, 1.1e-3 at ~1.06 from the raw IC and ~1.0 from
-            # the relaxed one.
+            # 4.1e-5 at 2.02 / 2.07; re-deriving the difference halves
+            # every step instead of carrying them gives 1.1e-3 at
+            # ~1.06 from the raw IC and ~1.0 from the relaxed one.
             print("=== pipe: consistent_imm self-convergence ===")
             _consistent_imm_contrast(
                 tdir,

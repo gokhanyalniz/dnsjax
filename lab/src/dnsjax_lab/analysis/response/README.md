@@ -58,7 +58,7 @@ Stream format, cadence guidance and resume rules:
 into a total mean profile (the closed-form laminar profile is added
 back), and `write_profile_file` writes it in the two-column, top-wall-
 first form the transient-growth CLI reads. Cut the initial transient
-with `t_min`, and sanity-check `re_tau` before going further.
+with `t_min`, and check `re_tau` before going further.
 
 ```python
 from dnsjax_lab.analysis.response.probes import (

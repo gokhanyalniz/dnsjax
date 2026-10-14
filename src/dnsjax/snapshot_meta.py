@@ -40,12 +40,12 @@ inheritable ones for its few milliseconds), hence ``shutil.which`` and
 ``close_fds=False`` in :func:`git_hash`.  CPython's other path is
 ``vfork``, whose child runs in the caller's memory until it execs: on a
 solver rank that child runs any exec wrapper the launcher interposed,
-and Spindle 0.13's wrapper corrupts the parent (rank 0 died between the
-``Distribution initialized`` and ``Code version`` lines, on ARCHER2 and
-on one local process).  ``posix_spawn`` runs no interposed code in the
-child and, unlike ``fork``, neither copies a large multithreaded
-process's page tables nor runs the fork handlers of the MPI and RPC
-libraries it has loaded.
+and such a wrapper can corrupt the parent (observed with Spindle 0.13:
+rank 0 died between the ``Distribution initialized`` and ``Code
+version`` lines, on ARCHER2 and on one local process).
+``posix_spawn`` runs no interposed code in the child and, unlike
+``fork``, neither copies a large multithreaded process's page tables
+nor runs the fork handlers of the MPI and RPC libraries it has loaded.
 
 **Atomic sidecars.**  A ``.bin`` stream writer (an extension
 section's, say) creates its JSON sidecar on the **main** process while

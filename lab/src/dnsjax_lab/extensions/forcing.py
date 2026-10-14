@@ -295,7 +295,8 @@ class StochasticForcer:
             placements, int(state.shape[0]) > n_components
         )
         self._inject = build_mode_injector(placements, carried_fn)
-        # Compile outside the benchmark window (donated dummies).
+        # Compile outside the benchmark window, on a discarded
+        # placeholder state (it is donated).
         jax.block_until_ready(
             self._inject(
                 jnp.zeros_like(state), self._device_cols(), *self._carry_args

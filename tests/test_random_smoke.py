@@ -41,19 +41,20 @@ Four entries (``plane-couette-cnab2``,
 ``--step.scheme cnab2`` to drive the alternative CN/AB2 time-stepping
 scheme -- Crank-Nicolson viscous + explicit 2nd-order Adams-Bashforth
 nonlinear, one FFT eval per step -- across all four geometry families.
-For the wall-bounded families this exercises the fix that makes the
-stiff base-flow coupling implicit (an FFT-free corrector; see ``_l_bf``
+For the wall-bounded families this exercises the implicit treatment of
+the stiff base-flow coupling (an FFT-free corrector; see ``_l_bf``
 / ``step_cnab2``) plus the iterative-CN self-start, so cnab2 stays
 stable on the wall-clustered CGL grid where a naive explicit-AB2 of the
 coupling blows up at CFL << 1; triply-periodic (Kolmogorov) drives the
 plain no-corrector path (uniform Fourier grid, no coupling stiffness).
 The two moving-wall entries use ``ny = 48`` on purpose (the coupling
-stiffness the fix targets scales with the near-wall clustering); the
-stationary-wall pipe uses ``ny = 32`` (its coupling is mild -- ``U -> 0``
-at the wall -- so cnab2 there is bounded only by the ordinary explicit
+stiffness that treatment targets scales with the near-wall clustering);
+the stationary-wall pipe uses ``ny = 32`` (its coupling is mild --
+``U -> 0`` at the wall -- so cnab2 there is bounded only by the
+ordinary explicit
 self-advection CFL, which ``ny = 48`` on the fine near-wall CGL grid
-would violate at this ``Re``, an inherent explicit-scheme limit, not the
-coupling bug).
+would violate at this ``Re``, an inherent explicit-scheme limit, not a
+coupling instability).
 
 The wall-bounded iterative-cn entries run the **unsplit** corrector
 (``step.split_corrector`` defaults off).  A trailing
@@ -65,12 +66,12 @@ The wall-bounded iterative-cn entries run the **unsplit** corrector
 Every entry above runs the **default** ``res.consistent_imm``
 reconstruction scheme, so the nonlinear stability gate the one-step
 ``test_imm_continuity.py`` guard cannot provide is covered for the
-whole table (the rejected state-side projection passed every linear
-gate yet went non-finite within ~6 steps of exactly the plane-couette
+whole table (a state-side projection passes every linear gate yet
+goes non-finite within ~6 steps of exactly the plane-couette
 configuration here).  Five ``*-legacy-imm`` entries then drive the
-retired primitive `$(v, p)$` path
-(``--res.consistent_imm False``) through the same nonlinear runs, so
-the kept-but-not-recommended formulation keeps its own coverage:
+legacy primitive `$(v, p)$` path (``--res.consistent_imm False``)
+through the same nonlinear runs, so the non-default formulation keeps
+its own coverage:
 plane-couette and taylor-couette under both schemes, plus the pipe
 under iterative-cn.  None of the pipe
 entries can see the cylindrical default scheme's low-``Re`` limit --
@@ -280,7 +281,7 @@ SYSTEMS: list[dict] = [
         # Regression guard for the per-device (no-replication) random
         # build with spectral padding: always multi-device on the kx axis
         # (np1 = 2), with nx // 2 = 17 not divisible by np1 (padded to
-        # 18).  Exercises the fixed multi-device spectral-padding path.
+        # 18).  Exercises the multi-device spectral-padding path.
         "name": "plane-couette-mpi-pad",
         "force_np": 2,
         "force_np0": 1,
@@ -314,7 +315,7 @@ SYSTEMS: list[dict] = [
         # operators are built and the nonlinear path solved on the
         # sharded axis -- catching sharding bugs the single-device run
         # misses.  On CPU the backend runs the pure-JAX banded sweep
-        # (the Triton kernel is GPU-only; see the GPU-validation plan).
+        # (the Triton kernel is GPU-only).
         "name": "pipe-pallas-mpi-pad",
         "force_np": 2,
         "force_np0": 1,
@@ -349,8 +350,8 @@ SYSTEMS: list[dict] = [
         # so on the wall-clustered CGL grid the rotational base-flow
         # coupling ``U d(u')/dy`` is a stiff explicit term and a naive
         # explicit-AB2 nonlinear blows up at dt=0.01 once ny >~ 40
-        # (CFL << 1).  This guards the fix that makes the base-flow
-        # coupling implicit (FFT-free corrector; see ``_l_bf`` /
+        # (CFL << 1).  This guards the implicit treatment of the
+        # base-flow coupling (FFT-free corrector; see ``_l_bf`` /
         # ``step_cnab2``), so cnab2 reports a *real* corrector
         # count/error and criterion 4 (err < tol) is a genuine check,
         # integrating cleanly like the iterative-cn entries.
@@ -371,17 +372,17 @@ SYSTEMS: list[dict] = [
     },
     {
         # The legacy primitive (v, p) path, driven nonlinearly: the
-        # plane-couette entry above already covers the shipped
-        # v-omega_y scheme, and this one keeps the retired formulation
+        # plane-couette entry above already covers the default
+        # v-omega_y scheme, and this one keeps the legacy formulation
         # under the same nonlinear load.  The laminar smoke cannot
         # separate them (every term is linear in u', so all vanish at
         # u' = 0) and the discrete-continuity guard
         # (``tests/test_imm_continuity.py``) takes one step, so only
         # entries of this shape integrate either formulation through a
         # real nonlinear run.  That matters more here than anywhere
-        # else in this file: the rejected state-side projection passed
-        # every *linear* gate and still went non-finite within ~6
-        # steps of exactly this configuration (the
+        # else in this file: a state-side projection passes every
+        # *linear* gate and still goes non-finite within ~6 steps of
+        # exactly this configuration (the
         # ``cartesian._imm_iteration`` docs).
         "name": "plane-couette-legacy-imm",
         "res": {"nx": 32, "ny": 48, "nz": 32},
@@ -403,9 +404,8 @@ SYSTEMS: list[dict] = [
         # path into it: the AB2/CN split hands ``_imm_iteration`` a
         # combination assembled from ``_l_bf`` and the carried
         # nonlinear history, and that combination is what the
-        # v-omega_y source projections act on.  The two knobs were
-        # disjoint across this file until 2026-07-25, so this
-        # combination had never been integrated nonlinearly.
+        # v-omega_y source projections act on, and no other entry
+        # integrates this combination nonlinearly.
         "name": "plane-couette-legacy-imm-cnab2",
         "res": {"nx": 32, "ny": 48, "nz": 32},
         "args": [
@@ -542,7 +542,8 @@ SYSTEMS: list[dict] = [
         # standard (inner-rotating, stationary-outer) config, which is a
         # *moving-wall* flow (``U_theta ~ O(1)`` at the inner wall): its
         # ``U_theta d(u')/dr`` coupling is stiff on the wall-clustered
-        # grid, so ny=48 stresses exactly the stiffness the fix removes.
+        # grid, so ny=48 stresses exactly the stiffness the implicit
+        # coupling removes.
         # NOTE: *strongly counter-rotating* Taylor-Couette
         # (re1=400/re2=-400) is deliberately **not** used here -- its
         # base flow is so non-normal that the explicit self-advection is

@@ -48,9 +48,8 @@ extra launch), the divergence guard on the random-field IC
 - a **peak-velocity / domain-scaling guard** (``_check_peak_scaling``,
   subprocess ``--peak``): built at two resolved box sizes, the sampled
   ``max|u'|`` is within ``PEAK_TOL`` (12%) of ``amplitude`` and
-  domain-independent -- guarding against a regression to the old
-  single-mode rolls whose amplitude grew in proportion to the box
-  length.
+  domain-independent -- which a single-mode construction, whose
+  amplitude grows with box length, cannot pass.
 
 Each ``(system, np0, np1)`` configuration runs in its own subprocess with
 forced CPU devices
@@ -99,11 +98,11 @@ CASES: dict[str, dict] = {
 }
 
 # Peak-velocity / domain-scaling guard.  The spot is peak-normalized so
-# max|u'| = amplitude and is domain-independent (the old single-mode
-# construction blew up the cross-stream velocity ~ box length).  Built at
-# two resolved boxes (the spot fits and is well sampled at both) with the
-# spanwise/axial wavelength a fixed physical value, so peak ~ amplitude
-# must hold at both and agree across them.
+# max|u'| = amplitude and is domain-independent (a single-mode
+# construction, whose amplitude grows with box length, would not be).
+# Built at two resolved boxes (the spot fits and is well sampled at
+# both) with the spanwise/axial wavelength a fixed physical value, so
+# peak ~ amplitude must hold at both and agree across them.
 PEAK_SYSTEMS = ["kolmogorov", "plane-couette", "pipe", "taylor-couette"]
 PEAK_AMP, PEAK_WIDTH, PEAK_WAVE = 0.1, 2.0, 4.0
 PEAK_BOXES = ((20.0, 48), (40.0, 96))  # (box length, resolution)

@@ -168,8 +168,8 @@ Wall-normal-resolved spectra
 with the wavenumber itself and stop integrating over `$y$`.  The
 three-bin split above *is* a three-bin partition of the
 `$(k_x, k_z)$` plane, and the paper restricts it to minimal flow
-units (its caveat after eq. 2.5); above that it stops resolving
-anything.
+units (its caveat after eq. 2.5); beyond that the three bins no
+longer separate scales.
 
 The stored objects are the two marginals of the per-mode density,
 plus its `$(0, 0)$` mode:
@@ -489,9 +489,7 @@ field):
 - :func:`twin_budget` (three-bin): 44 / 37;
 - :func:`twin_ybudget`: 33 / 26 convective, 29 / 24 rotational;
 - :func:`difference_pressure` (the ``lowres_delta/`` pressure): 16 /
-  17, its single-pass source and the solve (34 / 29 when it was built
-  from the budget's six-piece sources, before the solve's factor
-  copies below were removed);
+  17, its single-pass source and the solve;
 - for scale, the time step itself: 22 / 20 iterative-CN, 24 / 22
   CN/AB2;
 - :func:`twin_energies` 2.6 (7.9 under ``twin.bins``), the two
@@ -499,13 +497,9 @@ field):
   them a peak.
 
 Every program is lowered as the run calls it, the singletons passed as
-arguments.  The figures are **CPU** ones.  Until 2026-10 the step's were 30 /
-28 and 31 / 29 (and the ``y``-budget's and the pressure's some four fields
-above the present ones): some seven fields were the CPU banded sweep's
-per-solve permutations of the stored factors, which
-:func:`dnsjax.solvers._banded_solve_mode_inner` no longer makes (with the
-singletons baked in as constants XLA folds such work, so a ``jit`` of the bound
-step measures 20 / 18 and 21 / 19 now).  A GPU schedule differs again, so on a
+arguments.  The figures are **CPU** ones.  With the singletons baked in
+as constants XLA folds more of the work, so a ``jit`` of the bound step
+measures 20 / 18 and 21 / 19.  A GPU schedule differs again, so on a
 GPU the other programs may sit further above the step.
 
 So either budget, when enabled, is the run's high-water mark, since the device
@@ -1958,8 +1952,8 @@ def _twin_ybudget_jit(
     `$(n_{terms}, n_y, n_{k_z}, n_{k_x})$` on that selection
     (:func:`_cube_replicated`).  A sample on which both streams are due
     builds the densities -- the whole cost -- once.  The cube is
-    convective-only (the rotational form is being retired, and the
-    ``[twin]`` validation refuses the pair).
+    convective-only: ``[twin]`` validation refuses
+    ``twin.it_budget3d`` with ``twin.rotational_ybudget``.
     """
     stacked = _ybudget_densities(
         state1, state2, fourier_, flow_, pressure, rotational

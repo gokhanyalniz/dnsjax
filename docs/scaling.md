@@ -195,13 +195,12 @@ program.
    rank count that pads the 383 wall-normal points by only the one
    point any split of them needs, the rest on `np1`, whose groups of
    `n` consecutive ranks still fall within a node — and the aligned
-   `(n, 128)` the slowest that fit, 25 % behind on two nodes and 22 to
-   25 % on four (on one node `(2, 64)` ran 30 % behind `(128, 1)`).
-   `(128, n)` kept its lead to 32 nodes, the runner-up `(64, 2n)` 2 to
-   8 % behind from 2 nodes on. Splitting on `np1` alone across nodes is
-   the one arrangement to avoid: it puts the $3/2$-sized exchange on
-   the network (`(1, 256)` did not fit in two ARCHER2 nodes' memory).
-   Untested across GPU nodes.
+   `(n, 128)` the slowest that fit. `(128, n)` kept its lead to 32
+   nodes, there on every run but one outlier, with `(64, 2n)` the
+   runner-up (the measured margins: the `dnsjax.parameters` Design
+   notes). Splitting on `np1` alone across nodes is the one arrangement
+   to avoid: it puts the $3/2$-sized exchange on the network (`(1, 256)`
+   did not fit in two ARCHER2 nodes' memory). Untested across GPU nodes.
 3. **Snapshots follow the same pattern**, but only for the first
    reason: a one-dimensional grid reshards once per save instead of
    twice. Write granularity does not enter the choice — the reshard
@@ -212,11 +211,11 @@ program.
 never runs — so `np1` may be taken as far as the mode count allows, and
 one device per process makes $n_{p0} \cdot n_{p1}$ the rank count.
 Measured at four and eight ranks, the per-exchange cost dominates its
-volume: a two-dimensional grid costs 9 to 19 % against the best
-one-dimensional one, where the $3/2$ volume difference between the two
-one-dimensional grids is worth some 18 % of the transform itself but only
-a few percent of the step around it. Routing the collectives through MPI
-rather than `gloo` (see
+volume: a two-dimensional grid is slower than the best one-dimensional
+one, while the $3/2$ volume difference between the two one-dimensional
+grids matters for the transform itself but little for the step around
+it (the measurements: the `dnsjax.parameters` Design notes). Routing
+the collectives through MPI rather than `gloo` (see
 [CPU collectives](cpu-collectives.md)) speeds up
 every exchange, shifting weight from the per-exchange cost back toward
 volume.
@@ -405,8 +404,8 @@ network's).
 **Start-up on many nodes.** Every rank imports some 800 Python modules
 from the shared filesystem — close to a thousand file opens and
 directory listings per rank, more with the metadata lookups behind them —
-so on tens of full nodes the start-up is a burst that a parallel
-filesystem's metadata server serves slowly, and at every user's expense.
+so on tens of full nodes the start-up is a burst of metadata requests
+that a parallel filesystem serves slowly.
 Where the site offers a tool that has one process per node fetch the
 files for its ranks (Spindle, for one),
 the sweep driver runs under it. On ARCHER2,
@@ -491,16 +490,15 @@ thread, on whole nodes, placed by
 
 **The measurement.** Each run steps for 7 to 12 minutes of wall time,
 start-up included, timed from the end of its first (compiling) step. A
-point is the mean of two or three runs, each on its own allocation; a
-run that its repeats did not reproduce is left out. Every run
-reproduces the same trajectory: its statistics match a reference
-run's to round-off.
+point is the mean of all its runs, two to four, each on its own
+allocation. Every run reproduces the same trajectory: its statistics
+match a reference run's to round-off.
 
 <picture>
   <source media="(prefers-color-scheme: dark)"
           srcset="figures/archer2-scaling-dark.svg">
   <img src="figures/archer2-scaling-light.svg" width="820"
-       alt="Strong scaling on ARCHER2 from 1 to 64 nodes for the device grids (128, n) and (64, 2n): the speed-up over one node follows the ideal line closely, and the parallel efficiency falls from 1.00 on one node to 0.75 on 16, then rises to 1.01 on 32 and stands at 0.94 on 64.">
+       alt="Strong scaling on ARCHER2 from 1 to 64 nodes for the device grids (128, n) and (64, 2n): the speed-up over one node follows the ideal line closely, and the parallel efficiency falls from 1.00 on one node to 0.75 on 16, then rises to 0.92 on 32 and stands at 0.94 on 64.">
 </picture>
 
 Speed-up and efficiency are against the fastest one-node run,
@@ -516,43 +514,47 @@ lab's figure script).
 | 4 | 512 | 793.7 | 3.41 | 0.85 | 0.88 | 854.8 |
 | 8 | 1024 | 426.3 | 6.35 | 0.79 | 0.95 | 460.3 |
 | 16 | 2048 | 224.9 | 12.0 | 0.75 | 1.00 | 228.6 |
-| 32 | 4096 | 83.91 | 32.3 | 1.01 | 0.75 | 87.00 |
+| 32 | 4096 | 91.95 | 29.5 | 0.92 | 0.82 | 87.00 |
 | 64 | 8192 | 45.01 | 60.2 | 0.94 | 0.80 | — |
 
-`(128, n)`, the grid of rule 2, leads `(64, 2n)` at every node count:
-by 12 % on one node and by 2 to 8 % from 2 to 32 nodes. (`(64, 128)`,
-the next grid of that family, pads the spanwise axis and was not run.)
-Its efficiency falls to 0.75 by 16 nodes, returns to 1.01 at 32, and
-is 0.94 at 64. The runs spread most at 32 nodes, from 80.6 to 86.5
-seconds per time unit, an efficiency of 0.98 to 1.05.
+`(128, n)`, the grid of rule 2, leads `(64, 2n)` from 1 to 16 nodes:
+by 12 % on one node and by 2 to 8 % from 2 to 16. At 32 nodes three
+of its four runs, at 80.6 to 86.5 seconds per time unit, are faster
+than both of `(64, 2n)`'s; the fourth, at 116.1, is an obvious
+outlier, with nothing in its logs to account for it. It is kept in
+the mean, which it puts 6 % behind `(64, 2n)`'s. (`(64, 128)`, the
+next grid of that family, pads the spanwise axis and was not run.)
+The efficiency of `(128, n)` falls to 0.75 by 16 nodes, rises to 0.92
+at 32, and is 0.94 at 64.
 
-**Why 32 nodes cost what one does.** From 16 to 32 nodes the time per
-unit falls 2.7-fold, for half the work per rank. The fall belongs to
-the rank, not to the network. One node running the same problem at
-`nx = 1280/N` gives each of its ranks the spectral block of the
-`N`-node run, and the same spanwise-transform stage, with no traffic
-between nodes; it shows the same fall from `N = 16` to 32, 2.71-fold
-after 1.96 and 1.98 for the halvings before. Set against those runs,
-each `N`-node time splits into a per-rank factor (the one-node time
-times `N`, against the full problem on one node) and an off-node factor
-(the `N`-node time over the one-node one), whose product is the
-node-hour cost against one node:
+**Why the efficiency rises again at 32 nodes.** From 16 to 32 nodes the
+time per unit falls 2.4-fold, for half the work per rank. The fall
+belongs to the rank, not to the network. One node running the same
+problem at `nx = 1280/N` gives each of its ranks the spectral block of
+the `N`-node run, and the same spanwise-transform stage, with no traffic
+between nodes; it shows a larger fall still from `N = 16` to 32,
+2.71-fold after 1.96 and 1.98 for the halvings before. Set against those
+runs, each `N`-node time splits into a per-rank factor (the one-node
+time times `N`, against the full problem on one node) and an off-node
+factor (the `N`-node time over the one-node one), whose product is the
+node-hour cost against one node (the 32-node row includes the outlier
+above):
 
 | N | one node, `nx = 1280/N`: s per time unit | per-rank factor | N nodes: s per time unit | off-node factor |
 |---:|---:|---:|---:|---:|
 | 4 | 677.1 | 1.00 | 793.7 | 1.17 |
 | 8 | 345.4 | 1.02 | 426.3 | 1.23 |
 | 16 | 174.7 | 1.03 | 224.9 | 1.29 |
-| 32 | 64.48 | 0.76 | 83.91 | 1.30 |
+| 32 | 64.48 | 0.76 | 91.95 | 1.43 |
 | 64 | 26.30 | 0.62 | 45.01 | 1.71 |
 
-The per-rank cost holds within 3 % up to the block of 16 nodes, falls
-by a quarter at 32 and further at 64; the off-node factor grows
-smoothly to 1.30 at 32 nodes, then to 1.71 at 64. At 32 nodes the two
-nearly cancel, $0.76 \times 1.30 = 0.99$: that, not a free network, is
-why the run costs what one node does. The off-node factor holds more
-than the network: the `np1` exchange, absent from `(128, 1)` on one
-node, and the full-length streamwise transform.
+The per-rank cost holds within 3 % up to the block of 16 nodes, falls by
+a quarter at 32 and further at 64; the off-node factor grows with the
+node count, from 1.17 on 4 nodes to 1.43 on 32 and 1.71 on 64. At 32
+nodes the two partly cancel, $0.76 \times 1.43 = 1.09$: the run costs
+9 % more node hours than one node does, against 33 % more on 16. The
+off-node factor holds more than the network: the `np1` exchange, absent
+from `(128, 1)` on one node, and the full-length streamwise transform.
 
 The compiled step is the same program at both sizes: its optimized
 HLO differs only in how the `np1` exchange is packed (one piece per
@@ -564,13 +566,13 @@ rank is 720 KiB at 16 nodes and 360 KiB at 32, against 512 KiB of L2
 per core — though no hardware counters were read to show it.
 
 **What it means for a run.** Measure at the node counts you will run:
-the cost per step moved by a quarter between 16 and 32 nodes, which no
-smaller run would have shown. The one-node test above tells a per-rank
-effect from the network's on any machine. With a `parameters.toml` that
-names no `[init] snapshot` (a smaller `nx` starts a new trajectory
-anyway), inside a one-node allocation, run the sweep driver on one
-node at 128 ranks, `(128, 1)`, with two variants, `--res.nx 80` and
-`--res.nx 40` (each rank's share of an `N = 16`- and an `N = 32`-node
-run), each from a fixed seed for a few minutes of wall time. Compare
-each row's seconds per time unit, times its `N`, with the full
-problem's on one node.
+the per-rank cost of a step moved by a quarter between 16 and 32 nodes,
+which no smaller run would have shown. The one-node test above tells a
+per-rank effect from the network's on any machine. With a
+`parameters.toml` that names no `[init] snapshot` (a smaller `nx` starts
+a new trajectory anyway), inside a one-node allocation, run the sweep
+driver on one node at 128 ranks, `(128, 1)`, with two variants,
+`--res.nx 80` and `--res.nx 40` (each rank's share of an `N = 16`- and
+an `N = 32`-node run), each from a fixed seed for a few minutes of wall
+time. Compare each row's seconds per time unit, times its `N`, with the
+full problem's on one node.

@@ -228,13 +228,13 @@ moves a 72 MiB shard device to device in 0.32 ms (223 GB/s).  Inside
 the whole reason a multi-device snapshot is write-bound rather than
 reshard-bound.
 
-**Detecting GDS.**  Most of :func:`_gds_available`'s conditions have
-bitten this path.  ``import kvikio`` alone left ``kvikio.defaults``
-unresolved on some versions, so the check raised ``AttributeError``
-and took the "unusable" branch on a cluster that had kvikIO installed.
-And without the nvidia-fs driver, kvikIO's compat shim (POSIX I/O on a
-thread pool) measured 1.5-6x *slower* than this module's own host path
-below 1 MiB spans.
+**Detecting GDS.**  Most of :func:`_gds_available`'s conditions guard
+against a failure seen in practice.  ``import kvikio`` alone left
+``kvikio.defaults`` unresolved on some versions, so the check raised
+``AttributeError`` and took the "unusable" branch on a cluster that had
+kvikIO installed.  And without the nvidia-fs driver, kvikIO's compat
+shim (POSIX I/O on a thread pool) measured 1.5-6x *slower* than this
+module's own host path below 1 MiB spans.
 
 **cuFile alignment.**  cuFile's direct path prefers 4096-aligned file
 offsets; the tar's 512-aligned ones cost a bounce buffer for the head
@@ -281,8 +281,8 @@ class SnapshotMismatchError(Exception):
 #: interrupted save under the final name would load without complaint,
 #: blank wherever the writes did not reach.  A killed job therefore
 #: leaves a ``.partial`` beside the last good snapshot, outside every
-#: ``*.tar`` glob (a parent harvest relies on it), for one metadata
-#: operation per save.
+#: ``*.tar`` glob (so nothing that selects snapshots by name loads a
+#: half-written one), for one metadata operation per save.
 _PARTIAL_SUFFIX = ".partial"
 
 

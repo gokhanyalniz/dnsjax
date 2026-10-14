@@ -69,8 +69,8 @@ Run **on the GPU cluster** from inside a single-node allocation with
 >= 1 GPU (4 for the full mesh cases) and generous **host** memory --
 the production-size children compile large XLA programs, and the
 observed SLURM cgroup OOM kills (exit -9) were host memory, not HBM;
-request e.g. ``--mem 64G`` or more.  Then **paste the full stdout
-back**::
+request e.g. ``--mem 64G`` or more.  Save the full stdout (e.g.
+``| tee run.log``); it is the report::
 
     salloc -N1 --gpus=4 --mem=64G ...        # or an sbatch wrapper
     .venv/bin/python lab/scripts/performance/solver_benchmark.py --max-gpus 4
@@ -307,7 +307,7 @@ def _echo_tail(name: str, stdout: str, stderr: str) -> None:
     """Inline the end of a failed run's output into the driver stdout.
 
     The workdir often sits on a node-local /tmp that vanishes with the
-    job, so the paste-back must carry its own diagnosis.
+    job, so the saved log must carry its own diagnosis.
     """
     # Separate windows per stream: a chatty stderr (jax/XLA INFO) must
     # not crowd the stdout breadcrumbs out of the tail.
@@ -827,13 +827,12 @@ def _sys_cli_flags(system: str) -> list[str]:
 #   visibility.
 GPU_MODES = ("pinned", "pinned-nocumem", "all-visible")
 
-# XLA-flag variants once suspected for the first-step hang -- all
-# exonerated on the cluster (2026-07-08): with JAX_LOG_COMPILES the
-# big step demonstrably *compiles* (~3.3 s per rank) and hangs in its
-# first execution, identically under every variant below.  Kept only
-# for manual forcing via --xla-variant; the preflight now bisects
-# constructs (reshard probe, launch topology, scheme, backend, NCCL
-# env) instead of XLA flags.
+# Manual-override XLA-flag variants (--xla-variant); none changes the
+# first-step behaviour.  With JAX_LOG_COMPILES the big step *compiles*
+# (~3.3 s per rank) and hangs in its first execution, identically
+# under every variant below, so the preflight bisects constructs
+# (reshard probe, launch topology, scheme, backend, NCCL env) instead
+# of XLA flags.
 XLA_VARIANTS = (
     ("default", ""),
     ("no-command-buffer", "--xla_gpu_enable_command_buffer="),
@@ -1086,8 +1085,8 @@ _RESHARD_PROBE = (
 # dnsjax baseline leg hangs: each disables one transport-layer NCCL
 # feature that the small passing collectives may not touch (P2P
 # send/recv transport, cuMem buffer registration -- the mechanism
-# whose import already hard-fails under pinned per-task visibility on
-# this site -- and the low-latency protocols).  The first variant
+# whose import can hard-fail under pinned per-task visibility -- and
+# the low-latency protocols).  The first variant
 # whose retry completes is locked into every subsequent run.
 NCCL_VARIANTS: tuple[tuple[str, dict[str, str]], ...] = (
     ("nccl-p2p-off", {"NCCL_P2P_DISABLE": "1"}),
@@ -1303,11 +1302,10 @@ def _preflight_launcher(
                 break
         if not mode_ok:
             # A failed L1 means this allocation cannot host multi-task
-            # steps at all (e.g. the 1-task-per-node discipline this
-            # site otherwise prefers) -- every multi-process rung is
-            # then moot, but the single-process multi-GPU topology
-            # needs only one task: probe it directly before giving up
-            # on the mode.
+            # steps at all (e.g. one restricted to one task per node)
+            # -- every multi-process rung is then moot, but the
+            # single-process multi-GPU topology needs only one task:
+            # probe it directly before giving up on the mode.
             if (
                 rung == "L1-tasks"
                 and args.launch_mode in ("auto", "sp")
@@ -1805,7 +1803,7 @@ def _sp_ify(run: dict) -> dict:
 
     The run becomes one task whose PJRT client addresses all
     ``np0 * np1`` devices (the offline-test topology on real GPUs),
-    used when multi-process launches hang at this site.  The global
+    used where multi-process launches do not complete.  The global
     mesh, partitioning and outputs are identical; only the transport
     differs (no cross-process NCCL).
     """
@@ -2200,15 +2198,15 @@ def _verdict(
         if getattr(args, "launch_mode", "mp") == "sp":
             print(
                 "    NOTE measured via single-process multi-GPU (the "
-                "multi-process launch hangs at this site -- a launch/"
+                "multi-process launch did not complete -- a launch/"
                 "transport issue, orthogonal to backend numerics; "
                 "mesh, partitioning, and kernels are identical)"
             )
         if getattr(args, "locked_scheme", None):
             print(
                 f"    NOTE all correctness runs used "
-                f"scheme={args.locked_scheme} (iterative-cn hangs "
-                "multi-process at this site)"
+                f"scheme={args.locked_scheme} (iterative-cn hung "
+                "multi-process in this run)"
             )
         if getattr(args, "extra_run_env", None):
             print(f"    NOTE NCCL env locked: {args.extra_run_env}")
@@ -2370,7 +2368,7 @@ def _cpu_smoke(args: argparse.Namespace, workdir: Path) -> int:
         # default (2, 32) tile pads the 28-mode plane to 256 slots and
         # the padding, not the banded storage, dominates the factor
         # bytes (the documented small-plane caveat) -- the
-        # pallas-smaller-than-dense sanity check needs the true plane.
+        # pallas-smaller-than-dense check needs the true plane.
         rec = _spawn_child(
             entry,
             backend,
@@ -2654,8 +2652,8 @@ def main() -> None:
         default="default",
         choices=[v[0] for v in XLA_VARIANTS],
         help="force one XLA-flag variant onto every multi-rank run "
-        "(see XLA_VARIANTS; all were exonerated for the first-step "
-        "hang -- manual override only)",
+        "(see XLA_VARIANTS; none changes the first-step hang -- "
+        "manual override only)",
     )
     ap.add_argument(
         "--launch-mode",
@@ -2752,7 +2750,8 @@ def main() -> None:
     ratio_lines = _single_tables(single, a.parity_tol) if single else []
     code = _verdict(ratio_lines, diffs, mpi_recs, single, timing, a)
     print(
-        f"\nDone.  Paste the full stdout back.  Raw data: "
+        f"\nDone.  The full stdout is the report (save it, e.g. with "
+        f"| tee run.log).  Raw data: "
         f"{workdir}/results.jsonl"
     )
     sys.exit(code)

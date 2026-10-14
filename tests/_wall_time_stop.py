@@ -1,19 +1,19 @@
 r"""The skewed two-rank runs of the wall-clock stop tests, core and lab.
 
 Each process times ``stop.max_wall_time`` from its own start, so the
-budget runs out at a different moment on each.  A stop each process
-decided alone hung any run whose budget ran out between two processes'
-readings: one left the loop for the closing collectives, the other
-entered another step's, and both waited for the rest until the job
-was killed.  The drivers therefore decide it together
-(``sharding.Sharding.any_process``, at the ``outs.it_error_check``
-cadence).
+budget runs out at a different moment on each.  Were each process to
+decide alone, a budget running out between two processes' readings
+would hang the run: one would leave the loop for the closing
+collectives, the other enter another step's, and both would wait for
+the rest until the job was killed.  The drivers therefore decide it
+together (``sharding.Sharding.any_process``, at the
+``outs.it_error_check`` cadence).
 
 Here rank 1 starts ``--skew`` seconds after rank 0, which puts that
 split on every run rather than on an unlucky one: both drivers must
 stop on the budget, inside the stepping loop, and shut down on both
-ranks, leaving a ``FINISHED`` that names the budget.  The per-process
-stop hangs on each case until ``timeout`` ends it.
+ranks, leaving a ``FINISHED`` that names the budget.  A per-process
+stop would hang on each case until ``timeout`` ended it.
 
 :func:`run_skewed` runs one such case and judges it; :func:`parse_cli`
 and :func:`delay_script` are the scripts' shared setup.

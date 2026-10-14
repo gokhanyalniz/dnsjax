@@ -383,7 +383,7 @@ def _mean_profiles(compatible: bool) -> np.ndarray:
 def test_mean_mode_injection_under_constant_bulk() -> None:
     """A legal (0,0) profile injects under ``constant_bulk_velocity``.
 
-    Exactly the case the old code refused outright, and the mode is
+    Injection must not refuse it outright, and the mode is
     self-conjugate, so it writes one column and nothing else.
     """
     with tempfile.TemporaryDirectory() as tmp:

@@ -47,7 +47,7 @@
 # 1's np0 x np1 counts nodes x T.
 #SBATCH --ntasks-per-node=<TASKS_PER_NODE>
 #SBATCH --cpus-per-task=1
-# Memory: choose ONE of the next two lines, and leave the other
+# Memory: choose one of the next two lines, and leave the other
 # disabled ('##').  --mem asks for this much memory per node (0: all
 # of it); --exclusive asks for whole nodes, whose cores, memory and
 # network no other job shares.

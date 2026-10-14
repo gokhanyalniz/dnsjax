@@ -570,7 +570,8 @@ _BALANCE: dict[str, dict[str, float]] = {
     "tr_press": {"Wp": 1.0},
 }
 
-#: The balance terms, in the order the write-up lists them.
+#: The balance terms: production and its two parts, input, dissipation,
+#: then the transfers.
 BALANCE_TERMS: tuple[str, ...] = tuple(_BALANCE)
 
 #: The two parts ``prod`` splits into.  They sit **outside** the sum
@@ -613,8 +614,8 @@ def balance_term(
     float64.
 
     Each term is its **contribution to** `$\partial_t e$`, in the
-    write-up's notation (the per-mode `$\mathcal{P}$`, `$\mathcal{I}$`,
-    `$\mathcal{D}$` and `$\mathcal{T}$`, with `$e$` the modal energy):
+    per-mode notation `$\mathcal{P}$`, `$\mathcal{I}$`,
+    `$\mathcal{D}$` and `$\mathcal{T}$`, with `$e$` the modal energy:
 
     - ``prod``: `$\mathcal{P}_\Delta$`, ``P_U + P_r``; its parts are
       ``prod_mean``, `$\mathcal{P}_\Delta^{\mathbf{U}}$` (``P_U``), and

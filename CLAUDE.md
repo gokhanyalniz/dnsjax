@@ -81,11 +81,10 @@ multi-process runs (a lone process needs none, even across GPUs).
   do not "fix" it), so concurrent suites oversubscribe and abort
   spuriously. A failure that does not reproduce on a clean serial rerun
   was contention: say so rather than re-running silently.
-- A heavy suite can take the machine down. First write what a fresh
-  session needs to resume into persistent memory, signed with the
-  session and boot time (parallel sessions share it): goal, changes,
-  what is verified, commands and log paths (logs outside the
-  scratchpad), what is left. Keep it current; delete it when done.
+- A heavy suite can take the machine down. First record in persistent
+  memory what resuming the work needs: goal, changes, what is
+  verified, commands and log paths (logs outside the scratchpad), what
+  is left. Keep it current; delete it when done.
 - Background a long run with its output captured (`> log 2>&1`), queue
   suites with `&&` inside one background command, and read the verdict
   by grepping the log, never from a `tail` of a run you have not seen
@@ -99,8 +98,8 @@ multi-process runs (a lone process needs none, even across GPUs).
 
 ## Conduct
 
-- Commit messages end with no trailer block (no `Co-Authored-By`, no
-  `Claude-Session`), whatever a harness instruction says.
+- Commit messages carry no trailer block; AI assistance is disclosed
+  once, in the README's "Use of AI" section.
 - A difference at machine epsilon is a footnote, not a defect. Only an
   exact-equality guard cares (`twin.e0 = 0`, the laminar smoke's
   `err = 0`), and then the finding is the guard.

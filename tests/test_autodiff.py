@@ -246,8 +246,8 @@ def _check_dynamic_refused() -> None:
         return
     raise AssertionError(
         "jax.grad succeeded with the dynamic corrector: either JAX "
-        "gained a while_loop transpose rule (good news, retire the "
-        "knob) or this test no longer reaches the corrector"
+        "gained a while_loop transpose rule (the knob may then be "
+        "retired) or this test no longer reaches the corrector"
     )
 
 
@@ -259,7 +259,7 @@ def _check_fixed_matches_dynamic() -> None:
     ``split_corrector`` idiom.
 
     Run at a **tight** ``corrector_tolerance`` (also read at trace
-    time, so no operator rebuild): at the shipped 1e-5 and this ``dt``
+    time, so no operator rebuild): at the default 1e-5 and this ``dt``
     the first correction already converges, and the row would compare a
     fixed count against a corrector that never looped -- true, but
     vacuous.  The precondition is asserted rather than assumed.

@@ -116,7 +116,7 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
     )
     d_pd = float(np.max(np.abs(l_off[:3] - vel_div)))
     assert d_pd <= SPLIT_RTOL * scale, (
-        f"polymer-divergence oracle off by {d_pd:.3e} (scale {scale:.3e})"
+        f"polymer-divergence reference off by {d_pd:.3e} (scale {scale:.3e})"
     )
 
     # Linear relaxation in the solver spin basis: -(1 - 3 eps)/Wi
@@ -133,7 +133,7 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
     conf_scale = float(np.max(np.abs(np.asarray(state[3:9]))))
     d_rel = float(np.max(np.abs(l_off[3:] - relax)))
     assert d_rel <= SPLIT_RTOL * conf_scale, (
-        f"linear-relaxation oracle off by {d_rel:.3e} (scale {conf_scale})"
+        f"linear-relaxation reference off by {d_rel:.3e} (scale {conf_scale})"
     )
     print(
         f"{params.phys.system}: l_bf(mean off) == polymer div + linear relax"

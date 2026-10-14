@@ -106,7 +106,7 @@ VIOLATION_FLOOR = 0.1
 #:     tanh case A  1.9e-14  8.3e-15  6.3e-15  6.7e-15
 #:     tanh case B  3.2e-13  2.5e-12  4.2e-13  4.1e-12
 #:
-#: (at the shipped ``s_w = 0.4`` no entry exceeds ``1.4e-14``; case B is
+#: (at the default ``s_w = 0.4`` no entry exceeds ``1.4e-14``; case B is
 #: the worse row throughout, its two extra rows being the ones the
 #: filter drives near-degenerate).  A projection that is wrong rather
 #: than rounded scores `$O(1)$` -- damping the correction by 1 % scores
@@ -118,7 +118,7 @@ IDEMPOTENT_TOL = 1e-10
 CROSS_TOL = 1e-13
 
 RAND_AMP, RAND_SMOOTH, RAND_SEED = 0.1, 0.4, 3
-# The wall-normal pair, at the shipped defaults.  ``RAND_WALL_CONF``
+# The wall-normal pair, at the model defaults.  ``RAND_WALL_CONF``
 # is inert at the (0, 0) column the projector acts on -- the window is
 # scaled by |k| -- so it only shapes the surrounding modes here.
 RAND_WALL_SMOOTH, RAND_WALL_CONF = 0.4, 0.14
@@ -350,10 +350,10 @@ def test_projector_properties(check) -> None:
             # in (``keep`` above), so normalizing its drift by its own
             # norm reports that shrinkage rather than the projector --
             # on the s=0.99 case-B row it reads 8e-14 at this seed and
-            # up to 2e-11 at others, and at this one it tipped over a
-            # bound calibrated here once a CI runner's BLAS summed the
-            # same solve in a different order.  Column by column
-            # through the same entry point instead: ``|P(Pd) - Pd| <=
+            # up to 2e-11 at others, and a draw-normalized drift is
+            # sensitive to BLAS summation order.  So the check runs
+            # column by column through the same entry point instead:
+            # ``|P(Pd) - Pd| <=
             # ||P^2 - P||_inf |d|_inf`` bounds every input at once,
             # with no draw in it.  (The no-slip check below *is* an
             # equality -- exact by construction, the window factor.)
@@ -374,13 +374,13 @@ def test_projector_properties(check) -> None:
             )
             # E||d'||^2 = tr(KP) <= tr(K) = E||d||^2: the projection
             # is orthogonal in the ensemble's own metric (module
-            # docstring).  Read off ``P`` rather than sampled -- the
-            # 200-draw estimate this replaces targets the *drawn*
-            # ensemble below, pins it to no better than +-80 % on the
-            # case-B rows, and its own noise (+-0.9 % where the true
-            # ratio is 0.9983) put it over 1.0 for 1 loop seed in 40.
-            # The rejected fixed-complement projector (module
-            # docstring) scores 2.0 to 4.7 here.
+            # docstring).  Read off ``P`` rather than sampled: a
+            # 200-draw estimate targets the *drawn* ensemble below,
+            # pins it to no better than +-80 % on the case-B rows, and
+            # its own noise (+-0.9 % where the true ratio is 0.9983)
+            # puts it over 1.0 for 1 loop seed in 40.  The
+            # fixed-complement projector the module docstring rejects
+            # scores 2.0 to 4.7 here.
             ratio = float(np.trace(K @ P) / np.trace(K))
             check(
                 f"{tag}: does not amplify",
@@ -392,7 +392,7 @@ def test_projector_properties(check) -> None:
             # orthogonal in the floored ``K``, so ``_KERNEL_FLOOR``
             # costs the drawn ensemble 1.9 % of its retained energy at
             # ``s = 0.99`` (0.9814 -> 0.9631) against 7.6e-5 at the
-            # shipped 0.4.  It stays a contraction -- worst 0.9999995
+            # default 0.4.  It stays a contraction -- worst 0.9999995
             # over both grids, ``ny`` in {17, 33, 65, 129} and ``s`` in
             # {0, 0.2, 0.4, 0.8, 0.95, 0.99} -- and this is the number
             # the sampled ratio converged to (0.9631 at 20000 draws,

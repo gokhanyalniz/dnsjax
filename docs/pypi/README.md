@@ -41,7 +41,7 @@ plane by itself.</a>
 - **Measured from 1 to 64 CPU nodes** — on ARCHER2 (two 64-core AMD
   EPYC 7742 and 256 GB of DDR4-3200 per node), a turbulent channel at
   `1280 × 383 × 384` runs 60 times faster on 64 nodes (8192
-  MPI ranks) than on one, at a parallel efficiency of 0.75 to 1.01 on
+  MPI ranks) than on one, at a parallel efficiency of 0.75 to 0.94 on
   every node count from 2 to 64 ([figure](https://github.com/gokhanyalniz/dnsjax/blob/main/README.md#fig-scaling)).
 - **Machine-precision discrete incompressibility, by default** — a
   stepped state's divergence sits at round-off *at any resolution*,
@@ -163,23 +163,23 @@ lab's: [performance scripts](https://github.com/gokhanyalniz/dnsjax/blob/main/la
 
 <a id="fig-scaling"></a>
 <img src="https://raw.githubusercontent.com/gokhanyalniz/dnsjax/main/docs/figures/archer2-scaling-light.svg" width="820"
-       alt="Strong scaling on ARCHER2 from 1 to 64 nodes for the device grids (128, n) and (64, 2n): the speed-up over one node follows the ideal line closely, and the parallel efficiency falls from 1.00 on one node to 0.75 on 16, then rises to 1.01 on 32 and stands at 0.94 on 64.">
+       alt="Strong scaling on ARCHER2 from 1 to 64 nodes for the device grids (128, n) and (64, 2n): the speed-up over one node follows the ideal line closely, and the parallel efficiency falls from 1.00 on one node to 0.75 on 16, then rises to 0.92 on 32 and stands at 0.94 on 64.">
 
 <p align="center"><em>
 Strong scaling of a turbulent channel at 1280 &times; 383 &times; 384 on
 ARCHER2, from 1 to 64 nodes (128 to 8192 MPI ranks, one per core),
-against the fastest one-node run; each point is the mean of two or
-three runs, its bar their range. A node: two 64-core AMD EPYC 7742
-(Zen&nbsp;2, 2.25&nbsp;GHz nominal, run at 2.0) with 256 GB of
+against the fastest one-node run; each point is the mean of all its
+runs, two to four, its bar their range. A node: two 64-core AMD
+EPYC 7742 (Zen&nbsp;2, 2.25&nbsp;GHz nominal, run at 2.0) with 256 GB of
 DDR4-3200 over eight channels per socket, Infinity Fabric within a
 socket and three xGMI links between the two, and HPE Slingshot between
 nodes, as the site documented them on 7 October 2026.
 </em></p>
 
 Every run reproduces the same trajectory to round-off. The efficiency
-falls to 0.75 by 16 nodes and returns to 1.01 at 32. That rise is a
-per-rank speed-up, not the network's: one node shows it too when each
-of its ranks holds the same share of the problem.
+falls to 0.75 by 16 nodes and rises again, to 0.92 at 32 and 0.94 at 64.
+That rise is a per-rank speed-up, not the network's: one node shows it
+too when each of its ranks holds the same share of the problem.
 [`docs/scaling.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/scaling.md#strong-scaling-on-archer2) has the
 machine, the method, the tables and that breakdown.
 
@@ -223,14 +223,12 @@ tools have a page of their own,
   keeping data transposes to a minimum comes second.
 - **Tests as standalone scripts.** Configuration lives in module-level
   singletons captured at import, and JAX's platform and precision are
-  process-wide, so a test has to own its process. Making that explicit
-  beats fighting a collector that wants to import everything into one.
+  process-wide, so a test has to own its process: each runs as its own
+  script, and `pytest` collects them through a subprocess bridge.
 - **JAX rather than hand-written CUDA or Fortran.** One source targets
   CPU, GPU and TPU and shards across devices without a second
   implementation. Where standard JAX is not enough, such as for the
   wall-normal banded sweep, a Pallas kernel is used under the same API.
-  Besides, JAX is simply easier to read and write than CUDA, or Fortran
-  with MPI.
 
 ## What's in the box
 
@@ -313,9 +311,8 @@ parameter fields and two run-loop sections
   backend-agnostic and the solver accepts `cuda`, `rocm` and `tpu`
   alike, but only CPU and CUDA are exercised regularly; AMD (ROCm) has
   had minimal testing and TPUs none at all. The banded kernel's adjoint
-  is in the same position the kernel itself once was: its numerics are
-  checked in interpret mode and it is lowered for CUDA, but **reverse
-  mode has not yet been run on a GPU**.
+  has its numerics checked in interpret mode and is lowered for CUDA,
+  but **reverse mode through it has not yet been run on a GPU**.
 - **One wall-bounded direction.** The discretization admits at most one
   non-periodic direction.
 - **Perturbing the mean profile is Cartesian-only.** The
@@ -390,7 +387,7 @@ adds:
 - **Scripts**: ensembles and twin post-processing; the performance
   tools (benchmarks, profiles, memory sizing, the scaling figure);
   functionality checks (differentiability, GPU kernel and storage
-  diagnostics); the refactor gate, the release tooling and the
+  diagnostics); a refactor regression check, the release tooling and the
   documentation checkers — [`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/README.md#scripts).
 - **Tests**: 36 scripts of its own, collected by the same `pytest` —
   [`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/README.md#tests).
@@ -415,7 +412,7 @@ the influence-matrix treatment of the wall conditions, the Fornberg
 finite-difference weights, the 3/2 dealiasing rule and the rest are long
 established. What is mine is the selection and the assembly — which
 formulation to use where, and how the pieces have to fit together to
-make one solver rather than a pile of methods — together with the
+make one solver rather than a collection of methods — together with the
 strategy for deciding whether the result is right: a dense reference
 solver to check the fast path against, per-geometry operators checked
 against independent constructions, and published values to land on.

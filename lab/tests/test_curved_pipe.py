@@ -19,12 +19,13 @@ of the things they capture.
     Pure NumPy, no solver import.
 
 ``metric``
-    The `$m \pm 1$` structure (the handover's own test): multiplying a
-    single azimuthal mode by `$h$` produces exactly `$m$` and
-    `$m \pm 1$` with neighbour amplitude `$\kappa/2$` at `$r = 1$`; the
-    shift **truncates** rather than wraps at `$|m| = M$`; and the
-    `$1/h$` harmonics the flux read contracts with, and the `$1/h^2$`
-    ones ``dnsjax.analysis.divergence`` divides by, match their closed
+    The `$m \pm 1$` structure (the defining property of the `$\chi$`
+    product): multiplying a single azimuthal mode by `$h$` produces
+    exactly `$m$` and `$m \pm 1$` with neighbour amplitude
+    `$\kappa/2$` at `$r = 1$`; the shift **truncates** rather than
+    wraps at `$|m| = M$`; and the `$1/h$` harmonics the flux read
+    contracts with, and the `$1/h^2$` ones
+    ``dnsjax.analysis.divergence`` divides by, match their closed
     forms (:func:`dnsjax_lab.harmonics.inverse_metric_harmonics`) to
     machine precision.
 
@@ -336,7 +337,7 @@ def _check_metric(kappa: float) -> str:
         if int(m_vals[j]) == int(m_vals[top]):
             worst_trunc = float(np.abs(out[:, top + 1]).max())
 
-    # the wall neighbour amplitude the handover quotes
+    # the wall neighbour amplitude, kappa/2 at r = 1
     wall_amp = 0.5 * kappa * rs[-1]
 
     # exact 1/h and 1/h^2 harmonics vs an FFT of each

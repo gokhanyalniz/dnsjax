@@ -151,7 +151,7 @@ truthfully is left out until it can be.
 ## Commits
 
 Imperative, sentence case, no prefix, and specific about what changed —
-`Refuse every stale twin stream, and price two costs honestly` rather
+`Refuse a twin stream recorded under other parameters` rather
 than `fix streams`. Wrap the body at 72 columns and use it for the
 reasoning: what was wrong, and why this is the fix.
 

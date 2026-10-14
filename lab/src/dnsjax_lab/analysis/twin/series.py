@@ -82,10 +82,10 @@ def relative_time(
     ``parent_t`` when *meta* is ``None``, and without a recorded
     ``dt`` the difference is returned as it is.
 
-    A member recorded before the cadence anchor (2026-09-06) keeps its
-    phase offset: its samples are displaced from the others by whole
-    steps, which the rounding preserves exactly, so an ensemble stack
-    still sees that displacement and still refuses it.
+    A member recorded under an absolute-step cadence keeps its phase
+    offset: its samples are displaced from the others by whole steps,
+    which the rounding preserves exactly, so an ensemble stack still
+    sees that displacement and still refuses it.
 
     Raises when a sample reads more than :data:`_SNAP_TOLERANCE` of a
     step off that grid, which the driver cannot write: either the

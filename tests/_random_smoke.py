@@ -204,7 +204,7 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
     name = system["name"]
     # ``force_dt`` overrides the global --dt outright (the adaptive
     # entries start from their own dt; the nan-guard entry needs a dt
-    # *larger* than any sane default).
+    # *larger* than any sensible default).
     dt = system.get("force_dt", args.dt)
     cmd = _build_command(system, args, dt)
 
@@ -327,7 +327,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-sim-time", type=float, default=1.0)
     parser.add_argument("--dt", type=float, default=0.01)
     parser.add_argument("--amplitude", type=float, default=0.1)
-    # The shipped default, so the smoke test drives the initial
+    # The model default, so the smoke test drives the initial
     # condition users actually get.  The random IC's *wall-normal*
     # shaping (``init.random_wall_smoothness`` /
     # ``random_wall_confinement``) is not a flag here: it is

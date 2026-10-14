@@ -55,7 +55,7 @@ final snapshot pair; see
 | `twin.seed` | unset | Perturbation RNG seed; vary per ensemble member. Unset draws one from the system entropy pool on a fresh start and takes the recorded one from `twin.json` on a resume |
 | `twin.smoothness` | `0.022` | Spectral envelope of the random perturbation over the periodic directions (`init.random_smoothness` convention). The default seeds below the minimal flow unit of plane Poiseuille at $Re_\tau = 178.6$ (below) |
 | `twin.wall_smoothness` | `0.4` | Its wall-normal envelope (`init.random_wall_smoothness` convention) |
-| `twin.wall_confinement` | `0.14` | Scale-dependent narrowing of its wall window (`init.random_wall_confinement` convention); `0` gives every mode the same window, which is what a member recorded before 2026-09-04 ran with, and resumes only with `--twin.wall_confinement 0` |
+| `twin.wall_confinement` | `0.14` | Scale-dependent narrowing of its wall window (`init.random_wall_confinement` convention); `0` gives every mode the same window, which is what a member whose `twin.json` has no `wall_confinement` key ran with (it back-fills to `0`), and such a member resumes only with `--twin.wall_confinement 0` |
 | `twin.mean_flow` | `true` | Perturb the $(k_x, k_z) = (0, 0)$ profile as well, conditioned on its conservation laws (below); `false` gives a mean-free partner |
 | `twin.bins` | `false` | Also record the $\Delta U$ / $\Delta u_1$ / $\Delta u_2$ three-bin energies in `twin.dat`; required by `it_budget` |
 | `twin.x0_planes` | `false` | Also store the $k_x = 0$ plane (the `_x0` fields) in both wall-normal-resolved streams: $E_{\Delta u_1}$, and with it $E_{\Delta u_2}$, resolved in $k_z$. The three-bin split does not need it; off, it is never traced |
@@ -164,9 +164,8 @@ $4\pi \times 2 \times 2\pi$ box ($Re_\tau = 178.6$) and 0.0079 at
 $Re_\tau = 500$. A minimal flow unit has no room below itself, so a
 run in one (the plane-Couette box of Hamilton, Kim & Waleffe, *J. Fluid
 Mech.* **287**, 317–348, 1995) sets `--twin.smoothness 0.4`
-(`ensemble_setup.py build-twin --smoothness 0.4` for a member tree),
-which is also the earlier default: members recorded with it resume only
-with that flag.
+(`ensemble_setup.py build-twin --smoothness 0.4` for a member tree);
+members recorded with $s = 0.4$ resume only with that flag.
 
 Its $(k_x, k_z) = (0, 0)$ content follows `twin.mean_flow`, **on by
 default** (the driver's own knob, not the shared
@@ -513,9 +512,9 @@ samples and are kept, so a consumer that needs a *uniform* grid — a
 centred difference, an across-member stack — selects one with
 `series.uniform_grid` instead of assuming the raw stream is one.
 
-Members recorded before the cadence rule above (2026-09-06) whose
-parents sat at different `it` residues carry grids displaced against
-one another, and share no relative sample time but $t = 0$.
+Members recorded under an absolute-step cadence, whose parents sat at
+different `it` residues, carry grids displaced against one another,
+and share no relative sample time but $t = 0$.
 `aggregate_members` and `lab/scripts/twin_spectral_maps.py` both refuse
 them at the default tolerance, naming the `align_atol`
 (`--align-atol`) that accepts them: it pairs each frame with every

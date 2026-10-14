@@ -41,8 +41,8 @@ LX, LZ = 5.0, 5.0
 # ``L / WAVELENGTH = 5/3`` is deliberately **not** an integer: that is
 # the only regime in which a roll factor has a nonzero DC bin, so it is
 # what makes the mean-mode check below a real guard.  At an integral
-# ratio (the shipped defaults, and the old 2.5 here) the leak this
-# checks for is machine-zero by coincidence and every build passes.
+# ratio (the model defaults among them) the leak this checks for is
+# machine-zero by coincidence, so the check could not fail.
 AMP, WIDTH, WAVELENGTH = 0.1, 1.5, 3.0  # physical width / cross-roll wave
 
 
@@ -59,7 +59,7 @@ DIV_TOL_SPECTRAL = 1e-13
 # *relative* divergence bound over the whole field, k_z = 0 included
 # (the builders solve continuity on every mode, so this is machine-zero).
 RAND_AMP, RAND_SMOOTH, RAND_SEED = 0.2, 0.4, 7
-# The wall-normal pair, at the shipped defaults: the divergence bound
+# The wall-normal pair, at the model defaults: the divergence bound
 # below is what proves the scale-dependent wall window is structurally
 # inert (it reshapes a column, it does not touch the closure).
 RAND_WALL_SMOOTH, RAND_WALL_CONF = 0.4, 0.14
@@ -141,7 +141,7 @@ def max_divergence(true: np.ndarray, weight=None) -> float:
     -- pipe resolves to ``half-cgl``, whose `$D_1$` differs from the
     default grid's, and a mismatched reference would silently measure
     the wrong operator.  The whole field is measured, including the
-    `$k_z = 0$` plane: the random-field builders now solve continuity
+    `$k_z = 0$` plane: the random-field builders solve continuity
     on every mode (see :mod:`dnsjax.ic.random_field`).
 
     A case's *weight* maps the true-mode state onto the variables whose

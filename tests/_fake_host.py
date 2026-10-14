@@ -1,4 +1,4 @@
-r"""Two hosts on one machine, for the ``mpirun`` launches of the tests.
+r"""A simulated second host, for the ``mpirun`` launches of the tests.
 
 XLA's distributed runtime tells hosts apart by their boot id
 (``/proc/sys/kernel/random/boot_id``) and gives each host's devices a
@@ -16,6 +16,9 @@ needs nothing from either.  An interleaved layout (``rank % 2``) is
 the one that sets the solver mesh's order, which groups each node's
 devices (:func:`dnsjax.sharding.device_grid`), apart from the device
 ids' rank order.
+
+Local test only: an unprivileged user namespace on the developer's own
+machine, affecting nothing outside the test processes.
 """
 
 from __future__ import annotations
@@ -52,10 +55,10 @@ def write_boot_id(directory: Path) -> Path:
 
 
 def unavailable(boot_id: Path) -> str | None:
-    """Why this machine cannot fake a second host, or ``None``.
+    """Why the local machine cannot simulate a second host, or ``None``.
 
-    Runs the wrapper as a second-host rank would: it must read the fake
-    boot id, as the caller's own uid.
+    Runs the wrapper as a second-host rank would: it must read the
+    simulated boot id, as the caller's own uid.
     """
     if shutil.which("unshare") is None:
         return "no `unshare` on PATH"
