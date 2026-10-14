@@ -91,6 +91,9 @@ to satisfy the formatter.
 uv run prek install
 ```
 
+No tracked file carries an email address, the package metadata
+included: CI's lint job fails on one.
+
 ## Tests
 
 Every test is a standalone script; `pytest` is a bridge over them,
