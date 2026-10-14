@@ -317,7 +317,9 @@ class RunContext:
     ``None`` means global help (bare ``dnsjax --help`` shows the
     global parameters and the flow list even when a ``parameters.toml``
     selects a system).  ``sample_toml`` is the flow named by
-    ``--sample-toml`` (``None`` = not requested).
+    ``--sample-toml`` (``None`` = not requested; the flag alone takes
+    the resolved system).  A bare token after either selector that
+    names no flow is refused rather than read as the default.
     """
 
     system: str
@@ -407,7 +409,15 @@ def peek_run_context(
         ):
             continue
         positional = tok
-    _check_system(positional, "positional")
+    # A bare token right after the selector that names no flow is a
+    # misspelt flow, not a request for the default: refuse it rather
+    # than print another flow's surface.
+    for flag in ("--help", "-h", "--sample-toml"):
+        if flag in argv:
+            i = argv.index(flag)
+            nxt = argv[i + 1] if i + 1 < len(argv) else None
+            if nxt is not None and not nxt.startswith("-"):
+                _check_system(nxt, flag)
 
     sample_toml = None
     if "--sample-toml" in argv:
@@ -733,14 +743,24 @@ def resolve_parameters(
                 f"{ctx.system!r} (snapshots do not convert across "
                 "flows)."
             )
-        snap = read_snapshot_params(snapshot_path)
+        # A stored key this version does not define (a core one, or a
+        # registered section's) is refused by ``read_snapshot_params``
+        # with a ``ValueError``; present it as the one line above.
+        try:
+            snap = read_snapshot_params(snapshot_path)
+        except ValueError as exc:
+            raise SystemExit(
+                f"{prog}: error: snapshot '{snapshot_path}': {exc}"
+            ) from None
         if snap is not None:
             snap_params, snap_ext = snap
             # A recorded section nothing here registers was in use
             # when the snapshot was written (a plugin's, absent here)
             # and may define its trajectory: refuse, unless the layers
-            # above say ``init.force_resume``, in which case the banner
-            # says what was left out.
+            # above say ``init.force_resume`` -- the command line's
+            # word when it set the field, else the TOML's, as the
+            # layers apply -- in which case the banner says what was
+            # left out.
             from .extensions import LOADED_PLUGINS
             from .snapshot_meta import read_snapshot_meta
 
@@ -748,10 +768,12 @@ def resolve_parameters(
                 read_snapshot_meta(snapshot_path)["params"]
             )
             if unknown:
-                forced = bool(
-                    (cli_layer.get("init") or {}).get("force_resume")
-                    or (toml_layer.get("init") or {}).get("force_resume")
-                )
+                forced = False
+                for layer in (cli_layer, toml_layer):
+                    value = (layer.get("init") or {}).get("force_resume")
+                    if value is not None:
+                        forced = bool(value)
+                        break
                 if not forced:
                     loaded = ", ".join(LOADED_PLUGINS) or "none"
                     raise SystemExit(

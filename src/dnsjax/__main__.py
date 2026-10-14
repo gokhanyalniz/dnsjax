@@ -1817,6 +1817,13 @@ def main(argv: list[str] | None = None) -> int:
     import jax
 
     with RunStatus(jax.process_index(), jax.process_count()) as status:
+        # A SIGTERM during the setup below (seeds, the banner, the IC,
+        # the compiles: minutes at production size) must still end in
+        # ``TERMINATED`` with exit 128 + n; ``run`` replaces this with
+        # the handler that also flushes the streams once they exist.
+        signal.signal(
+            signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum)
+        )
         # Every rank: an unset seed is drawn on process 0 and broadcast,
         # so the ranks build one random field rather than one each.
         # Before the gate below -- a collective inside it would deadlock.
@@ -1846,7 +1853,8 @@ def _print_banner(setup: ResolvedSetup, seed_notes: list[str]) -> None:
         print(
             f"Inherited parameters embedded in snapshot "
             f"'{setup.snapshot_path}' (except np0/np1/platform/"
-            "double_precision); parameters.toml and command-line "
+            "double_precision, init.snapshot/force_resume and the "
+            "[solver] section); parameters.toml and command-line "
             "arguments override them.",
             flush=True,
         )

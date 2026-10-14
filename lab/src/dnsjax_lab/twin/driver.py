@@ -2338,6 +2338,11 @@ def main(argv: list[str] | None = None) -> int:
     import jax
 
     with RunStatus(jax.process_index(), jax.process_count()) as status:
+        # A SIGTERM during setup still ends in ``TERMINATED`` (the
+        # solver's rule); ``run`` installs the flushing handler later.
+        signal.signal(
+            signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum)
+        )
         if main_device:
             _print_banner(setup)
         status.outcome = run(
@@ -2364,7 +2369,8 @@ def _print_banner(setup: ResolvedSetup) -> None:
         print(
             f"Inherited parameters embedded in snapshot "
             f"'{setup.snapshot_path}' (except np0/np1/platform/"
-            "double_precision); parameters.toml and command-line "
+            "double_precision, init.snapshot/force_resume and the "
+            "[solver] section); parameters.toml and command-line "
             "arguments override them.",
             flush=True,
         )

@@ -2242,11 +2242,24 @@ def read_snapshot_params(
     # version no longer defines must survive the pass above to reach
     # it.
     snap.pop("solver", None)
-    overlays = {
-        name: snap.pop(name)
-        for name in tuple(snap)
-        if name in EXTENSIONS and isinstance(snap[name], dict)
-    }
+    overlays: dict[str, dict] = {}
+    for name in tuple(snap):
+        if name in EXTENSIONS and isinstance(snap[name], dict):
+            section = snap.pop(name)
+            # A key the registered model lacks (written by a newer
+            # version of the plugin) is refused like a core key is in
+            # ``internalize_stored``: a layer cannot carry it, and a
+            # bare pydantic error on the merge would name neither the
+            # snapshot nor the section.
+            unknown = sorted(
+                set(section) - set(EXTENSIONS[name].model.model_fields)
+            )
+            if unknown:
+                raise ValueError(
+                    f"stored {name}.{unknown[0]} is not a field of the "
+                    f"[{name}] section in this version"
+                )
+            overlays[name] = section
     return Parameters.model_validate(snap), overlays
 
 
@@ -2257,11 +2270,13 @@ def unregistered_sections(stored: dict) -> list[str]:
     A section neither of :class:`Parameters` nor a registered
     extension (:data:`dnsjax.extensions.EXTENSIONS`) is a plugin's this
     installation lacks.  A dump records an extension section only
-    while it is configured (:func:`dnsjax.extensions.extension_metadata`),
-    so such a section was in use when the dump was written, possibly
-    defining its trajectory: a resume without it is not a continuation
-    it can vouch for, which is why :func:`dnsjax.bootstrap.resolve_parameters`
-    refuses one unless ``init.force_resume`` is set.
+    while it is configured, or always when it defines no ``configured``
+    hook (:func:`dnsjax.extensions.extension_metadata`), so such a
+    section was in use, or at least present, when the dump was
+    written, possibly defining its trajectory: a resume without it is
+    not a continuation it can vouch for, which is why
+    :func:`dnsjax.bootstrap.resolve_parameters` refuses one unless
+    ``init.force_resume`` is set.
     """
     from .extensions import EXTENSIONS
 
