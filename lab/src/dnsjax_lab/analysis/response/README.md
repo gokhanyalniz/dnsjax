@@ -160,7 +160,8 @@ and $-\epsilon$. Because dnsjax runs are deterministic for a fixed
 configuration and device layout, $(u_+ - u_-)/2$ cancels the shared
 background **and** every even-order nonlinear contribution, at the same
 cost as an unpaired pair. `baseline` pairs a perturbed member against
-the unperturbed parent; `none` relies on the plain ensemble mean alone.
+the parent re-seeded at zero amplitude; `none` relies on the plain
+ensemble mean alone.
 
 Run the members, then aggregate:
 

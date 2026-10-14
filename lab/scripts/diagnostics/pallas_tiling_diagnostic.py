@@ -1,4 +1,4 @@
-"""GPU diagnostic: bisect the mode-tiled Pallas banded-kernel miscompile.
+r"""GPU diagnostic: bisect the mode-tiled Pallas banded-kernel miscompile.
 
 ``_pallas_banded_solve`` (``solvers.py``) is correct in Pallas interpret
 mode and lowers cleanly for ``cuda``, but without padding it returns
@@ -26,17 +26,19 @@ formulations -- against a NumPy reference, swept over tile size
 and partial-vs-full mode tiles. The first failing probe names the broken
 construct; a passing alternative names the fix.
 
-Run **on a GPU** (single device, no mpirun)::
+Run **on a GPU** (single device, no mpirun; ``--dist.platform`` defaults
+to cpu, so name the GPU)::
 
     # the full sweep, then the quick subset
-    .venv/bin/python lab/scripts/diagnostics/pallas_tiling_diagnostic.py
     .venv/bin/python lab/scripts/diagnostics/pallas_tiling_diagnostic.py \
-        --quick
+        --dist.platform cuda
+    .venv/bin/python lab/scripts/diagnostics/pallas_tiling_diagnostic.py \
+        --dist.platform cuda --quick
 
-Without a GPU it falls back to a **lowering-only** check
-(``lower(lowering_platforms=("cuda",))``) so the probes can be validated
-before a GPU run.  Save the full stdout (e.g. ``| tee run.log``); it is
-the report.
+On the CPU (the default platform) it falls back to a **lowering-only**
+check (``lower(lowering_platforms=("cuda",))``) so the probes can be
+validated before a GPU run.  A regression exits with status 1.  Save
+the full stdout (e.g. ``| tee run.log``); it is the report.
 
 Probes (ladder; ``b`` is per-mode-scaled so cross-lane contamination is
 visible):
@@ -644,8 +646,10 @@ def main() -> None:
                             first_reg = tag
                         print(f"{tag} -> {kind}: {type(e).__name__}: {msg}")
 
-    if execute:
-        _summary(xfails, regs, runs, first_reg, results, modes, tiles)
+    if execute and _summary(
+        xfails, regs, runs, first_reg, results, modes, tiles
+    ):
+        raise SystemExit(1)
 
 
 def _dump(probe: str, got: np.ndarray, ref: np.ndarray) -> None:
@@ -663,7 +667,8 @@ def _dump(probe: str, got: np.ndarray, ref: np.ndarray) -> None:
     print()
 
 
-def _summary(xfails, regs, runs, first_reg, results, modes, tiles) -> None:
+def _summary(xfails, regs, runs, first_reg, results, modes, tiles) -> int:
+    """Print the verdict and the per-probe summary; the regression count."""
     print("\n" + "=" * 72)
     n_reg = sum(regs.values())
     if n_reg == 0:
@@ -712,6 +717,7 @@ def _summary(xfails, regs, runs, first_reg, results, modes, tiles) -> None:
         "do not pad."
     )
     print("=" * 72)
+    return n_reg
 
 
 if __name__ == "__main__":

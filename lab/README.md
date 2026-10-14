@@ -70,6 +70,7 @@ runs:
 | `pallas_solve_profile.py` | GPU profile of the banded solve and its share of a step |
 | `memory_budget.py` | per-rank memory of the step as run, on any layout, from XLA's buffer assignment, offline |
 | `memory_watch.py` | per-node memory sampler for multi-process runs, with a summary of each node's peak and typical use, JAX-free |
+| `step_sharing_census.py` | which step-invariant wall-normal GEMMs one iterative-CN step shares between its predictor and correction passes, from the compiled program |
 | `scaling_figure.py` | the strong-scaling figure and tables of [`docs/scaling.md`](../docs/scaling.md), from the committed CSV of measured runs (needs the `plots` group) |
 
 Functionality checks, in [`scripts/diagnostics/`](scripts/diagnostics/):

@@ -169,18 +169,20 @@ def per_rank_table(runs: list[dict], fams: dict, t1: float) -> str:
         "| N nodes: s per time unit | off-node factor |",
         "|---:|---:|---:|---:|---:|",
     ]
-    reduced = {
-        nx_full // r["nx"]: r["s_per_t"]
-        for r in runs
-        if r["nx"] < nx_full
-        and r["nodes"] == 1
-        and r["np0"] == np0
-        and r["np1"] == k
-    }
+    # Every run of a configuration counts: the mean, as elsewhere.
+    reduced: dict[int, list[float]] = {}
+    for r in runs:
+        if (
+            r["nx"] < nx_full
+            and r["nodes"] == 1
+            and r["np0"] == np0
+            and r["np1"] == k
+        ):
+            reduced.setdefault(nx_full // r["nx"], []).append(r["s_per_t"])
     for n in sorted(reduced):
         if n not in fams[key]:
             continue
-        one, many = reduced[n], mean(fams[key][n])
+        one, many = mean(reduced[n]), mean(fams[key][n])
         lines.append(
             f"| {n} | {_seconds(one)} | {one * n / t1:.2f} "
             f"| {_seconds(many)} "

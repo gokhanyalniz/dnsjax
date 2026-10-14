@@ -68,7 +68,8 @@ the driver::
 
     .venv/bin/python lab/scripts/diagnostics/gds_probe.py --env-only
 
-``--cpu-smoke`` runs Part B's POSIX engines only, so the harness can
+``--cpu-smoke`` runs Part B's POSIX engines and Part C on CPU at a tiny
+resolution (up to the engine A/B, which needs GDS), so the harness can
 be validated on a machine with no GPU, no cupy and no kvikIO.  Save the
 full stdout (e.g. ``| tee run.log``); it is the report.
 """
@@ -1040,8 +1041,8 @@ def main() -> None:
     ap.add_argument(
         "--cpu-smoke",
         action="store_true",
-        help="GPU-less self-check: Part B's POSIX engine only, tiny "
-        "volume (validates the harness, not the storage)",
+        help="GPU-less self-check: Part B's POSIX engines and Part C on "
+        "CPU, tiny volume (validates the harness, not the storage)",
     )
     args = ap.parse_args()
 

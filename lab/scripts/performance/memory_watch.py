@@ -148,9 +148,26 @@ def _read_int(path: Path | None) -> int | str:
 
 
 def _is_solver(argv: list[str]) -> bool:
-    """A ``dnsjax`` / ``dnsjax-*`` script or ``python -m dnsjax...``."""
-    names = [os.path.basename(a) for a in argv[:3]]
-    if any(n == "dnsjax" or n.startswith("dnsjax-") for n in names):
+    """A solver process, not a launcher that names one.
+
+    A ``dnsjax`` / ``dnsjax-*`` console script runs as the interpreter
+    with the script as its first argument, ``python -m dnsjax...`` as
+    the interpreter with ``-m``; a wrapper such as ``uv run dnsjax``,
+    ``srun dnsjax`` or ``mpirun ... dnsjax`` has another executable in
+    ``argv[0]`` and is left out.
+    """
+    if not argv:
+        return False
+
+    def named(arg: str) -> bool:
+        n = os.path.basename(arg)
+        return n == "dnsjax" or n.startswith("dnsjax-")
+
+    if named(argv[0]):
+        return True
+    if not os.path.basename(argv[0]).startswith("python"):
+        return False
+    if len(argv) > 1 and named(argv[1]):
         return True
     return len(argv) > 2 and argv[1] == "-m" and argv[2].startswith("dnsjax")
 
