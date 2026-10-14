@@ -154,6 +154,18 @@ floored), corrector passes per step against `$\eta$`:
 reaches ``max_corrector_iterations`` by `$\eta = 0.1$`.  At the default
 tolerance `$10^{-5}$` every one of those converges in 0-1 passes, so no shipped
 configuration is affected.
+
+**Step-invariant GEMMs.**  The predictor and the first correction pass of an
+iterative-CN step build the same `$t^n$` half of the right-hand side.  XLA
+computes it once, by common-subexpression elimination, only where no GEMM
+batches a `$t^n$` column with an iterate column; the same batching keeps
+loop-invariant code motion from hoisting it out of the corrector loop.  Stage 1
+of :func:`_imm_iteration_vw` therefore gives `$u_r^n$` and the iterate's
+`$u_\theta$` an `$A_{\mathrm{base}}$` GEMM each: a step shares 2 of the 7
+GEMMs of a pass and runs 5 field-GEMMs of `$A_{\mathrm{base}}$`, where one GEMM
+batching the two (rejected) shares none and runs 8.  Counted as ``dot``
+instructions of the optimized CPU HLO on the dense path at
+`$16 \times 33 \times 16$`; on CPU the steps agree bit for bit.
 """
 
 import copy
@@ -1754,15 +1766,16 @@ def _imm_iteration_vw(
     state_cn = from_pm_basis(c * velocity_j + (1 - c) * velocity_n)
     nonlin = from_pm_basis(c * nonlin_j + (1 - c) * nonlin_n)
 
-    # Stage 1: two batched FD matvecs.  The two fields entering a
-    # vector Laplacian need exactly `$A_\mathrm{base} = D_2 + (1/r)
-    # D_1$` and nothing else from `$D_1$`, so they take the fused
-    # operator (one GEMM per field instead of two, and no field-sized
-    # `$1/r$` multiply-add); the rest need `$D_1$` alone.  Both stacks
-    # are y-leading, so both GEMMs stay transpose-free.
-    A_in = jnp.stack([state_n[1], state_cn[2]], axis=1)
-    A_pair_n = apply_y_matrix(flow_.A_base, A_in, component_axis=1)
-    A_ur_n, A_ut_it = A_pair_n[:, 0], A_pair_n[:, 1]
+    # Stage 1: the FD matvecs.  The two fields entering a vector
+    # Laplacian need exactly `$A_\mathrm{base} = D_2 + (1/r) D_1$` and
+    # nothing else from `$D_1$`, so they take the fused operator (one
+    # GEMM per field instead of two, and no field-sized `$1/r$`
+    # multiply-add); the rest need `$D_1$` alone, in one y-leading,
+    # transpose-free batch.  `$u_r^n$` and the iterate's `$u_\theta$`
+    # take a GEMM each, so that a step's passes share the `$t^n$` one
+    # and stage 4's (Design notes: "Step-invariant GEMMs").
+    A_ur_n = apply_y_matrix(flow_.A_base, state_n[1])
+    A_ut_it = apply_y_matrix(flow_.A_base, state_cn[2])
     d1_in = jnp.stack(
         [
             state_cn[0],  # u_z^it               -> omega_theta
