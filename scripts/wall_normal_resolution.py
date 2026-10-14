@@ -134,7 +134,8 @@ def cgl_grid(ny: int) -> ndarray:
 def chebyshev_d1(ny: int) -> ndarray:
     r"""Chebyshev differentiation matrix on the CGL nodes.
 
-    The standard barycentric construction, returned in dnsjax's
+    The ``cheb`` construction of Trefethen, *Spectral Methods in
+    MATLAB* (2000), ch. 6, returned in dnsjax's
     wall-first (ascending `$y$`) node ordering so it composes with
     :func:`cgl_grid`.
     """

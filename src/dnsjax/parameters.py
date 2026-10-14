@@ -67,11 +67,10 @@ eliminated discretely, never formed.  `$D_1$` and `$D_2$`
 stay individually Fornberg-fit and the band stays at ``fd_order``.
 The wall-normal-velocity equation is the pressure-eliminated
 fourth-order one, integrated as two second-order banded solves that
-commute exactly (Tuckerman 1989; Luchini & Quadrio 2006 is the
-FD-in-`$y$` precedent), so no fourth-order operator is assembled
-anywhere.  Tangential no-slip is not imposed but *emerges* from the
-reconstruction, so the tangential wall values become a live diagnostic
-of influence-matrix health.
+commute exactly (Kim, Moin & Moser 1987), so no fourth-order operator
+is assembled anywhere.  Tangential no-slip is not imposed but
+*emerges* from the reconstruction, so the tangential wall values
+become a live diagnostic of influence-matrix health.
 
 Per geometry: **Cartesian** advances `$(v, \omega_y)$`, four per-mode
 banded solves down to three.  **Annular** advances the
@@ -191,7 +190,7 @@ the pipe's ``c/it`` drops ``1.00 -> 0.10`` and Taylor-Couette's
 ``0.09 -> 0.00``, because the reconstruction removes the projection
 error the corrector was working against (consistent with Kleiser's
 report, via CHQZ p. 220, of *lower* time-step stability limits when
-the boundary correction is omitted).  ``tests/test_random_smoke.py``
+the tau correction is omitted).  ``tests/test_random_smoke.py``
 does not reprint those: its ``*-legacy-imm`` entries deliberately run
 a different ``Re``, box and resolution from their default
 counterparts, so the ``c/it`` values it prints side by side are not a

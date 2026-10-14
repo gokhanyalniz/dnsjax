@@ -777,9 +777,8 @@ class CartesianFlow:
         `$M$` is inverted in closed form.  It is well conditioned --
         `$\mathrm{cond}(M) \in [1.00, 1.01]$` measured over
         `$N_y \in [25, 97]$`, `$k^2 \in [0.04, 4\times10^3]$`,
-        `$\Delta t \in [10^{-4}, 10^{-1}]$` -- so the
-        conditioning-driven column rescaling of Boronski & Tuckerman
-        (arXiv:0705.0608) is not needed; ``det`` is merely *small* at
+        `$\Delta t \in [10^{-4}, 10^{-1}]$` -- so it needs no
+        rescaling; ``det`` is merely *small* at
         small `$\Delta t$` (`$\sim 10^{-9}$`), which is scale, not
         degeneracy.  At the mean mode `$v \equiv 0$` by continuity, so
         ``M_inv`` and the columns are zeroed outright and the runtime
@@ -1589,10 +1588,10 @@ def _imm_iteration_vw(
     have, since its factors mix `$D_1$` and `$D_2$` and leave the
     `$(D_2 - D_1^2)$` / `$[D_1, D_2]$` obstruction -- what the
     rejected composed-`$D_2$` ``consistent_imm`` route bought off by
-    setting `$D_2 := D_1 D_1$`.  This
-    is the Tuckerman (1989) biharmonic-splitting influence-matrix
-    construction; Luchini & Quadrio (2006) is the FD-in-`$y$`
-    precedent.  The only place fourth-order *content* appears is the
+    setting `$D_2 := D_1 D_1$`.  The split, with one particular and
+    two homogeneous solutions fixing `$D_1 v$` at the walls, is that
+    of Kim, Moin & Moser (*J. Fluid Mech.* **177**, 133, 1987,
+    sec. 3).  The only place fourth-order *content* appears is the
     explicit half `$\tilde H^-\varphi^n = \varphi^n/\Delta t +
     (1 - c)\nu L(L v^n)$`, applied as two sequential narrow matvecs to
     **data** -- never assembled, never factorized.

@@ -69,8 +69,7 @@ eigenvalue of `$\mathcal{A}$` decays (a non-normal-operator effect):
     G_{\max} = \max_{t\ge 0} G(t)\ \text{at}\ t = t_{\mathrm{opt}}.
 
 This is the optimal energy growth of Reddy & Henningson, *J. Fluid
-Mech.* **252**, 209 (1993); Schmid & Henningson, *Stability and
-Transition in Shear Flows* (Springer, 2001), is the standard account.
+Mech.* **252**, 209 (1993).
 The energy norm `$\lVert\mathbf{q}\rVert_E^2 = \mathbf{q}^{H} W
 \mathbf{q}$` is the solver's own kinetic energy (``get_norm2*``): `$W$`
 is diagonal, `$W = \mathrm{diag}_c(m_c\,w_y)$` with the wall-normal

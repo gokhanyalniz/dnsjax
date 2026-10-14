@@ -607,7 +607,8 @@ def tanh_two_sided_grid(ny: int, s: float) -> ndarray:
     (designed for spectral accuracy), yet inherit the
     `$O(N^4)$` second-derivative conditioning and an
     `$O(1/N^2)$` convective CFL limit (Trefethen 2000;
-    Weideman & Reddy 2000).  A tanh-stretched grid with
+    Weideman & Trefethen, *SIAM J. Numer. Anal.* **25**, 1279,
+    1988).  A tanh-stretched grid with
     controlled wall spacing `$\sim O(1/N)$` achieves the
     same order-`$p$` accuracy with `$O(N^2)$` conditioning
     and an `$O(1/N)$` CFL limit.
