@@ -12,19 +12,19 @@ which trade experimental cost against how much you have to assume about
 the turbulent background — and which share one basis, one fit and one
 output convention, so their answers are directly comparable.
 
-Nothing here is imported by `dnsjax.analysis`, so the package-level
-"importing the analysis API never imports JAX" guarantee is untouched.
-These modules **may** use JAX, and they do where it pays.
+These modules **may** use JAX, and they do where it pays; `probes`
+and the `operator_tools` controllability export use NumPy (and SciPy)
+only.
 
 ## Requirements
 
-SciPy, which `uv sync` installs — it is a core dependency, so nothing
-extra is needed here. It is still imported **lazily**, inside the
-functions that use it — `logm`, the Lyapunov solve, non-symmetric
-`eig`: factorizations JAX has no GPU kernels for — which is what keeps
-`import dnsjax.analysis` free of both JAX and SciPy. The Lyapunov solve
-additionally carries an eigendecomposition closed form as a fallback;
-the matrix logarithm has none.
+SciPy, which `uv sync` installs (a dependency of the lab, and of JAX),
+so nothing extra is needed here. It is imported **lazily**, inside the
+functions that use it — `logm`, the Lyapunov solves, non-symmetric
+`eig`: factorizations JAX has no GPU kernels for — so importing any
+module here costs no SciPy until a function needs it. The Lyapunov
+solves also have eigendecomposition closed forms, which the tests use as
+independent checks of SciPy's.
 
 The dense time sweeps (growth curves, input-response curves) run
 batched `expm` + SVD on the JAX default device, are GPU-capable, and
@@ -56,9 +56,10 @@ Stream format, cadence guidance and resume rules:
 
 `read_probes` loads the stream; `mean_profile` turns the `(0,0)` record
 into a total mean profile (the closed-form laminar profile is added
-back), and `write_profile_file` writes it in the two-column, top-wall-
-first form the transient-growth CLI reads. Cut the initial transient
-with `t_min`, and check `re_tau` before going further.
+back; plane Couette and plane Poiseuille, as `re_tau`), and
+`write_profile_file` writes it in the two-column, top-wall-first form
+the transient-growth CLI reads. Cut the initial transient with `t_min`,
+and check `re_tau` before going further.
 
 ```python
 from dnsjax_lab.analysis.response.probes import (
@@ -240,7 +241,12 @@ package simpler than it would otherwise be:
 Because all three routes fit in those coordinates, on the same basis,
 and report the same quantities, their operators can be compared
 directly — against each other and against the reference operator
-restricted to the same subspace.
+restricted to the same subspace (`G_ref`, from $P^H A P$). On a
+truncated basis that restriction is not what a perfect fit returns:
+the noise-free linear data are $P^H e^{\tau A} P$, a semigroup only
+when the basis spans an $A$-invariant subspace, so the fitted generator
+drifts with the horizon even then, and `G_proj`, the growth of
+$P^H e^{t A} P$, is the curve a perfect fit tracks at each horizon.
 
 ## Module map
 

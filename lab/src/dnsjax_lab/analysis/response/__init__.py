@@ -1,7 +1,7 @@
 r"""Input-output / response analysis tools for dnsjax runs.
 
-Submodules (import them explicitly; this ``__init__`` stays empty so
-``import dnsjax.analysis`` never pulls JAX or SciPy):
+Submodules (import them explicitly; this ``__init__`` stays empty, so
+importing the package pulls in neither JAX nor SciPy):
 
 - :mod:`dnsjax_lab.analysis.response.probes` -- JAX-free (NumPy) reader
   for the runtime spectral-mode probe stream
@@ -73,10 +73,8 @@ and :mod:`.ssi` needs one run re-run with the ``[force]`` stochastic
 kicks (one experiment instead of an ensemble; hypothesis-free on the
 background).  Cost/assumption trade-offs: the two module docstrings.
 
-Unlike the rest of :mod:`dnsjax.analysis`, modules here **may** use
-JAX (they are never imported from ``analysis/__init__.py``, so the
-package-level JAX-free import guarantee is unaffected; the
-``transient_growth`` precedent).  CLIs select the platform via
+Modules here **may** use JAX, lazily (unlike the JAX-free
+:mod:`dnsjax_lab.analysis.twin`); the CLIs select the platform via
 ``bootstrap.configure_jax_platform`` before any JAX import.
 
 The JAX/NumPy line is drawn by profitability, not habit: the dense

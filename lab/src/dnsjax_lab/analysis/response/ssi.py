@@ -56,7 +56,7 @@ Knobs (when to tweak)
   many).
 - The forcing amplitude / channel count are **run-time** knobs
   (``force.amplitude`` / ``force.n_channels``,
-  :class:`dnsjax.extensions.ForceParams`); this module reads
+  :class:`dnsjax_lab.extensions.ForceParams`); this module reads
   them from the sidecar.  :func:`predicted_forced_variance` gives
   the stationary forced level for planning the amplitude.
 
@@ -213,18 +213,30 @@ def kick_response_windows(
 
     if len(probe.t) < 2:
         raise ValueError("the probe stream has fewer than 2 samples")
-    delta = float(probe.t[1] - probe.t[0])
+    # The cadence from the sidecar, not from the first two samples: a
+    # resume from a snapshot off the probe cadence records its initial
+    # state off the grid.
+    delta = float(probe.meta["it_probes"]) * float(probe.meta["dt"])
+    t = probe.t
     w_rows, resp_rows = [], []
     for k, t_k in enumerate(forcing.t):
         if t_k < t_min:
             continue
-        idx = int(round((t_k - probe.t[0]) / delta))
-        if idx < 0 or idx + max_lag >= len(probe.t):
+        idx = int(np.searchsorted(t, t_k - 0.25 * delta))
+        if idx + max_lag >= len(t):
             continue
-        if abs(probe.t[idx] - t_k) > 1e-9:
+        if abs(t[idx] - t_k) > 1e-9 * max(1.0, abs(t_k)):
             raise ValueError(
                 f"kick at t = {t_k:g} does not coincide with a probe "
                 "sample (mismatched streams?)"
+            )
+        if not np.allclose(
+            np.diff(t[idx : idx + max_lag + 1]), delta, rtol=1e-6, atol=0
+        ):
+            raise ValueError(
+                f"the probe samples after the kick at t = {t_k:g} are "
+                "not uniformly spaced (a resume off the probe cadence "
+                "adds one); raise t_min past it"
             )
         w_rows.append(forcing.w[k, kf])
         resp_rows.append(b[idx : idx + max_lag + 1])
@@ -326,12 +338,9 @@ def predicted_forced_variance(
         )
     q = eps**2 * (p @ p.conj().T)
     q_eff = e_mat @ q @ e_mat.conj().T  # kick propagated to the sample
-    try:
-        from scipy.linalg import solve_discrete_lyapunov
+    from scipy.linalg import solve_discrete_lyapunov
 
-        x = solve_discrete_lyapunov(e_mat, q_eff)
-    except ImportError:  # pragma: no cover - scipy present in dev
-        x = _discrete_lyapunov_eig(e_mat, q_eff)
+    x = solve_discrete_lyapunov(e_mat, q_eff)
     return float(np.real(np.trace(p.conj().T @ x @ p)))
 
 
@@ -339,9 +348,10 @@ def _discrete_lyapunov_eig(e_mat: np.ndarray, q: np.ndarray) -> np.ndarray:
     r"""Eigendecomposition closed form of `$X = E X E^H + Q$`.
 
     With `$E = S\Lambda S^{-1}$`: `$\tilde{X}_{ij} = \tilde{Q}_{ij}
-    / (1 - \lambda_i\bar{\lambda}_j)$` in the eigenbasis.  SciPy-free
-    fallback, mirroring the continuous-case fallback in
-    :mod:`.operator_tools`.
+    / (1 - \lambda_i\bar{\lambda}_j)$` in the eigenbasis: the
+    independent check of SciPy's solve in the tests, as
+    :func:`.operator_tools._gramian_eig_closed_form` is of the
+    continuous one.
     """
     lam, s = np.linalg.eig(e_mat)
     s_inv = np.linalg.inv(s)
@@ -376,6 +386,7 @@ def identify_ssi(
     stationary variance).
     """
     from dnsjax_lab.analysis.response.operator_tools import (
+        check_stream,
         load_modes_npz,
         load_operator,
         recover_basis,
@@ -391,17 +402,21 @@ def identify_ssi(
     f0 = forcings[0].meta
     eps = float(f0["amplitude"])
     n_ch = int(f0["n_channels"])
+    pooled = ("amplitude", "n_channels", "profiles_sha256", "it_force", "dt")
     for r, f in zip(runs, forcings, strict=True):
-        if float(f.meta["amplitude"]) != eps or (
-            int(f.meta["n_channels"]) != n_ch
-        ):
+        differ = [k for k in pooled if f.meta.get(k) != f0.get(k)]
+        if differ:
             raise ValueError(
-                f"{r}: forcing amplitude/channel count differ from the "
-                "first run's; pool only identically configured runs"
+                f"{r}: forcing {', '.join(differ)} differ from the first "
+                "run's; pool only identically configured runs"
             )
     if modes_npz is None:
-        modes_npz = f0["profiles"]
-        if not Path(modes_npz).exists():
+        # Recorded as configured, so a relative path is the run's.
+        modes_npz = Path(f0["profiles"])
+        if not modes_npz.is_absolute():
+            run0 = Path(runs[0])
+            modes_npz = (run0 if run0.is_dir() else run0.parent) / modes_npz
+        if not modes_npz.exists():
             raise FileNotFoundError(
                 f"the sidecar's profile bundle {modes_npz} no longer "
                 "exists; pass --modes-npz explicitly"
@@ -417,6 +432,7 @@ def identify_ssi(
     windows = []
     for r, fd in zip(runs, forcings, strict=True):
         pd = read_probes(r)
+        check_stream(op, pd.meta, str(r))
         d = float(pd.meta["it_probes"]) * float(pd.meta["dt"])
         if delta is None:
             delta = d
@@ -547,9 +563,12 @@ def main(argv: list[str] | None = None) -> int:
         t_min=args.t_min,
     )
 
-    from dnsjax_lab.analysis.response.operator_tools import growth_curve
+    from dnsjax_lab.analysis.response.operator_tools import (
+        growth_curve,
+        projected_growth_curve,
+    )
 
-    result.pop("op")
+    op = result.pop("op")
     a_ref = result.pop("a_ref")
     delta = result.pop("delta")
     t_max = args.growth_tmax
@@ -558,6 +577,7 @@ def main(argv: list[str] | None = None) -> int:
     t_grid = delta * np.arange(int(round(t_max / delta)) + 1)
     g_id = growth_curve(result["L"], t_grid)
     g_ref = growth_curve(a_ref, t_grid)
+    g_proj = projected_growth_curve(op.A, result["basis"], t_grid)
     np.savez(
         args.out,
         readme=(
@@ -565,12 +585,15 @@ def main(argv: list[str] | None = None) -> int:
             "kick/response cross-covariances, on the forced channel "
             "basis (energy-orthonormal coordinates); G_id/G_ref: "
             "growth curves of L and of the reference operator "
-            "restricted to the same basis, on t_grid; causality: "
-            "||M(0)||_2, the estimator noise floor."
+            "restricted to the same basis, on t_grid; G_proj: "
+            "||P^H e^{tA} P||^2, what the fit measures in the "
+            "noise-free linear limit; causality: ||M(0)||_2, the "
+            "estimator noise floor."
         ),
         t_grid=t_grid,
         G_id=g_id,
         G_ref=g_ref,
+        G_proj=g_proj,
         **result,
     )
     print(

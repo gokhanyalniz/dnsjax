@@ -22,7 +22,9 @@ Two layers:
    *exactly* (rtol 1e-9) -- the CLI reports growth on the same
    resolved-eigenspace restriction it exports, so this doubles as the
    guard on that restriction.  The controllability CLI then exports
-   lifted modes whose energy Gram matrix is the identity.
+   lifted modes whose energy Gram matrix is the identity, and
+   ``check_stream`` refuses a probe stream on other nodes, another
+   harmonic or another box.
 
 Usage::
 
@@ -283,6 +285,29 @@ def test_export_faithfulness_and_cli() -> None:
         _, p = ot.controllability_modes(op.A, 5)
         g_r = ot.growth_curve(ot.restrict(op.A, p), t_grid)
         assert np.all(g_r <= g * (1.0 + 1e-9))
+
+        # A probe stream on the operator's coordinates passes; one on
+        # other wall-normal nodes, whose (1, 0) is another harmonic, or
+        # over another box, is refused (it would project silently).
+        meta = {
+            "wall_normal_grid": [float(v) for v in op.y],
+            "modes": [[1, 0]],
+            "wavenumbers": [[1, 0]],
+            "params": {},
+        }
+        ot.check_stream(op, meta, "stream")
+        uniform = [float(v) for v in np.linspace(-1.0, 1.0, NY)]
+        for bad in (
+            meta | {"wall_normal_grid": uniform},
+            meta | {"wavenumbers": [[2, 0]]},
+            meta | {"params": {"geo": {"lx": 99.0}}},
+        ):
+            try:
+                ot.check_stream(op, bad, "stream")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"check_stream accepted {bad}")
 
 
 # ── Runner ───────────────────────────────────────────────────────────

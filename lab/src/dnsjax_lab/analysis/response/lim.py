@@ -19,7 +19,10 @@ probe stream of the production run itself (``probes.modes``;
 :mod:`dnsjax_lab.extensions.probes`).  Its price is the whiteness hypothesis --
 when the turbulent forcing of the mode is correlated in time, `$M(\tau)$` is no
 longer a semigroup and the identified `$L$` drifts with the lag; the per-lag
-reconstruction residuals expose exactly that drift.
+reconstruction residuals expose that drift.  A truncated basis `$P$` adds one
+of its own: the noise-free limit is `$M(\tau) = P^H e^{\tau A} P$`, a
+semigroup only when the span of `$P$` is invariant under `$A$` (the saved
+``G_proj`` is its growth, against ``G_ref`` of `$P^H A P$`).
 
 Estimator
 ---------
@@ -33,9 +36,10 @@ segments (independent runs / stream files):
     C_0(\tau) = \sum_k \mathbf{b}_k\mathbf{b}_k^H,
 
 so `$M(\tau) = C\,C_0^{-1}$` is exact (to roundoff) for noiseless
-linear data -- the case the unit tests pin -- and unbiased under
-stationarity.  ``b`` are the probe profiles projected onto the
-exported operator's energy coordinates
+linear data -- the case the unit tests pin -- and consistent under
+stationarity (a ratio of sample covariances: biased in a finite sample,
+converging as the stream lengthens).  ``b`` are the probe profiles
+projected onto the exported operator's energy coordinates
 (:func:`~dnsjax_lab.analysis.response.ensemble.project_series`), each
 segment's own sample mean subtracted (``demean``).
 
@@ -223,6 +227,7 @@ def identify_lim(
     the CLI's growth curves) plus the estimator diagnostics.
     """
     from dnsjax_lab.analysis.response.operator_tools import (
+        check_stream,
         load_modes_npz,
         load_operator,
         recover_basis,
@@ -239,6 +244,7 @@ def identify_lim(
     delta: float | None = None
     for path in probes:
         data = read_probes(path)
+        check_stream(op, data.meta, str(path))
         _, b = projected_fluctuations(
             data, op.T_proj, i2, i3, p, t_min, demean
         )
@@ -352,6 +358,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from dnsjax_lab.analysis.response.operator_tools import (
         growth_curve,
+        projected_growth_curve,
         restrict,
     )
 
@@ -365,6 +372,11 @@ def main(argv: list[str] | None = None) -> int:
     g_id = growth_curve(result["L"], t_grid)
     a_ref = restrict(op.A, basis) if args.modes_npz is not None else op.A
     g_ref = growth_curve(a_ref, t_grid)
+    g_proj = (
+        projected_growth_curve(op.A, basis, t_grid)
+        if args.modes_npz is not None
+        else g_ref
+    )
     np.savez(
         args.out,
         readme=(
@@ -372,14 +384,17 @@ def main(argv: list[str] | None = None) -> int:
             "lagged covariances of the unforced probe stream, on the "
             "injected/restricted basis (energy-orthonormal "
             "coordinates); G_id/G_ref: growth curves of L and of the "
-            "reference operator on the same basis, on t_grid; "
-            "residuals: per-lag ||e^{tau L} - M(tau)||_F/||M||_F "
-            "(their growth with tau measures the whiteness "
-            "hypothesis)."
+            "reference operator restricted to the basis, on t_grid; "
+            "G_proj: ||P^H e^{tA} P||^2, what the fit measures in the "
+            "noise-free linear limit; residuals: per-lag "
+            "||e^{tau L} - M(tau)||_F/||M||_F (their growth with tau "
+            "measures the whiteness hypothesis and, on a truncated "
+            "basis, the basis truncation)."
         ),
         t_grid=t_grid,
         G_id=g_id,
         G_ref=g_ref,
+        G_proj=g_proj,
         **result,
     )
     print(
