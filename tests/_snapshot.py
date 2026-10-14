@@ -330,6 +330,19 @@ def _check_slab_placement(state, snapshot, sharding) -> None:
         )
 
 
+def regrid_profile(y):
+    """The regrid cases' wall-normal profile: degree 6, zero at the walls.
+
+    Chebyshev interpolation from 7 or more CGL nodes reproduces it
+    exactly, and so does the local stencil on that few nodes (its
+    window spans them all); what fails the ``1e-10`` comparison is a
+    regrid built on a grid recorded in float32 arithmetic, off the
+    exact nodes by ~1e-7.  The spectral route itself is pinned by the
+    load worker's log line (``run_ny_mismatch_case``).
+    """
+    return (1 - y**2) * (y**4 + 0.5 * y**2 + 0.3)
+
+
 def _worker(
     action: str,
     system: str,
@@ -454,14 +467,24 @@ def _worker(
         print("worker-save-fail-ok", flush=True)
         return
 
-    if action == "save_poly":
+    if action in ("save_poly", "save_poly_f32"):
         from dnsjax.parameters import derived_params
 
         y = np.asarray(
             -np.cos(np.arange(ny, dtype=np.float64) * np.pi / (ny - 1))
         )
-        derived_params.wall_normal_grid = y.tolist()
-        poly = 1 - y**2
+        # ``save_poly_f32`` records the grid as a single-precision run
+        # does: the CGL nodes evaluated in float32 arithmetic
+        # (``build_cartesian_grid`` under ``sharding.float_type``), off
+        # the exact nodes by up to ~2e-7, an odd grid's centre node
+        # near 4e-8 instead of 0 -- which is what fails the detectors'
+        # 1e-12 (rounding exact nodes to float32 would not).
+        recorded = y
+        if action == "save_poly_f32":
+            theta = np.arange(ny, dtype=np.float32) * np.float32(np.pi)
+            recorded = (-np.cos(theta / np.float32(ny - 1))).astype(np.float64)
+        derived_params.wall_normal_grid = recorded.tolist()
+        poly = regrid_profile(y)
         state_np = np.zeros(padded_shape, dtype=np.complex128)
         state_np[0, :, 0, 0] = poly
         state_np[1, :, 0, 0] = poly * 0.5
@@ -487,7 +510,7 @@ def _worker(
             jax.numpy,
         )
         got = np.asarray(state)
-        expected_poly = 1 - y_curr**2
+        expected_poly = regrid_profile(y_curr)
         np.testing.assert_allclose(
             got[0, :, 0, 0].real, expected_poly, atol=1e-10
         )
@@ -1238,6 +1261,7 @@ def run_ny_mismatch_case(
     load_np0: int = 1,
     label: str = "",
     save_ny: int = 8,
+    stored_float32: bool = False,
 ) -> str | None:
     """Save at *save_ny*, load at ny=16 with interpolation.
 
@@ -1247,12 +1271,17 @@ def run_ny_mismatch_case(
     row count rather than the current one -- the reader has to take
     ``a_true`` from the metadata, pad to the load mesh, and strip
     again after resharding back.
+
+    *stored_float32* records the saved grid as a single-precision run
+    does (float32 arithmetic; an odd *save_ny* puts its centre node off
+    zero): the regrid must still take the spectral route
+    (``regrid_profile``).
     """
     name = f"wb ny {save_ny}->16 interp{label}"
     with tempfile.TemporaryDirectory() as tmp:
         snap_path = os.path.join(tmp, "snap.tar")
         r_save = _run_worker(
-            "save_poly",
+            "save_poly_f32" if stored_float32 else "save_poly",
             "plane-couette",
             "walled",
             "concurrent",
@@ -1275,6 +1304,11 @@ def run_ny_mismatch_case(
         )
         if reason := _check(name, "load_interp", r_load):
             return reason
+        if stored_float32 and "Chebyshev coefficient map" not in r_load.stdout:
+            print(
+                f"  FAIL  {name}: the regrid did not take the spectral route"
+            )
+            return "stencil route"
     print(f"  PASS  {name}")
     return None
 
@@ -1358,6 +1392,7 @@ if __name__ == "__main__":
             "load",
             "roundtrip",
             "save_poly",
+            "save_poly_f32",
             "load_interp",
             "save_poly_parity",
             "load_interp_parity",

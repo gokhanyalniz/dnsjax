@@ -83,7 +83,9 @@ existed still reads as one.
 Resume is agnostic to the device count (precision must match — a
 mismatch rejects), and re-grids **every changed axis** on load: the
 wall-normal grid by interpolation — spectrally when both grids are
-CGL-family, by a local order-`fd_order` stencil for tanh or custom
+CGL-family (rebuilt in float64 from the recorded grid parameters, so a
+single-precision run takes the spectral route too; the log line names
+the route), by a local order-`fd_order` stencil for tanh or custom
 grids — and each Fourier axis by inserting or dropping modes at its
 high-wavenumber end, so a state can be picked up at a different
 resolution (which, being a `res` change, starts a new trajectory rather
