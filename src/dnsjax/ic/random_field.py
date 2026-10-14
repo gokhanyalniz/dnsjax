@@ -241,7 +241,8 @@ def enforce_hermitian_slice(
     """Enforce conjugate symmetry in-place on a 1-D slice.
 
     ``slc`` has leading shape ``(Nc, ...)`` where
-    ``Nc = n_physical - 1`` (Nyquist omitted), indexed by
+    ``Nc = n_physical - 1`` (Nyquist omitted; *n_physical* is even, as
+    every Fourier count is), indexed by
     ``complex_harmonics(n_physical)``:
     ``[0, 1, ..., n//2-1, -n//2+1, ..., -1]``.
 
@@ -262,10 +263,6 @@ def enforce_hermitian_slice(
     # Pair positive kz at index i with negative kz at Nc-i.
     for i in range(1, n_pos):
         slc[Nc - i] = np.conj(slc[i])
-
-    # Odd n: unpaired negative mode (Nyquist partner omitted).
-    if n_physical % 2 == 1:
-        slc[n_pos] = 0.0
 
 
 # ── Per-device mode generation (no full-array replication) ───────
@@ -300,10 +297,10 @@ def hermitian_column(
     r"""Conjugate-consistent ``(rows, n)`` draw on the real-FFT-axis-0 plane.
 
     Mirrors :func:`enforce_hermitian_slice`'s pairing over the length
-    ``n2 - 1`` complex axis (axis-2 index ``i2``): index 0 real,
-    ``i <-> n2-1-i`` conjugate pairs (the negative member is the conjugate
-    of the same canonical draw, so both owning devices agree without
-    communication), and the unpaired mode (odd ``n2``) zeroed.
+    ``n2 - 1`` complex axis (axis-2 index ``i2``, ``n2`` even): index 0
+    real, ``i <-> n2-1-i`` conjugate pairs (the negative member is the
+    conjugate of the same canonical draw, so both owning devices agree
+    without communication).
 
     Every component built here -- Cartesian `$(u_x, u_y, u_z)$`,
     cylindrical / annular `$(u_z, u_r, u_\theta)$`, and any further
@@ -316,8 +313,6 @@ def hermitian_column(
     if i2 == 0:
         rng = np.random.default_rng((seed, 0, 0, *stream))
         return rng.standard_normal((rows, n)).astype(np.complex128)
-    if n2 % 2 == 1 and i2 == n_pos:
-        return np.zeros((rows, n), dtype=np.complex128)
     canonical = i2 if i2 < n_pos else (n2 - 1) - i2
     rng = np.random.default_rng((seed, canonical, 0, *stream))
     d = rng.standard_normal((rows, n)) + 1j * rng.standard_normal((rows, n))
@@ -490,8 +485,6 @@ def _periodic_hermitian_raw(
         )
         enforce_hermitian_slice(col.T, ny)
         return col
-    if n2 % 2 == 1 and i2 == n_pos:
-        return np.zeros((3, nky), dtype=np.complex128)
     if i2 < n_pos:
         rng = np.random.default_rng((seed, i2, 0))
         return rng.standard_normal((3, nky)) + 1j * rng.standard_normal(
@@ -725,6 +718,13 @@ def generate_cylindrical(
             D1_v = D1_even_np if (m_val + 1) % 2 == 0 else D1_odd_np
             for lj in range(n_kz):
                 g3 = kz_start + lj  # global k_z index (axis 3, real)
+                if g2 == 0 and g3 == 0:
+                    # Mean mode: the (0, 0) conservation laws are only
+                    # established for the Cartesian flows, so every
+                    # other flow defers ``init.random_mean_flow``
+                    # (``dnsjax.ic.mean_mode``, and the per-flow
+                    # ``DeferredSpec``s); ``buf`` starts at zero.
+                    continue
                 kz_val = kz_np[g3]
                 window_wall = scaled_wall_window(
                     window_base, np.hypot(kz_val, m_val), wall_confinement
@@ -763,32 +763,21 @@ def generate_cylindrical(
                         + 1j * m_val * inv_r_np * col[2]
                     )
                     col[0] = -div_perp / (1j * kz_val)
-                elif m_val != 0:
-                    # k_z = 0: u_z drops out; close through u_theta.
+                else:
+                    # k_z = 0 (so m != 0): u_z drops out; close through
+                    # u_theta.
                     col[2] = (
                         1j
                         * rs_np
                         * (real_product(col[1], D1_v.T) + inv_r_np * col[1])
                         / m_val
                     )
-                else:
-                    # k_z = 0, m = 0 mean mode: (1/r) d(r u_r)/dr = 0 with
-                    # no-slip forces u_r = 0 (u_theta swirl / u_z axial
-                    # stay).
-                    col[1] = 0.0
                 # Energy = envelope^2 (no continuity 1/k low-k inflation).
                 col = normalize_mode(
                     col,
                     yw_np,
                     decay ** (abs(kz_val) + abs(m_val)),
                 )
-                # Mean mode: the (0, 0) conservation laws are only
-                # established for the Cartesian flows, so every other
-                # flow defers ``init.random_mean_flow``
-                # (``dnsjax.ic.mean_mode``, and the per-flow
-                # ``DeferredSpec``s).
-                if g2 == 0 and g3 == 0:
-                    col[:] = 0.0
                 buf[:, :, li, lj] = col
 
     state = assemble_local_shards(fill_local)
@@ -872,6 +861,13 @@ def generate_annular(
             m_val = int(m_np[g2])
             for lj in range(n_kz):
                 g3 = kz_start + lj  # global k_z index (axis 3, real)
+                if g2 == 0 and g3 == 0:
+                    # Mean mode: the (0, 0) conservation laws are only
+                    # established for the Cartesian flows, so every
+                    # other flow defers ``init.random_mean_flow``
+                    # (``dnsjax.ic.mean_mode``, and the per-flow
+                    # ``DeferredSpec``s); ``buf`` starts at zero.
+                    continue
                 kz_val = kz_np[g3]
                 window_lin = scaled_wall_window(
                     window_base, np.hypot(kz_val, m_val), wall_confinement
@@ -898,32 +894,21 @@ def generate_annular(
                         + 1j * m_val * inv_r_np * col[2]
                     )
                     col[0] = -div_perp / (1j * kz_val)
-                elif m_val != 0:
-                    # k_z = 0: u_z drops out; close through u_theta.
+                else:
+                    # k_z = 0 (so m != 0): u_z drops out; close through
+                    # u_theta.
                     col[2] = (
                         1j
                         * rs_np
                         * (real_product(col[1], D1_np.T) + inv_r_np * col[1])
                         / m_val
                     )
-                else:
-                    # k_z = 0, m = 0 mean mode: (1/r) d(r u_r)/dr = 0 with
-                    # no-slip forces u_r = 0 (u_theta swirl / u_z axial
-                    # stay).
-                    col[1] = 0.0
                 # Energy = envelope^2 (no continuity 1/k low-k inflation).
                 col = normalize_mode(
                     col,
                     yw_np,
                     decay ** (abs(kz_val) + abs(m_val)),
                 )
-                # Mean mode: the (0, 0) conservation laws are only
-                # established for the Cartesian flows, so every other
-                # flow defers ``init.random_mean_flow``
-                # (``dnsjax.ic.mean_mode``, and the per-flow
-                # ``DeferredSpec``s).
-                if g2 == 0 and g3 == 0:
-                    col[:] = 0.0
                 buf[:, :, li, lj] = col
 
     state = assemble_local_shards(fill_local)

@@ -562,6 +562,13 @@ def generate_viscoelastic_pipe(
             env = {s: rs_np ** abs(m_val + s) for s in (0, 1, -1, 2, -2)}
             for lj in range(n_kz):
                 g3 = kz_start + lj
+                if g2 == 0 and g3 == 0:
+                    # Mean mode: zero in both fields (the (0, 0)
+                    # conservation laws are only established for the
+                    # Cartesian flows, ``dnsjax.ic.mean_mode``; the
+                    # laminar pair is added below); ``buf`` starts at
+                    # zero.
+                    continue
                 kz_val = kz_np[g3]
                 envelope = decay ** (abs(kz_val) + abs(m_val))
                 window_wall = scaled_wall_window(
@@ -592,28 +599,18 @@ def generate_viscoelastic_pipe(
                         + 1j * m_val * inv_r_np * col[2]
                     )
                     col[0] = -div_perp / (1j * kz_val)
-                elif m_val != 0:
+                else:  # k_z = 0, so m != 0: close through u_theta
                     col[2] = (
                         1j
                         * rs_np
                         * (real_product(col[1], D1_v.T) + inv_r_np * col[1])
                         / m_val
                     )
-                else:
-                    col[1] = 0.0
                 col = normalize_mode(col, yw_np, envelope)
-                # Mean mode: the (0, 0) conservation laws are only
-                # established for the Cartesian flows, so every other
-                # flow defers ``init.random_mean_flow``
-                # (``dnsjax.ic.mean_mode``, and the per-flow
-                # ``DeferredSpec``s).
-                if g2 == 0 and g3 == 0:
-                    col[:] = 0.0
                 buf[0:3, :, li, lj] = col
 
                 # ── Conformation (rows 3:9): windowed, wall-vanishing
-                # noise, axis-enveloped in the spin basis; zero at the
-                # mean mode (laminar added below). ──
+                # noise, axis-enveloped in the spin basis. ──
                 if g3 == 0:
                     ccol = hermitian_column(
                         seed, g2, nz, Nr, rows=6, stream=(1,)
@@ -645,8 +642,6 @@ def generate_viscoelastic_pipe(
                     ]
                 )
                 ccol = normalize_mode(ccol, yw_np, envelope)
-                if g2 == 0 and g3 == 0:
-                    ccol[:] = 0.0
                 buf[3:9, :, li, lj] = ccol
 
     state = assemble_local_shards(fill_local)
