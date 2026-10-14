@@ -22,6 +22,14 @@ stencil_decomposition:
 build_integration_weights:
     Composite polynomial quadrature weights on a non-uniform grid
     (``fd_order``-accurate; the general-purpose rule).
+axis_augmented_weights:
+    The full-disc radial rule on a grid without `$r = 0$`:
+    :func:`build_integration_weights` on the axis-augmented grid,
+    correct for either parity.
+positive_quadrature:
+    The highest-order rule up to a requested order whose weights are
+    all positive (a definite discrete norm); the solver's weights on
+    every non-CGL grid.
 clenshaw_curtis_weights:
     Clenshaw-Curtis quadrature weights on a CGL grid (spectral for
     smooth integrands; used by the full-CGL Cartesian and annular
@@ -39,7 +47,7 @@ tanh_two_sided_grid:
     (clustering at both walls).
 tanh_one_sided_grid:
     One-sided tanh-stretched radial grid on (0, 1] (clustering
-    at the outer wall, no point at r = 0).
+    at the wall `$r = 1$`, no point at `$r = 0$`).
 grid_nodes:
     The nodes each geometry's grid builder produces, in float64
     and without its operators (any resolution, any run precision).
@@ -87,7 +95,7 @@ keeps the local rule, because full exactness and weight positivity are
 incompatible there (:func:`_cgl_completion_matrices`).
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import numpy as np
 from numpy import ndarray
@@ -353,7 +361,9 @@ def build_integration_weights(y: ndarray, p: int) -> ndarray:
 
     Composite accuracy is `$O(h^{p+1})$` for smooth
     integrands, consistent with the FD derivative order `$p$`
-    from :func:`build_diff_matrices`.
+    from :func:`build_diff_matrices`.  At high `$p$` some weights
+    can be negative; the solver's grids take
+    :func:`positive_quadrature`'s order instead.
 
     Parameters
     ----------
@@ -398,6 +408,77 @@ def build_integration_weights(y: ndarray, p: int) -> ndarray:
     return w
 
 
+def axis_augmented_weights(r: ndarray, p: int) -> ndarray:
+    r"""Full-disc radial quadrature on a grid without the axis.
+
+    Weights `$w_j$` with
+    `$\sum_j w_j f(r_j) \approx \int_0^1 f\,r\,dr$` for any bounded
+    `$f$` of either parity: the order-*p* composite rule
+    (:func:`build_integration_weights`) integrates `$g = f r$` on the
+    grid augmented by the axis node, where `$g(0) = 0$`, so that
+    node's weight drops out and `$r_j$` folds into the rest.  The rule
+    of every non-CGL pipe grid (the CGL ones take
+    :func:`cgl_radial_quadrature_weights`) and of the analysis
+    package's radial integrals.
+
+    Parameters
+    ----------
+    r:
+        Ascending radial grid on `$(0, 1]$`, shape ``(N_r,)``.
+    p:
+        Accuracy order of the composite rule.
+
+    Returns
+    -------
+    :
+        Weight array of shape ``(N_r,)``, in *r*'s dtype.
+    """
+    r = np.asarray(r)
+    r_aug = np.concatenate([np.zeros(1, dtype=r.dtype), r])
+    return build_integration_weights(r_aug, p)[1:] * r
+
+
+def positive_quadrature(
+    build: Callable[[int], ndarray], p: int
+) -> tuple[ndarray, int]:
+    r"""The highest-order rule up to *p* whose weights are all positive.
+
+    *build* maps an order `$q$` to that order's weights (e.g.
+    ``lambda q: build_integration_weights(y, q)``); this returns
+    ``(weights, q)`` for the largest `$q \le p$` whose weights are all
+    strictly positive, so the discrete energy norm, the corrector norm
+    and the bulk-velocity constraint built on them stay definite.
+
+    Why it is needed: a high-order interpolatory stencil can carry
+    negative weights, on near-uniform spacing (as the 9-point
+    Newton-Cotes rule does, which is the pipe axis's case) and on
+    rapidly varying spacing (a coarse, strongly stretched grid).
+    Measured at ``fd_order = 8``: every one-sided tanh pipe grid
+    (``nr`` 8 to 399, stretch 1 to 2) takes order 7, or 4 to 6 below
+    ``nr = 26``; a uniform radial grid order 7 and a slightly
+    perturbed half-CGL one order 5; a two-sided tanh grid keeps order
+    8 at the default stretch 1.5 and drops only when coarse and
+    strongly stretched (`$N_y \le 20$` at stretch 2, `$\le 33$` at
+    stretch 3, to order 1 below `$N_y = 13$`).  A grid positive at *p*
+    keeps its order-*p* weights unchanged.
+
+    Raises
+    ------
+    ValueError
+        When no order from *p* down to 1 is positive (a non-monotone
+        grid: on an ascending one the order-1 trapezoid rule is).
+    """
+    for q in range(p, 0, -1):
+        w = build(q)
+        if np.all(w > 0):
+            return w, q
+    raise ValueError(
+        "No composite quadrature order up to "
+        f"{p} has strictly positive weights on this grid; is it "
+        "strictly ascending?"
+    )
+
+
 def clenshaw_curtis_weights(ny: int) -> ndarray:
     r"""Clenshaw-Curtis quadrature weights for a CGL grid.
 
@@ -418,7 +499,7 @@ def clenshaw_curtis_weights(ny: int) -> ndarray:
     axis, so a single Clenshaw-Curtis vector is spectral for only one
     parity of `$f$` -- that grid uses the parity-specific
     :func:`cgl_radial_quadrature_weights` instead, and a non-CGL radial
-    grid the axis-augmented :func:`build_integration_weights` rule.
+    grid the axis-augmented rule (:func:`axis_augmented_weights`).
 
     Parameters
     ----------
@@ -649,12 +730,14 @@ def tanh_one_sided_grid(nr: int, s: float) -> ndarray:
 
     .. math::
         \xi_j = (j + 1) / N_r, \qquad
-        r_j = 1 - \frac{\tanh\!\bigl(s\,(1 - \xi_j)\bigr)}
-                       {\tanh(s)},
+        r_j = \frac{\tanh(s\,\xi_j)}{\tanh(s)},
         \quad j = 0, \ldots, N_r{-}1.
 
-    `$\xi$` spans `$(0, 1]$` (excluding 0), so `$r_0 > 0$`
-    and `$r_{N_r - 1} = 1$` exactly.
+    `$\xi$` spans `$(0, 1]$` (excluding 0), so
+    `$r_0 = \tanh(s/N_r)/\tanh(s) > 0$` and `$r_{N_r - 1} = 1$`
+    exactly.  The slope `$dr/d\xi = s\,\mathrm{sech}^2(s\xi)/\tanh(s)$`
+    falls monotonically, so the spacing is largest at the axis and
+    smallest at the wall; `$s \to 0$` gives the uniform grid.
 
     Parameters
     ----------
@@ -670,7 +753,7 @@ def tanh_one_sided_grid(nr: int, s: float) -> ndarray:
         `$0$` to `$1$`.
     """
     xi = np.arange(1, nr + 1, dtype=np.float64) / nr
-    return 1.0 - np.tanh(s * (1.0 - xi)) / np.tanh(s)
+    return np.tanh(s * xi) / np.tanh(s)
 
 
 def grid_nodes(

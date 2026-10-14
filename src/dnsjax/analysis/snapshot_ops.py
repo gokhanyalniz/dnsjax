@@ -40,6 +40,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..fd import (
+    axis_augmented_weights,
     build_integration_weights,
     clenshaw_curtis_weights,
     is_cgl_grid,
@@ -296,11 +297,9 @@ def _axis_weights(info, ax, coords, params):
             # Parity-agnostic full-disc rule: a *physical* radial
             # profile (at fixed theta) has no definite r-parity, so the
             # solver's per-mode spectral parity weights do not apply
-            # here.  Integrate g = f*r on the axis-augmented grid with
-            # the axis r=0 as a free node (g(0)=0 for any bounded f);
-            # drop the axis node, fold in r_j.
-            r_aug = np.concatenate([[0.0], grid])
-            return build_integration_weights(r_aug, p)[1:] * grid
+            # here.  At fd_order, not the solver's positive order: an
+            # integral of a physical field needs no definite norm.
+            return axis_augmented_weights(grid, p)
         if info.family == "annular":
             # Affine-mapped Clenshaw-Curtis on the CGL grid (matching
             # the solver); composite fd_order for a custom/tanh grid.

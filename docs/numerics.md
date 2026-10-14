@@ -147,10 +147,13 @@ the admissible step of its explicit azimuthal advection grows with the
 innermost node's radius. `iterative-cn` integrates the near-axis
 coupling implicitly and defaults to the finer-resolving half-CGL grid.
 Optional tanh stretching (`grid_type = "tanh"`, or `"half-tanh"` for
-the pipe's one-sided variant, with the `grid_stretch` factor) and fully
-**custom grids** (via a `geo.wall_grid` file) are supported; quadrature is
-spectral Clenshaw–Curtis on CGL grids (a weighted parity variant on the
-pipe's half grids) and an order-`fd_order` composite rule otherwise.
+the pipe's one-sided variant, clustered at the wall, with the
+`grid_stretch` factor) and fully **custom grids** (via a `geo.wall_grid`
+file) are supported; quadrature is spectral Clenshaw–Curtis on CGL grids
+(a weighted parity variant on the pipe's half grids) and otherwise a
+composite rule of the highest order up to `fd_order` whose weights are all
+positive, so every discrete norm stays definite (order 7 at the default 8
+on most pipe grids; a startup line names any order below `fd_order`).
 
 ## The influence-matrix method
 

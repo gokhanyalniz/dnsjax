@@ -210,6 +210,7 @@ from ._base import (
     integrate_scalar,
     pad_base_flow,  # noqa: F401 — re-exported
     phys_to_spec,  # noqa: F401 — re-exported
+    quadrature_weights,
     spec_to_phys,  # noqa: F401 — re-exported
     to_pm_basis,
 )
@@ -470,7 +471,8 @@ def build_annular_grid(
         these are affine-mapped **Clenshaw-Curtis** weights
         (spectral for smooth integrands, exact for the smooth
         base/mean profiles); custom / tanh grids fall back to the
-        ``fd_order`` composite rule.
+        composite rule, at the highest order up to ``fd_order`` whose
+        weights are all positive (:func:`._base.quadrature_weights`).
     inv_r:
         `$1/r$` on the grid, shape ``(ny,)``.
     """
@@ -520,9 +522,16 @@ def build_annular_grid(
             * rs
         )
     else:
-        # Custom / tanh grids are not CGL: use the general fd_order
-        # composite rule times the Jacobian.
-        w = build_integration_weights(np.asarray(rs), fd_order)
+        # Custom / tanh grids are not CGL: the composite rule times the
+        # Jacobian, at the highest order up to fd_order whose weights
+        # are all positive.
+        rs_np = np.asarray(rs)
+        w = quadrature_weights(
+            lambda q: build_integration_weights(rs_np, q),
+            fd_order,
+            "Radial",
+            ny,
+        )
         y_weights = jnp.asarray(w, dtype=sharding.float_type) * rs
     D1, D2 = build_diff_matrices(np.asarray(rs), fd_order)
     return rs, D1, D2, y_weights, inv_r

@@ -36,6 +36,9 @@ on CPU the wall-normal derivatives default to the stencil, so these
 keep the dense GEMM -- the GPU path, and the reference -- stepping
 here, one per geometry (the two paths' agreement:
 ``test_wall_normal_matvec.py``).
+A ``pipe-half-tanh`` entry runs the pipe on its one named non-CGL
+radial grid, whose weights take the positive-order composite rule
+(``fd.positive_quadrature``) that no CGL entry reaches.
 Four entries (``plane-couette-cnab2``,
 ``pipe-cnab2``, ``taylor-couette-cnab2``, ``kolmogorov-cnab2``) pass
 ``--step.scheme cnab2`` to drive the alternative CN/AB2 time-stepping
@@ -210,6 +213,22 @@ SYSTEMS: list[dict] = [
             "1800",
             "--geo.lz",
             "5",
+        ],
+    },
+    # The pipe's wall-clustered one-sided tanh grid, the one named
+    # non-CGL radial grid: it steps on the positive-order composite
+    # quadrature (``fd.positive_quadrature``), which no CGL row reaches.
+    {
+        "name": "pipe-half-tanh",
+        "args": [
+            "--phys.system",
+            "pipe",
+            "--phys.re",
+            "1800",
+            "--geo.lz",
+            "5",
+            "--geo.grid_type",
+            "half-tanh",
         ],
     },
     {
