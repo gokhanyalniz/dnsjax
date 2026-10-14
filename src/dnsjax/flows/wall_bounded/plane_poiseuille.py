@@ -32,7 +32,7 @@ the run evolves in the frame translating in `$x$` at
 and the CFL diagnostic advects with `$\mathbf{U} -
 U_{grid}\hat{\mathbf{x}}$` (see ``parameters.update_parameters`` and
 ``geometries.wall_bounded._base.pad_base_flow``).  Set
-``--phys.u_grid 0`` for the lab frame.
+``--phys.u_grid 0`` for the laboratory frame.
 
 Driving
 -------

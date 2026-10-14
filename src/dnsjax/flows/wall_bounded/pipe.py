@@ -35,7 +35,7 @@ the cylindrical ``_get_rhs_core`` / ``_l_bf`` and the CFL diagnostic
 advects with `$\mathbf{U} - U_{grid}\hat{\mathbf{z}}$` (see
 ``parameters.update_parameters`` and
 ``geometries.wall_bounded._base.pad_base_flow``).  Set
-``--phys.u_grid 0`` for the lab frame.
+``--phys.u_grid 0`` for the laboratory frame.
 """
 
 from dataclasses import dataclass

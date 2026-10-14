@@ -146,7 +146,7 @@ move at all.  In the plane-Poiseuille `$4\pi \times 2\pi$` box,
 ``init.random_smoothness = 0.4`` puts 92 % of a (mean-free, the
 ``init.random_mean_flow`` default) perturbation's energy inside
 `$|k_z| \le 2$`, and every mode beyond `$|k_z| = 36$` more than sixteen decades
-below the peak, while the lab's twin-partner default, `$s = 0.022$`,
+below the peak, while `$s = 0.022$`, a near-wall perturbation's value,
 peaks at `$\lambda^+ \approx 50$`.  The wall-normal law must **not** follow
 `$s$` down: lowering `$s_w$` moves the wall-normal profile *away* from the wall
 rather than towards it (the wall window, not the filter, is what sets that
@@ -160,7 +160,7 @@ and takes `$s$` alone.
 
 **Shape is not growth.**  Neither smoothness default is fitted to the
 `$(y, k)$` shape a turbulent difference field settles into (scored
-by the lab's ``random_ic_calibrate.py``), because that shape is not a
+against recorded ensembles), because that shape is not a
 growth predictor: at the minimal plane-Couette box of Hamilton, Kim &
 Waleffe (*J. Fluid Mech.* **287**, 317, 1995; `$Re_\tau \approx 34$`)
 the score peaks at `$s \approx 0.15$`, while over 60 advective units

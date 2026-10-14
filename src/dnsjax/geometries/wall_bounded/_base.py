@@ -23,13 +23,13 @@ grid            GEMM      stencil   per-pair ratio, median (IQR)
 
 and the other geometries, at a moderate and the smallest grid: the
 pipe x1.04 (``32x97x64``) and x0.97 (``16x33x16``), Taylor-Couette
-x1.08 and x0.95, the lab's viscoelastic Dean and pipe x1.04 and x1.05
+x1.08 and x0.95, a viscoelastic Dean and pipe x1.04 and x1.05
 (``16x65x32``).  ``10x385x320`` has the per-rank modes and points of a
 ``1280 x 385 x 320`` run on 128 ranks, where XLA's count for the step
 falls from 18.25 to 4.45 GFLOP.  The gain grows with `$N_y$` (the
 GEMM's FLOPs per point do); on the smallest test grids the stencil's
 fixed cost can leave it a few per cent behind.  The step temporaries
-are unchanged, but for the lab's viscoelastic Dean's (+0.15 %: its
+are unchanged, but for the viscoelastic Dean's (+0.15 %: its
 re/im split on the 9-field tensor stacks); the stored parts add ``~30 KB`` per
 matrix, and the unrolled stencils about 2.5 s of compile per step
 program.  The stencil's first form padded the field by the full
@@ -407,7 +407,7 @@ def pad_base_flow(flow: object) -> None:
     (:func:`dnsjax.measurements.get_cfl` via each geometry's
     ``_get_rhs_measured``), so the reported CFL is the
     frame-relative advection.  The rotational cross product
-    (:func:`dnsjax.rhs.get_nonlin`) keeps the lab-frame
+    (:func:`dnsjax.rhs.get_nonlin`) keeps the laboratory-frame
     ``base_flow_padded``: the frame term is applied in *convective*
     form, `$+ i k_0 U_{grid} \mathbf{u}'$`, added spectrally in each
     geometry's ``_get_rhs_core`` / ``_l_bf`` (Design notes: "The moving

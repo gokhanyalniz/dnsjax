@@ -180,8 +180,9 @@ git push origin v0.2.0
 ```
 
 `cut` strips the lab from `pyproject.toml`, relocks, dates the
-citation, pins the PyPI README's links to the tag, points the archive's
-links into the lab at the tag on GitHub, commits and tags.
+citation, trims the README to the sections a release carries, pins the
+PyPI README's links to the tag, points the archive's links into the lab
+at the tag on GitHub, commits and tags.
 Pushing the tag runs `.github/workflows/release.yml`, which checks the
 artefacts and the archive, then publishes to PyPI once the `pypi`
 environment's reviewer approves and drafts the GitHub release.

@@ -843,8 +843,9 @@ def _build_A_base(D1: Array, D2: Array, inv_r: Array) -> Array:
     `$D_1 x$` is reused, the split form stays.  The fused product is
     not bit-identical to the split one, so a change to it is guarded by
     ``tests/test_imm_continuity.py``, the band-vs-dense parity tests
-    and the lab's viscoelastic suites -- not by the laminar smoke, whose
-    `$u' = 0$` makes every stage zero either way.
+    and the stepping suites of flows carrying more than three components
+    -- not by the laminar smoke, whose `$u' = 0$` makes every stage zero
+    either way.
 
     Parameters
     ----------

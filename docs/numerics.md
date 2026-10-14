@@ -35,8 +35,7 @@ term,
 in which the base-flow self-interaction is a pure gradient absorbed by the
 pressure. A force-driven flow, without such a profile, integrates the
 **total** field with a mean-mode body force instead
-(`FlowSpec.total_field`), as those of the repository's lab package do
-([`lab/README.md`](../lab/README.md)).
+(`FlowSpec.total_field`).
 
 ## Spatial discretization
 

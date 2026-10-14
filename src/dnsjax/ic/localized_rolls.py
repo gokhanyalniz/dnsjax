@@ -279,7 +279,7 @@ def peak_velocity(
 
     Each *component* is the triple of physical 1-D factors
     ``(wall-normal profile, complex-axis signal, real-axis signal)`` of
-    one **lab-frame** velocity component (`$u_x, u_y, u_z$` Cartesian;
+    one **laboratory-frame** velocity component (`$u_x, u_y, u_z$` Cartesian;
     `$u_z, u_r, u_\theta$` cyl/annular).  The component physical field is
     their outer product, times *weight* when given: a
     ``(Ny, n_c)`` factor shared by every component (a metric's

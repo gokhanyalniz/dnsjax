@@ -81,8 +81,7 @@ Summing these, the leading-order total per device is
 
 with $W \approx 15\text{–}21$ as above and $(n_c, m, v) = (3, 2, 2)$
 for the plane flows, $(5, 3, 3)$ for the pipe and $(3, 3, 2)$ for
-Taylor–Couette (the lab's flows:
-[`lab/docs/numerics.md`](../lab/docs/numerics.md#conventions)). The sum
+Taylor–Couette (a flow another package adds states its own). The sum
 is an upper estimate —
 XLA's buffer reuse typically realizes less — and halves at single
 precision. Off the stepping path, a snapshot write reshards the state
@@ -289,9 +288,8 @@ back to `gloo` otherwise. The same docstring covers when raising
 The rules above fix a run's shape. What they leave open — the rank
 count on a CPU node, the grid axis and the Pallas tile on a GPU node,
 the precision, how far the step scales across nodes — is measured on
-the machine itself by the repository lab's
-[`lab/scripts/performance/node_benchmark.py`](../lab/scripts/performance/node_benchmark.py)
-(the lab's performance tools are kept beside it). It launches
+the machine itself by a layout sweep, a driver the repository's lab
+holds ([the lab](../README.md#the-lab)). It launches
 the ordinary solver on one fixed problem (the production configuration
 with a short horizon) across every candidate layout, on one node or
 several, and tabulates the seconds per time unit, the parallel
@@ -349,8 +347,8 @@ the ranks that hold only padding: at `1280 x 385 x 320` on 128 ranks,
 `(128, 1)` pads the wall-normal axis from 385 to 512 points and the
 stored spanwise modes from 319 to 384, while `(4, 32)` pads them to 388
 and 320 and `(1, 128)` pads neither (its oversampled spanwise axis
-rounds from 480 to 512 points). `node_benchmark.py --dry-run` prints
-every layout's padding before anything runs.
+rounds from 480 to 512 points). The sweep driver prints every
+layout's padding before anything runs.
 
 **Size the node, not just the rank.** On a node of many cores and a few
 GiB per core, every rank's own runtime — the interpreter, jaxlib, the
@@ -367,14 +365,14 @@ there, a rank held about 1.1 GiB besides its share of the problem's
 93.5 GiB while stepping at `(128, n)` (0.9 GiB at `(64, 2n)`) on up to
 16 nodes, and more beyond: 1.2 GiB at 32 nodes and 1.3 at 64. One
 process on the first node held some 70 KiB more per rank of the job on
-top (0.57 GiB more at 8192 ranks). Three tools separate the two:
-[`lab/scripts/performance/memory_budget.py`](../lab/scripts/performance/memory_budget.py) predicts the
-problem's share per rank for any layout from XLA's own buffer
-assignment, without the machine; the `Peak host memory` line of a run
+top (0.57 GiB more at 8192 ranks). Three things separate the two: a
+memory budget (the lab's) predicts the problem's share per rank for
+any layout from XLA's own buffer assignment, without the machine; the
+`Peak host memory` line of a run
 reports what the operating system saw at the high-water mark, start-up
 included, and the `Resident host memory` line under it what the run
-still holds at the end; and
-[`lab/scripts/performance/memory_watch.py`](../lab/scripts/performance/memory_watch.py) samples each
+still holds at the end; and a per-node sampler (the lab's, which the
+SLURM example runs as `MEMWATCH`) samples each
 node's total during a job, so an out-of-memory kill is placed against
 its layout and start-up phase. A layout that does not fit is helped, in
 order, by less padding, by `solver.rhs_transform_chunks`, and by fewer
@@ -387,19 +385,17 @@ removes three quarters of the step's floating-point work and about 15 %
 of its time on one core of a laptop processor, at unchanged memory (the
 measured table: the Design notes of
 `src/dnsjax/geometries/wall_bounded/_base.py`).
-`node_benchmark.py --variant gemm="--solver.wall_normal_matvec dense"`
-measures the same trade on the target node, in one sweep.
+The sweep driver measures the same trade on the target node, as one
+of its variants, in one sweep.
 
 **Across nodes**, start from the largest padding-free `np0` (rule 2 of
 *Choosing the device grid*) and measure.
-`node_benchmark.py --launcher srun --nodes 1 2 4 ...`, run inside the
-allocation, measures the strong scaling of the production problem
-directly — `--np0 128 64` keeps the `(128, n)` and `(64, 2n)` families
-at every node count — and its `--exe` arms compare two checkouts in one
-sweep. `node_benchmark.py --target cpu` runs every factorization at
-each rank count (`--ranks 16 32 64 128` by default, or `--np0` /
-`--np1` to keep a few), so the table also shows the rank count at
-which the step stops scaling. Measure at the node counts you will run:
+The sweep driver, run inside the allocation over a list of node
+counts, measures the strong scaling of the production problem directly
+— keeping the `(128, n)` and `(64, 2n)` families at every node count —
+and compares two checkouts in one sweep. On one CPU node it runs every
+factorization at each rank count, so the table also shows the rank
+count at which the step stops scaling. Measure at the node counts you will run:
 on ARCHER2 the cost of a step moved by a quarter between 16 and 32
 nodes, for a reason no smaller run shows
 ([Strong scaling on ARCHER2](#strong-scaling-on-archer2), which also
@@ -413,7 +409,7 @@ so on tens of full nodes the start-up is a burst that a parallel
 filesystem's metadata server serves slowly, and at every user's expense.
 Where the site offers a tool that has one process per node fetch the
 files for its ranks (Spindle, for one),
-`node_benchmark.py --launch-prefix` runs a sweep under it. On ARCHER2,
+the sweep driver runs under it. On ARCHER2,
 Spindle cut the time from launch to a running distributed runtime from
 59 to 25 s on two nodes, at no cost per step; under it that phase
 stayed under a minute on up to 64 nodes (a job's first launch the
@@ -433,7 +429,7 @@ all four GPUs, no launcher:
 ```
 
 - **Grid.** `np0 = 4` is rule 1's default; `np1 = 4` is the alternative
-  worth one pair of runs, and `node_benchmark.py --target gpu` adds the
+  worth one pair of runs, and the sweep driver's GPU target adds the
   2 × 2 grid.
 - **Memory.** JAX reserves `XLA_PYTHON_CLIENT_MEM_FRACTION` of each GPU
   at start-up (0.75 by default) and allocates inside it. Size the run
@@ -444,19 +440,17 @@ all four GPUs, no launcher:
   the knob for a run that does not fit.
 - **Pallas tile.** The defaults (2, 32) were tuned on an H100 SXM, which
   has the same 132 streaming multiprocessors as an H200 but less memory
-  bandwidth (3.35 against 4.8 TB/s), so they are where a `--tiles` sweep
-  starts rather than a result for the H200.
-  [`lab/scripts/performance/pallas_solve_profile.py`](../lab/scripts/performance/pallas_solve_profile.py)
-  breaks a solve down against the device's own peak bandwidth.
+  bandwidth (3.35 against 4.8 TB/s), so they are where a tile sweep
+  starts rather than a result for the H200. The lab's profile of the
+  banded solve breaks one down against the device's own peak bandwidth.
 - **Precision.** Single precision halves every figure under
   [Memory footprint](#memory-footprint);
-  `node_benchmark.py --precisions double single` puts the two side by
-  side.
+  the sweep driver puts the two side by side.
 
 ## Strong scaling on ARCHER2
 
-One production-sized run, timed on 1 to 64 nodes of a CPU cluster with
-[`lab/scripts/performance/node_benchmark.py`](../lab/scripts/performance/node_benchmark.py).
+One production-sized run, timed on 1 to 64 nodes of a CPU cluster by
+the sweep driver.
 
 **The machine.** A standard compute node of
 [ARCHER2](https://docs.archer2.ac.uk/user-guide/hardware/), an HPE Cray
@@ -510,10 +504,10 @@ run's to round-off.
 </picture>
 
 Speed-up and efficiency are against the fastest one-node run,
-`(128, 1)`; the figure's bars span the runs behind each point
-([`lab/scripts/performance/scaling_figure.py`](../lab/scripts/performance/scaling_figure.py) draws it,
-and these tables, from
-[`figures/archer2-scaling.csv`](figures/archer2-scaling.csv)).
+`(128, 1)`; the figure's bars span the runs behind each point (the
+figure and these tables are drawn from
+[`figures/archer2-scaling.csv`](figures/archer2-scaling.csv) by the
+lab's figure script).
 
 | nodes | ranks | `(128, n)`: s per time unit | speed-up | efficiency | node hours per time unit | `(64, 2n)`: s per time unit |
 |---:|---:|---:|---:|---:|---:|---:|
@@ -574,15 +568,9 @@ the cost per step moved by a quarter between 16 and 32 nodes, which no
 smaller run would have shown. The one-node test above tells a per-rank
 effect from the network's on any machine. With a `parameters.toml` that
 names no `[init] snapshot` (a smaller `nx` starts a new trajectory
-anyway), inside a one-node allocation:
-
-```bash
-.venv/bin/python lab/scripts/performance/node_benchmark.py \
-  --target cpu --launcher srun --nodes 1 --tasks-per-node 128 --np0 128 \
-  --toml parameters.toml \
-  --variant n16="--res.nx 80" --variant n32="--res.nx 40" \
-  --solver-args "--init.random_seed 1 --stop.max_wall_time PT3M30S"
-```
-
-Compare each row's seconds per time unit, times its `N`, with the
-full problem's on one node.
+anyway), inside a one-node allocation, run the sweep driver on one
+node at 128 ranks, `(128, 1)`, with two variants, `--res.nx 80` and
+`--res.nx 40` (each rank's share of an `N = 16`- and an `N = 32`-node
+run), each from a fixed seed for a few minutes of wall time. Compare
+each row's seconds per time unit, times its `N`, with the full
+problem's on one node.

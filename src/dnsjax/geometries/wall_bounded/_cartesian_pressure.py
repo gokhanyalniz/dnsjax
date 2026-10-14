@@ -8,8 +8,8 @@ alone, consistently with the discrete dynamics that produced it: the
 perturbation pressure `$p'$` of one state, which the reduced-resolution
 snapshots of :mod:`dnsjax.lowres` store, or the difference pressure
 `$\Delta p$` of two states (:func:`convective_nonlinear` with a
-reference), which the lab's twin runs take (``dnsjax_lab.twin.pressure``
-builds on this module).  All solve the same problem with a different
+reference), which a lockstep two-state run takes for its difference
+pressure.  All solve the same problem with a different
 source; nothing below reads the source except as a source.
 
 Interior equation
@@ -341,8 +341,8 @@ def convective_nonlinear(
     *state*'s profile, `$\mathrm{i}(k_x\Delta P_x + k_z\Delta P_z)
     \hat{\mathbf{u}}'^{(1)}$` and `$\Delta\hat v\,\partial_y
     \mathbf{U}_b$`.  That is, to round-off, the sum of the six
-    convective pieces a difference-energy budget splits it into (the
-    lab's twin diagnostics), without the split: 30 transforms, and each
+    convective pieces a difference-energy budget splits it into,
+    without the split: 30 transforms, and each
     half of a component's pair goes back on its own, behind its own
     barrier, so one gradient set is live at a time -- the peak the
     pressure of a reduced difference snapshot sets (Design notes:

@@ -68,7 +68,7 @@ CFL_X_LAMINAR = SMOKE_DT * SMOKE_NX / SMOKE_LX
 #   Poiseuille:  max|(1 - y^2) - 2/3| = 2/3 at the y = +/-1 walls.
 # Couette keeps U_grid = 0 (max|y| = 1), i.e. the unchanged
 # CFL_X_LAMINAR.  Both maxima sit exactly on grid nodes, so (unlike the
-# lab-frame pipe, whose max between nodes was only range-checkable)
+# laboratory-frame pipe, whose max between nodes was only range-checkable)
 # these are tight equalities.
 CFL_GRID_LAMINAR_PIPE = 0.5 * CFL_X_LAMINAR
 CFL_GRID_LAMINAR_POISEUILLE = (2.0 / 3.0) * CFL_X_LAMINAR

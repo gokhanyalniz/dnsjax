@@ -1714,8 +1714,8 @@ def _peak_host_memory_line(jax) -> str | None:
     minus its shared pages, plus one copy of the largest shared part on
     that node (an estimate: ranks peak at different moments, so it errs
     high).  A node's total is what an out-of-memory kill is decided on;
-    a sampler (``lab/scripts/performance/memory_watch.py``) records it
-    over time.
+    a per-node sampler run beside the job records it over time
+    (``examples/slurm/cpu.slurm``, ``MEMWATCH``).
 
     A second line, ``Resident host memory at the end``, sums what each
     rank still holds (``VmRSS``) the same way, at one moment: what the

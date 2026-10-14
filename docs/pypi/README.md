@@ -49,7 +49,8 @@ plane by itself.</a>
   (also available as an option).
 - **Five flow systems across four geometries**, all on one stepping
   core; a package of your own adds flows, parameter fields and run-loop
-  sections through entry points, without editing the solver.
+  sections through entry points, without editing the solver — as the
+  repository's lab does, with five flows more ([The lab](https://github.com/gokhanyalniz/dnsjax/blob/main/README.md#the-lab)).
 - **Non-modal optimal growth built on the solver itself** — linear
   transient growth about an arbitrary wall-normal profile, reusing the
   solver's own linear step mode by mode.
@@ -124,6 +125,14 @@ where a plane channel takes `--geo.lx`/`--res.ny`/`--res.nz`. For the
 various conventions involved, see
 [Conventions](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/numerics.md#conventions).
 
+The repository's lab adds five flows on the same geometries — a curved
+(toroidal) pipe with a metric of its own, quasi-Keplerian Taylor–Couette
+flow, Dean flow (a pressure-driven curved channel), and viscoelastic
+pipe and Dean flows carrying the polymer conformation tensor — installed
+by the same `uv sync` and run the same way:
+[`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/README.md#flows), with their equations in
+[`lab/docs/numerics.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/docs/numerics.md).
+
 ## Parallelization
 
 One time step: the spectral state is inverse-transformed onto the
@@ -146,6 +155,11 @@ is not trivial. [`docs/scaling.md`](https://github.com/gokhanyalniz/dnsjax/blob/
 per geometry, a symbolic memory model linear in `n_x n_y n_z` that sizes
 a configuration before it is launched, and how to pick the device grid
 `(n_p0, n_p1)` on one node and across many.
+
+The tools behind those numbers — a layout and strong-scaling sweep
+driver, a per-rank memory budget from XLA's buffer assignment, a
+per-node memory sampler and GPU profiles of the banded solve — are the
+lab's: [performance scripts](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/README.md#scripts).
 
 <a id="fig-scaling"></a>
 <img src="https://raw.githubusercontent.com/gokhanyalniz/dnsjax/main/docs/figures/archer2-scaling-light.svg" width="820"
@@ -176,7 +190,9 @@ its flows to about 2 % or better, and the rest of the suite pins the
 discrete divergence, the energy budget, the temporal order, the banded
 kernel against a dense reference, and the analysis API against the
 solver's own operators. Every claim is mapped to the test that backs it
-in [`docs/validation.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/validation.md).
+in [`docs/validation.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/validation.md). The lab's flows and
+tools have a page of their own,
+[`lab/docs/validation.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/docs/validation.md).
 
 ## Design decisions
 
@@ -234,6 +250,7 @@ in [`docs/validation.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/
 | **Crash-consistent diagnostics** | buffered streams flushed before snapshots and on termination; a NaN or inf aborts naming the quantity and writes no snapshot of the broken state |
 | **Graceful shutdown** | an ISO 8601 wall-time budget ends the run cleanly, final snapshot included, before a queue kills it |
 | **Laminarization auto-stop** | a run ends once the perturbation energy falls below a threshold |
+| **In the lab** | lockstep twin runs streaming a perturbation's growth, budget and spectra; `[probes]` and `[force]` run-loop streams; a response analysis from a turbulent run to a linear operator — [The lab](https://github.com/gokhanyalniz/dnsjax/blob/main/README.md#the-lab) |
 
 ## Documentation
 
@@ -249,8 +266,11 @@ in [`docs/validation.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/
 | [`docs/extending.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/extending.md) | adding a flow system, in this package or from your own |
 | [`docs/cpu-collectives.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/cpu-collectives.md) | routing multi-process CPU collectives through MPI |
 | [`tests/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/tests/README.md) | how the suite is laid out and how to run it |
-| [`scripts/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/scripts/README.md) | the offline tools: figures, benchmarks, ensembles, post-processing |
+| [`scripts/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/scripts/README.md) | the offline tools: figures, a snapshot perturbation, wall-normal resolution |
 | [`CONTRIBUTING.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/CONTRIBUTING.md) | setup, lint, tests, adding a flow, commit style |
+| [`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/README.md) | the lab: its flows, runs and analyses, scripts and tests |
+| [`lab/docs/numerics.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/docs/numerics.md) | the lab flows' equations and conventions |
+| [`lab/docs/validation.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/docs/validation.md) | what the lab's flows and tools are checked against |
 
 Field-by-field parameter documentation lives in the code, rendered per
 flow by `dnsjax --help <system>` and `dnsjax --sample-toml <system>`.
@@ -266,7 +286,9 @@ machinery, second-order temporal convergence, energy-budget closure); the
 machinery (snapshot round-trips, device-count-agnostic resume, the
 JAX-free import guarantee); and the published optimal-growth values.
 Several launch real `mpirun` multi-device runs; none needs a GPU. See
-[`tests/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/tests/README.md).
+[`tests/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/tests/README.md). The lab's suite adds 36 scripts of
+its own, collected by the same `pytest`
+([`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/README.md#tests)).
 
 ## Extending
 
@@ -280,7 +302,10 @@ surface, the stepping dispatch and the analysis package's geometry sets
 all derive from the registry and extend themselves. A flow with a
 metric of its own adds a geometry module as well, and parameter fields
 and run-loop sections plug in the same way. See
-[`docs/extending.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/extending.md).
+[`docs/extending.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/extending.md). The lab is the worked example
+of every extension point: five flows, one with a metric of its own,
+parameter fields and two run-loop sections
+([`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/README.md)).
 
 ## Limitations
 
@@ -342,30 +367,41 @@ The numerics follow these references:
 ## The lab
 
 This repository also holds [`lab/`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/README.md), a second package
-developed alongside the solver and never released with it: further
-flows (the curved pipe, quasi-Keplerian, Dean and two viscoelastic
-flows), lockstep twin runs, runtime probe and forcing streams, and
-response analysis. It plugs into the solver through the same entry
-points a package of your own would use, and `uv sync` installs it into
-the same environment.
+developed alongside the solver and never released with it. It plugs
+into the solver through the same entry points a package of your own
+would use, and `uv sync` installs both into one environment. What it
+adds:
+
+- **Five flows** on the solver's geometries — the curved pipe,
+  quasi-Keplerian Taylor–Couette, Dean, and the viscoelastic pipe and
+  Dean — [`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/README.md#flows), their equations in
+  [`lab/docs/numerics.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/docs/numerics.md) and their checks in
+  [`lab/docs/validation.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/docs/validation.md).
+- **Twin runs**: `dnsjax-twin` steps a reference snapshot and a
+  perturbed copy in lockstep and streams the difference field's
+  energies, budget and spectra —
+  [`twin/`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/src/dnsjax_lab/twin/README.md).
+- **Runtime streams**: `[probes]` records the wall-normal profiles of
+  chosen spectral modes, `[force]` drives them with white-in-time kicks
+  — [`extensions/`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/src/dnsjax_lab/extensions/README.md).
+- **Response analysis**: from a turbulent run to a data-driven linear
+  operator, three interchangeable ways —
+  [`analysis/response/`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/src/dnsjax_lab/analysis/response/README.md).
+- **Scripts**: ensembles and twin post-processing; the performance
+  tools (benchmarks, profiles, memory sizing, the scaling figure);
+  functionality checks (differentiability, GPU kernel and storage
+  diagnostics); the refactor gate, the release tooling and the
+  documentation checkers — [`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/README.md#scripts).
+- **Tests**: 36 scripts of its own, collected by the same `pytest` —
+  [`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/README.md#tests).
+
+Its own limitations: [`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/README.md#limitations).
 
 ## License and citation
 
 Released under the [MIT License](https://github.com/gokhanyalniz/dnsjax/blob/main/LICENSE), © 2025–2026 Gökhan Yalnız.
 If `dnsjax` supports your work, a citation of this repository
 (<https://github.com/gokhanyalniz/dnsjax>) is appreciated.
-
-## Acknowledgements
-
-I developed most of `dnsjax` (everything before 1 August 2026) during
-my year as a postdoctoral researcher in Björn Hof's group at the
-Institute of Science and Technology Austria, and I am grateful for that
-opportunity and for the time it gave me to work on this. Substantial
-changes have followed, and continue, since I joined Yongyun Hwang's
-group at Imperial College London. I also thank Ashley P. Willis for
-[`openpipeflow`](https://openpipeflow.org), from which I learned a great
-deal. None of them was involved in the development of this code. Any
-errors are my own.
 
 ## Use of AI
 

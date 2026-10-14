@@ -62,19 +62,13 @@ to lose, is in `_pallas_banded_solve_t` in `src/dnsjax/solvers.py`.
 
 ## Running the probe
 
-The probe is a functionality check of the repository's lab:
-
-```bash
-# 12 configurations, then the cross product, then on a GPU
-uv run python lab/scripts/diagnostics/grad_probe.py
-uv run python lab/scripts/diagnostics/grad_probe.py --full
-uv run python lab/scripts/diagnostics/grad_probe.py --dist.platform cuda
-```
-
-One subprocess per configuration — the parameter singletons and the
-jitted steppers capture their configuration at import and trace time —
-printing a Markdown table of forward mode, reverse mode, and a central
-difference against every gradient.
+The probe is a functionality check the repository's lab holds
+([the lab](../README.md#the-lab)): one subprocess per stepping
+configuration — the parameter singletons and the jitted steppers
+capture their configuration at import and trace time — printing a
+Markdown table of forward mode, reverse mode, and a central difference
+against every gradient, for twelve configurations, their cross product,
+or the same on a GPU.
 
 ## What is verified where
 

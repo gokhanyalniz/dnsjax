@@ -197,8 +197,8 @@ speed-up is a bonus, not a guarantee.
 
 **The split corrector stays opt-in.**  At realistic ``dt`` the
 unsplit corrector converges in ~1-2 iterations for *every* flow
-(measured, the lab's total-field Dean and high-Wi viscoelastic Dean
-flows included: unsplit ``c`` stays 2-3, far from the cap, at
+(measured, a total-field Dean flow and a high-Wi viscoelastic one
+included: unsplit ``c`` stays 2-3, far from the cap, at
 ``dt = 0.01``), so it is both correct and faster -- the split measured
 a few % slower at production sizes on GPU, up to tens of % on small
 problems.  The split pays off only once ``dt`` is pushed far enough
@@ -216,8 +216,8 @@ induced corrector stress can trip the fallback into rescuing single
 steps (``ny = 32`` completes via fallbacks, while ``ny = 48`` diverges
 with the corrector still converged).
 
-**Implicit mean-flow coupling.**  Decisive for the lab's total-field
-Dean flow: at ``nz = 64``, ``dt = 0.15`` (mean-flow ``CFL_th ~ 0.5``)
+**Implicit mean-flow coupling.**  Decisive for a total-field Dean
+flow: at ``nz = 64``, ``dt = 0.15`` (mean-flow ``CFL_th ~ 0.5``)
 the coupling off NaNs by ``t ~ 4`` while the coupling on runs clean,
 matching ``iterative-cn`` at ~4 FFT-free Picard iterations per step
 against its ~4 FFT evaluations.  Neutral where the limit is
@@ -404,8 +404,8 @@ class Distribution(BaseModel):
 
     What these rules leave open on a given node -- the rank count, the
     grid axis, the Pallas tile, the precision -- is measured there by
-    ``lab/scripts/performance/node_benchmark.py``, one fixed problem over every
-    candidate layout; ``docs/scaling.md`` ("Target nodes") gives the
+    a sweep of one fixed problem over every candidate layout;
+    ``docs/scaling.md`` ("Target nodes") gives the
     starting configuration for a two-socket CPU node and a four-GPU
     one.
 
@@ -438,7 +438,7 @@ class Distribution(BaseModel):
     --dist.np1 2``.  Both topologies produce identical
     global meshes, trajectories, and snapshots (resume is
     np-agnostic), and both are validated on real multi-GPU
-    hardware (``lab/scripts/performance/solver_benchmark.py``).
+    hardware (a benchmark of the solve on a multi-GPU node).
     The single-process form avoids cross-process NCCL
     entirely -- the reliable choice on single-node
     allocations whose multi-process collective stack is
