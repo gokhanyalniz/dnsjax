@@ -15,19 +15,24 @@ from __future__ import annotations
 
 import numpy as np
 
-#: Magnitude of the laminar wall velocity gradient, per Cartesian base
-#: flow: `$U = y$` gives 1, `$U = 1 - y^2$` gives 2.  A snapshot stores
-#: the perturbation about that profile, so the *total* wall shear --
-#: and hence `$Re_\tau$` -- needs it added back.
-LAMINAR_WALL_SHEAR = {"plane-couette": 1.0, "plane-poiseuille": 2.0}
+#: The laminar wall velocity gradient `$dU/dy$` at the bottom and top
+#: walls, per Cartesian base flow: `$U = y$` gives `$(1, 1)$`,
+#: `$U = 1 - y^2$` gives `$(2, -2)$`.  A snapshot stores the
+#: perturbation about that profile, so the *total* wall shear -- and
+#: hence `$Re_\tau$` -- needs it added back, sign included.
+LAMINAR_WALL_SHEAR = {
+    "plane-couette": (1.0, 1.0),
+    "plane-poiseuille": (2.0, -2.0),
+}
 
 
 def friction_reynolds(stats, params) -> float:
     r"""`$Re_\tau = u_\tau h/\nu$` from the snapshot's own wall shear.
 
     `$u_\tau = \sqrt{\nu\,|\mathrm{d}U/\mathrm{d}y|_w}$` in code units
-    (`$h = 1$`, `$\nu = 1/Re$`), averaged over both walls: the stored
-    ``tau'_s,*`` perturbation stresses plus the laminar contribution of
+    (`$h = 1$`, `$\nu = 1/Re$`), averaged over both walls: at each wall
+    the stored ``tau'_s,*`` perturbation stress (signed, `$\nu\,
+    \partial_y u'_s$`) plus the laminar one of
     :data:`LAMINAR_WALL_SHEAR`.  Cartesian base flows only.
     """
     system = str(params.phys.system)
@@ -37,9 +42,9 @@ def friction_reynolds(stats, params) -> float:
             f"got {system!r}"
         )
     re = float(params.phys.re)
-    lam = LAMINAR_WALL_SHEAR[system] / re
-    lo = abs(lam + float(stats["tau'_s,b"]))
-    hi = abs(-lam + float(stats["tau'_s,t"]))
+    lam_b, lam_t = LAMINAR_WALL_SHEAR[system]
+    lo = abs(lam_b / re + float(stats["tau'_s,b"]))
+    hi = abs(lam_t / re + float(stats["tau'_s,t"]))
     return float(np.sqrt(0.5 * (lo + hi)) * re)
 
 

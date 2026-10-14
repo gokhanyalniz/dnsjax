@@ -449,14 +449,20 @@ def load_profile_modes(
 
 
 def load_profile_npy(path: str | Path) -> np.ndarray:
-    """A raw ``(C, Ny)`` complex profile on the snapshot's grid."""
+    """A raw ``(C, Ny)`` complex profile on the snapshot's grid.
+
+    ``C`` must be the flow's stored component count: a single row would
+    otherwise broadcast onto every component of the state.
+    """
+    from dnsjax.flows.registry import spec_for
     from dnsjax.parameters import params
 
+    n_c = spec_for(params.phys.system).n_components
     vec = np.asarray(np.load(path))
-    if vec.ndim != 2 or vec.shape[1] != params.res.ny:
+    if vec.shape != (n_c, params.res.ny):
         raise SystemExit(
-            f"{path}: expected a (C, ny={params.res.ny}) profile, got "
-            f"shape {vec.shape}"
+            f"{path}: expected a ({n_c}, ny={params.res.ny}) profile, "
+            f"got shape {vec.shape}"
         )
     return vec
 
