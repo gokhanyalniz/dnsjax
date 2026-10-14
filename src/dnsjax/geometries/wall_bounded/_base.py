@@ -80,7 +80,7 @@ from jax import Array, lax, shard_map
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
-from ...fd import stencil_decomposition
+from ...fd import positive_quadrature, stencil_decomposition
 from ...operators import phys_to_spec_2d, spec_to_phys_2d
 from ...parameters import derived_params, params
 from ...sharding import register_dataclass_pytree, sharding
@@ -596,13 +596,40 @@ def extract_mean_mode(state: Array) -> Array:
 # ── Norms and integration ───────────────────────────────────────
 
 
+#: Non-CGL grids whose quadrature order was already reported, as
+#: ``(label, n, order)``: the IC builders build the grid again, and one
+#: startup line per grid is enough.
+_quadrature_order_reported: set[tuple[str, int, int]] = set()
+
+
+def quadrature_weights(
+    build: Callable[[int], np.ndarray], fd_order: int, label: str, n: int
+) -> np.ndarray:
+    r"""A non-CGL grid's weights: the highest positive order up to *fd_order*.
+
+    :func:`dnsjax.fd.positive_quadrature` of *build* (an order ->
+    weights map: the composite rule on the grid, or the pipe's
+    axis-augmented one), so every energy and corrector norm stays
+    definite.  When the order falls below *fd_order*, one startup line
+    names it (main process, once per *label* and *n*).
+    """
+    w, order = positive_quadrature(build, fd_order)
+    key = (label, n, order)
+    if order < fd_order and key not in _quadrature_order_reported:
+        _quadrature_order_reported.add(key)
+        sharding.print(
+            f"{label} quadrature: order {order}, the highest up to "
+            f"fd_order = {fd_order} whose weights are all positive."
+        )
+    return w
+
+
 def integrate_scalar(scalar_data: Array, y_weights: Array) -> Array:
     r"""Quadrature integral using precomputed weights.
 
-    Returns `$\sum_j w_j\,f(y_j)$` where `$w_j$` are
-    precomputed quadrature weights (Clenshaw-Curtis for CGL
-    grids, or composite polynomial weights with radial
-    Jacobian for cylindrical grids).
+    Returns `$\sum_j w_j\,f(y_j)$` where `$w_j$` are the geometry's
+    precomputed quadrature weights (its grid builder's ``y_weights``:
+    spectral on the CGL grids, :func:`quadrature_weights` otherwise).
 
     Parameters
     ----------

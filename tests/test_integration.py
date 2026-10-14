@@ -8,7 +8,10 @@ Tests cover:
    (``build_integration_weights``): weight sum, polynomial exactness,
    convergence rate.
 3. The parity-free axis-augmented radial quadrature (the cylindrical
-   solver rule): positivity and even+odd exactness.
+   solver rule): positivity and even+odd exactness; the wall-clustered
+   one-sided tanh grid; and the positive-order rule every non-CGL grid
+   takes (``positive_quadrature``): positive and exact at its order on
+   the grids where ``fd_order = 8`` is not, unchanged where it is.
 4. Interpolation matrices: Chebyshev, the ``cgl_axis_gap`` detector,
    the spectral ``cgl_parity_interpolation_matrices`` (half / rigged /
    mixed, both parities), and the local Fornberg fallback (bounded
@@ -50,6 +53,7 @@ import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
 from dnsjax.fd import (  # noqa: E402
+    axis_augmented_weights,
     build_integration_weights,
     build_interpolation_matrix,
     cgl_axis_gap,
@@ -61,7 +65,9 @@ from dnsjax.fd import (  # noqa: E402
     is_cgl_grid,
     local_grid_spacing,
     local_interpolation_matrix,
+    positive_quadrature,
     tanh_one_sided_grid,
+    tanh_two_sided_grid,
 )
 from dnsjax.geometries.wall_bounded import integrate_scalar  # noqa: E402
 
@@ -295,16 +301,6 @@ def _radial_cgl_grid(nr, gap):
     return s[nr + gap :]
 
 
-def _augmented_radial_weights(rs, p):
-    """The solver's parity-free full-disc quadrature rule.
-
-    Integrates g = f*r on the axis-augmented grid [0, *rs], then drops
-    the axis node.
-    """
-    r_aug = np.concatenate([[0.0], rs])
-    return build_integration_weights(r_aug, p)[1:] * rs
-
-
 def test_augmented_axis_quadrature():
     """Parity-free axis-augmented radial quadrature (the solver rule):
     strictly positive AND exact for even *and odd* monomials up to the
@@ -316,7 +312,7 @@ def test_augmented_axis_quadrature():
     for gap in (0, 1):
         for nr in (8, 16, 32):
             rs = _radial_cgl_grid(nr, gap)
-            yw = _augmented_radial_weights(rs, p)
+            yw = axis_augmented_weights(rs, p)
             assert np.all(yw > 0), f"gap={gap} nr={nr}: negative weight"
             # int_0^1 r^d * r dr = 1/(d+2), exact for d+1 <= p, both
             # parities (odd d included -- the regression guard).
@@ -327,6 +323,92 @@ def test_augmented_axis_quadrature():
                     atol=1e-12,
                     err_msg=f"gap={gap} nr={nr} d={d}",
                 )
+
+
+def test_half_tanh_wall_clustered():
+    """The pipe's ``half-tanh`` grid clusters at the wall ``r = 1``.
+
+    Gaps shrink strictly from the axis to the wall, the outermost node
+    is the wall and none sits on the axis.  A formula clustering at the
+    axis instead would pass every other check in this file.
+    """
+    for nr in (8, 12, 24, 48):
+        for s in (0.5, 1.0, 1.5, 2.0):
+            r = tanh_one_sided_grid(nr, s)
+            gaps = np.diff(np.concatenate([[0.0], r]))
+            assert r[0] > 0.0 and r[-1] == 1.0, (nr, s)
+            assert np.all(np.diff(gaps) < 0.0), f"nr={nr} s={s}: {gaps}"
+
+
+def test_positive_quadrature():
+    """Every non-CGL grid's weights are positive and exact at their order.
+
+    At ``fd_order = 8`` the composite rule is not positive on the
+    pipe's one-sided tanh grid (beside the axis), on a uniform radial
+    grid, or on a smooth custom annular grid; the builders take the
+    highest positive order instead, and a grid positive at 8 (the
+    default-stretch Cartesian tanh) keeps its order-8 weights bit for
+    bit.  At order 8 the radial builder would refuse each of these pipe
+    grids at setup, and the annular one would run on an indefinite norm.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from dnsjax.geometries.wall_bounded.annular import build_annular_grid
+    from dnsjax.geometries.wall_bounded.cartesian import (
+        build_cartesian_grid,
+    )
+    from dnsjax.geometries.wall_bounded.cylindrical import (
+        build_cylindrical_grid,
+    )
+
+    p = 8
+    uniform = [np.arange(1, n + 1) / n for n in (16, 33)]
+    for rs in [tanh_one_sided_grid(n, 1.5) for n in (16, 24, 48)] + uniform:
+        w, q = positive_quadrature(
+            lambda q, rs=rs: axis_augmented_weights(rs, q), p
+        )
+        assert axis_augmented_weights(rs, p).min() < 0.0, len(rs)
+        assert 4 <= q < p and np.all(w > 0.0), (len(rs), q)
+        # int_0^1 r^d * r dr = 1/(d+2), exact for d + 1 <= q.
+        for d in range(q):
+            assert_allclose(
+                float(w @ rs**d), 1.0 / (d + 2), atol=1e-13, err_msg=d
+            )
+
+    # The radial builder, with a named and a custom grid.
+    yw = np.asarray(build_cylindrical_grid(24, p, None, "half-tanh", 1.5)[4])
+    assert np.all(yw > 0.0)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "grid.txt"
+        np.savetxt(path, uniform[0][::-1])  # wall-to-axis order
+        yw = np.asarray(build_cylindrical_grid(16, p, str(path))[4])
+    assert np.all(yw > 0.0)
+
+    # A smooth custom annular grid (``tests/test_annular.py``'s shape).
+    r1, r2 = 1.0, 2.0
+    x = np.linspace(0.0, 1.0, 21)
+    grid = r1 + (r2 - r1) * (x + 0.05 * np.sin(2.0 * np.pi * x))
+    assert (build_integration_weights(grid, p) * grid).min() < 0.0
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "grid.txt"
+        np.savetxt(path, grid[::-1])
+        rs, _, _, yw, _ = build_annular_grid(
+            21, p, str(path), r_inner=r1, r_outer=r2
+        )
+    yw = np.asarray(yw)
+    assert np.all(yw > 0.0)
+    assert_allclose(float(yw.sum()), (r2**2 - r1**2) / 2, rtol=1e-12)
+
+    # Positive at fd_order: the order-8 weights, unchanged.
+    for ny in (17, 33, 65):
+        y = tanh_two_sided_grid(ny, 1.5)
+        assert_allclose(
+            np.asarray(build_cartesian_grid(ny, p, None, "tanh", 1.5)[3]),
+            build_integration_weights(y, p),
+            rtol=0,
+            atol=0,
+        )
 
 
 def test_cgl_radial_quadrature_weights():

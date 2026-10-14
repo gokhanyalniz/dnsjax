@@ -157,6 +157,7 @@ from ._base import (
     integrate_scalar,  # noqa: F401 — re-exported
     pad_base_flow,  # noqa: F401 — re-exported
     phys_to_spec,  # noqa: F401 — re-exported
+    quadrature_weights,
     spec_to_phys,  # noqa: F401 — re-exported
 )
 
@@ -296,9 +297,10 @@ def build_cartesian_grid(
         wall-to-interior order (first line = top wall
         `$y = 1$`, last line = bottom wall `$y = -1$`).
         The code reverses to ascending order internally.
-        Custom grids use composite polynomial integration
-        weights (order-*p* accuracy matching the FD stencil)
-        instead of Clenshaw-Curtis.
+        Custom and tanh grids use composite polynomial
+        integration weights instead of Clenshaw-Curtis, at the
+        highest order up to *fd_order* whose weights are all
+        positive (:func:`._base.quadrature_weights`).
     grid_type:
         Named grid type (``"cgl"`` or ``"tanh"``).
     grid_stretch:
@@ -328,12 +330,22 @@ def build_cartesian_grid(
                 f" (got [{grid[0]}, {grid[-1]}])"
             )
         ys = jnp.asarray(grid, dtype=sharding.float_type)
-        w = build_integration_weights(grid, fd_order)
+        w = quadrature_weights(
+            lambda q: build_integration_weights(grid, q),
+            fd_order,
+            "Wall-normal",
+            ny,
+        )
         y_weights = jnp.asarray(w, dtype=sharding.float_type)
     elif grid_type == "tanh":
         grid = tanh_two_sided_grid(ny, grid_stretch)
         ys = jnp.asarray(grid, dtype=sharding.float_type)
-        w = build_integration_weights(grid, fd_order)
+        w = quadrature_weights(
+            lambda q: build_integration_weights(grid, q),
+            fd_order,
+            "Wall-normal",
+            ny,
+        )
         y_weights = jnp.asarray(w, dtype=sharding.float_type)
     else:
         ys = -jnp.cos(

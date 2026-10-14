@@ -83,9 +83,11 @@ guard: `test_no_cross_geometry_import` in `lab/tests/`).
 - The annulus orders its components `(u_z, u_r, u_θ)` like the pipe,
   not (streamwise, wall-normal, spanwise) (the `annular.py` docstring).
 - Full-disc radial quadrature is parity-specific (`y_weights` /
-  `y_weights_odd`); custom and tanh grids and `dnsjax.analysis` use the
-  composite rule. There is no `r = 0` point:
-  `cylindrical.interpolate_to_axis`.
+  `y_weights_odd`). Every non-CGL grid (custom, tanh, in all three
+  geometries) takes the composite rule at the highest order up to
+  `fd_order` whose weights are all positive
+  (`_base.quadrature_weights`); `dnsjax.analysis` keeps `fd_order`.
+  There is no `r = 0` point: `cylindrical.interpolate_to_axis`.
 - `geo.m0` (every cylindrical/annular surface but the curved pipe's):
   the pipe's parity `m_is_even` follows the physical `m = m0·h`, and
   `analysis/_core.radial_derivative` must use exactly that selector

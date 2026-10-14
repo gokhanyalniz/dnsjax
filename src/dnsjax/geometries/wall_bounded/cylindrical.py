@@ -150,9 +150,9 @@ from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
 from ...fd import (
+    axis_augmented_weights,
     axis_extrapolation_weights,
     build_diff_matrices,
-    build_integration_weights,
     cgl_radial_quadrature_weights,
     local_grid_spacing,
     matrix_half_bandwidth,
@@ -185,6 +185,7 @@ from ._base import (
     integrate_scalar,  # noqa: F401 — re-exported
     pad_base_flow,  # noqa: F401 — re-exported
     phys_to_spec,  # noqa: F401 — re-exported
+    quadrature_weights,
     spec_to_phys,  # noqa: F401 — re-exported
 )
 from ._cylindrical_stepping import (
@@ -623,7 +624,8 @@ def build_cylindrical_grid(
     1. *wall_grid*: load from file (a custom grid always
        overrides dnsjax's grid generation).
     2. *grid_type*: ``"half-tanh"`` for one-sided tanh stretching
-       (outer wall only -- there is no inner wall); ``"half-cgl"``
+       (clustered at the wall only -- there is no inner wall;
+       :func:`~dnsjax.fd.tanh_one_sided_grid`); ``"half-cgl"``
        for the half-CGL radial grid (``axis_gap = 0``);
        ``"rigged-cgl"`` / ``None`` for the rigged-CGL radial grid
        (``axis_gap = 1``).  The Cartesian/annular names
@@ -675,9 +677,11 @@ def build_cylindrical_grid(
         `$r$` weights that bake in the `$r = 0$` reconstruction
         (:func:`~dnsjax.fd.cgl_radial_quadrature_weights`); on a
         custom / tanh grid the parity-agnostic axis-augmented
-        composite rule (`$g = f r$` on `$[0, r_0, \ldots]$`, the axis
-        a free node since `$g(0) = 0$`).  Strictly positive (a
-        definite energy norm), verified at build.
+        composite rule (:func:`~dnsjax.fd.axis_augmented_weights`),
+        at the highest order up to *fd_order* whose weights are all
+        positive (:func:`._base.quadrature_weights`; order 7 at the
+        default 8 on most grids).  Strictly positive (a definite
+        energy norm), verified at build.
     y_weights_odd:
         **Odd-parity** radial quadrature weights, shape ``(ny,)``,
         for an *odd* integrand (the mean `$u_\theta$`); equal to
@@ -738,18 +742,18 @@ def build_cylindrical_grid(
         w_even_np, w_odd_np = qc
     else:
         # Custom / tanh grid: the parity-agnostic axis-augmented
-        # composite rule (integrate g = f*r on [0, *rs] with the axis
-        # r=0 as a free node, g(0)=0 for any bounded f; fd_order,
-        # positive, correct for either parity).
-        r_aug = np.concatenate([[0.0], rs_np])
-        w_aug = build_integration_weights(r_aug, fd_order)[1:] * rs_np
+        # composite rule (g = f*r on [0, *rs] with the axis r=0 a free
+        # node, g(0)=0 for any bounded f; correct for either parity),
+        # at the highest order up to fd_order whose weights are all
+        # positive -- at fd_order = 8 the axis end rarely is.
+        w_aug = quadrature_weights(
+            lambda q: axis_augmented_weights(rs_np, q), fd_order, "Radial", ny
+        )
         w_even_np = w_odd_np = w_aug
     if not (np.all(w_even_np > 0) and np.all(w_odd_np > 0)):
         raise ValueError(
             "Radial quadrature weights are not strictly positive "
-            "(the discrete energy norm would be indefinite): the "
-            "fd_order is too high for this ny, or the custom wall "
-            "grid is pathological near the axis."
+            "(the discrete energy norm would be indefinite)."
         )
     y_weights = jnp.asarray(w_even_np, dtype=sharding.float_type)
     y_weights_odd = jnp.asarray(w_odd_np, dtype=sharding.float_type)
