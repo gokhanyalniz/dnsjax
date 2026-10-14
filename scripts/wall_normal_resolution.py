@@ -66,15 +66,20 @@ be meaningless rather than merely approximate.
 
 Wall units
 ----------
-`$Re_\tau = \sqrt{S_w\,Re}$` with `$S_w$` the mean wall shear
-relative to laminar (``--wall-shear``, default ``1.0`` = the exactly
-defined laminar value).  For a turbulent estimate take `$S_w$` from a
-run's ``stats.dat``: the `$\tau'$` columns are `$(\partial_y
-u'_s)/Re$`, and the laminar plane-Couette shear is `$1$`, so
+`$Re_\tau = \sqrt{S_w\,Re}$` with `$S_w$` the mean
+`$|\mathrm{d}U/\mathrm{d}y|$` at the two walls in code units
+(``--wall-shear``; the default ``1.0`` is laminar plane Couette, and
+laminar plane Poiseuille is ``2.0``).  For a turbulent estimate take
+`$S_w$` from a run's ``stats.dat``: the `$\tau'$` columns are
+`$(\partial_y u'_s)/Re$`, signed, on top of the laminar gradients
+`$(1, 1)$` (plane Couette) or `$(2, -2)$` (plane Poiseuille) at the
+bottom and top walls, so
 
 .. math::
-    S_w = 1 + \frac{Re}{2}\,
-          (\tau'_{s,b} + \tau'_{s,t}).
+    S_w = 1 + \frac{Re}{2}\,(\tau'_{s,b} + \tau'_{s,t})
+    \quad\text{(plane Couette)}, \qquad
+    S_w = 2 + \frac{Re}{2}\,(\tau'_{s,b} - \tau'_{s,t})
+    \quad\text{(plane Poiseuille)}.
 
 Every `$y^+$` in the output scales as `$\sqrt{S_w}$`.
 
@@ -431,7 +436,9 @@ def cmd_box(args: argparse.Namespace) -> None:
     rt = _re_tau(args.re, args.wall_shear)
     kx = real_harmonics(args.nx)
     kz = complex_harmonics(args.nz)
-    nxp = round_up_padded_smooth(args.oversampling * args.nx // 2, 1)
+    # The real-FFT axis rounds to an even length, as the solver does
+    # (``parameters.PaddedResolution.apply_rounding``).
+    nxp = round_up_padded_smooth(args.oversampling * args.nx // 2, 2)
     nzp = round_up_padded_smooth(args.oversampling * args.nz // 2, 1)
     print(f"Box  lx = {args.lx:.4f}  lz = {args.lz:.4f}")
     print("Modes retained (res.nx/nz are pre-dealiasing counts):")
@@ -498,9 +505,10 @@ def _add_wall_unit_args(ap: argparse.ArgumentParser) -> None:
         "--wall-shear",
         type=float,
         default=1.0,
-        help="Mean wall shear relative to laminar S_w (default 1.0 = "
-        "laminar); Re_tau = sqrt(S_w Re).  See the module "
-        "docstring for reading it off stats.dat.",
+        help="Mean |dU/dy| at the walls in code units, S_w (default "
+        "1.0: laminar plane Couette; laminar plane Poiseuille is 2.0); "
+        "Re_tau = sqrt(S_w Re).  See the module docstring for reading "
+        "it off stats.dat.",
     )
 
 

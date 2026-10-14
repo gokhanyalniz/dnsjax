@@ -52,10 +52,12 @@ so run this as::
     uv run --group plots python scripts/snapshot_figure.py \
         run/state00010.tar --out docs/figures/pipe_puff.png
 
-``--component`` selects the stored component by index (0 is the
-streamwise one in every family: `$u_x$` for the plane channels and the
-periodic box, `$u_z$` for the pipe and the annulus, whose component
-order is axial-first -- see ``docs/scaling.md``).
+``--component`` selects the stored component by index: 0 is the
+streamwise one for the plane channels and the periodic box (`$u_x$`)
+and the pipe (`$u_z$`, axial first), but the annulus keeps the pipe's
+axial-first order, so there the streamwise (azimuthal) velocity is
+component 2 (`$u_\theta$`) and 0 is the spanwise `$u_z$` (see
+``docs/scaling.md``).
 
 Producing the README figures
 ----------------------------
@@ -224,19 +226,26 @@ def _periodic_edges(c: np.ndarray) -> np.ndarray:
     return np.concatenate([c - 0.5 * d, [c[-1] + 0.5 * d]])
 
 
-def _meridional(field: np.ndarray, r: np.ndarray) -> tuple:
+def _meridional(field: np.ndarray, r: np.ndarray, theta: np.ndarray) -> tuple:
     r"""Stack the `$\theta = 0, \pi$` half-planes into a diameter.
 
     *field* is one component in the native cylindrical layout
-    ``(r, theta, z)``.  Returns ``(plane, s_edges)`` over the signed
+    ``(r, theta, z)`` on the uniform *theta* nodes of a
+    `$2\pi/m_0$` wedge (the full circle at `$m_0 = 1$`), where
+    `$\theta = \pi$` is the node at `$\pi \bmod 2\pi/m_0$`: half-way
+    round for an odd `$m_0$`, `$\theta = 0$` itself for an even one.
+    Returns ``(plane, s_edges)`` over the signed
     radius, with a masked core cell spanning `$[-r_1, +r_1]$` when the
     inner radius is a wall (:data:`_ANNULAR_CORE_FRACTION`) and the two
     innermost cells meeting at `$r = 0$` when it is a pipe axis.
     """
     r = np.asarray(r, dtype=float)
+    theta = np.asarray(theta, dtype=float)
     n_theta = field.shape[1]
+    d_theta = theta[1] - theta[0]
+    i_pi = int(round((np.pi % (n_theta * d_theta)) / d_theta)) % n_theta
     upper = field[:, 0, :]  # theta = 0
-    lower = field[:, n_theta // 2, :]  # theta = pi
+    lower = field[:, i_pi, :]  # theta = pi
     e = _grid_edges(r)
     if r[0] > _ANNULAR_CORE_FRACTION * r[-1]:
         core = np.full((1, field.shape[2]), np.nan)
@@ -683,12 +692,19 @@ def build_parser() -> argparse.ArgumentParser:
         "wall-parallel plane, written as .webp, .gif or .png (APNG) "
         "after the output suffix",
     )
-    p.add_argument("--out", type=Path, required=True, help="output PNG path")
+    p.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="output path: a PNG figure, or an animation's .webp / .gif",
+    )
     p.add_argument(
         "--component",
         type=int,
         default=0,
-        help="stored component index (default 0, the streamwise one)",
+        help="stored component index (default 0: streamwise for the "
+        "plane channels, the box and the pipe; on the annulus the "
+        "streamwise one is 2)",
     )
     p.add_argument(
         "--y",
@@ -704,7 +720,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=99.7,
         help="percentile of |u| setting the shared colour scale of a "
-        "stack (default 99.7); --clim overrides it",
+        "stack or of an animation's frames (default 99.7); --clim "
+        "overrides it",
     )
     p.add_argument(
         "--y-aspect",
@@ -789,9 +806,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "pin the colour scale to [-clim, +clim] instead of fitting "
-            "it to this frame; required for an animation (see the "
-            "module docstring), and read off a representative frame's "
-            "printed |u|max"
+            "it to this frame; an animation without it takes one scale "
+            "from --clip over all its frames.  Read it off a "
+            "representative frame's printed |u|max"
         ),
     )
     p.add_argument("--width-px", type=int, default=1600)
@@ -830,8 +847,8 @@ def main(argv: list[str] | None = None) -> int:
                 "snapshot_figure: a stack of wall-parallel planes is a "
                 f"Cartesian view; {system!r} draws the meridional one"
             )
-        r, _theta, z = data.physical_coords
-        plane, vert = _meridional(field, r)
+        r, theta, z = data.physical_coords
+        plane, vert = _meridional(field, r, theta)
         plane, z = _axial_window(plane, np.asarray(z), args.window)
         horiz = _periodic_edges(z)
         labels = ("$z$", "$r$", c_label)
@@ -852,9 +869,12 @@ def main(argv: list[str] | None = None) -> int:
             base = comp.partition("_")[0]
             sub = _component_label(comp, "")[1:-1].partition("_")[2]
             c_label = rf"${base}_{sub} - \langle {base}_{sub} \rangle_{{xz}}$"
+        # A snapshot written without its stats (a perturbed seed, an
+        # import) leaves the planes without wall units.
+        stats = read_stats(args.snapshot[0])
         re_tau = (
-            friction_reynolds(read_stats(args.snapshot[0]), data.params)
-            if system in LAMINAR_WALL_SHEAR
+            friction_reynolds(stats, data.params)
+            if system in LAMINAR_WALL_SHEAR and stats is not None
             else None
         )
 
