@@ -91,10 +91,11 @@ Usage::
         --calib.sweep_wall_confinement "0,0.11,0.14,0.20"
 
 ``--calib.target`` is either one member directory or a tree of them
-(``--calib.members`` is the glob, default ``twin*``).  Flow, box,
-resolution and grid must match the recorded stream's -- a mismatch is
-refused rather than interpolated, because the two maps would not be
-on the same axes.
+(``--calib.members`` is the glob, default ``*``: every subdirectory
+that holds a ``twin_yspectra`` stream, ``build-twin``'s ``m0000`` and
+the like).  Flow, box, resolution and grid must match the recorded
+stream's -- a mismatch is refused rather than interpolated, because the
+two maps would not be on the same axes.
 """
 
 from __future__ import annotations
@@ -140,8 +141,11 @@ class CalibParams(BaseModel):
         ),
     )
     members: str = Field(
-        default="twin*",
-        description=("Glob selecting member directories under a target tree."),
+        default="*",
+        description=(
+            "Glob selecting member directories under a target tree "
+            "(those without a twin_yspectra stream are skipped)."
+        ),
     )
     window: str = Field(
         default="15,30",
@@ -276,8 +280,10 @@ def _member_shapes(
 
     *shapes* is ``(n_t, n_y, n_k)``, component-summed, the `$(0, 0)$`
     mode removed, each record normalized to unit total -- the shape
-    alone.  Read through a memory map: the eager reader would pull a
-    gigabyte per member for the handful of records a window needs
+    alone.  Read through a memory map, which touches only the two
+    fields used of every record (the target window and the
+    `$\mu$` fit read them all), where the eager reader would load every
+    field: a gigabyte per member
     (:func:`dnsjax_lab.analysis.twin.yspectra.record_dtype` exists for
     exactly this).
     """
@@ -329,8 +335,6 @@ def build_target(
     every member, renormalized; *series* pairs each member's `$t$`
     with its per-record shapes, for the `$\mu$` fit.
     """
-    from dnsjax_lab.analysis.twin.yspectra import shape_alignment  # noqa: F401
-
     meta0 = None
     total = None
     count = 0
@@ -469,14 +473,39 @@ def main(argv: list[str] | None = None) -> int:
         print(note, flush=True)
     from dnsjax_lab.twin.diagnostics import flow  # noqa: F401  (builds it)
 
-    if (int(meta["ny"]), _n_k(meta, marginal)) != (
-        params.res.ny,
-        params.res.nz // 2 if marginal == "x" else params.res.nx // 2,
-    ):
+    from dnsjax.parameters import derived_params
+
+    y_run = np.asarray(derived_params.wall_normal_grid, dtype=np.float64)
+    y_rec = np.asarray(meta["y"], dtype=np.float64)
+    mismatch = [
+        name
+        for name, same in (
+            ("system", meta["system"] == params.phys.system),
+            (
+                "resolution",
+                (int(meta["ny"]), _n_k(meta, marginal))
+                == (
+                    params.res.ny,
+                    params.res.nz // 2
+                    if marginal == "x"
+                    else params.res.nx // 2,
+                ),
+            ),
+            ("lx", np.isclose(float(meta["lx"]), params.geo.lx)),
+            ("lz", np.isclose(float(meta["lz"]), params.geo.lz)),
+            (
+                "wall-normal grid",
+                y_run.shape == y_rec.shape
+                and np.allclose(y_run, y_rec, rtol=0, atol=1e-6),
+            ),
+        )
+        if not same
+    ]
+    if mismatch:
         raise SystemExit(
-            f"{_PROG}: error: this run's grid does not match the "
-            f"recorded stream's (ny {params.res.ny} vs {meta['ny']}); "
-            "the two maps would not share axes."
+            f"{_PROG}: error: this run's {', '.join(mismatch)} does not "
+            "match the recorded stream's; the two maps would not share "
+            "axes."
         )
 
     sweeps = {

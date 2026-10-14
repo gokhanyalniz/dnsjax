@@ -51,12 +51,14 @@ reconstruction scheme; ``--legacy-imm`` profiles the retired primitive
 `$(v, p)$` one instead, which has a different operator set, a different
 per-mode solve count and its own stage transcription.
 
-Run **on a GPU** (single device, no mpirun)::
+Run **on a GPU** (single device, no mpirun; ``--dist.platform`` defaults
+to cpu, so name the GPU)::
 
-    .venv/bin/python lab/scripts/performance/pallas_solve_profile.py
     .venv/bin/python lab/scripts/performance/pallas_solve_profile.py \
-        --system pipe --ny 128 --nx 192 --nz 192 --trace /tmp/dnsjax_trace \
-        --hlo-out /tmp/dnsjax_hlo.txt
+        --dist.platform cuda
+    .venv/bin/python lab/scripts/performance/pallas_solve_profile.py \
+        --dist.platform cuda --system pipe --ny 128 --nx 192 --nz 192 \
+        --trace /tmp/dnsjax_trace --hlo-out /tmp/dnsjax_hlo.txt
 
 Solve-kernel tile sweep (each config is a fresh process -- the tile is
 baked into the operator at construction, so it cannot vary in-process)::
@@ -83,10 +85,10 @@ with ``grep '^SUMMARY'`` instead of reading full dumps::
 A full run also ends with a ``SUMMARY`` line (adds ``imm``/``step``/
 ``cnab2`` too), so the same grep works for the step-level confirmations.
 
-Without a GPU it prints the HLO census only (timings need real
-hardware), so the harness can be checked before a GPU run;
-``--cpu-smoke`` additionally exercises Parts B/C once on CPU at tiny
-resolution (numerics only) to validate the harness end-to-end.
+On the CPU (the default platform) it profiles the CPU solve path, the
+pure-JAX sweep, through Parts A, B, A2 and C: numbers for that path,
+not stand-ins for the Triton kernel's.  ``--cpu-smoke`` runs them once
+at tiny resolution (numerics only) to validate the harness end-to-end.
 ``--steps-only N`` runs ``N`` steps and exits, skipping Parts A/B/C:
 a clean driver to wrap in an external profiler (e.g.
 ``nsys profile --stats=true``).

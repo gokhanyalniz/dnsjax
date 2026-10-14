@@ -120,8 +120,10 @@ SELF = Path(__file__).resolve()
 RESULT_TAG = "@@RESULT "
 
 # Per-system physics (the test-suite-standard values from
-# tests/test_random_smoke.py) as dotted parameter paths, usable both
-# as child ``params`` assignments and as ``--{path}`` CLI flags.
+# tests/test_random_smoke.py) as dotted internal parameter paths: the
+# child's parameter layer takes them as they are, and the multi-process
+# command lines translate them to each flow's public names
+# (:func:`_public_flag`; the pipe's axial ``geo.lx`` is ``--geo.lz``).
 SYS_ARGS: dict[str, dict[str, float]] = {
     "plane-couette": {"phys.re": 330.0, "geo.lx": 5.0, "geo.lz": 5.0},
     "plane-poiseuille": {"phys.re": 660.0, "geo.lx": 5.0, "geo.lz": 5.0},
@@ -431,15 +433,15 @@ def run_child(a: argparse.Namespace) -> None:
         validate_parameters,
     )
 
-    params.phys.system = a.system
+    # Every field goes through one layering call, never a direct
+    # ``params.<section>.<field> = ...`` assignment: ``update_parameters``
+    # re-materializes each per-flow default (the backend, a flow's
+    # rheology and box) for any field no layer set, so a direct
+    # assignment is silently overwritten.
+    layer: dict[str, dict] = {"phys": {"system": a.system}}
     for dotted, v in SYS_ARGS[a.system].items():
         section, key = dotted.split(".")
-        setattr(getattr(params, section), key, v)
-    params.res.nx = a.nx
-    params.res.ny = a.ny
-    params.res.nz = a.nz
-    params.res.fd_order = a.fd_order
-    params.res.double_precision = True
+        layer.setdefault(section, {})[key] = v
     # The two ``res.consistent_imm`` formulations build different
     # operator groups (the legacy primitive one carries a pressure
     # Poisson ``Lk`` and, in the cylindrical geometries, a third ``Hk``
@@ -447,19 +449,22 @@ def run_child(a: argparse.Namespace) -> None:
     # below -- the operator classes, the factor-byte table, the
     # isolated solve times, the per-step times and the corrector counts
     # -- is per-formulation.  Default: the shipped scheme.
-    params.res.consistent_imm = not a.legacy_imm
-    params.step.dt = a.dt
-    params.step.scheme = "iterative-cn"  # both steppers are built
+    layer.setdefault("res", {}).update(
+        nx=a.nx,
+        ny=a.ny,
+        nz=a.nz,
+        fd_order=a.fd_order,
+        double_precision=True,
+        consistent_imm=not a.legacy_imm,
+    )
+    # Both steppers are built; iterative-cn is the configured one.
+    layer.setdefault("step", {}).update(dt=a.dt, scheme="iterative-cn")
+    layer["solver"] = {"backend": a.backend}
     if a.bm0 is not None:
-        params.solver.pallas_block_m0 = a.bm0
+        layer["solver"]["pallas_block_m0"] = a.bm0
     if a.bm1 is not None:
-        params.solver.pallas_block_m1 = a.bm1
-    # The backend must go through the layering call, not a direct
-    # ``params.solver.backend = ...`` assignment: ``update_parameters``
-    # re-resolves the per-family backend default for any field not
-    # recorded in ``_user_set_fields``, so a direct assignment is
-    # overwritten and the dense children would silently run pallas.
-    update_parameters(Parameters(solver={"backend": a.backend}))
+        layer["solver"]["pallas_block_m1"] = a.bm1
+    update_parameters(Parameters(**layer))
     padded_res.set_padded_resolution(params)
     validate_parameters()
     # Select the backend explicitly (the driver passes --dist.platform;
@@ -521,12 +526,10 @@ def run_child(a: argparse.Namespace) -> None:
     # each way).
     to_solver = getattr(m, "to_solver_basis", lambda x: x)
     from_solver = getattr(m, "from_solver_basis", lambda x: x)
-    # ``jnp.copy`` unconditionally: the step donates its argument, and
-    # ``state`` is benchmarked again further down.  Relying on
-    # ``to_solver`` to hand back a fresh array is what broke here --
-    # the Cartesian flows stopped exporting the basis maps when the
-    # carried (phi, v, omega_y) basis was dropped, so the fallback
-    # became the identity and the parity loop deleted ``state`` itself
+    # ``jnp.copy`` unconditionally: the step donates its argument,
+    # ``state`` is benchmarked again further down, and ``to_solver`` is
+    # the identity on the Cartesian flows (they export no basis maps),
+    # so without the copy the parity loop would delete ``state`` itself
     # ("Array has been deleted" at the first ``_bench_step``).
     s = jnp.copy(to_solver(state))
     for _ in range(a.parity_steps):
@@ -801,10 +804,24 @@ def _spawn_child(
     return result
 
 
+def _public_flag(system: str, dotted: str) -> str:
+    """The CLI flag of an internal ``section.field`` on *system*.
+
+    The pipe and annulus surfaces name their axial, radial and azimuthal
+    fields after their geometry (``geo.lx`` is ``--geo.lz``,
+    ``res.nx/ny/nz`` are ``--res.nz/nr/ntheta``) and refuse the internal
+    names.
+    """
+    from dnsjax.flows.registry import spec_for
+
+    section, name = dotted.split(".")
+    return f"--{section}.{spec_for(system).alias(section, name)}"
+
+
 def _sys_cli_flags(system: str) -> list[str]:
     flags = ["--phys.system", system]
     for dotted, v in SYS_ARGS[system].items():
-        flags += [f"--{dotted}", str(v)]
+        flags += [_public_flag(system, dotted), str(v)]
     return flags
 
 
@@ -1502,11 +1519,11 @@ def _run_mpi(
     cmd += ["--dist.np0", str(run["np0"]), "--dist.np1", str(run["np1"])]
     cmd += _sys_cli_flags(run["system"])
     cmd += [
-        "--res.nx",
+        _public_flag(run["system"], "res.nx"),
         str(run["nx"]),
-        "--res.ny",
+        _public_flag(run["system"], "res.ny"),
         str(run["ny"]),
-        "--res.nz",
+        _public_flag(run["system"], "res.nz"),
         str(run["nz"]),
         "--res.fd_order",
         "4",
@@ -2406,16 +2423,20 @@ def _cpu_smoke(args: argparse.Namespace, workdir: Path) -> int:
 
     # mpirun pair + snapshot diff on CPU (validates the parsers and
     # the diff path against real output).
+    # The pipe pair puts a flow with geometry-named parameters (the
+    # public --geo.lz / --res.nr / ...) through the command builder.
     base = {"nx": 6, "ny": 24, "nz": 8, "dt": 0.01, "tmax": 0.05}
     mpi_recs = []
-    for name, backend, np1 in (
-        ("corr-plane-couette-pallas-np1x1", "pallas", 1),
-        ("corr-plane-couette-pallas-np1x2", "pallas", 2),
-        ("corr-plane-couette-dense-np1x1", "dense", 1),
+    for name, system, backend, np1 in (
+        ("corr-plane-couette-pallas-np1x1", "plane-couette", "pallas", 1),
+        ("corr-plane-couette-pallas-np1x2", "plane-couette", "pallas", 2),
+        ("corr-plane-couette-dense-np1x1", "plane-couette", "dense", 1),
+        ("corr-pipe-pallas-np1x1", "pipe", "pallas", 1),
+        ("corr-pipe-dense-np1x1", "pipe", "dense", 1),
     ):
         run = {
             "name": name,
-            "system": "plane-couette",
+            "system": system,
             "backend": backend,
             "np0": 1,
             "np1": np1,

@@ -82,6 +82,9 @@ fixed on purpose.
 - `performance/memory_budget.py`: per-rank memory of the as-run step on
   any layout, offline (forced CPU devices).
 - `performance/memory_watch.py`: JAX-free per-node memory sampler.
+- `performance/step_sharing_census.py`: which `t^n` GEMMs one
+  iterative-CN step shares between its predictor and correction
+  passes (an HLO dot census, CPU).
 - `performance/scaling_figure.py`: the strong-scaling figure (light and
   dark SVG) and tables of `docs/scaling.md`, from
   `docs/figures/*-scaling.csv`.

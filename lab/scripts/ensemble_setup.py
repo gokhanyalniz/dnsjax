@@ -42,8 +42,11 @@ Two subcommands:
       same cost as a baseline pair (dnsjax runs are deterministic for
       a fixed configuration and device layout, so the shared
       background cancels to the linear-response accuracy).
-    - ``baseline``: ``mNNNN_p`` (perturbed) / ``mNNNN_b`` (the
-      unperturbed parent, resumed as-is); combination ``u_p - u_b``.
+    - ``baseline``: ``mNNNN_p`` (perturbed) / ``mNNNN_b`` (the parent
+      re-seeded through the same tool at zero amplitude, so the pair
+      differs by the perturbation alone -- a parent snapshot can carry
+      solver state a seed does not, the pipe's ``carry/`` member);
+      combination ``u_p - u_b``.
     - ``none``: perturbed members only; the background turbulence
       only cancels in the plain ensemble mean (slowest convergence).
 
@@ -324,6 +327,16 @@ def build(args: argparse.Namespace) -> int:
         # 0 is the probe stream switched off, and a response member
         # without one records nothing to aggregate.
         raise SystemExit("--it-probes must be >= 1")
+    # The probe stream samples on the absolute ``it % it_probes``, so a
+    # parent off that cadence starts its member's grid at another phase,
+    # which ``aggregate`` refuses only after every member has run.
+    off = [s["path"] for s in snapshots if int(s["it"]) % args.it_probes]
+    if off:
+        raise SystemExit(
+            f"{len(off)} parent snapshot(s) sit off the probe cadence "
+            f"(it not a multiple of --it-probes {args.it_probes}), e.g. "
+            f"{off[0]}; harvest parents at multiples of it_probes."
+        )
 
     # Final-sample alignment check against the parents' step.dt.
     meta0 = read_snapshot_meta(Path(snapshots[0]["path"]))
@@ -351,40 +364,42 @@ def build(args: argparse.Namespace) -> int:
     run_lines: list[str] = []
     for mem in members:
         mdir = tree / mem["dir"]
-        if mem["sign"] == 0:
-            seed = mem["parent"]  # baseline: resume the parent as-is
-        else:
-            seed = str((mdir / "seed.tar").resolve())
-            cmd = [
-                sys.executable,
-                str(_PERTURB),
-                "--init.snapshot",
-                mem["parent"],
-                "--perturb.out",
-                seed,
-                "--perturb.mode",
-                f"{i2},{i3}",
-                *src_args,
-                "--perturb.amplitude_energy",
-                str(args.amplitude_energy),
-            ]
-            if mem["sign"] < 0:
-                cmd += ["--perturb.negate", "True"]
-            seed_cmds.append((mem, cmd))
+        seed = str((mdir / "seed.tar").resolve())
+        # A baseline member (sign 0) is seeded at zero amplitude rather
+        # than resumed from the parent itself (the docstring's
+        # ``baseline``).
+        amplitude = (
+            ["--perturb.amplitude_scale", "0"]
+            if mem["sign"] == 0
+            else ["--perturb.amplitude_energy", str(args.amplitude_energy)]
+        )
+        cmd = [
+            sys.executable,
+            str(_PERTURB),
+            "--init.snapshot",
+            mem["parent"],
+            "--perturb.out",
+            seed,
+            "--perturb.mode",
+            f"{i2},{i3}",
+            *src_args,
+            *amplitude,
+        ]
+        if mem["sign"] < 0:
+            cmd += ["--perturb.negate", "True"]
+        seed_cmds.append((mem, cmd))
         mem["seed"] = seed
         # Record only (the members.json index): the member's TOML
         # carries the *relative* horizon, not this absolute time.
         mem["t_end"] = mem["parent_t"] + args.horizon
         # ``--dist.np0`` as well as ``mpirun -np``: the mesh size is a
         # *parameter*, and a run whose visible device count does not
-        # equal ``np0 * np1`` exits 1 at startup (``sharding.py``).
-        # Emitting only ``-np N`` therefore produced a launch line that
-        # could never run for any N > 1.  np0 is the wall-normal / k_z
-        # axis, the 1-D split the solver's own launch recipes use: its
-        # exchange moves 2/3 of the bytes np1's does, and snapshot
-        # granularity no longer distinguishes the two.  A member whose
-        # ``ny`` / ``nr`` does not divide N is auto-padded, not
-        # rejected, and says so at startup.
+        # equal ``np0 * np1`` exits 1 at startup (``sharding.py``), so a
+        # line with ``-np N`` alone could not run for any N > 1.  np0 is
+        # the wall-normal / k_z axis, the 1-D split the solver's own
+        # launch recipes use: its exchange moves 2/3 of the bytes np1's
+        # does.  A member whose ``ny`` / ``nr`` does not divide N is
+        # auto-padded, not rejected, and says so at startup.
         dist = f" --dist.np0 {args.np}" if args.np > 1 else ""
         run_lines.append(
             f"cd {mdir.resolve()} && mpirun -np {args.np} {dnsjax_bin}{dist}"
@@ -525,10 +540,13 @@ def _twin_member_toml(mem: dict, args: argparse.Namespace, shape: dict) -> str:
         lines.append("[outs]")
         lines += [f"{k} = {v}" for k, v in outs if v is not None]
         # ``validate_parameters`` requires it_error_check <=
-        # it_corrector; the default (10) is too coarse for a fine
-        # corrector cadence.  ``0`` is the stream switched off, which
-        # constrains nothing.
-        if args.it_corrector and args.it_corrector < 10:
+        # it_corrector; the default is too coarse for a fine corrector
+        # cadence.  ``0`` is the stream switched off, which constrains
+        # nothing.
+        from dnsjax.parameters import Outputs
+
+        check = Outputs.model_fields["it_error_check"].default
+        if args.it_corrector and args.it_corrector < check:
             lines.append(f"it_error_check = {args.it_corrector}")
         lines.append("")
     lines += [

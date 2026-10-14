@@ -96,8 +96,9 @@ What is reported
   span (the solver's ``Device grid`` line);
 - each row's deviation from a reference run (``dev``; "Agreement"
   below);
-- each row's padding: ``--dry-run`` prints, for every layout, what
-  the start-up diagnostics would report, without launching anything.
+- each row's padding (CPU sweeps): ``--dry-run`` prints, for every
+  layout, what the start-up diagnostics would report, without
+  launching anything.
 
 Rows that fail (a mesh the mode counts cannot split, an out-of-memory
 kill, a timeout) are reported with their status and the tail of their
@@ -264,7 +265,7 @@ class Row:
     result: dict = field(default_factory=dict)
 
 
-def _factorisations(n: int) -> list[tuple[int, int]]:
+def _factorizations(n: int) -> list[tuple[int, int]]:
     """Every ``(np0, np1)`` with ``np0 * np1 == n``."""
     return [(a, n // a) for a in range(1, n + 1) if n % a == 0]
 
@@ -286,7 +287,7 @@ def _layouts(
     n: int, np0_filter: list[str], np1_filter: list[str]
 ) -> list[tuple[int, int]]:
     """The factorizations of *n* the ``--np0`` and ``--np1`` filters keep."""
-    pairs = _factorisations(n)
+    pairs = _factorizations(n)
     for axis, kept in ((0, np0_filter), (1, np1_filter)):
         if kept and kept != ["all"]:
             keep = {int(v) for v in kept}
@@ -404,12 +405,15 @@ def _arm_label(label: str, vn: str, en: str, variants, exes) -> str:
 
 
 def _gpu_rows(a: argparse.Namespace) -> list[Row]:
-    """The GPU sweep."""
+    """The GPU sweep, with the same arms and launch prefix as the CPU's."""
     solver = shlex.split(a.solver_args)
+    variants = _named(a.variant, ("base", ""))
+    exes = _named(a.exe, ("dnsjax", str(DNSJAX)))
+    prefix = shlex.split(a.launch_prefix) if a.launch_prefix else []
     tiles = [tuple(int(x) for x in t.split(",")) for t in a.tiles] or [None]
     rows = []
-    for (np0, np1), tile, prec in itertools.product(
-        _factorisations(a.gpus), tiles, a.precisions
+    for (np0, np1), tile, prec, (vn, va), (en, ep) in itertools.product(
+        _factorizations(a.gpus), tiles, a.precisions, variants, exes
     ):
         extra = []
         if tile is not None:
@@ -421,7 +425,8 @@ def _gpu_rows(a: argparse.Namespace) -> list[Row]:
             ]
         extra += ["--res.double_precision", str(prec == "double")]
         cmd = [
-            str(DNSJAX),
+            *prefix,
+            ep,
             "--dist.platform",
             "cuda",
             "--dist.np0",
@@ -430,15 +435,20 @@ def _gpu_rows(a: argparse.Namespace) -> list[Row]:
             str(np1),
             *extra,
             *solver,
+            *shlex.split(va),
         ]
         tag = f" tile {tile[0]}x{tile[1]}" if tile else ""
         rows.append(
             Row(
-                f"({np0}, {np1}){tag} {prec}",
+                _arm_label(
+                    f"({np0}, {np1}){tag} {prec}", vn, en, variants, exes
+                ),
                 cmd,
                 ranks=1,
                 np0=np0,
                 np1=np1,
+                variant=vn,
+                exe=en,
             )
         )
     return rows
@@ -739,7 +749,7 @@ def _nodelist() -> list[str]:
     return proc.stdout.split() if proc.returncode == 0 else []
 
 
-def _summarise(rows: list[Row], a: argparse.Namespace) -> None:
+def _summarize(rows: list[Row], a: argparse.Namespace) -> None:
     """Print the table; efficiencies against the best smallest row."""
     srun = a.target == "cpu" and a.launcher == "srun"
     size = (lambda r: r.nodes) if srun else (lambda r: r.ranks)
@@ -981,7 +991,7 @@ def main() -> int:
             flush=True,
         )
     checked = _check_reference(rows, a.stats_tolerance)
-    _summarise(rows, a)
+    _summarize(rows, a)
     if not checked and any(
         r.result.get("stats_reference") == "self" for r in rows
     ):

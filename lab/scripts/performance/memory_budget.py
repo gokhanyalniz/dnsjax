@@ -126,7 +126,11 @@ def _production_nx(p, np0: int, np1: int) -> float:
     pr = PaddedResolution()
     pr.set_padded_resolution(q)
     kx_dev = math.ceil((p.res.nx // 2) / np1)
-    return max(2 * np1 * kx_dev, 2 * pr.nx_padded / 3, p.res.nx)
+    return max(
+        2 * np1 * kx_dev,
+        2 * pr.nx_padded / p.phys.oversampling_factor,
+        p.res.nx,
+    )
 
 
 def _production_padding(p, np0: int, np1: int, periodic: bool) -> str:
