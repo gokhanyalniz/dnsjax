@@ -283,7 +283,13 @@ class RunHooks:
         return None
 
     def flush(self, check: bool) -> str | None:
-        """Write buffered records; checked, a non-finite message."""
+        """Write buffered records; checked, a non-finite message.
+
+        Reset the buffer before returning a message, and return
+        ``None`` when *check* is false: the abort a message triggers
+        flushes every stream once more, unchecked, and a hook that
+        reported again would recurse.
+        """
         return None
 
 

@@ -40,6 +40,7 @@ import signal
 import socket
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -295,6 +296,44 @@ def live_sigterm(d: Path, ctx: dict) -> None:
     assert got["exit"] == "143", got
 
 
+def live_sigterm_setup(d: Path, ctx: dict) -> None:
+    """SIGTERM during setup, before any stream exists: exit 143, TERMINATED.
+
+    The solver claims ``RUNNING`` as the first thing it does, minutes
+    before the first step at production size; the scheduler's SIGTERM
+    in that window must still end in ``TERMINATED`` rather than leave
+    ``RUNNING`` behind.  A larger box makes the window long enough for
+    the signal to land in it, which the case checks.
+    """
+    big = list(SOLVER)
+    for name, value in (
+        ("--res.nx", "48"),
+        ("--res.ny", "97"),
+        ("--res.nz", "48"),
+    ):
+        big[big.index(name) + 1] = value
+    run = Run(solver(1, [*big, *LONG]), d)
+    deadline = time.monotonic() + 600
+    while not (d / rs.RUNNING).exists():
+        if run.proc.poll() is not None:
+            raise AssertionError(f"exit {run.proc.returncode} before RUNNING")
+        if time.monotonic() > deadline:
+            run.finish(0)
+            raise AssertionError("no RUNNING within 600 s")
+        time.sleep(0.05)
+    seen = time.monotonic()
+    run.proc.send_signal(signal.SIGTERM)
+    print(f"RUNNING after {seen - (deadline - 600):.2f} s; SIGTERM sent")
+    rc = run.finish()
+    assert "First iteration over" not in run.stdout, (
+        "the signal landed after setup: raise the box"
+    )
+    assert rc == 128 + signal.SIGTERM, f"exit {rc}"
+    assert end_files(d) == [rs.TERMINATED], end_files(d)
+    got = fields(d / rs.TERMINATED)
+    assert got["reason"] == "signal 15 (SIGTERM)", got
+
+
 def live_corrector(d: Path, ctx: dict) -> None:
     """A corrector that cannot converge: final snapshot, exit 4."""
     args = [*SOLVER, *LONG, "--step.corrector_tolerance", "1e-300"]
@@ -333,6 +372,7 @@ ONE_PROCESS = [
     ("remove", live_stop(1, "remove")),
     ("usr1", live_stop(1, "launched")),
     ("sigterm", live_sigterm),
+    ("sigterm-setup", live_sigterm_setup),
     ("corrector", live_corrector),
     ("refusal", live_refusal),
 ]

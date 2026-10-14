@@ -979,6 +979,14 @@ def case_entry_smoke() -> None:
         "--phys.system X --help works",
     )
 
+    for flag in ("--sample-toml", "--help"):
+        r = run(flag, "pipee")
+        check(
+            r.returncode != 0 and "unknown flow system 'pipee'" in r.stderr,
+            f"{flag} refuses an unknown flow",
+            (r.returncode, r.stderr[-200:]),
+        )
+
     r = run("--sample-toml", "pipe")
     check(r.returncode == 0, "--sample-toml exits 0", r.stderr[-300:])
     try:

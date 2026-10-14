@@ -588,7 +588,11 @@ def run_unknown_section_checks() -> str | None:
     one ``<prog>: error:`` line naming the section and the way out,
     under the solver's name or another entry point's own; with
     ``init.force_resume`` it goes on without the section, which the
-    resolved setup reports for the banner.
+    resolved setup reports for the banner.  The override follows the
+    layers' precedence: a ``parameters.toml`` setting it is overruled
+    by ``--init.force_resume False`` on the command line.  A stored
+    key of a registered section that this version's model lacks (a
+    newer plugin wrote it) is refused in the same one-line form.
     """
     from pathlib import Path
 
@@ -626,6 +630,57 @@ def run_unknown_section_checks() -> str | None:
                 toml_path=False,
             )
             assert setup.ignored_sections == ("plugsec",), setup
+
+            # Precedence: the TOML says force, the CLI says not.
+            toml = Path(tmp) / "parameters.toml"
+            toml.write_text("[init]\nforce_resume = true\n")
+            try:
+                resolve_parameters(
+                    [
+                        "--init.snapshot",
+                        str(path),
+                        "--init.force_resume",
+                        "False",
+                    ],
+                    toml_path=toml,
+                )
+            except SystemExit as exc:
+                assert "[plugsec]" in str(exc.code), exc.code
+            else:
+                raise AssertionError("CLI force_resume False overruled")
+            setup = resolve_parameters(
+                ["--init.snapshot", str(path)], toml_path=toml
+            )
+            assert setup.ignored_sections == ("plugsec",), ("TOML", setup)
+
+            # A stored key the registered section's model lacks.
+            example = _example_extension()
+            skewed = Path(tmp) / "skewed.tar"
+            write_meta_tar(
+                skewed,
+                meta
+                | {
+                    "params": recorded_params_dump(params)
+                    | {
+                        "example": {
+                            "modes": "1,1",
+                            "it_example": 1,
+                            "bogus": 1,
+                        }
+                    }
+                },
+            )
+            try:
+                resolve_parameters(
+                    ["--init.snapshot", str(skewed)], toml_path=False
+                )
+            except SystemExit as exc:
+                msg = str(exc.code)
+                assert msg.startswith("dnsjax: error: "), msg
+                assert "example.bogus" in msg and "\n" not in msg, msg
+            else:
+                raise AssertionError("a key the model lacks was accepted")
+            del example
     except AssertionError as exc:
         print(f"  FAIL  {name}: {exc}")
         return str(exc)

@@ -45,9 +45,12 @@ alone would wait forever in the next collective, and so would the
 others.
 
 ``SIGTERM`` and ``SIGINT`` keep their immediate meaning (each driver's
-handler flushes the streams and exits ``128 + n``).  A scheduler sends
-``SIGKILL`` soon after ``SIGTERM`` (SLURM's ``KillWait``, often 30
-s), which may not leave time for a final snapshot.  For a job time
+handler flushes the streams and exits ``128 + n``; during setup, before
+any stream exists, ``SIGTERM`` exits the same way with nothing to
+flush, so ``TERMINATED`` is written from the moment ``RUNNING`` is).
+A scheduler sends ``SIGKILL`` soon after ``SIGTERM`` (SLURM's
+``KillWait``, often 30 s), which may not leave time for a final
+snapshot.  For a job time
 limit, set ``stop.max_wall_time`` below it, or ask the scheduler for
 an early ``SIGUSR1`` (SLURM: ``--signal=USR1@<seconds>``).
 
