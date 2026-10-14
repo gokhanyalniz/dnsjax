@@ -361,7 +361,7 @@ selection or cadence is refused.
 `lowres/` holds the reference state at `[lowres]`'s cadence, exactly
 as a plain solver run writes it. `lowres_delta/` holds the difference
 field $\Delta\mathbf{u}$ at `twin.it_lowres_delta`. Under
-`lowres.pressure` (on by default for these flows) each file also holds
+`lowres.pressure` (off by default) each file also holds
 its static pressure; the difference's, $\Delta p$, is the pressure the
 budget's `Wp` is computed from (to round-off), solved from
 $\Delta\mathbf{u}$ directly rather than as a difference of two

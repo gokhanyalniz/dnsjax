@@ -287,8 +287,8 @@ SYSTEMS: list[dict] = [
         "oversubscribe": True,
         "check_laminarization": True,
         "res": {"nx": 34, "ny": 32, "nz": 32},
-        # Reduced snapshots with the static pressure (on by default
-        # here): kx = 9 does not divide np1 either.
+        # Reduced snapshots with the static pressure: kx = 9 does not
+        # divide np1 either.
         "lowres": {
             "it_lowres": 50,
             "res": {"nx": 18, "ny": 17, "nz": 12},

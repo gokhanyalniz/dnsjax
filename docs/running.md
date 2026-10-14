@@ -268,8 +268,8 @@ resume onto a new grid does it: spectrally between Chebyshev grids. A
 custom `geo.wall_grid` has no grid at another count, so it keeps its
 own.
 
-On plane Couette and plane Poiseuille, `lowres.pressure` (on by
-default there) adds the static pressure perturbation $p'$, computed
+On plane Couette and plane Poiseuille, `lowres.pressure` (off by
+default) adds the static pressure perturbation $p'$, computed
 from the full-resolution field. It is the pressure consistent with the
 discrete dynamics, in the gauge where its mean profile is zero at the
 upper wall, re-pinned there after the reduction. The mean pressure

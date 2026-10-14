@@ -362,8 +362,8 @@ def case_lowres() -> None:
         except ValidationError as ex:  # pragma: no cover - a surface slip
             check(False, f"{system} lowres.pressure parse", ex)
 
-    # The model default is off; the Cartesian flows default it on.
-    for system, want in (("plane-couette", True), ("pipe", False)):
+    # Off by default, on the flows that offer it as on the others.
+    for system, want in (("plane-couette", False), ("pipe", False)):
         _reset()
         P.update_parameters(P.Parameters(phys={"system": system}))
         check(
