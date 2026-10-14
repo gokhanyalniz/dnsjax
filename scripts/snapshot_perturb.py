@@ -479,7 +479,7 @@ def perturb_state(
 def main(argv: list[str] | None = None) -> int:
     from dnsjax.bootstrap import configure_jax_platform, resolve_parameters
     from dnsjax.parameters import params
-    from dnsjax.snapshot_meta import read_snapshot_meta
+    from dnsjax.snapshot_meta import is_snapshot_file, read_snapshot_meta
 
     # Snapshot + CLI layers only (toml_path=False): the [perturb]
     # section and the shared surface (--init.snapshot,
@@ -505,6 +505,8 @@ def main(argv: list[str] | None = None) -> int:
     # Match the snapshot's stored precision before JAX initializes
     # arrays (bit-identical round-trip of the untouched modes); the
     # written snapshot's metadata records it via params.
+    if not is_snapshot_file(snapshot):
+        raise SystemExit(f"{snapshot} is not a dnsjax snapshot")
     stored_dp = bool(
         read_snapshot_meta(snapshot)["params"]["res"]["double_precision"]
     )

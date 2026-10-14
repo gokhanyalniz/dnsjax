@@ -124,12 +124,16 @@ def _snapshot_tar(path: Path):
     (Design notes: "Truncated archives").
     """
     try:
-        with tarfile.open(path, "r") as tf:
+        # ``"r:"``, never ``"r"``: a compressed archive would open
+        # transparently, pass every member check, and then be read at
+        # the raw byte offsets of the decompressed stream.
+        with tarfile.open(path, "r:") as tf:
             yield tf
     except tarfile.ReadError as exc:
         raise SnapshotArchiveError(
             f"{path} is not a readable snapshot archive ({exc}); it is "
-            "truncated or corrupt -- an interrupted write or copy "
+            "truncated or corrupt, or compressed, which no reader accepts "
+            "-- an interrupted write or copy "
             "leaves exactly this.  A snapshot is written to a "
             "'.partial' file and renamed, so a complete file under "
             "the final name should never be short."
@@ -207,10 +211,11 @@ def is_snapshot_file(path: str | Path) -> bool:
     path = Path(path)
     if not path.is_file():
         return False
-    if not tarfile.is_tarfile(path):
+    try:
+        with tarfile.open(path, "r:") as tf:
+            return META_MEMBER in tf.getnames()
+    except tarfile.ReadError:
         return False
-    with _snapshot_tar(path) as tf:
-        return META_MEMBER in tf.getnames()
 
 
 #: Oldest readable snapshot ``format_version``.  Format 6 stores the
@@ -234,10 +239,11 @@ def read_snapshot_meta(path: str | Path) -> dict:
     """
     path = Path(path)
     with _snapshot_tar(path) as tf:
-        member = tf.extractfile(META_MEMBER)
-        if member is None:
-            raise ValueError(f"{path} has no {META_MEMBER} member.")
-        meta = json.loads(member.read())
+        if META_MEMBER not in tf.getnames():
+            raise ValueError(
+                f"{path} is not a dnsjax snapshot: no {META_MEMBER} member."
+            )
+        meta = json.loads(tf.extractfile(META_MEMBER).read())
     version = meta.get("format_version", 0)
     if version < MIN_FORMAT_VERSION:
         raise ValueError(

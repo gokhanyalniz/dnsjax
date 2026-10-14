@@ -314,6 +314,30 @@ def test_error_paths() -> None:
             [*common, "--perturb.mode", "0,0"], expect_fail="must be real"
         )
 
+        # Not a snapshot at all: a tar of something else, and a path
+        # that does not exist, each refused in one line (no traceback).
+        import tarfile
+
+        with tarfile.open(tmp / "junk.tar", "w") as tf:
+            tf.add(tmp / "vec.npy", arcname="vec.npy")
+        for bad in (tmp / "junk.tar", tmp / "missing.tar"):
+            out = run_perturb(
+                [
+                    "--init.snapshot",
+                    str(bad),
+                    "--perturb.out",
+                    str(tmp / "x.tar"),
+                    "--perturb.npy",
+                    str(tmp / "vec.npy"),
+                    "--perturb.amplitude_scale",
+                    "1.0",
+                    "--perturb.mode",
+                    "3,0",
+                ],
+                expect_fail="is not a dnsjax snapshot",
+            )
+            assert "Traceback" not in out, out[-800:]
+
         # Wrong-system bundle (only the "system" key is read before
         # the rejection fires).
         np.savez(tmp / "wrong.npz", system="plane-couette")

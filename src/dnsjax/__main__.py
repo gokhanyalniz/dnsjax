@@ -569,12 +569,19 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
     ):
         # single-file (tar-wrapped zarr3) snapshot
         from .snapshot import (
+            SnapshotMismatchError,
             load_snapshot,
             read_metadata,
             validate_snapshot_params,
         )
 
-        validate_snapshot_params(params.init.snapshot)
+        # The one resume refusal the parameter layers cannot make
+        # (precision is chosen per run, components per flow version):
+        # presented like theirs, one line, not a traceback.
+        try:
+            validate_snapshot_params(params.init.snapshot)
+        except SnapshotMismatchError as exc:
+            raise SystemExit(f"dnsjax: error: {exc}") from None
         state, t_snap, it_snap = load_snapshot(params.init.snapshot)
         meta = read_metadata(params.init.snapshot)
 

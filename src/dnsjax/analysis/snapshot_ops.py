@@ -215,9 +215,11 @@ def divergence(field, params, coords):
             div = metric.product(row, r, info, -2)
         return div
 
-    # cartesian / triply-periodic: sum_i ∂u_i/∂x_i
+    # cartesian / triply-periodic: sum_i ∂u_i/∂x_i over the leading
+    # three stored components, the velocity by contract (a flow storing
+    # more labels the rest, which are not velocities).
     total = None
-    for idx, label in enumerate(info.components):
+    for idx, label in enumerate(info.components[:3]):
         direction = label.split("_", 1)[1]  # "u_x" -> "x"
         ax = info.axis_of(direction)
         term = _core.derivative_axis(

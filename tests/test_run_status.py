@@ -334,6 +334,36 @@ def live_sigterm_setup(d: Path, ctx: dict) -> None:
     assert got["reason"] == "signal 15 (SIGTERM)", got
 
 
+def live_mismatch(d: Path, ctx: dict) -> None:
+    """A precision mismatch on resume: one refusal line, exit 1, TERMINATED.
+
+    ``res.double_precision`` is never compared by the parameter layers
+    (a resume may run at either precision), so the snapshot's own
+    check is the first to refuse; it must do so the way every other
+    resume refusal does, not with a traceback.
+    """
+    args = [
+        *SOLVER,
+        "--init.snapshot",
+        str(ctx["parent"]),
+        "--res.double_precision",
+        "False",
+        "--stop.max_sim_time",
+        "0.05",
+    ]
+    run = Run(solver(1, args), d)
+    rc = run.finish()
+    assert rc == 1, f"exit {rc}"
+    assert "Traceback" not in run.stderr, "a traceback, not a refusal"
+    assert "dnsjax: error:" in run.stderr and "precision" in run.stderr, (
+        run.stderr[-300:]
+    )
+    assert end_files(d) == [rs.TERMINATED], end_files(d)
+    got = fields(d / rs.TERMINATED)
+    assert got["reason"].startswith("dnsjax: error:"), got
+    assert got["exit"] == "1", got
+
+
 def live_corrector(d: Path, ctx: dict) -> None:
     """A corrector that cannot converge: final snapshot, exit 4."""
     args = [*SOLVER, *LONG, "--step.corrector_tolerance", "1e-300"]
@@ -373,6 +403,7 @@ ONE_PROCESS = [
     ("usr1", live_stop(1, "launched")),
     ("sigterm", live_sigterm),
     ("sigterm-setup", live_sigterm_setup),
+    ("mismatch", live_mismatch),
     ("corrector", live_corrector),
     ("refusal", live_refusal),
 ]

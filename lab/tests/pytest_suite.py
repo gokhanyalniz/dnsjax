@@ -9,11 +9,22 @@ twin_postprocess, wall_time_stop, run_status and host_placement.
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 _TESTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_TESTS_DIR))
+
+# A checkout synced without the lab (``uv sync --no-group lab``) still
+# holds this file: skip the suite rather than fail every row.
+if importlib.util.find_spec("dnsjax_lab") is None:
+    pytest.skip(
+        "the lab package is not installed (uv sync --no-group lab)",
+        allow_module_level=True,
+    )
 
 import _repo  # noqa: E402, F401 -- the core suite's helpers
 from _bridge import MPI, NO_MPI_ONLY, SLOW, Row, script_test  # noqa: E402

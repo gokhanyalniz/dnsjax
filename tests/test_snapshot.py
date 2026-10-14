@@ -84,6 +84,7 @@ from _live import report
 from _snapshot import (
     run_atomic_write_case,
     run_case,
+    run_compressed_case,
     run_gds_detection_case,
     run_git_hash_case,
     run_io_layout_case,
@@ -404,6 +405,7 @@ if __name__ == "__main__":
     # a short archive is rejected, and the two write modes agree.
     results.append(("GDS detection branches", run_gds_detection_case()))
     results.append(("truncated archive rejected", run_truncation_case()))
+    results.append(("compressed archive rejected", run_compressed_case()))
     results.append(
         ("chunks match the metadata", run_meta_chunk_consistency_case())
     )
