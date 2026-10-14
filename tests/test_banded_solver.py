@@ -704,8 +704,9 @@ def test_build_pallas_operator_checks() -> None:
 
     A healthy operator builds a working Pallas operator; a no-pivot
     breakdown (zero leading pivot) and genuine element growth (tiny
-    leading pivot) hard-error; an above-tolerance residual with benign
-    growth prints the ill-conditioning notice and still builds.
+    leading pivot), in every mode or in one mode only, hard-error; an
+    above-tolerance residual with benign growth prints the
+    ill-conditioning notice and still builds.
     """
     Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
     p, Ny = 4, 16
@@ -744,6 +745,23 @@ def test_build_pallas_operator_checks() -> None:
     else:
         raise AssertionError("element growth did not raise")
 
+    # Growth in one mode whose |A| is small against the group's: the
+    # check is per mode, so a ratio of the group's maxima (about 1 here)
+    # cannot hide it.
+    modes = np.stack(
+        [1e8 * _make_random_banded(Ny, p, seed=2)] * (Nkz * Nkx)
+    ).reshape(Nkz, Nkx, Ny, Ny)
+    modes[0, 0] = _make_random_banded(Ny, p, seed=2)
+    modes[0, 0, 0, 0] = 1e-5
+    try:
+        _build_pallas_operator(
+            [_banded_from_dense(jnp.asarray(modes), p)], "mode"
+        )
+    except RuntimeError as err:
+        assert "unstable" in str(err)
+    else:
+        raise AssertionError("one mode's element growth did not raise")
+
     # Residual above tolerance with benign growth (tolerance squeezed
     # below any attainable float64 residual): the ill-conditioning
     # notice is printed and a working Pallas operator is still built.
@@ -779,8 +797,9 @@ def test_factor_checked_measures() -> None:
 
     Every mode gets its own operator, so a mode mix-up cannot hide
     behind a tiled one.  The factors come back mode-inner and multiply
-    back to each mode's matrix; the growth is ``max|U| / max|A|``
-    exactly; the residual is the probe NumPy computes, checked on the
+    back to each mode's matrix; the growth planes are each mode's
+    ``max|U|`` and ``max|A|`` exactly; the residual is the probe NumPy
+    computes, checked on the
     real factors (round-off) and on factors with a perturbed diagonal,
     where the probe is far above round-off and must match NumPy's to
     many digits.
@@ -792,13 +811,14 @@ def test_factor_checked_measures() -> None:
     ).reshape(Nkz, Nkx, Ny, Ny)
     band = _banded_from_dense(jnp.asarray(A), p)
     L, U, resid, max_u, max_a = (np.asarray(v) for v in _factor_checked(band))
-    growth = max_u.max() / max_a.max()
     assert L.shape == (Ny, p, Nkz, Nkx) and U.shape == (Ny, p + 1, Nkz, Nkx)
+    band_np = np.asarray(band)
     for z in range(Nkz):
         for x in range(Nkx):
             Ld, Ud = _dense_factors(L, U, z, x)
             assert_allclose(Ld @ Ud, A[z, x], atol=1e-12 * np.abs(A).max())
-    assert growth == np.abs(U).max() / np.abs(np.asarray(band)).max()
+            assert max_u[z, x] == np.abs(U[..., z, x]).max()
+            assert max_a[z, x] == np.abs(band_np[z, x]).max()
     assert resid.shape == (Nkz, Nkx) and resid.max() < 1e-12
 
     U_bad = U.copy()
