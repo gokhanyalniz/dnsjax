@@ -42,9 +42,8 @@ command line and in `parameters.toml` alike), not a silently ignored knob.
 The example above runs a **100-diameter pipe at Re = 2300**, started from
 a compact localized-roll perturbation, on a single CPU device. Every
 problem-defining parameter — the physics, the geometry, the resolution,
-and the time integrator — is written out explicitly, so switching to
-another flow is a matter of editing values rather than learning the
-defaults.
+and the time integrator — is written out explicitly, so nothing depends
+on a default you have not seen.
 
 It is a production-scale run: seven million real degrees of freedom
 carried over 500 advective time units. For something that finishes while
@@ -75,10 +74,14 @@ Reading the flags:
 
 This configuration fits comfortably in laptop memory — the
 [Memory footprint](scaling.md#memory-footprint) section shows how to
-estimate any configuration. **Switching flows** is a one-line change:
-`--phys.system taylor-couette --phys.re1 … --phys.re2 … --geo.eta …`, or
-`--phys.system kolmogorov --geo.lx … --geo.lz …`, and so on per the
-[flow table](../README.md#flows-and-geometries).
+estimate any configuration. **Switching flows** changes the parameter
+names too, since each flow takes only its own:
+`--phys.system taylor-couette` takes `--phys.re1`, `--phys.re2` and
+`--geo.eta` in place of `--phys.re`, on a `cgl` or `tanh` radial grid,
+and `--phys.system kolmogorov` takes `--geo.lx`, `--geo.lz` and
+`--res.nx/ny/nz`, with no wall-normal grid or `fd_order`.
+`dnsjax --help <system>` lists each flow's parameters, and the
+[flow table](../README.md#flows-and-geometries) the flows.
 
 ## The TOML form
 
@@ -171,8 +174,9 @@ parameters, and the physical-space resolution are printed at startup; the
 first step takes noticeably longer than the rest (JIT compilation); and a
 timing summary is printed at the end. Statistics stream to `stats.dat`
 (with `steps.dat` and `corrector.dat` for the CFL and corrector
-diagnostics), and snapshots appear as `state00000.tar` (the initial
-condition), `state00001.tar`, and so on. Runs end gracefully — at
+diagnostics), each at its `outs.it_*` cadence and off until that is set,
+and snapshots appear as `state00000.tar` (the initial condition),
+`state00001.tar`, and so on. Runs end gracefully — at
 `max_sim_time`, at an ISO 8601 `stop.max_wall_time` budget, on
 relaminarization, or on request (below), each writing a final snapshot
 first; on SIGTERM/SIGINT they flush the diagnostic buffers and exit at

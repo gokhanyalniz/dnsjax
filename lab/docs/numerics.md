@@ -70,9 +70,9 @@ elasticity numbers are each flow's own.
   `phys.driving = "constant_bulk_velocity"`; the annular flows, like
   Taylor–Couette, can pin their axial mean velocity to zero
   (`phys.block_mean_spanwise_velocity`). The moving frame's default
-  speed is the laminar bulk velocity, $1/2$ for the curved and
-  viscoelastic pipes, and zero for the annular flows (Dean's driving is
-  azimuthal, so its axial bulk vanishes).
+  speed is $1/2$ for the curved and viscoelastic pipes (the straight
+  pipe's laminar bulk velocity) and zero for the annular flows (Dean's
+  driving is azimuthal, so its axial bulk vanishes).
 - **Quasi-Keplerian rotation.** The quasi-Keplerian flow is
   Taylor–Couette's annulus parameterized by `re1`, the rotation number
   `r_omega` on the quasi-Keplerian half-line $R_\Omega \lt -1$, and

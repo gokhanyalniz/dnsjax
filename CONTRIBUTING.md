@@ -64,9 +64,9 @@ Moving the floor touches several places, none of which derive from
 each other: `requires-python` and the classifiers in `pyproject.toml`,
 `requires-python` in `lab/pyproject.toml`, the `smoke` matrix and the
 `core-only` job's floor venv in `.github/workflows/ci.yml`, the floor
-venv in `.github/workflows/release.yml`, the Python badge in
-`README.md`, and the Prerequisites line in the repository's root
-`CLAUDE.md`. **Lowering** it additionally requires a real run under the
+venv in `.github/workflows/release.yml`, and the Python badge and the
+Quick start's version sentence in `README.md` (which names the pinned
+version too). **Lowering** it additionally requires a real run under the
 new floor, in this order: `py_compile` the tree, import it, then run
 the offline suite. Source-level compatibility is necessary but not
 sufficient, and only a real run finds things like reliance on deferred

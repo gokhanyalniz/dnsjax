@@ -13,7 +13,8 @@ growth $G(t)$ about a wall-normal total profile by reusing the solver's
 own linear step, one Fourier mode at a time — so every check here tests the
 production stepper, not a separate linear code. Each case below is a
 single mode, matched on the solver's discretization (finite differences
-in $y$) to about **2 %** or better:
+in $y$): $G_{\max}$ to about **2 %** or better, the time of the optimum to
+4 %:
 
 | Flow | Control parameters | Mode | Published $G_{\max}$ | at $t$ | Source |
 |---|---|---|---|---|---|

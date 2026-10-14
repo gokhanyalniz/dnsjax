@@ -54,14 +54,15 @@ the omitted Nyquist mode re-enters as a zero in its exact wrap-order slot
 for even and odd pads alike. The mode *counts* do: a Nyquist mode exists
 only at an even count, so at an odd one the layout would drop a genuine
 harmonic instead and strand its conjugate partner, and every Fourier axis
-is therefore required to be even (`nx` and `nz`, plus `ny` in the
+is therefore required to be even (`nx` and `nz` on the plane channels,
+`nz` and `ntheta` on the pipe and the annulus, all three in the
 triply-periodic box; a wall-normal grid size is unconstrained). The
 oversampled sizes are then rounded up, with a startup note, to
 **7-smooth** lengths (no prime factor beyond 7, so every transform takes
 the fast FFT radix kernels whatever the base resolution) that also
 divide evenly across the device grid; the streamwise real-FFT axis,
-never sharded, is rounded to an *even* 7-smooth length instead, the
-length an inverse real FFT returns. The extra slots carry only zero
+never sharded in physical space, is rounded to an *even* 7-smooth length
+instead, the length an inverse real FFT returns. The extra slots carry only zero
 modes, so the rounding is physically neutral.
 
 ## Temporal discretization
@@ -71,10 +72,10 @@ same influence-matrix implicit solve:
 
 - **`iterative-cn`** (default) — a semi-implicit Euler predictor followed
   by an iterative Crank–Nicolson corrector that makes the nonlinear term
-  implicit through its fixed point. This costs $2 + c$ FFT evaluations
-  per step, $c$ the corrections past the first (the `c` column of
-  `corrector.dat`; two to three evaluations at the usual $c = 0$ or
-  $1$), and is stable well past the advective CFL limit.
+  implicit through its fixed point. This costs two FFT evaluations per
+  step plus one per further correction (the `c` column of
+  `corrector.dat`; two to three evaluations at the usual `c` of 0 or 1),
+  and is stable well past the advective CFL limit.
 - **`cnab2`** — Crank–Nicolson viscous term with an explicit second-order
   Adams–Bashforth nonlinear term, costing a **single** FFT evaluation per
   step, a half to a third of what `iterative-cn` needs, at the price of an
@@ -113,11 +114,12 @@ unless the count covers what the dynamic corrector actually used, which
 `src/dnsjax/parameters.py` carries the full trade-off.
 
 Both schemes can run at a fixed `step.dt` or under **adaptive CFL time
-stepping** (`step.adaptive`): the main loop re-reads the measured total
-CFL every `cfl_cadence` steps and rescales the step toward the
-`cfl_target` setpoint, bounded by `dt_min`/`dt_max`, per-change growth
-and shrink limiters, and a relative deadband that suppresses churn from
-CFL noise. An accepted change rebuilds the $\Delta t$-dependent
+stepping** (`step.adaptive`, which needs `step.dt_max`): the main loop
+re-reads the measured total CFL every `cfl_cadence` steps and rescales
+the step toward the `cfl_target` setpoint, bounded by `dt_min`/`dt_max`,
+per-change growth and shrink limiters, and a relative deadband that
+suppresses churn from CFL noise. An accepted change rebuilds the
+$\Delta t$-dependent
 implicit operators on the device — a few implicit solves, no
 recompilation — and under `cnab2` the following Adams–Bashforth step
 is ratio-weighted (variable-step AB2), so both schemes remain
@@ -186,9 +188,9 @@ plane and annular ones. The pipe is the exception — its axis forces an exact
 diagonalization that doubles the scalars it evolves, so it pays one solve
 more. Half of those scalars are differences that the velocity does not
 determine, so they are carried from step to step rather than re-derived from
-it; re-derived, they made the pipe first order in time at coarse radial
-resolution. Snapshots store them next to the velocity
-([`snapshots.md`](snapshots.md#the-format)). The wall boundary condition is
+it; re-deriving them would make the pipe first order in time at coarse
+radial resolution. Snapshots store them next to the velocity
+([`snapshots.md`](snapshots.md#what-is-stored)). The wall boundary condition is
 still recovered by the same tiny per-mode capacitance solve as before —
 $1 \times 1$ for the pipe's single wall, $2 \times 2$ for the two-walled
 Cartesian and annular geometries.

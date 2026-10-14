@@ -73,8 +73,8 @@ sharing a runner `tests/_<name>.py`.
 
 Run **one** heavy suite at a time. Each invocation is already serial
 internally and deliberately leaves JAX's CPU thread pool unpinned, so
-concurrent invocations oversubscribe the machine and have produced
-spurious failures. Read a verdict from a captured log rather than from a
+concurrent invocations oversubscribe the machine and produce spurious
+failures. Read a verdict from a captured log rather than from a
 `tail` of a run you have not seen in full, and treat a failure that does
 not reproduce on a clean serial rerun as contention.
 
