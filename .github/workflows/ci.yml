@@ -45,6 +45,14 @@ jobs:
       - run: uv run ruff format --check src tests scripts lab/src lab/tests lab/scripts
       # The PyPI copy of the README must follow every README change.
       - run: uv run python lab/scripts/release/pypi_readme.py --check
+      # No tracked file carries an email address: package metadata,
+      # docs, notebooks and test fixtures included.
+      - name: No email address in the tree
+        run: |
+          if git grep -nIE '[[:alnum:]._%+-]+@[[:alnum:]-]+(\.[[:alnum:]-]+)*\.[[:alpha:]]{2,}'; then
+            echo "the lines above carry an email address"
+            exit 1
+          fi
 
   smoke:
     name: smoke (CPU, Python ${{ matrix.python }})
