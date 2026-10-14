@@ -57,6 +57,11 @@ Four checks, in increasing strength:
   on a developed field and the gap doubles as an under-resolution
   diagnostic.  Do not tighten it without re-measuring the table.
 
+Two checks on the stream itself ride along with the CLI runs: without a
+driving knob no driving column is written, and a run of a single step
+records its final state's row (``t0`` and ``t0 + dt``, as any longer
+run records its last).
+
 Run directly::
 
     uv run python tests/test_driving.py
@@ -393,6 +398,42 @@ def _check_absent() -> str | None:
     return None
 
 
+def _check_one_step_rows() -> str | None:
+    """A one-step run's ``stats.dat`` holds ``t0`` and the final state."""
+    with tempfile.TemporaryDirectory() as tmp:
+        proc = _cli(
+            tmp,
+            "plane-couette",
+            [
+                "--res.nx",
+                "8",
+                "--res.nz",
+                "8",
+                "--res.ny",
+                "17",
+                "--step.dt",
+                "0.005",
+                "--stop.max_sim_time",
+                "0.005",
+                "--outs.it_stats",
+                "1",
+                "--outs.snapshot_save_initial",
+                "False",
+                "--outs.snapshot_save_final",
+                "False",
+                "--init.start_from_laminar",
+                "True",
+            ],
+        )
+        if proc.returncode != 0:
+            return f"one-step run exit {proc.returncode}"
+        t_col = np.loadtxt(Path(tmp) / "stats.dat", ndmin=2)[:, 0]
+        print(f"  one-step run: stats.dat t = {t_col}")
+        if len(t_col) != 2 or not np.isclose(t_col[-1], 0.005):
+            return f"one-step run wrote t = {t_col}, not [0, 0.005]"
+    return None
+
+
 def main() -> None:
     if "--worker" in sys.argv:
         kind = sys.argv[sys.argv.index("--worker") + 1]
@@ -452,6 +493,8 @@ def main() -> None:
             )
         print("=== column absent without a driving knob ===")
         results.append(("column absent under CPG", _check_absent()))
+        print("=== a one-step run records its final row ===")
+        results.append(("one-step final row", _check_one_step_rows()))
 
     failures = [(n, r) for n, r in results if r is not None]
     sys.exit(report(len(results) - len(failures), failures))

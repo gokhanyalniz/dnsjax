@@ -1537,7 +1537,7 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
     state_phys = from_solver_basis(state)
 
     # Final-state stats: computed once when the run stepped, reused by
-    # both the final snapshot and the benchmark diagnostic below.
+    # the final row, the final snapshot and the closing summary below.
     if it > params.init.it0:
         stats = get_stats(state_phys)
         bad_final = [
@@ -1550,6 +1550,15 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
                 f"non-finite final statistic(s) {', '.join(bad_final)} "
                 f"at t = {t:.6e}, it = {it}"
             )
+        # The final state's row, whatever the cadence (the loop samples
+        # each state before its step, so never this one), buffered
+        # before the final snapshot's flush so the stream holds it when
+        # that snapshot is written.  The loop leaves the buffer short of
+        # full, so it has room.
+        if params.outs.it_stats is not None:
+            buffer = buffer.at[py_idx].set(_stats_row(stats, last_driving))
+            ts_buf.append(t)
+            py_idx += 1
 
     # Extension records of the final state: the loop samples *before*
     # each step, so the post-step final state is never sampled there.
@@ -1603,11 +1612,6 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
         # Final diagnostic output (``stats`` was computed above for the
         # final state).
         c_per_it = c_tot / n_steps
-
-        if params.outs.it_stats is not None:
-            buffer = buffer.at[py_idx].set(_stats_row(stats, last_driving))
-            ts_buf.append(t)
-            py_idx += 1
 
         sharding.print(
             f"t = {t:.2f}",
