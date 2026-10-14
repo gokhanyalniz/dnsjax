@@ -152,31 +152,13 @@ the reconstruction's `$1/k^2$` (`$1/(k_z^2 + m^2/r^2)$` in the
 cylindrical geometries) amplifies the gravest mode by `$1/k_{\min}$`
 (`$O(1-10)$` for typical boxes).
 
-*Rejected alternatives.*  (1) **Operator-side identities**, implemented
-on the annular and pipe geometries before the default:
-`$D_2 := D_1 D_1$` plus the CHQZ (7.3.51)-(7.3.58) boundary closure.
-It works, but cannot reach round-off in a cylindrical geometry (the
-metric commutator `$[D_1, 1/r] \ne -1/r^2$` survives; on the pipe a
-parity invariant forbids both parities' commutators vanishing at
-once), it widens every banded operator, it costs an order in the
-`$D_2$` truncation constant, and -- because a composed `$D_2$` is not
-grid-scale-dissipative -- it made the pipe unstable from a grid-white
-random IC.  (2) **Commutator cancellation**: feeding the commutator
-back into the Poisson RHS reaches machine zero but contracts like
-`$N_y^{-2}$`.  (3) **State-side tangential projection**: back-solving
-the tangential pair from continuity at the primitive `$v$` zeroes the
-interior divergence and passes every *linear* gate, but is violently
-unstable nonlinearly (x5-10 per step at the gravest modes, worse per
-unit time at smaller ``dt``, not cured by the boundary closure) --
-Kleiser's tau-method instability (CHQZ p. 219) in FD form.  (4) Merely
-solving an `$\omega_y$` Helmholtz beside the existing `$(v, p)$` IMM
-and reconstructing is the *same state map* as (3), so it inherits the
-instability: only advancing the wall-normal velocity by the
-pressure-eliminated dynamics escapes it.  (5) Decoupling the annular
-`$(u_r, \omega_r)$` pair the way `$u_\pm$` decouples
-`$(u_r, u_\theta)$` is impossible, since it mixes two vector fields;
-the exactly decoupled candidates are enumerated and dismissed in the
-``annular`` Design notes.
+*Rejected alternatives* -- operator-side identities
+(`$D_2 := D_1 D_1$` with a boundary closure), commutator cancellation,
+the state-side tangential projection, an `$\omega_y$` solve beside the
+`$(v, p)$` influence matrix, and an exactly decoupled annular pair --
+are recorded with their measurements in the ``cartesian`` Design notes
+("Routes tried and retired") and the ``annular`` ones ("Decoupling the
+pair").
 
 *Step cost.*  The per-mode banded solve count goes 4 -> 3 on the
 Cartesian and annular families and 4 -> **5** on the pipe, the one
@@ -662,17 +644,16 @@ class Physics(BaseModel):
     # temporal accuracy, and relaxes the corrector-contraction dt limit
     # (the advecting velocity drops to ``U - U_grid``) -- though not
     # cnab2's explicit self-advection CFL, which is set by the
-    # frame-invariant ``u' x omega'``.  NOT the
+    # frame-invariant ``u' x omega'``.  Not the
     # rotational-form splitting `omega' x c + grad(c . u')` (whose
     # explicit `c d/dy u'` piece is wall-stiff and unstable).  When
-    # ``None`` (default) it resolves to the laminar bulk velocity in
-    # the grid direction (1/2 for both pipes, 2/3 plane-Poiseuille, 0
-    # otherwise); see ``update_parameters`` and
-    # ``derived_params.u_grid``.  Only
-    # meaningful for wall-bounded systems (periodic flows reject it).
+    # ``None`` (default) it resolves to the flow's laminar bulk
+    # velocity in the grid direction (1/2 for the pipe, 2/3 for plane
+    # Poiseuille, 0 otherwise); see ``update_parameters`` and
+    # ``derived_params.u_grid``.  Only meaningful for wall-bounded
+    # systems (periodic flows reject it).
     # A changed ``u_grid`` on resume is trajectory-defining (the stored
-    # fields drift between frames); pre-feature snapshots resume into
-    # the new default.
+    # fields drift between frames).
     u_grid: float | None = Field(
         default=None,
         description=(
@@ -1435,8 +1416,10 @@ class TimeStepping(BaseModel):
       coupling stiffness): it is the plain one-FFT no-corrector
       explicit-AB2 step.
 
-      ``implicit_mean_coupling`` (wall-bounded cnab2 only, default on)
-      additionally folds the coupling with the *instantaneous mean
+      ``implicit_mean_coupling`` (wall-bounded, default on; the cnab2
+      corrector and the split iterative-cn one -- every FFT-free
+      corrector reads ``_l_bf``) additionally folds the coupling with
+      the *instantaneous mean
       flow* -- ``L_mf = u' x curl(mean u') + (mean u') x omega'``, the
       same cross-product structure as ``L_bf`` with the time-varying
       mean profile ``extract_mean_mode(u')`` in place of ``U`` -- into
@@ -1449,8 +1432,7 @@ class TimeStepping(BaseModel):
       profile, whose ``L_bf`` is otherwise zero) no longer rides the
       explicit term, removing its advective-CFL contribution (decisive
       for a total-field flow at a large ``dt``; Design notes: "Implicit
-      mean-flow coupling").  The
-      double-counted
+      mean-flow coupling").  The double-counted
       mean-mean product is a purely wall-normal (radial) profile at the
       mean mode, absorbed by the mean pressure in the projection -- and
       the AB2/CN split is second-order consistent for *any* choice of

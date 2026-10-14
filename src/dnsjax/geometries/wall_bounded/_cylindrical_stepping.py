@@ -1113,25 +1113,15 @@ def _imm_iteration(
     :func:`_imm_iteration_vw`), the legacy one carries nothing and
     returns ``None`` there.
 
-    Two formulations of the same second-order-in-time scheme, sharing
-    the carried `$(u_z, u_+, u_-)$` state, the signature, the parity
-    reduction and the `$1 \times 1$` shape of the influence matrix:
-
-    - **on, the default** -- :func:`_imm_iteration_vw`, the
-      `$u_r$`-`$\omega_r$` formulation via the spin quad: advance the
-      radial velocity and vorticity, reconstruct `$(u_z, u_\theta)$`,
-      never form a pressure.
-    - **off, the legacy path** --
-      :func:`._cylindrical_primitive_imm._imm_iteration_vp`, the
-      primitive Kleiser-Schumann influence-matrix method: solve for
-      `$(u_z, u_+, u_-)$` against a pressure Poisson solve, enforcing
-      continuity at the wall.  Kept for reference and for reproducing
-      older trajectories; not recommended.
-
-    The branch is a Python ``if`` on a parameter fixed before this
-    module is imported, so it costs nothing at trace time and the two
-    bodies never mix.  The legacy body lives in a sibling module
-    imported only here, so the default path never loads it.
+    The Cartesian dispatcher's two formulations
+    (:func:`.cartesian._imm_iteration`, which also says how the branch
+    is taken), sharing the carried `$(u_z, u_+, u_-)$` state, the
+    parity reduction and the `$1 \times 1$` influence matrix: on (the
+    default), :func:`_imm_iteration_vw`, the `$u_r$`-`$\omega_r$`
+    formulation via the spin quad that reconstructs `$(u_z, u_\theta)$`
+    and never forms a pressure; off,
+    :func:`._cylindrical_primitive_imm._imm_iteration_vp`, the primitive
+    Kleiser-Schumann method enforcing continuity at the wall.
 
     Why there are two, and why the second one is *this* one, is
     derived once for all three geometries in the Cartesian dispatcher
@@ -1267,16 +1257,10 @@ def build_stepper(
     ``build_*_stepper(flow)``, which binds that geometry's ``fourier``
     singleton and ``_build_dt_leaves``.
 
-    Returns ``(init_state_bound, predict_and_fully_correct,
-    predict_and_fully_correct_measured, step_cnab2,
-    step_cnab2_measured, set_dt, reset_ab2_kappa)`` with the
-    ``fourier`` and *flow* singletons already bound.  ``_l_bf`` (the
-    FFT-free base-flow coupling) is passed so the CN/AB2 scheme
-    treats it implicitly; ``_build_dt_leaves`` backs the adaptive-dt
-    ``set_dt`` rebuild.  Every array crossing these steppers is in
-    the decoupled `$(u_z, u_+, u_-)$` solver basis (the module
-    docstring), the states followed by the pass's carried slots
-    (:func:`_correct`).
+    Otherwise as :func:`.cartesian.build_cartesian_stepper`; every
+    array crossing these steppers is in the decoupled
+    `$(u_z, u_+, u_-)$` solver basis (the module docstring), the states
+    followed by the pass's carried slots (:func:`_correct`).
     """
     return build_wall_bounded_stepper(
         _get_rhs,

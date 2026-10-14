@@ -224,18 +224,6 @@ start-up transient: on ARCHER2 (hardware: ``docs/scaling.md``) one at
 layout (``sharding.Sharding.distribute``).  Hence the second closing
 line, the resident memory at the end, which is what the run settles
 at.
-
-**A sharper relaminarization signal (not implemented).**  The
-laminarization stop compares ``E'`` with a threshold.  The norm of
-the *complete* RHS (Laplacian included) is sharper: it vanishes only
-at a genuine fixed point, not merely at low energy.  The complete RHS
-is never formed (the viscous term is implicit in the Helmholtz
-solve), but the increment-norm proxy ``||u^{n+1} - u^n|| / dt`` is
-essentially free: by construction of the Crank-Nicolson update it
-equals the time average of the complete projected RHS, needs only
-states already in hand (one extra norm, no operator evaluations, no
-pressure solve), and goes to zero at the laminar fixed point.
-Tracking it would mean keeping the pre-step state for the difference.
 """
 
 import math
@@ -1469,8 +1457,7 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
                 # is fused into the step itself), so this is a second
                 # state and gets its own single crossing of the
                 # component-basis boundary -- the top-of-loop view was
-                # of u^n and is long gone.  (A sharper signal: Design
-                # notes, "A sharper relaminarization signal".)
+                # of u^n and is long gone.
                 e_prime_host = float(_perturbation_energy_solver(state))
                 if not math.isfinite(e_prime_host):
                     # A NaN would otherwise compare False against the

@@ -27,7 +27,9 @@ Array layout convention
 Physical arrays have shape
 
 - ``(ny_padded, nz_padded, nx_padded)`` for triply-periodic,
-- ``(ny, nz_padded, nx_padded)`` for wall-bounded,
+- ``(ny + ny_y_pad, nz_padded, nx_padded)`` for wall-bounded (the
+  ``ny_y_pad`` rows round ``ny`` up to a multiple of ``np0``; zero
+  where ``np0`` divides it),
 
 with axes ``[y, z, x]``.  ``y`` is sharded by ``np0``, ``z`` by
 ``np1``, ``x`` is local.

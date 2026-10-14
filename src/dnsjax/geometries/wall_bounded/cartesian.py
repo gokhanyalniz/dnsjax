@@ -1943,12 +1943,10 @@ def build_cartesian_stepper(
 ]:
     """Build the time-stepping functions of a Cartesian wall-bounded flow.
 
-    Returns ``(init_state_bound, predict_and_fully_correct,
-    predict_and_fully_correct_measured, step_cnab2,
-    step_cnab2_measured, set_dt, reset_ab2_kappa)`` with the
-    ``fourier`` and *flow* singletons already bound.  ``_l_bf`` (the
-    FFT-free base-flow coupling) is passed so the CN/AB2 scheme
-    treats it implicitly; ``_build_dt_leaves`` backs the adaptive-dt
+    The tuple of :func:`._base.build_wall_bounded_stepper`, with this
+    module's ``fourier`` and *flow* bound: ``_l_bf`` (the FFT-free
+    base-flow coupling) is passed so the CN/AB2 scheme treats it
+    implicitly, and ``_build_dt_leaves`` backs the adaptive-dt
     ``set_dt`` rebuild.
     """
     return build_wall_bounded_stepper(

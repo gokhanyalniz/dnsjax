@@ -85,7 +85,7 @@ def parse_mode_pairs(spec: str) -> list[tuple[int, int]]:
     Each pair is a global spectral index: ``i2`` on the complex
     (axis-2) slot and ``i3`` on the real-FFT (axis-3) slot of the
     stored spectral layout -- the same convention as the
-    transient-growth CLI ``--modes`` argument.  Whitespace around
+    transient-growth CLI's ``--tg.modes``.  Whitespace around
     numbers and separators is ignored.  Purely syntactic (this module
     is a JAX-free leaf): no range check against a resolution --
     callers validate bounds themselves.
