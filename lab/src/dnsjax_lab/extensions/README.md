@@ -36,8 +36,10 @@ the same convention the transient-growth CLI's `--tg.modes` uses. Indices
 are bounds-checked against the true (unpadded) mode counts, so a
 padding slot can never be probed. Unlike the transient-growth CLI, the
 mean mode `0,0` **is** allowed: its record is the instantaneous mean
-profile of the perturbation, and adding the closed-form laminar profile
-recovers the total mean (the reader does this for you).
+profile of the stored field — the perturbation on a base-flow system,
+to which `mean_profile` adds the closed-form laminar profile for plane
+Couette and plane Poiseuille, and the total itself on a force-driven
+one.
 
 On `curved-pipe` the component-0 profile is the solver's carried
 streamwise variable $w_s = h u_s$ with $h = 1 + \kappa r\cos\theta$,

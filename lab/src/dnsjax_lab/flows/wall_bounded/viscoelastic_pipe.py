@@ -66,7 +66,7 @@ The default reconstruction scheme is supported here, as for every other
 wall-bounded flow, and needs nothing viscoelastic: the polymer stress
 reaches the velocity solve only as one more source term, which either
 influence-matrix formulation projects unchanged.  Guards: the
-``viscoelastic-pipe`` entry in ``tests/test_random_smoke.py`` for the
+``viscoelastic-pipe`` entry in ``lab/tests/test_random_smoke.py`` for the
 default and ``viscoelastic-pipe-legacy-imm`` for the legacy path (both
 nonlinear gates -- the laminar smoke is linear and blind to either
 formulation's nonlinear path, and a fixed-resolution entry cannot see
@@ -129,7 +129,7 @@ from dnsjax_lab.geometries.wall_bounded.cylindrical_viscoelastic import (
     build_viscoelastic_stepper,
     fourier,
     from_solver_basis,  # noqa: F401 — re-exported (basis boundary)
-    get_norm2_conformation,  # noqa: F401 -- available for callers
+    get_norm2_conformation,
     parity_d1_even,
     viscoelastic_laminar_profiles,
 )
@@ -440,37 +440,11 @@ def add_viscoelastic_pipe_laminar(vel_state: Array) -> Array:
     appends the laminar sPTT-equilibrium conformation (both at the mean
     mode), giving the 9-component total-field IC in the physical
     layout.  Used by the localized-rolls IC (a velocity-only
-    perturbation); the random IC builds its 9 components directly.
+    perturbation); the random IC builds its 9 components directly.  The
+    laminar pair is :func:`init_state`'s.
     """
-    from jax import numpy as jnp
-
-    from dnsjax.geometries.wall_bounded.cylindrical import (
-        build_cylindrical_grid,
-        fourier,
-    )
-    from dnsjax_lab.geometries.wall_bounded.cylindrical_viscoelastic import (
-        viscoelastic_laminar_profiles,
-    )
-
-    rs, D1_even, *_ = build_cylindrical_grid(
-        params.res.ny,
-        params.res.fd_order,
-        params.geo.wall_grid,
-        params.geo.grid_type,
-        params.geo.grid_stretch,
-    )
-    prof = viscoelastic_laminar_profiles(
-        np.asarray(rs),
-        np.asarray(D1_even),
-        params.phys.wi,
-        params.phys.epsilon,
-    )
-    prof_jax = jnp.asarray(prof, dtype=vel_state.dtype)
-    laminar = jnp.where(
-        fourier.mean_mask[None], prof_jax[:, :, None, None], 0.0
-    )
-    total_vel = vel_state + laminar[:3]
-    return jnp.concatenate([total_vel, laminar[3:]])
+    laminar = init_state()
+    return jnp.concatenate([vel_state + laminar[:3], laminar[3:]])
 
 
 # Viscoelastic conformation noise: every physical tensor
@@ -518,9 +492,6 @@ def generate_viscoelastic_pipe(
         get_norm2_cyl,
     )
     from dnsjax.snapshot import assemble_local_shards
-    from dnsjax_lab.geometries.wall_bounded.cylindrical_viscoelastic import (
-        viscoelastic_laminar_profiles,
-    )
 
     nx = params.res.nx
     Nr = params.res.ny
@@ -657,14 +628,7 @@ def generate_viscoelastic_pipe(
     )
 
     # Add the laminar pair at the mean mode (total-field IC).
-    prof = viscoelastic_laminar_profiles(
-        rs_np, D1_even_np, params.phys.wi, params.phys.epsilon
-    )
-    prof_jax = jnp.asarray(prof, dtype=state.dtype)
-    laminar = jnp.where(
-        fourier.mean_mask[None], prof_jax[:, :, None, None], 0.0
-    )
-    return state + laminar
+    return state + init_state()
 
 
 def init_random_state(

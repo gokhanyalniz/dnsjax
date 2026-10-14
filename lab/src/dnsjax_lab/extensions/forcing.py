@@ -13,7 +13,7 @@ identifies the mode's linear operator without any hypothesis on the
 turbulent background (:mod:`dnsjax_lab.analysis.response.ssi`, which
 also holds the JAX-free reader).  On ``curved-pipe`` the component-0
 profile is added to the carried `$w_s = h\,u_s$`, not to `$u_s$`
-(:class:`dnsjax.extensions.ForceParams`).
+(:class:`dnsjax_lab.extensions.ForceParams`).
 
 Why kicks, not a body-force term
 --------------------------------
@@ -352,14 +352,17 @@ class StochasticForcer:
         # fixed-shape draw per kick, mirrored in ``kick``).
         #
         # The record count must equal the kicks the state has been
-        # through, ``it0 // it_force``.  Resuming off an earlier
-        # snapshot than the stream was written up to (a parent run to
-        # it = 1000 with snapshots at 500 and 1000, resumed from 500),
-        # deleting ``forcing.bin`` but not its sidecar, or a fresh start
+        # through: one at every multiple of it_force below it0 (a kick
+        # fires before the step of its iteration, it = 0 included), so
+        # ``ceil(it0 / it_force)`` -- a snapshot off the kick cadence
+        # (a final one) included.  Resuming off an earlier snapshot than
+        # the stream was written up to (a parent run to it = 1000 with
+        # snapshots at 500 and 1000, resumed from 500), deleting
+        # ``forcing.bin`` but not its sidecar, or a fresh start
         # (``it0 == 0``) that finds records would each append records
         # duplicating times already present -- silently, since
         # ``_MATCH_KEYS`` compares only the (identical) configuration.
-        n_taken = params.init.it0 // f.it_force
+        n_taken = -(-params.init.it0 // f.it_force)
         if n_existing != n_taken:
             where = (
                 f"a resume at init.it0 = {params.init.it0}"

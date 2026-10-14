@@ -345,9 +345,9 @@ def get_driving(state: Array) -> dict[str, Array]:
     The optional flow-module export ``__main__`` uses for the one
     ``stats.dat`` row with no step behind it (``t = t0``); every other
     row carries the value the corrector applied, threaded out
-    of the step.  Same keys and sign as that column
-    (`$-\partial p'/\partial s$`, the applied forcing), ``{}`` when no
-    driving knob is on.  Takes the **physical** view of *state*, like
+    of the step.  Same keys and sign as that column (the applied
+    force `$-\Pi$` along `$z$`, ``-dPdz'``), ``{}`` when no driving
+    knob is on.  Takes the **physical** view of *state*, like
     :func:`get_stats`.
     """
     return _get_driving_jit(state, flow)
@@ -365,31 +365,10 @@ def add_dean_laminar(state: Array) -> Array:
     :func:`generate_annular`.  The laminar profile is axisymmetric and
     zero at both walls, so it preserves the perturbation's
     divergence-free and no-slip properties.  Returns the total spectral
-    state in `$(u_z, u_r, u_\theta)$` form.
+    state in `$(u_z, u_r, u_\theta)$` form; the profile is
+    :func:`init_state`'s.
     """
-    from jax import numpy as jnp
-
-    from dnsjax.geometries.wall_bounded.annular import (
-        build_annular_grid,
-        fourier,
-    )
-    from dnsjax.sharding import sharding
-
-    rs, *_ = build_annular_grid(
-        params.res.ny,
-        params.res.fd_order,
-        params.geo.wall_grid,
-        params.geo.grid_type,
-        params.geo.grid_stretch,
-        r_inner=derived_params.r_inner,
-        r_outer=derived_params.r_outer,
-    )
-    u_theta = dean_laminar_u_theta(rs, params.geo.eta)  # (Nr,) real
-    # Place U_theta at the mean mode as the u_theta component.
-    u_spec = jnp.where(fourier.mean_mask, u_theta[:, None, None], 0.0)
-    zeros = jnp.zeros_like(u_spec, dtype=sharding.complex_type)
-    laminar = jnp.stack([zeros, zeros, u_spec.astype(sharding.complex_type)])
-    return state + laminar
+    return state + init_state()
 
 
 def init_random_state(

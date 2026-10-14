@@ -120,7 +120,7 @@ advection / mean-shear stretching + linear relaxation (all gated /
 structured so the explicit AB2 remainder is the pure
 fluctuation-fluctuation nonlinearity plus the nonlinear relaxation) --
 and advances that remainder explicitly.  It reproduces ``iterative-cn``
-to O(`$\Delta t^2$`) at ~1 FFT/step versus ~4.
+to `$O(\Delta t^2)$` at ~1 FFT/step versus ~4.
 """
 
 from dataclasses import dataclass, field
@@ -133,7 +133,6 @@ from jax import numpy as jnp
 
 from dnsjax.geometries.wall_bounded._base import (
     apply_y_matrix,
-    integrate_scalar,  # noqa: F401 -- re-exported for the flow module
 )
 from dnsjax.geometries.wall_bounded.annular import (
     CFL_NAMES,
@@ -156,8 +155,6 @@ from dnsjax.solvers import (
     _banded_from_dense,
 )
 from dnsjax_lab.geometries.wall_bounded._viscoelastic_common import (
-    C_FROB_SQRT_SPIN,  # noqa: F401 -- re-exported
-    N_VE_COMPONENTS,  # noqa: F401 -- re-exported
     TENSOR_SPIN,
     from_spin_basis,
     get_norm2_conformation,  # noqa: F401 -- re-exported for the flow
@@ -200,7 +197,7 @@ to_solver_basis = to_spin_basis
 from_solver_basis = jax.jit(from_spin_basis)
 
 
-# ── Analytical laminar profiles (JAX-free, build-time) ──────────────
+# ── Analytical laminar profiles (build-time) ──────────────────────
 
 
 def viscoelastic_laminar_profiles(
@@ -221,8 +218,9 @@ def viscoelastic_laminar_profiles(
     :mod:`~dnsjax_lab.flows.wall_bounded.viscoelastic_dean` module
     docstring): `$c_{rr} = c_{zz} = 1$`, `$c_{r\theta} =
     \mathrm{Wi}\,S/f$`, `$c_{\theta\theta} = 1 + 2 c_{r\theta}^2$`.
-    Pure (NumPy, build-time); shared by the flow's laminar state and
-    the viscoelastic random / rolls ICs.
+    A build-time host computation returning NumPy (the shared
+    `$U_\theta$` formula runs in JAX); shared by the flow's laminar state
+    and the viscoelastic random / rolls ICs.
     """
     from dnsjax_lab.geometries.wall_bounded._annular_forced import (
         annular_forced_laminar_u_theta,

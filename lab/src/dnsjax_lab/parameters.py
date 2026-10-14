@@ -149,8 +149,9 @@ class _Geometry:
 class _Initiation:
     """``[init]``: the sPTT random IC's tensor amplitude."""
 
-    # Radially windowed to zero at both walls, which keep their laminar
-    # conformation; shares the velocity draw's ``random_smoothness`` /
+    # Radially windowed to zero at the walls (the pipe's one, the
+    # annulus's two), which keep their laminar conformation; shares the
+    # velocity draw's ``random_smoothness`` /
     # ``random_wall_smoothness`` / ``random_wall_confinement`` shaping.
     random_conformation_amplitude: float = Field(
         default=700.0,
