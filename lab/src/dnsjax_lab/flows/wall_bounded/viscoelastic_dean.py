@@ -521,6 +521,13 @@ def generate_viscoelastic_dean(
             m_val = int(m_np[g2])
             for lj in range(n_kz):
                 g3 = kz_start + lj
+                if g2 == 0 and g3 == 0:
+                    # Mean mode: zero in both fields (the (0, 0)
+                    # conservation laws are only established for the
+                    # Cartesian flows, ``dnsjax.ic.mean_mode``; the
+                    # laminar pair is added below); ``buf`` starts at
+                    # zero.
+                    continue
                 kz_val = kz_np[g3]
                 envelope = decay ** (abs(kz_val) + abs(m_val))
                 window_lin = scaled_wall_window(
@@ -547,26 +554,15 @@ def generate_viscoelastic_dean(
                         + 1j * m_val * inv_r_np * vcol[2]
                     )
                     vcol[0] = -div_perp / (1j * kz_val)
-                elif m_val != 0:
-                    # k_z = 0: u_z drops out; close through u_theta.
+                else:
+                    # k_z = 0 (so m != 0): u_z drops out; close through
+                    # u_theta.
                     d1_v = real_product(vcol[1], D1_np.T)
                     vcol[2] = 1j * rs_np * (d1_v + inv_r_np * vcol[1]) / m_val
-                else:
-                    # k_z = 0, m = 0 mean mode: (1/r) d(r u_r)/dr = 0
-                    # with no-slip forces u_r = 0.
-                    vcol[1] = 0.0
                 vcol = normalize_mode(vcol, yw_np, envelope)
-                # Mean mode: the (0, 0) conservation laws are only
-                # established for the Cartesian flows, so every other
-                # flow defers ``init.random_mean_flow``
-                # (``dnsjax.ic.mean_mode``, and the per-flow
-                # ``DeferredSpec``s).
-                if g2 == 0 and g3 == 0:
-                    vcol[:] = 0.0
                 buf[0:3, :, li, lj] = vcol
 
-                # Conformation (rows 3:9): windowed, wall-vanishing noise;
-                # zero at the mean mode (laminar added below).
+                # Conformation (rows 3:9): windowed, wall-vanishing noise.
                 if g3 == 0:
                     ccol = hermitian_column(
                         seed, g2, nz, Nr, rows=6, stream=(1,)
@@ -575,8 +571,6 @@ def generate_viscoelastic_dean(
                     ccol = column_draw(seed, g2, g3, Nr, rows=6, stream=(1,))
                 ccol = real_product(ccol, wn_filter.T) * window_wn
                 ccol = normalize_mode(ccol, yw_np, envelope)
-                if g2 == 0 and g3 == 0:
-                    ccol[:] = 0.0
                 buf[3:9, :, li, lj] = ccol
 
     state = assemble_local_shards(fill_local)
