@@ -16,7 +16,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # The event name keeps a push to main from cancelling the weekly run.
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -237,7 +238,12 @@ jobs:
   full-cpu:
     name: full offline suite (CPU)
     # Weekly and on demand only: the whole offline suite is far too long
-    # for every push.
+    # for every push.  On main, the release line, the released solver
+    # is tested alone: the lab left out of the environment, so its
+    # rows skip and the core suite runs as a release ships it.  On any
+    # other branch both suites run.  No mpirun on the runner, so the
+    # mpi rows skip themselves; the slow rows are solver integrations
+    # measured in minutes each.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -246,7 +252,13 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
-      - run: uv sync --group plots
-      # No mpirun on the runner, so the mpi rows skip themselves; the
-      # slow rows are solver integrations measured in minutes each.
-      - run: uv run pytest -m "not slow and not mpi"
+      - name: The released solver alone (main)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          uv sync --no-group lab --group plots
+          uv run --no-group lab --group plots pytest -m "not slow and not mpi"
+      - name: Both suites (any other branch)
+        if: github.ref != 'refs/heads/main'
+        run: |
+          uv sync --group plots
+          uv run pytest -m "not slow and not mpi"
