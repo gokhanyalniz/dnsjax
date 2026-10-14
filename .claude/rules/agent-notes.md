@@ -21,12 +21,11 @@ paths:
   edited or written. Before adding a line, check that no note loaded
   alongside already says it. The indexes (the root's package map,
   `tests/`, `scripts/`) are one line per file.
-- Sizes are guides, counted at the 79-column wrap. The root aims at
-  about 200 lines; every line costs every session, so grow it only with
-  the utmost care, after asking whether a directory note or a rule file
-  covers the files where the mistake would be made. Those load only
-  with their files and have more room (about 120 lines is comfortable,
-  not a limit), but the line test still decides what goes in.
+- No note has a line budget (the 79-column wrap makes line counts a
+  poor measure); the line test decides what goes in. The root loads in
+  every session, so before growing it, ask whether a directory note or
+  a rule file covers the files where the mistake would be made: those
+  load only with their files.
 - State a rule as what to do, with its reason or a pointer to it: the
   reason is what carries a rule to a case it does not name.
 - A note's general statement that code contradicts is a case for the
