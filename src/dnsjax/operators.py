@@ -21,9 +21,11 @@ component.  This is *not* fewer collectives: ``vmap`` over the
 ``shard_map`` pipeline already batches the reshard, and both forms
 compile to the same op counts at the same mesh (on a 1x4 CPU mesh, 6
 all-to-all, 6 transpose and 2 FFT either way).  What the fold saves is
-the per-component ``vmap`` dispatch: 12.3 against 14.1 ms at 1x1, 8.03
-against 8.32 ms at 1x4.  At ``np0 > 1``, where ``y`` is sharded, the
-merged reshape would be ambiguous, so those wrappers ``vmap``.
+the per-component ``vmap`` dispatch: on CPU, 12.3 against 14.1 ms on
+one device (x1.15) and 8.03 against 8.32 ms on a 1x4 mesh (x1.04); the
+grid of that measurement was not recorded.  At ``np0 > 1``, where ``y``
+is sharded, the merged reshape would be ambiguous, so those wrappers
+``vmap``.
 """
 
 from jax import Array, jit, vmap

@@ -1840,18 +1840,8 @@ def _build_dt_leaves(
 ) -> dict[str, object]:
     r"""Rebuild every ``dt``-dependent flow leaf at the traced *dt*.
 
-    The pure counterpart of the ``__post_init__`` operator/IMM setup,
-    jitted by the builder's ``set_dt``: assemble the `$H_k$` group at
-    *dt*, factor it **unchecked**
-    (:func:`solvers._factor_pallas_operator` -- the checked build ran
-    at setup, and under ``step.adaptive`` additionally at ``dt_max``,
-    the dominance-weakest point), then re-run the unmodified IMM
-    derivation on a trace-local shallow copy of *flow_* and collect
-    the refreshed leaves (:func:`_imm_leaves`, which the setup runs
-    too).  `$L_k$` is ``dt``-independent and shared.
-    The returned leaves match the stored ones in
-    shape/dtype/sharding, so swapping them onto the flow singleton
-    retraces nothing.
+    As :func:`.cartesian._build_dt_leaves`, for the `$H_k$` group of the
+    active ``res.consistent_imm`` scheme.
     """
     new = copy.copy(flow_)
     new.dt = dt
@@ -1894,13 +1884,9 @@ def _imm_leaves(
 ) -> dict[str, object]:
     r"""The influence-matrix leaves of *flow_*'s current ``Hk_op``.
 
-    :meth:`CylindricalFlow._derive_imm_homogeneous_data` and
-    :meth:`CylindricalFlow._precompute_bulk_response` on a trace-local
-    shallow copy, returned by name (``None``-valued ones included).
-    Shared by the setup, which jits it with the flow under
-    construction as the argument (:meth:`CylindricalFlow.__post_init__`,
-    after the metric the bulk response reads), and the ``set_dt``
-    rebuild (:func:`_build_dt_leaves`), so the two cannot drift apart.
+    As :func:`.cartesian._imm_leaves`, for this geometry's
+    :data:`_IMM_LEAVES`; the setup runs it after the metric the bulk
+    response reads (:meth:`CylindricalFlow.__post_init__`).
     """
     new = copy.copy(flow_)
     dims = (sharding.nz_spec, sharding.nx_spec, params.res.ny)

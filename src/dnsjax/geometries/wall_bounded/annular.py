@@ -1206,18 +1206,8 @@ def _build_dt_leaves(
 ) -> dict[str, object]:
     r"""Rebuild every ``dt``-dependent flow leaf at the traced *dt*.
 
-    The pure counterpart of the ``__post_init__`` operator/IMM setup,
-    jitted by the builder's ``set_dt``: assemble the `$H_k$` group at
-    *dt*, factor it **unchecked**
-    (:func:`solvers._factor_pallas_operator` -- the checked build ran
-    at setup, and under ``step.adaptive`` additionally at ``dt_max``,
-    the dominance-weakest point), then re-run the unmodified IMM
-    derivation on a trace-local shallow copy of *flow_* and collect
-    the refreshed leaves (:func:`_imm_leaves`, which the setup runs
-    too).  `$L_k$` is ``dt``-independent and shared.
-    The returned leaves match the stored ones in
-    shape/dtype/sharding, so swapping them onto the flow singleton
-    retraces nothing.
+    As :func:`.cartesian._build_dt_leaves`, for the `$H_k$` group of the
+    active ``res.consistent_imm`` scheme.
     """
     new = copy.copy(flow_)
     new.dt = dt
@@ -1259,13 +1249,8 @@ _IMM_LEAVES = (
 def _imm_leaves(fourier_: Fourier, flow_: AnnularFlow) -> dict[str, object]:
     r"""The influence-matrix leaves of *flow_*'s current ``Hk_op``.
 
-    :meth:`AnnularFlow._derive_imm_homogeneous_data` and
-    :meth:`AnnularFlow._precompute_bulk_response` on a trace-local
-    shallow copy, returned by name (``None``-valued ones included).
-    Shared by the setup, which jits it with the flow under
-    construction as the argument (:meth:`AnnularFlow.__post_init__`),
-    and the ``set_dt`` rebuild (:func:`_build_dt_leaves`), so the two
-    cannot drift apart.
+    As :func:`.cartesian._imm_leaves`, for this geometry's
+    :data:`_IMM_LEAVES`.
     """
     new = copy.copy(flow_)
     dims = (sharding.nz_spec, sharding.nx_spec, params.res.ny)
@@ -1899,26 +1884,15 @@ def _imm_iteration(
 ) -> tuple[Array, Array, dict[str, Array]]:
     r"""One implicit annular step: dispatch on ``res.consistent_imm``.
 
-    Two formulations of the same second-order-in-time scheme, sharing
-    the carried `$(u_z, u_+, u_-)$` state, the signature, the
-    capacitance-matrix structure and the `$2 \times 2$` shape of its
-    influence matrix:
-
-    - **on, the default** -- :func:`_imm_iteration_vw`, the
-      `$u_r$`-`$\omega_r$` formulation: advance the radial velocity and
-      vorticity, reconstruct `$(u_z, u_\theta)$`, and never form a
-      pressure.
-    - **off, the legacy path** --
-      :func:`._annular_primitive_imm._imm_iteration_vp`, the primitive
-      Kleiser-Schumann influence-matrix method: solve for
-      `$(u_z, u_+, u_-)$` against a pressure Poisson solve, enforcing
-      continuity at the two walls.  Kept for reference and for
-      reproducing older trajectories; not recommended.
-
-    The branch is a Python ``if`` on a parameter fixed before this
-    module is imported, so it costs nothing at trace time and the two
-    bodies never mix.  The legacy body lives in a sibling module
-    imported only here, so the default path never loads it.
+    The Cartesian dispatcher's two formulations
+    (:func:`.cartesian._imm_iteration`, which also says how the branch
+    is taken), sharing the carried `$(u_z, u_+, u_-)$` state and the
+    `$2 \times 2$` influence matrix: on (the default),
+    :func:`_imm_iteration_vw`, the `$u_r$`-`$\omega_r$` formulation
+    that reconstructs `$(u_z, u_\theta)$` and never forms a pressure;
+    off, :func:`._annular_primitive_imm._imm_iteration_vp`, the
+    primitive Kleiser-Schumann method enforcing continuity at the two
+    walls.
 
     Why there are two, and why the second one is *this* one, is
     derived once for all three geometries in the Cartesian dispatcher
@@ -2025,15 +1999,9 @@ def build_annular_stepper(
 ]:
     """Build time-stepping functions for an annular flow.
 
-    Returns ``(init_state_bound, predict_and_fully_correct,
-    predict_and_fully_correct_measured, step_cnab2,
-    step_cnab2_measured, set_dt, reset_ab2_kappa)`` with the
-    ``fourier`` and *flow* singletons already bound.  ``_l_bf`` (the
-    FFT-free base-flow coupling) is passed so the CN/AB2 scheme
-    treats it implicitly; ``_build_dt_leaves`` backs the adaptive-dt
-    ``set_dt`` rebuild.  Every array crossing these steppers is in
-    the decoupled `$(u_z, u_+, u_-)$` solver basis (the module
-    docstring).
+    As :func:`.cartesian.build_cartesian_stepper`, with this module's
+    ``fourier``; every array crossing these steppers is in the
+    decoupled `$(u_z, u_+, u_-)$` solver basis (the module docstring).
     """
     return build_wall_bounded_stepper(
         _get_rhs,

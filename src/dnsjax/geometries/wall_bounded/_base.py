@@ -62,12 +62,10 @@ and a re-measurement on a small machine should not expect one.
 
 **The moving frame's convective form.**  The frame term is applied as
 `$+ i k_0 U_{grid} \mathbf{u}'$`, mode-diagonal and divergence-free,
-hence projection-neutral and non-stiff.  The first moving-frame
-implementation used the rotational split
+hence projection-neutral and non-stiff.  The rotational split
 `$\boldsymbol{\omega}' \times \mathbf{c} + \nabla(\mathbf{c} \cdot
-\mathbf{u}')$` instead, whose explicit `$c\,\partial_y u'$` half is
-wall-stiff, and was removed for exactly this instability (commit
-``1a8d7dc``).
+\mathbf{u}')$` (rejected) makes an explicit `$c\,\partial_y u'$` half
+of it, which is wall-stiff and unstable.
 """
 
 import copy

@@ -83,9 +83,14 @@ def make_stepper(
 ]:
     r"""Build the JIT-compiled predictor-corrector stepping functions.
 
-    The returned functions close over the flow-specific callables, so
-    precomputed data (wavenumbers, time-stepping coefficients, base flow)
-    is captured at construction time rather than passed on every call.
+    The returned functions close over the flow-specific callables and
+    take the precomputed data (wavenumbers, time-stepping coefficients,
+    base flow) as trailing pytree arguments on every call -- the
+    family's ``fourier`` and ``flow`` objects, which the binding layer
+    passes (``_base.build_wall_bounded_stepper``,
+    ``triply_periodic.build_triply_periodic_stepper``): a global array
+    must reach a jitted function as an argument, never through a
+    closure (:func:`dnsjax.sharding.register_dataclass_pytree`).
 
     **Basis contract.** This module never inspects a state's
     components, and it must not: the geometries are free to carry the

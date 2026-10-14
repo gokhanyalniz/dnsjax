@@ -1575,7 +1575,7 @@ def mode_state_energy(
 
     ``get_norm2*``-based, so amplitude conventions built on it (the
     ``--tg.export_amplitude`` seed, ``snapshot_perturb``'s
-    ``--amplitude-energy``) agree exactly with the solver's own
+    ``--perturb.amplitude_energy``) agree exactly with the solver's own
     ``E'`` diagnostic.
     """
     norm2 = getattr(gmod, _NORM2_BY_FAMILY[family])

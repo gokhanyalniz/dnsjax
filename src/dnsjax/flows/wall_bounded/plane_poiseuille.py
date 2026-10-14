@@ -319,8 +319,8 @@ def get_driving(state: Array) -> dict[str, Array]:
     The optional flow-module export ``__main__`` uses for the one
     ``stats.dat`` row with no step behind it (``t = t0``); every other
     row carries the value the corrector applied, threaded out
-    of the step.  Same keys and sign as that column
-    (`$-\partial p'/\partial s$`, the applied forcing), ``{}`` when no
+    of the step.  Same keys and sign as that column (the applied
+    force `$-\Pi$`, :mod:`dnsjax.ic.mean_mode`), ``{}`` when no
     driving knob is on.  Takes the **physical** view of *state*, like
     :func:`get_stats`.
     """
