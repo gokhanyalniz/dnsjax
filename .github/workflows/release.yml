@@ -8,8 +8,12 @@ name: Release
 #
 # A tag must point at a release commit cut by
 # lab/scripts/release/prepare_release.py: the solver alone in
-# pyproject.toml and uv.lock, so that the sdist and the zipball both
-# install with uv.  A rehearsal builds from main, stripped the same way.
+# pyproject.toml and uv.lock, so that the sdist and the zipball, which
+# carry no lock, both install with uv.  A rehearsal builds from main,
+# stripped the same way.  The GitHub release alone also carries the
+# repository with the lab, the contributor guide and uv's files, as an
+# asset built from the tag's parent commit; Zenodo takes the source
+# archive alone.
 
 on:
   push:
@@ -30,6 +34,8 @@ jobs:
       id-token: write # trusted publishing
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2 # the tag's parent too, for the with-lab asset
       - uses: astral-sh/setup-uv@v10.0.1
 
       - name: The tag points at a release commit
@@ -71,7 +77,7 @@ jobs:
             exit 1
           fi
 
-      - name: The sdist holds the archive's files, the archive adds uv.lock
+      - name: The sdist and the archive hold the same files
         run: |
           set -eu
           git archive -o "$RUNNER_TEMP/archive.tar" HEAD
@@ -80,8 +86,9 @@ jobs:
 
       # What Zenodo will archive: GitHub's zipball of the tag, which
       # honours the .gitattributes export-ignore of lab/, the agent
-      # notes and the development configuration: the sdist's files and
-      # uv.lock.  It must install with that uv.lock.
+      # notes, the contributor guide and the development configuration,
+      # uv.lock included: the sdist's files.  It must install with uv
+      # without a lock.
       - name: The tag's zipball holds no lab or agent files, and installs
         if: github.event_name == 'push'
         env:
@@ -99,7 +106,7 @@ jobs:
             files dist/dnsjax-*.tar.gz zipball.zip
           mkdir zipball && python3 -m zipfile -e zipball.zip zipball
           cd zipball/*/
-          uv sync --locked
+          uv sync
           uv run python -c "import dnsjax.flows.registry as r; print(r.all_systems())"
 
       - name: The wheel alone installs and runs
@@ -122,11 +129,29 @@ jobs:
         if: github.event_name == 'push'
         uses: pypa/gh-action-pypi-publish@release/v1
 
-      - name: Draft the GitHub release
+      # The tag's parent is the commit the release was cut from: the
+      # whole repository.  Its archive lets the lab, the contributor
+      # guide and uv's files in and keeps the agent files and the CI
+      # configuration out, as the zipball does.  GitHub readers get it
+      # as an asset; Zenodo takes the source archive alone, and deleting
+      # the release deletes the asset.
+      - name: Draft the GitHub release, the repository with the lab attached
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" dist/* --draft \
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          asset="$RUNNER_TEMP/dnsjax-${version}-with-lab.tar.gz"
+          printf '%s -export-ignore\n' /lab /CONTRIBUTING.md /uv.lock \
+            /.python-version >> .git/info/attributes
+          git archive --format=tar.gz --prefix="dnsjax-${version}-with-lab/" \
+            -o "$asset" "${GITHUB_REF_NAME}^"
+          if tar -tzf "$asset" | grep -E 'CLAUDE\.md|/\.claude/|/\.github/'; then
+            echo "the with-lab asset carries agent files or CI configuration"
+            exit 1
+          fi
+          tar -tzf "$asset" | grep -q '/lab/pyproject.toml$'
+          gh release create "${GITHUB_REF_NAME}" dist/* "$asset" --draft \
             --verify-tag --generate-notes \
             --title "dnsjax ${GITHUB_REF_NAME}"

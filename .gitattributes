@@ -1,10 +1,14 @@
 # What `git archive` -- and so the GitHub release zipball, which Zenodo
 # archives -- leaves out: the lab (lab/, the dnsjax-lab package), which
 # is developed here but never released, every file written for coding
-# agents (the CLAUDE.md notes, .claude/), and the development
-# configuration (CI, git and hook settings).  The PyPI sdist holds the
-# same files but uv.lock (pyproject.toml's source-include).
+# agents (the CLAUDE.md notes, .claude/), the development
+# configuration (CI, git and hook settings, uv's pinned interpreter and
+# lock file), and the contributor guide, which describes this
+# repository rather than the solver.  The PyPI sdist holds the same
+# files (pyproject.toml's source-include).
 /lab export-ignore
+/CONTRIBUTING.md export-ignore
+/uv.lock export-ignore
 /.claude export-ignore
 CLAUDE.md export-ignore
 /.github export-ignore

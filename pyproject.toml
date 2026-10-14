@@ -81,10 +81,11 @@ requires = ["uv_build>=0.11.4,<0.13.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-# The sdist holds what the release archive does (.gitattributes) but
-# uv.lock: the package, its tests, docs, examples and scripts, and the
-# top-level documents.  No agent notes in either artefact: the
-# CLAUDE.md files beside the code stay out.
+# The sdist holds what the release archive does (.gitattributes): the
+# package, its tests, docs, examples and scripts, the README and the
+# citation.  No agent notes and no contributor guide in
+# either artefact: the CLAUDE.md files beside the code stay out, and so
+# does CONTRIBUTING.md.
 source-include = [
     "tests/**",
     "docs/**",
@@ -92,7 +93,6 @@ source-include = [
     "scripts/**",
     "README.md",
     "CITATION.cff",
-    "CONTRIBUTING.md",
 ]
 source-exclude = ["**/CLAUDE.md"]
 wheel-exclude = ["**/CLAUDE.md"]

@@ -156,7 +156,7 @@ jobs:
             exit 1
           fi
 
-      - name: The sdist holds the archive's files, the archive adds uv.lock
+      - name: The sdist and the archive hold the same files
         run: |
           set -eu
           git archive -o "$RUNNER_TEMP/archive.tar" HEAD
