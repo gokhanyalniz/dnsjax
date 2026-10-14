@@ -17,15 +17,19 @@ full chain is a documented manual rehearsal):
    streams ``u_pm = base_k(t) +- eps resp(t)`` with a large random
    per-pair background -> ``aggregate_tree`` recovers ``eps resp``
    to roundoff (the background and even orders cancel identically).
-3. **identify_generator units**: exact multi-horizon recovery of a
+3. **Member alignment**: members whose parents sit late in a run (the
+   accumulated clock's rounding) align; a sampling phase displaced by
+   whole steps is refused.
+4. **identify_generator units**: exact multi-horizon recovery of a
    known generator; branch-cut / singular / shape rejections.
-4. **Direct identification end-to-end vs a known operator**: a real
+5. **Direct identification end-to-end vs a known operator**: a real
    transient-growth ``--tg.save_operator`` bundle + controllability
    basis (real writers, subprocess); synthetic basis responses
    generated from the *restriction* of the exported operator, plus
    noise -> ``identify_from_responses`` recovers it (noise-free to
-   1e-8, noisy to 5%), and the ``identify`` CLI writes matching
-   ``G_id``/``G_ref`` curves.
+   1e-8, noisy to 5%), refuses a horizon past the record and a
+   response on another time grid, and the ``identify`` CLI writes
+   matching ``G_id``/``G_ref`` curves.
 
 Usage::
 
@@ -83,6 +87,7 @@ from pathlib import Path  # noqa: E402
 import numpy as np  # noqa: E402
 from dnsjax_lab.analysis.response import operator_tools as ot  # noqa: E402
 from dnsjax_lab.analysis.response.ensemble import (  # noqa: E402
+    _member_response,
     aggregate_tree,
     identify_from_responses,
     identify_generator,
@@ -247,6 +252,58 @@ def test_harvest_build_and_aggregate() -> None:
             )
 
 
+def _clock(t0: float, dt: float, n_steps: int, every: int) -> np.ndarray:
+    """Sample times of a run clock that accumulates ``t += dt``."""
+    t, out = t0, [t0]
+    for i in range(1, n_steps + 1):
+        t += dt
+        if i % every == 0:
+            out.append(t)
+    return np.asarray(out)
+
+
+def test_member_alignment() -> None:
+    """Members align on whole steps, whatever their parents' clocks.
+
+    The solver's clock accumulates ``t += dt`` from each parent's own
+    time, so a late parent's relative times carry rounding of order
+    1e-9 after 10 000 steps; members still align.  A sampling phase
+    displaced by three steps (a parent off the probe cadence) does not.
+    """
+    dt, every, n_steps = 0.01, 100, 10_000
+    nt = n_steps // every + 1
+    rng = np.random.default_rng(3)
+    with tempfile.TemporaryDirectory() as tmpname:
+        tree = Path(tmpname)
+        members = []
+        for k, t0 in ((0, 200.0), (1, 5000.0)):
+            times = _clock(t0, dt, n_steps, every)
+            for tag in ("p", "m"):
+                d = tree / f"m{k:04d}_{tag}"
+                d.mkdir()
+                u = rng.standard_normal((nt, 1, 3, NY)) + 0j
+                write_probe_stream(d, u, dt, times=times)
+                members.append({"dir": d.name})
+        late = _clock(5000.0, dt, n_steps, every) - 5000.0
+        early = _clock(200.0, dt, n_steps, every) - 200.0
+        assert np.abs(late - early).max() > 1e-10  # the drift is real
+        t_rel, mean_u, _, _ = _member_response(tree, members, "antithetic")
+        assert mean_u.shape == (nt, 1, 3, NY)
+
+        # Displace one pair's phase by three steps: refused.
+        shifted = _clock(5000.0, dt, n_steps, every)
+        shifted[1:] += 3 * dt
+        for tag in ("p", "m"):
+            u = rng.standard_normal((nt, 1, 3, NY)) + 0j
+            write_probe_stream(tree / f"m0001_{tag}", u, dt, times=shifted)
+        try:
+            _member_response(tree, members, "antithetic")
+        except SystemExit as e:
+            assert "relative sample times differ" in str(e), e
+        else:
+            raise AssertionError("a displaced sampling phase was accepted")
+
+
 def test_identify_generator_units() -> None:
     rng = np.random.default_rng(6)
     m = rng.standard_normal((4, 4)) + 1j * rng.standard_normal((4, 4))
@@ -356,6 +413,29 @@ def test_direct_identification() -> None:
         err = np.linalg.norm(result["L"] - l_true) / np.linalg.norm(l_true)
         assert err < 1e-8, err
         assert max(result["residuals"]) < 1e-8
+
+        # A horizon past the record, and a response on another time
+        # grid, are refused rather than snapped or misaligned.
+        try:
+            identify_from_responses(
+                files, op_npz, cont_npz, horizons=[0.5, 3.0]
+            )
+        except SystemExit as e:
+            assert "beyond the record" in str(e), e
+        else:
+            raise AssertionError("a horizon past the record was accepted")
+        with np.load(files[1]) as z:
+            fields = dict(z)
+        fields["t_rel"] = 1.1 * fields["t_rel"]
+        np.savez(files[1], **fields)
+        try:
+            identify_from_responses(
+                files, op_npz, cont_npz, horizons=[0.5, 1.0]
+            )
+        except SystemExit as e:
+            assert "time grid differs" in str(e), e
+        else:
+            raise AssertionError("mismatched response grids were accepted")
 
         # Noisy: 5% recovery.
         files = _synthetic_responses(

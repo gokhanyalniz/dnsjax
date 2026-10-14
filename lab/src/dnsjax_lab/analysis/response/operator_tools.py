@@ -44,7 +44,7 @@ for ensemble response experiments)::
 
 writes ``profiles_{i2}_{i3}`` (``(m, C, Ny)`` full-state profiles,
 unit energy norm, consumable by ``snapshot_perturb.py
---modes-npz``) and ``gram_eigvals_{i2}_{i3}`` per mode present in the
+--perturb.modes_npz``) and ``gram_eigvals_{i2}_{i3}`` per mode present in the
 operator bundle (or a ``--modes "i2,i3;..."`` subset).  NumPy/SciPy
 only -- no JAX, no device.
 """
@@ -105,6 +105,9 @@ class OperatorData:
     k_metric: float
     volume_fac: float
     meta: dict
+    #: The mode's physical wavenumbers (``mode_wn2`` / ``mode_wn3``):
+    #: `$(k_z, k_x)$` Cartesian, `$(m, k_{ax})$` otherwise.
+    wn: tuple[float, float] = (float("nan"), float("nan"))
 
 
 def available_modes(path: str | Path) -> list[tuple[int, int]]:
@@ -153,6 +156,7 @@ def load_operator(path: str | Path, i2: int, i3: int) -> OperatorData:
             )
         }
         k_metric = float(npz["mode_k_metric"][row])
+        wn = (float(npz["mode_wn2"][row]), float(npz["mode_wn3"][row]))
     t_proj = q_mat.conj().T @ f_mat @ v_mat.conj().T
     t_lift = v_mat @ np.linalg.solve(f_mat, q_mat)
     return OperatorData(
@@ -172,7 +176,63 @@ def load_operator(path: str | Path, i2: int, i3: int) -> OperatorData:
         k_metric=k_metric,
         volume_fac=float(meta["volume_fac"]),
         meta=meta,
+        wn=wn,
     )
+
+
+def check_stream(op: OperatorData, probe_meta: dict, source: str) -> None:
+    r"""Refuse a probe stream whose coordinates *op* does not describe.
+
+    ``T_proj`` acts on the operator's wall-normal nodes (``code_grid``)
+    at one physical wavenumber pair, so a stream recorded on other
+    nodes, or whose ``(i2, i3)`` names another wavenumber (another
+    ``res.nz`` / ``res.nx``, another box), would project silently onto
+    the wrong coordinates.  *probe_meta* is the stream's sidecar
+    (``probes.json``): its nodes must be the operator's (as a set, to
+    round-off), its integer harmonics at ``(op.i2, op.i3)`` the
+    operator's wavenumbers over the export's box, and its own box, when
+    it records one, the export's.  *source* names the stream in the
+    message.
+    """
+    import json
+
+    y = np.sort(np.asarray(probe_meta["wall_normal_grid"], dtype=float))
+    y_op = np.sort(op.y)
+    tol = 1e-6 * max(1.0, float(np.abs(y_op).max()))
+    if y.shape != y_op.shape or not np.allclose(y, y_op, rtol=0, atol=tol):
+        raise ValueError(
+            f"{source}: the probe stream's wall-normal grid differs from "
+            "the operator bundle's (code_grid); export the operator on "
+            "the run's grid"
+        )
+    modes = [tuple(m) for m in probe_meta["modes"]]
+    q2, q3 = probe_meta["wavenumbers"][modes.index((op.i2, op.i3))]
+    geo = json.loads(str(op.meta["params_json"]))["geo"]
+    cartesian = op.family == "cartesian"
+    h2 = op.wn[0] * geo["lz"] / (2 * np.pi) if cartesian else op.wn[0]
+    h3 = op.wn[1] * geo["lx"] / (2 * np.pi)
+    if not np.allclose([h2, h3], [q2, q3], rtol=0, atol=1e-6):
+        raise ValueError(
+            f"{source}: mode ({op.i2},{op.i3}) is the harmonic pair "
+            f"({q2}, {q3}) in the probe stream but ({h2:.6g}, {h3:.6g}) "
+            "in the operator bundle (another resolution or box)"
+        )
+    # The stream's own box, under its public names: the axial length is
+    # ``geo.lz`` on the pipe and the annulus.
+    p_geo = probe_meta.get("params", {}).get("geo", {})
+    pairs = (
+        [("lx", "lx"), ("lz", "lz")]
+        if cartesian
+        else [("lz", "lx"), ("m0", "m0")]
+    )
+    for public, internal in pairs:
+        if public in p_geo and not np.isclose(
+            float(p_geo[public]), float(geo[internal]), rtol=1e-12
+        ):
+            raise ValueError(
+                f"{source}: geo.{public} = {p_geo[public]} in the probe "
+                f"stream but {geo[internal]} in the operator bundle"
+            )
 
 
 # ── Controllability ──────────────────────────────────────────────
@@ -183,8 +243,9 @@ def _gramian_eig_closed_form(a: np.ndarray) -> np.ndarray:
 
     With `$A = E\Lambda E^{-1}$` and `$\tilde{X} = E^{-1} X E^{-H}$`,
     `$AX + XA^H = -I$` becomes `$\tilde{X}_{ij} = -(E^{-1}E^{-H})_{ij}
-    / (\lambda_i + \bar{\lambda}_j)$`.  SciPy-free fallback; less
-    robust than Bartels-Stewart for near-defective `$A$`.
+    / (\lambda_i + \bar{\lambda}_j)$`: the tests' independent check of
+    SciPy's Bartels-Stewart solve (less robust than it for a
+    near-defective `$A$`).
     """
     e_val, e_vec = np.linalg.eig(a)
     g = np.linalg.inv(e_vec)
@@ -211,12 +272,9 @@ def controllability_gramian(a: np.ndarray) -> np.ndarray:
             f"A is not stable (spectral abscissa {abscissa:+.3e}); "
             "the infinite-horizon Gramian does not exist"
         )
-    try:
-        from scipy.linalg import solve_continuous_lyapunov
-    except ImportError:
-        x = _gramian_eig_closed_form(a)
-    else:
-        x = solve_continuous_lyapunov(a, -np.eye(a.shape[0], dtype=complex))
+    from scipy.linalg import solve_continuous_lyapunov
+
+    x = solve_continuous_lyapunov(a, -np.eye(a.shape[0], dtype=complex))
     return 0.5 * (x + x.conj().T)
 
 
@@ -393,6 +451,43 @@ def growth_curve(
     @jax.jit
     def _chunk(ts_dev: Any) -> Any:
         mats = jax.vmap(lambda t: expm(t * a_dev))(ts_dev)
+        return jnp.linalg.svd(mats, compute_uv=False)[:, 0] ** 2
+
+    ts = np.asarray(ts, dtype=float)
+    out = [
+        np.asarray(_chunk(jnp.asarray(ts[lo : lo + t_chunk])))
+        for lo in range(0, len(ts), t_chunk)
+    ]
+    return np.concatenate(out) if out else np.zeros(0, dtype=float)
+
+
+def projected_growth_curve(
+    a: np.ndarray, p: np.ndarray, ts: np.ndarray, t_chunk: int = 16
+) -> np.ndarray:
+    r"""Growth of the projected propagator, `$\lVert P^H e^{tA} P\rVert_2^2$`.
+
+    What an identification on the basis *p* (orthonormal columns)
+    measures at each horizon in the noise-free linear limit:
+    `$M(\tau) = P^H e^{\tau A} P$`.  It is a semigroup, and so equals
+    :func:`growth_curve` of :func:`restrict` (`$e^{\tau P^H A P}$`), only
+    when the span of *p* is invariant under *a*; on a truncated basis of
+    a non-normal operator the two differ, and the identified generator
+    drifts with the horizon for that reason alone.  Batched like
+    :func:`growth_curve` (*t_chunk*).
+    """
+    import jax
+    import jax.numpy as jnp
+    from jax.scipy.linalg import expm
+
+    _require_x64()
+    a_dev = jnp.asarray(np.asarray(a, dtype=complex))
+    p_dev = jnp.asarray(np.asarray(p, dtype=complex))
+
+    @jax.jit
+    def _chunk(ts_dev: Any) -> Any:
+        mats = jax.vmap(lambda t: p_dev.conj().T @ expm(t * a_dev) @ p_dev)(
+            ts_dev
+        )
         return jnp.linalg.svd(mats, compute_uv=False)[:, 0] ** 2
 
     ts = np.asarray(ts, dtype=float)

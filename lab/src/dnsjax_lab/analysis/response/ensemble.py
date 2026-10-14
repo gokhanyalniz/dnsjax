@@ -109,9 +109,14 @@ def identify_generator(
     rejected with a ``ValueError`` naming it -- shorten the horizons
     or average more members.  Returns ``(L, diagnostics)`` with
     per-horizon reconstruction residuals
-    `$\lVert e^{\tau_i L} - M_i\rVert_F / \lVert M_i\rVert_F$` (large
-    residuals at long horizons flag nonlinearity / noise, not a
-    failure of the fit itself).
+    `$\lVert e^{\tau_i L} - M_i\rVert_F / \lVert M_i\rVert_F$`.
+    Large residuals at long horizons flag nonlinearity or noise -- and,
+    on a truncated basis `$P$`, the truncation itself: the noise-free
+    linear `$M(\tau) = P^H e^{\tau A} P$` is a semigroup only when the
+    span of `$P$` is invariant under `$A$`, so even exact data then fit
+    a horizon-dependent `$L$`
+    (:func:`.operator_tools.projected_growth_curve` is that limit's
+    growth).
     """
     from scipy.linalg import expm, logm
 
@@ -195,27 +200,39 @@ def stability_report(l_mat: np.ndarray) -> dict:
 # ── Aggregation ──────────────────────────────────────────────────
 
 
+def _member_index(name: str) -> int:
+    """The pair index ``k`` of a member directory ``m{k:04d}_{tag}``."""
+    return int(name[1:].split("_", 1)[0])
+
+
 def _member_response(
     tree: Path, members: list[dict], pairing: str
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     """Read + align + pair-combine the member probe streams.
 
     Returns ``(t_rel, mean_u, modes, sidecar_meta)`` with ``mean_u``
-    of shape ``(nt, K, C, Ny)``.
+    of shape ``(nt, K, C, Ny)``.  The pairs are read one at a time and
+    summed as they go, so the peak holds one pair's streams, not the
+    ensemble's.
     """
-    by_dir = {m["dir"]: m for m in members}
-    data = {d: read_probes(tree / d) for d in by_dir}
-
-    ref_dir = next(iter(data))
-    ref = data[ref_dir]
+    dirs = [m["dir"] for m in members]
+    ref_dir = dirs[0]
+    ref = read_probes(tree / ref_dir)
     t_rel = ref.t - ref.t[0]
-    for d, pd in data.items():
+    # A displaced sampling phase is a whole number of steps, while the
+    # clock's own rounding (``t += dt`` from each parent's t0) stays far
+    # below a step even late in a long run: a quarter step separates
+    # the two.
+    atol = 0.25 * float(ref.meta["dt"])
+
+    def checked(d: str) -> np.ndarray:
+        pd = ref if d == ref_dir else read_probes(tree / d)
         if pd.u.shape != ref.u.shape:
             raise SystemExit(
                 f"{d}: probe shape {pd.u.shape} differs from "
                 f"{ref_dir}'s {ref.u.shape}"
             )
-        if not np.allclose(pd.t - pd.t[0], t_rel, rtol=0, atol=1e-10):
+        if not np.allclose(pd.t - pd.t[0], t_rel, rtol=0, atol=atol):
             # A shared ``it_probes * dt`` does *not* on its own put two
             # members on one relative grid: ``dnsjax`` gates the probe
             # stream on ``it % it_probes``, the absolute step counter,
@@ -234,20 +251,23 @@ def _member_response(
             )
         if pd.modes.tolist() != ref.modes.tolist():
             raise SystemExit(f"{d}: probed modes differ from {ref_dir}'s")
+        return pd.u
 
-    combos = []
-    n_pairs = max(int(m["dir"][1:5]) for m in members) + 1
+    tags = {"antithetic": ("p", "m"), "baseline": ("p", "b")}.get(
+        pairing, ("p",)
+    )
+    n_pairs = max(_member_index(d) for d in dirs) + 1
+    total = None
     for k in range(n_pairs):
+        u = [checked(f"m{k:04d}_{tag}") for tag in tags]
         if pairing == "antithetic":
-            combos.append(
-                0.5 * (data[f"m{k:04d}_p"].u - data[f"m{k:04d}_m"].u)
-            )
+            combo = 0.5 * (u[0] - u[1])
         elif pairing == "baseline":
-            combos.append(data[f"m{k:04d}_p"].u - data[f"m{k:04d}_b"].u)
+            combo = u[0] - u[1]
         else:
-            combos.append(data[f"m{k:04d}_p"].u)
-    mean_u = np.mean(combos, axis=0)
-    return t_rel, mean_u, ref.modes, ref.meta
+            combo = u[0]
+        total = combo if total is None else total + combo
+    return t_rel, total / n_pairs, ref.modes, ref.meta
 
 
 def aggregate_tree(
@@ -295,16 +315,27 @@ def aggregate_tree(
         "basis_index": spec["source"].get("index", -1),
         "system": meta["system"],
         "members_json": json.dumps(spec, sort_keys=True, default=str),
+        # The streams' coordinates, for the operator check of
+        # ``identify_from_responses``.
+        "probe_meta_json": json.dumps(
+            {
+                k: meta.get(k)
+                for k in ("wall_normal_grid", "modes", "wavenumbers")
+            }
+            | {"params": {"geo": meta.get("params", {}).get("geo", {})}}
+        ),
     }
 
     if operator is not None:
         from dnsjax_lab.analysis.response.operator_tools import (
+            check_stream,
             growth_curve,
             input_response_curve,
             load_operator,
         )
 
         op = load_operator(operator, i2, i3)
+        check_stream(op, meta, str(tree))
         a_series = project_series(mean_u[:, inj], op.T_proj)
         e_meas = np.sum(np.abs(a_series) ** 2, axis=1)
         if e_meas[0] <= 0.0:
@@ -371,6 +402,12 @@ def identify_from_responses(
             responses[j] = {
                 "t": np.asarray(z["t_rel"]),
                 "u": np.asarray(z["mean_u"])[:, int(z["injected_index"])],
+                "probe_meta": (
+                    json.loads(str(z["probe_meta_json"]))
+                    if "probe_meta_json" in z.files
+                    else None
+                ),
+                "path": str(path),
             }
             if i2 is None:
                 i2, i3 = int(z["injected_i2"]), int(z["injected_i3"])
@@ -386,6 +423,7 @@ def identify_from_responses(
         )
 
     from dnsjax_lab.analysis.response.operator_tools import (
+        check_stream,
         load_modes_npz,
         load_operator,
         recover_basis,
@@ -398,6 +436,22 @@ def identify_from_responses(
         raise SystemExit(str(e)) from e
 
     t_ref = responses[0]["t"]
+    delta = float(t_ref[1] - t_ref[0])
+    for j in range(m):
+        r = responses[j]
+        if r["probe_meta"] is not None:
+            try:
+                check_stream(op, r["probe_meta"], r["path"])
+            except ValueError as e:
+                raise SystemExit(str(e)) from e
+        if r["t"].shape != t_ref.shape or not np.allclose(
+            r["t"], t_ref, rtol=0, atol=0.25 * delta
+        ):
+            raise SystemExit(
+                f"{r['path']}: its time grid differs from basis index "
+                "0's; aggregate every response on one cadence and "
+                "horizon"
+            )
     b_mat = np.stack(
         [project_series(responses[j]["u"], op.T_proj, p) for j in range(m)],
         axis=2,
@@ -419,11 +473,22 @@ def identify_from_responses(
     pairs = []
     used = []
     for tau in horizons:
+        if tau > t_ref[-1] + 0.5 * delta:
+            raise SystemExit(
+                f"horizon {tau:g} lies beyond the record (t <= {t_ref[-1]:g})"
+            )
         k = int(np.argmin(np.abs(t_ref - tau)))
         if k == 0:
             raise SystemExit(f"horizon {tau:g} snaps to t = 0")
+        if float(t_ref[k]) in used:
+            continue
         pairs.append((float(t_ref[k]), b_mat[k]))
         used.append(float(t_ref[k]))
+    if len(used) < len(horizons):
+        print(
+            f"[ensemble] note: requested horizons collapse to {used} "
+            f"on the {delta:g}-spaced response grid."
+        )
     l_mat, diag = identify_generator(pairs)
     report = stability_report(l_mat)
     return {
@@ -499,6 +564,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     from dnsjax_lab.analysis.response.operator_tools import (
         growth_curve,
+        projected_growth_curve,
         restrict,
     )
 
@@ -507,6 +573,7 @@ def main(argv: list[str] | None = None) -> int:
     basis = result["basis"]
     g_id = growth_curve(result["L"], t_ref)
     g_ref = growth_curve(restrict(op.A, basis), t_ref)
+    g_proj = projected_growth_curve(op.A, basis, t_ref)
     np.savez(
         args.out,
         readme=(
@@ -514,11 +581,13 @@ def main(argv: list[str] | None = None) -> int:
             "generator on the injected controllability basis "
             "(energy-orthonormal coordinates); G_id/G_ref: growth "
             "curves of L and of the reference operator restricted "
-            "to the same basis, on t_grid."
+            "to the same basis, on t_grid; G_proj: ||P^H e^{tA} P||^2, "
+            "what the fit measures in the noise-free linear limit."
         ),
         t_grid=t_ref,
         G_id=g_id,
         G_ref=g_ref,
+        G_proj=g_proj,
         **result,
     )
     print(

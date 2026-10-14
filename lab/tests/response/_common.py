@@ -97,12 +97,16 @@ def operator_artifacts(tmp: Path) -> tuple[Path, Path]:
 
 
 def write_probe_stream(
-    directory: Path, u: np.ndarray, dt: float, t0: float = 0.0
+    directory: Path,
+    u: np.ndarray,
+    dt: float,
+    t0: float = 0.0,
+    times: np.ndarray | None = None,
 ) -> None:
     """Hand-written ``probes.bin``/``probes.json`` probing mode (3,0).
 
     *u* is the ``(nt, 3, NY)`` complex profile series; samples sit at
-    ``t0 + k * IT_PROBES * dt``.
+    ``t0 + k * IT_PROBES * dt``, or at *times* when given.
     """
     from dnsjax_lab.analysis.response.probes import MIN_FORMAT_VERSION
 
@@ -127,7 +131,7 @@ def write_probe_stream(
     }
     rec_dtype = np.dtype([("t", "<f8"), ("u", "<f8", (1, 3, NY, 2))])
     rec = np.zeros(nt, dtype=rec_dtype)
-    rec["t"] = t0 + np.arange(nt) * IT_PROBES * dt
+    rec["t"] = t0 + np.arange(nt) * IT_PROBES * dt if times is None else times
     rec["u"][..., 0] = u.real
     rec["u"][..., 1] = u.imag
     with open(directory / "probes.json", "w") as f:

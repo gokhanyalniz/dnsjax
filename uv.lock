@@ -129,7 +129,6 @@ dependencies = [
     { name = "numpy" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
-    { name = "scipy" },
     { name = "tensorstore" },
 ]
 
@@ -152,7 +151,6 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.5.1" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pydantic-settings", specifier = ">=2.13.0" },
-    { name = "scipy", specifier = ">=1.18.0" },
     { name = "tensorstore", specifier = ">=0.1.71" },
 ]
 
@@ -171,10 +169,14 @@ version = "0.1.0"
 source = { editable = "lab" }
 dependencies = [
     { name = "dnsjax" },
+    { name = "scipy" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "dnsjax", editable = "." }]
+requires-dist = [
+    { name = "dnsjax", editable = "." },
+    { name = "scipy", specifier = ">=1.18.0" },
+]
 
 [[package]]
 name = "fonttools"

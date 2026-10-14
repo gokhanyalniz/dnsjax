@@ -8,8 +8,7 @@ friction Reynolds number, and profile files consumable by the transient-growth
 CLI (``--tg.profile``).
 
 Depends only on NumPy, the standard library, and the JAX-free
-:mod:`dnsjax.fd` leaf, so it is safe anywhere the
-``import dnsjax.analysis`` guarantee applies.
+:mod:`dnsjax.fd` leaf, so importing it pulls in neither JAX nor SciPy.
 
 Conventions
 -----------
@@ -64,8 +63,9 @@ class ProbeData:
     ``u`` has shape ``(n_t, K, C, N_y)`` (complex128): ``K`` probed
     modes in sidecar order, ``C`` state components
     (``component_labels``).  ``modes`` are the ``(i2, i3)`` global
-    spectral indices, ``wavenumbers`` the matching integer harmonics
-    (multiply by `$2\pi/L$` for physical wavenumbers).  ``meta`` is
+    spectral indices, ``wavenumbers`` the matching harmonics (multiply
+    the Cartesian and axial ones by `$2\pi/L$` for physical
+    wavenumbers; the azimuthal one is already `$m = m_0 j$`).  ``meta`` is
     the full sidecar dict (``meta["params"]`` is the writing run's
     resolved parameter dump).
     """
@@ -120,10 +120,11 @@ def _check_format_version(json_path: Path, meta: dict, minimum: int) -> None:
         raise ValueError(
             f"{json_path} has format_version {version}; this reader "
             f"takes version {minimum}+ only.  The record layout is "
-            "unchanged, but the component basis (and, for forcing, "
-            "the conjugate-partner rule) changed representation, so "
-            "an older stream would be misread silently rather than "
-            "fail -- see the writer's FORMAT_VERSION comment."
+            "unchanged, but the component basis, the azimuthal "
+            "wavenumbers of a wedge (and, for forcing, the "
+            "conjugate-partner rule) changed representation, so an "
+            "older stream would be misread silently rather than fail "
+            "-- see the writer's FORMAT_VERSION comment."
         )
 
 
@@ -189,8 +190,11 @@ def read_probes(path: str | Path = ".") -> ProbeData:
             "re-ran a trajectory segment?); filter by t before "
             "averaging."
         )
-    u = rec["u"][..., 0].astype(np.complex128)
-    u += 1j * rec["u"][..., 1]
+    # Real and imaginary parts written in place: no complex temporary
+    # beside ``u`` (the streams reach several GB).
+    u = np.empty(rec["u"].shape[:-1], dtype=np.complex128)
+    u.real = rec["u"][..., 0]
+    u.imag = rec["u"][..., 1]
 
     return ProbeData(
         t=t,
