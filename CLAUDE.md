@@ -98,8 +98,6 @@ multi-process runs (a lone process needs none, even across GPUs).
 
 ## Conduct
 
-- Commit messages carry no trailer block; AI assistance is disclosed
-  once, in the README's "Use of AI" section.
 - A difference at machine epsilon is a footnote, not a defect. Only an
   exact-equality guard cares (`twin.e0 = 0`, the laminar smoke's
   `err = 0`), and then the finding is the guard.
@@ -230,3 +228,73 @@ analysis/         snapshot API, transient_growth, snapshot_import
   `src/dnsjax/`: `geometries/wall_bounded/`, `geometries/triply_periodic/`,
   `flows/`, `analysis/`; the lab's `lab/` (its index, scripts included)
   and `lab/src/dnsjax_lab/twin/`.
+
+## Commit messages
+
+Audience, in priority order: (1) an LLM reading the history to
+understand this codebase; (2) a technical reader assessing the work.
+
+- Subject: imperative mood, at most 72 characters and ideally 50, no
+  trailing full stop.
+- Body: wrapped at 72 characters, blank line after the subject, present
+  for any non-trivial change. State why the change was made and what
+  changed at the level of modules, equations, numerical schemes or data
+  structures. Do not restate the diff.
+- Name the concrete thing: the solver, boundary condition, geometry,
+  spectral transform, time-stepper, JAX transformation, sharding
+  strategy. "Update solver" is a failure.
+- Never use a vague verb as the whole subject: update, improve, fix
+  stuff, cleanup, various changes, misc.
+- No self-deprecation, no profanity, no informal aside, no emoji, and
+  no trailer block (`Co-authored-by:` included): AI assistance is
+  disclosed once, in the README's "Use of AI" section
+  (`.claude/settings.json`'s `attribution` turns Claude Code's off).
+- Plain words: the banned words of `lab/scripts/docs/banned_words.py`
+  (`TONE`, `WORDS`) apply to commit messages as to docstrings. A banned
+  word is permitted only where it is the correct and necessary
+  technical term (the cadence `anchor` argument of `lowres.lowres_due`
+  and the twin driver).
+- `lab/scripts/docs/check_commit_message.py` rejects what of this and
+  the next section a script can judge: prek's commit-msg hook runs it
+  on every commit (`uv run prek install` installs both hooks).
+  `--commits origin/main..HEAD` checks what a push would publish,
+  including commits the hook never saw (`--no-verify`,
+  `git commit-tree`).
+
+## Commit hashes
+
+- Code, configuration, tests and documentation never depend on or
+  record a commit hash: a hash does not survive a history rewrite.
+- A commit message never cites a commit hash; it cites the commit's
+  subject line, in quotes.
+- Snapshot and run metadata may record a commit hash, and should record
+  the commit subject line alongside it so the provenance survives a
+  rewrite.
+
+## History
+
+- Keep `main` linear: never create a merge commit (GitHub refuses a
+  push to `main` that carries one). Land a branch by rebasing it onto
+  `main` and fast-forwarding `main` to it.
+- Rebase an unpushed branch onto `main`, and fast-forward `main` to it,
+  without asking: it rewrites only commits no remote holds. After `git
+  fetch` (and `git merge --ff-only origin/main` on a `main` that is
+  behind), a branch is unpushed when `git rev-list main..<branch> --not
+  --remotes` lists every commit `git rev-list main..<branch>` does.
+  Then `git rebase --committer-date-is-author-date main <branch>`, `git
+  switch main` and `git merge --ff-only <branch>`; rebase `main`'s own
+  unpushed commits onto `origin/main` the same way. On a conflict, `git
+  rebase --abort` and ask: a resolution is a change the user has not
+  seen.
+- Never run any other history-rewriting git command without explicit
+  per-instance approval: a rebase of a pushed commit, filter-branch,
+  filter-repo, reset --hard, a ref update onto an existing branch or
+  tag (`branch -f`, `update-ref`, `tag -f`) and reflog expiry or
+  pruning.
+- `git push --force` and `--force-with-lease` are the user's action,
+  never the agent's.
+- Every commit carries one author and committer identity, that of
+  HEAD's author (`git log -1 --format='%an <%ae>'`), with the committer
+  date equal to the author date. An amend resets the committer date;
+  amend with `GIT_COMMITTER_DATE="$(git log -1 --format=%aD)" git commit
+  --amend`.

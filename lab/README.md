@@ -111,6 +111,8 @@ and read-only unless the row says otherwise:
 | `check_links.py` | relative links and `#anchors` of the given Markdown files, by GitHub's slug rules |
 | `check_refs.py` | every backticked module, symbol, class member, parameter field, flag and path in docstrings, comments and docs resolves in the tree; `check_snake.py` reuses its index to list the backticked `snake_case` tokens that name nothing |
 | `check_docstrings.py` | escape, math-form, doubled-word and tone-word checks over the tracked Python tree; `lint_docs.py` the same for named files, plus multi-line summaries and split Sphinx roles |
+| `banned_words.py` | the banned-word patterns the docstring checks and the commit-message check share |
+| `check_commit_message.py` | a commit message against the rules of the root `CONTRIBUTING.md` ("Commits"), as the commit-msg hook of `prek.toml`; `--commits` checks recorded commits, such as what a push would publish |
 | `check_returns.py` | return-tuple arity and documented parameters against each signature |
 | `docs_only.py` | proves a change against a base ref touches docstrings, comments and `description=` strings only |
 | `parse_cmds.py` | parse-validates one documented command line (solver, twin or TOML) without JAX |

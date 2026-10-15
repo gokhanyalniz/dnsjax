@@ -12,12 +12,9 @@ import sys
 import tokenize
 from pathlib import Path
 
-WORDS = re.compile(
-    r"\b(actually|simply|honest(?:ly)?|oracle|anchor(?:ed|s)?|today|"
-    r"currently|in the future|future work|hand-written|this box|"
-    r"dev box|for now|not yet implemented|TODO|FIXME|XXX)\b",
-    re.I,
-)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from banned_words import WORDS  # noqa: E402
+
 ROLE = re.compile(r":(?:func|mod|class|meth|data|attr|obj):`[^`\n]*\n[^`]*?`")
 
 for path in sys.argv[1:]:

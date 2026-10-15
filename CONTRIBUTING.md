@@ -85,7 +85,10 @@ tables and HTML excepted). Name the directories when formatting — a bare
 docs and the example notebook, which are laid out to be read rather than
 to satisfy the formatter.
 
-`prek.toml` configures the commit hook, which runs both:
+`prek.toml` configures two hooks, one command installing both: at
+commit, ruff check and format; on the message, the rules of
+[Commits](#commits), through `lab/scripts/docs/`'s
+[`check_commit_message.py`](lab/scripts/docs/check_commit_message.py).
 
 ```bash
 uv run prek install
@@ -153,10 +156,33 @@ truthfully is left out until it can be.
 
 ## Commits
 
-Imperative, sentence case, no prefix, and specific about what changed —
+Imperative, sentence case, no prefix, at most 72 characters (ideally
+50) with no trailing full stop, and specific about what changed —
 `Refuse a twin stream recorded under other parameters` rather
 than `fix streams`. Wrap the body at 72 columns and use it for the
-reasoning: what was wrong, and why this is the fix.
+reasoning: what was wrong, and why this is the fix. No trailer block,
+and no commit hash: cite another commit by its subject, in quotes,
+since a hash does not survive a history rewrite. The banned words of
+the docstring checks ([`banned_words.py`](lab/scripts/docs/banned_words.py))
+apply to messages too. The commit-message hook checks these rules as
+far as a script can; `uv run python
+lab/scripts/docs/check_commit_message.py --commits origin/main..HEAD`
+checks what a push would publish.
+
+`main` stays linear, and GitHub refuses a push to it that carries a
+merge commit. Bring a branch up to date by rebasing it onto `main`
+rather than merging `main` into it, and land it by fast-forward (the
+date flag keeps each commit's committer date equal to its author date,
+as on every commit here):
+
+```bash
+git rebase --committer-date-is-author-date main <branch>
+git switch main
+git merge --ff-only <branch>
+```
+
+`git config pull.ff only` and `git config merge.ff only` make `git
+pull` and `git merge` refuse to create a merge commit.
 
 ## Releases
 
