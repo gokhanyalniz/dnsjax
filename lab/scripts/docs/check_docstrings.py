@@ -12,9 +12,13 @@ import ast
 import io
 import re
 import subprocess
+import sys
 import tokenize
 from collections import Counter
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from banned_words import TONE  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[3]  # the repository root
 files = subprocess.run(
@@ -49,15 +53,6 @@ markers = []
 dates = []
 tone = Counter()
 tone_where = {}
-TONE = re.compile(
-    r"\b(flagship|oracle|anchor(?:s|ed|ing)?|hand-written|handwritten|"
-    r"honest(?:ly)?|crucial(?:ly)?|notably|importantly|seamless(?:ly)?|"
-    r"leverag(?:e|es|ed|ing)|robust(?:ly|ness)?|comprehensive|"
-    r"cutting-edge|state-of-the-art|delv(?:e|es|ing)|simply|obviously|"
-    r"clearly|trivially|elegant(?:ly)?|powerful|magic(?:al)?|"
-    r"essentially|basically|literally|very|really|actually|just)\b",
-    re.I,
-)
 for f in files:
     src = (ROOT / f).read_text()
     lines = src.splitlines()

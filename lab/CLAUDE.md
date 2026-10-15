@@ -123,6 +123,10 @@ fixed on purpose.
 - `docs/check_docstrings.py`: raw-string, math-form, doubled-word and
   tone-word checks over the tracked Python tree; `docs/lint_docs.py`,
   the same for the given files plus summary lines and split roles.
+- `docs/banned_words.py`: `TONE` and `WORDS`, the banned-word patterns
+  the prose checks share.
+- `docs/check_commit_message.py`: a commit message against the commit
+  rules (prek's commit-msg hook); `--commits <revs>`, recorded ones.
 - `docs/check_returns.py`: return arity and documented parameters
   against each signature.
 - `docs/docs_only.py`: proves a diff against a base ref changes

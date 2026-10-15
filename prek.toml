@@ -1,3 +1,9 @@
+# `prek install` installs both hooks: ruff at commit, and the commit
+# message check (lab/scripts/docs/check_commit_message.py) on the
+# message. A hook without `stages` runs at commit only.
+default_install_hook_types = ["pre-commit", "commit-msg"]
+default_stages = ["pre-commit"]
+
 [[repos]]
 repo = "https://github.com/astral-sh/ruff-pre-commit"
 rev = "v0.16.10" # Ruff version.
@@ -8,3 +14,14 @@ hooks = [
   # Run the formatter.
   { id = "ruff-format", types_or = ["python", "pyi"] },
 ]
+
+[[repos]]
+repo = "local"
+
+# The mechanical commit rules of CONTRIBUTING.md ("Commits").
+[[repos.hooks]]
+id = "commit-message"
+name = "commit message"
+language = "system"
+entry = "uv run python lab/scripts/docs/check_commit_message.py"
+stages = ["commit-msg"]
