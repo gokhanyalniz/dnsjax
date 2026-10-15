@@ -32,6 +32,10 @@ Pallas banded backend (``PerModeBandedPallasOperator``):
    must never be routed through the rule); and the adjoint composes
    inside ``.solve``'s ``shard_map``
    (``test_pallas_adjoint_composes_in_solve``).
+6. Stacked operators solve on both paths, whose stored family axes
+   differ (``test_pallas_stacked_operators``), and a stacked CPU solve
+   makes no factor-shaped copy (``test_stacked_cpu_solve_copies_no_factor``,
+   the guard on the CPU family axis).
 
 The interpret/lowering tests call ``_pallas_banded_solve`` directly
 with local, uncommitted factors (``_mode_inner_factors``; in
@@ -82,6 +86,7 @@ params.res.double_precision = True
 
 import contextlib  # noqa: E402
 import io  # noqa: E402
+import re  # noqa: E402
 
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
@@ -680,23 +685,89 @@ def test_pallas_adjoint_composes_in_solve() -> None:
 
 
 def test_pallas_stacked_operators() -> None:
-    """A stacked Pallas operator solves each component with its factors."""
+    """A stacked Pallas operator solves each component with its factors.
+
+    On both paths, whose stored family axes differ
+    (:func:`~dnsjax.solvers._family_axis`): the CPU sweep, and the
+    kernel in interpret mode (``solvers._force_kernel_path`` and
+    ``_force_interpret``, set before the operator is built), each for
+    both ``component_axis`` layouts.
+    """
+    import dnsjax.solvers as solvers_mod
+
     Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
     p, Ny = 4, 16
     As = [_make_random_banded(Ny, p, seed=s) for s in (1, 2, 3)]
-    stk = _stack_pallas_operators(
-        *[_pallas_op_from_dense(A, p, Nkz, Nkx) for A in As]
-    )
     rng = np.random.default_rng(11)
     bs = [rng.standard_normal(Ny) for _ in range(3)]
-    rhs = jnp.stack(
-        [jnp.tile(jnp.asarray(b)[:, None, None], (1, Nkz, Nkx)) for b in bs]
-    )  # (3, Ny, Nkz, Nkx)
-    X = np.asarray(stk.solve(rhs))
-    for c in range(3):
-        assert_allclose(
-            X[c, :, 0, 0], np.linalg.solve(As[c], bs[c]), atol=1e-9, rtol=1e-9
+    cols = [jnp.tile(jnp.asarray(b)[:, None, None], (1, Nkz, Nkx)) for b in bs]
+    refs = [np.linalg.solve(A, b) for A, b in zip(As, bs, strict=True)]
+    for kernel in (False, True):
+        solvers_mod._force_kernel_path = kernel
+        solvers_mod._force_interpret = kernel
+        try:
+            stk = _stack_pallas_operators(
+                *[_pallas_op_from_dense(A, p, Nkz, Nkx) for A in As]
+            )
+            for ca in (0, 1):
+                X = np.asarray(
+                    stk.solve(jnp.stack(cols, axis=ca), component_axis=ca)
+                )
+                for c in range(3):
+                    x = X[c] if ca == 0 else X[:, c]
+                    assert_allclose(
+                        x[:, 0, 0],
+                        refs[c],
+                        atol=1e-9,
+                        rtol=1e-9,
+                        err_msg=f"kernel={kernel} component_axis={ca} c={c}",
+                    )
+        finally:
+            solvers_mod._force_kernel_path = False
+            solvers_mod._force_interpret = False
+
+
+def test_stacked_cpu_solve_copies_no_factor() -> None:
+    """A stacked CPU solve reads its factors in place.
+
+    The CPU sweep is a ``lax.scan`` down the wall-normal axis, and a
+    ``vmap``-ed scan batches over the axis right after the scanned one,
+    so factors stored with their families leading are transposed in full
+    on every solve: the results stay right, and a factor-sized copy per
+    solve stays live across a step.  In the layout
+    :func:`~dnsjax.solvers._family_axis` gives the CPU path, the
+    compiled solve makes no array of a factor's shape, for either
+    ``component_axis`` (the influence-matrix ``Hk`` pairs take ``1``,
+    the sPTT conformation ``Hc`` takes ``0``), with the factors passed
+    as jit arguments, as the stepper passes them.
+    """
+    Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
+    p, Ny, C = 4, 16, 2
+    stk = _stack_pallas_operators(
+        *[
+            _pallas_op_from_dense(
+                _make_random_banded(Ny, p, seed=40 + c), p, Nkz, Nkx
+            )
+            for c in range(C)
+        ]
+    )
+    factor_dims = {tuple(sorted(a.shape)) for a in (stk.L, stk.U)}
+    produced = re.compile(r"= f64\[([\d,]+)\]\S* ([\w-]+)\(")
+    for ca, shape in ((0, (C, Ny, Nkz, Nkx)), (1, (Ny, C, Nkz, Nkx))):
+        rhs = jnp.ones(shape, dtype=jnp.complex128)
+        hlo = (
+            jax.jit(lambda op, r, ca=ca: op.solve(r, component_axis=ca))
+            .lower(stk, rhs)
+            .compile()
+            .as_text()
         )
+        made = [
+            (op, dims)
+            for dims, op in produced.findall(hlo)
+            if tuple(sorted(int(d) for d in dims.split(","))) in factor_dims
+            and op not in ("parameter", "get-tuple-element", "bitcast")
+        ]
+        assert not made, f"component_axis={ca}: factor-shaped {made}"
 
 
 def test_build_pallas_operator_checks() -> None:

@@ -166,6 +166,35 @@ GEMMs of a pass and runs 5 field-GEMMs of `$A_{\mathrm{base}}$`, where one GEMM
 batching the two (rejected) shares none and runs 8.  Counted as ``dot``
 instructions of the optimized CPU HLO on the dense path at
 `$16 \times 33 \times 16$`; on CPU the steps agree bit for bit.
+
+**Folding the `$t^n$` terms (rejected).**  Every pass adds to its explicit
+half two terms linear in the iterate and in `$t^n$`, the pressure-free sources
+and the lagged spin partners.  One array per step,
+`$E = \Phi^n/\Delta t + (1-c)\,\nu L \Phi^n + (1-c)\,G(u^n, N^n)$`, with every
+pass solving from `$E + c\,G(u_j, N_j)$`, is therefore the same scheme with its
+sums reassociated (the steps agree to `$8 \times 10^{-16}$` relative).  It
+changes no GEMM count, the sharing above already computing the `$t^n$` GEMMs
+once per step, and it moves memory only through what the first correction keeps
+live across the nonlinear term's second transform batch, where the step's peak
+sits.  Change in the as-run step's temporaries, in spectral fields (CPU buffer
+assignment, one device, dense wall-normal matvecs, `$64 \times 65 \times 64$`,
+the sPTT flows `$48 \times 49 \times 48$`; the barriers are
+``lax.optimization_barrier`` keeping the precompute out of the first transform
+batch):
+
+=================  ==========  =============
+flow               plain fold  with barriers
+=================  ==========  =============
+Taylor-Couette     -7          -9
+plane Couette      +1          -2
+pipe               -3.7        not measured
+viscoelastic Dean  -11         not measured
+viscoelastic pipe  -10         not measured
+=================  ==========  =============
+
+A saving of that size, none on the Cartesian geometry without barriers, does
+not pay for the interface every geometry's pass would need: the stepper hands a
+pass `$u^n$` and `$N^n$`, never `$E$`.
 """
 
 import copy

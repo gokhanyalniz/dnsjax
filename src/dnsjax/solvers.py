@@ -311,6 +311,42 @@ reintroduce those matvec transposes.  Eliminating it means folding the
 three-component stack into the kernel's `$(k_z, k_x)$` batch, so that
 no ``vmap`` runs over components: a solve-kernel refactor worth ~2 % of
 the step, deferred as low-return and cross-cutting.
+
+**Stacked factors on CPU.**  The CPU sweep is a ``lax.scan`` down the
+wall-normal axis, and mapping a scan over a batch axis moves that axis
+of every scanned operand to immediately after the scanned one.  Factors
+stored with their families leading, the kernel path's layout, are
+therefore transposed in full by every CPU solve of a stacked operator,
+and XLA holds the copies across the step and makes them again inside
+the corrector loop.  Stored after the wall-normal axis
+(:func:`_family_axis`), the families sit where the mapped scan wants
+them and no solve copies a factor (the guard:
+``test_stacked_cpu_solve_copies_no_factor``).  The as-run step's
+temporaries in spectral fields, families leading against after ``N``
+(CPU buffer assignment, one device, dense wall-normal matvecs):
+
+================================  ====================  ================
+flow, grid                        stacked families      step temporaries
+================================  ====================  ================
+Taylor-Couette ``64 x 65 x 64``   ``H_k`` 2             76.9 -> 59.9
+pipe ``64 x 65 x 64``             ``H_k`` 2             84.9 -> 67.9
+sPTT Dean ``48 x 49 x 48``        ``H_k`` 2, ``H_c`` 6  330.6 -> 262.6
+sPTT pipe ``48 x 49 x 48``        ``H_k`` 2, ``H_c`` 6  343.8 -> 275.8
+================================  ====================  ================
+
+The same 17 fields leave the curved pipe's step and the pipe's cnab2
+step, 20 Taylor-Couette's cnab2 step and 25.5 the legacy primitive
+pass's three families; the figures hold on the stencil path and at
+``32 x 33 x 32``, the arguments and outputs do not change, and plane
+Couette, with no stacked operator, compiles to the same program.  The
+sweep does the same arithmetic in the same order, so the states are
+bit-identical (every run, stream and snapshot of a refactor capture).
+Step time, one device pinned to one core, the two layouts' trees run
+alternately with the order reversed every second pair: x0.86 on
+Taylor-Couette ``64 x 65 x 64`` (six pairs, 0.80-0.91), x0.90 on the
+pipe at the same grid (eight pairs, 0.87-0.93) and x0.89 on the sPTT
+Dean ``48 x 49 x 48`` (six pairs, 0.81-0.96, the corrector iterating);
+six shorter pipe pairs gave x0.92 (0.75-1.06).
 """
 
 from __future__ import annotations
@@ -1395,6 +1431,31 @@ def _kernel_path() -> bool:
     return jax.default_backend() == "gpu"
 
 
+def _family_axis() -> int:
+    r"""Axis of the band families in a stacked operator's stored factors.
+
+    A stacked operator (:func:`_stack_pallas_operators`) holds one band
+    family per solved component, and where that axis sits is part of
+    the per-backend storage (:func:`_kernel_path` decides it, as it
+    decides the rest):
+
+    - **kernel path:** ``0``, ``(C, N, p, Nkz*, Nkx*)``, the layout the
+      kernel's GPU measurements were taken with.  Mapping the
+      ``pallas_call`` over the families adds them to the kernel's grid.
+    - **CPU:** ``1``, ``(N, C, p, Nkz, Nkx)``.  The sweep is a
+      ``lax.scan`` down the wall-normal axis, and mapping a scan moves
+      each scanned operand's batch axis to immediately after the
+      scanned one; with the families leading, every solve would
+      transpose both factor arrays in full (Design notes: "Stacked
+      factors on CPU").
+
+    :meth:`PerModeBandedPallasOperator.solve` and
+    :func:`_stack_pallas_operators` both read it, so storage and solve
+    agree on either path.
+    """
+    return 0 if _kernel_path() else 1
+
+
 def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     r"""Solve one mode-inner banded operator over a ``(Nkz, Nkx)`` block.
 
@@ -1429,11 +1490,13 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     On CPU the sweep is :func:`_banded_solve_mode_inner`, which scans the
     stored factors as they are: no factor copy, no crop and no
     un-inversion (the CPU build stores the plain diagonal at the true
-    plane, :meth:`~PerModeBandedPallasOperator.from_mode_inner_factors`).
-    That the stored layout is the kernel's on CPU too, and that the CPU
-    sweep reads it directly, both rest on end-to-end measurements (Design
-    notes: "One stored layout for both backends", "The CPU sweep reads
-    the stored layout").
+    plane, :meth:`~PerModeBandedPallasOperator.from_mode_inner_factors`,
+    and a stacked operator's families after the ``N`` axis,
+    :func:`_family_axis`).  That the stored layout is the kernel's on
+    CPU too, and that the CPU sweep reads it directly, both rest on
+    end-to-end measurements (Design notes: "One stored layout for both
+    backends", "The CPU sweep reads the stored layout", "Stacked factors
+    on CPU").
     """
     p = L.shape[1]
     is_complex = jnp.iscomplexobj(rhs)
@@ -1472,33 +1535,37 @@ class PerModeBandedPallasOperator:
     spectral field, the velocity's native layout -- see :meth:`solve`
     for the component-axis dispatch.
 
-    **The layout is shared by both backends; two transforms on top of
-    it are per-backend** (:func:`_kernel_path` decides, and is the
+    **The layout is shared by both backends; three transforms on top
+    of it are per-backend** (:func:`_kernel_path` decides, and is the
     single predicate behind both the storage and the sweep, so the two
     cannot disagree):
 
-    ==================  ==================  ==================
+    ==================  ==================  ====================
     stored form         kernel path (GPU)   CPU run
-    ==================  ==================  ==================
+    ==================  ==================  ====================
     ``U`` diagonal      reciprocated        plain
     mode plane          whole-tile padded   the true plane
-    ==================  ==================  ==================
+    stacked families    leading axis        after the ``N`` axis
+    ==================  ==================  ====================
 
     A CPU run never reaches the kernel, so both kernel transforms would
-    only be undone again on every solve.  The two backends therefore
-    share this class, the layout, the factorization and the ``.solve``
-    skeleton, and differ in exactly those two rows plus the local solve
-    body.
+    only be undone again on every solve, and its sweep would transpose
+    family-leading factors on every solve (:func:`_family_axis`).  The
+    two backends therefore share this class, the layout, the
+    factorization and the ``.solve`` skeleton, and differ in exactly
+    those three rows plus the local solve body.
 
     Attributes
     ----------
     L:
-        Strict-lower factor band, mode-inner,
-        ``(N, p, Nkz*, Nkx*)`` or ``(C, N, p, Nkz*, Nkx*)``.
+        Strict-lower factor band, mode-inner, ``(N, p, Nkz*, Nkx*)``;
+        a stacked operator adds its family axis ``C``
+        (:func:`_family_axis`): ``(C, N, p, Nkz*, Nkx*)`` on the kernel
+        path, ``(N, C, p, Nkz, Nkx)`` on CPU.
     U:
-        Upper factor band, mode-inner, ``(N, p+1, Nkz*, Nkx*)`` or
-        ``(C, ...)``; diagonal first, **reciprocated on the kernel path
-        only** (plain on CPU -- see the table above).
+        Upper factor band, mode-inner, ``(N, p+1, Nkz*, Nkx*)``, with
+        ``C`` placed as in *L*; diagonal first, **reciprocated on the
+        kernel path only** (plain on CPU -- see the table above).
 
     ``Nkz* x Nkx*`` is the stored mode plane: on the kernel path the
     true plane rounded up to whole Pallas tiles **per device shard** at
@@ -1628,9 +1695,10 @@ class PerModeBandedPallasOperator:
         Pallas kernel stores its factors in, so the GPU path feeds the
         kernel with no transpose (see :func:`_banded_mode_solve`).
 
-        Dispatch: ``L.ndim == 5`` (batched/stacked operators) vmaps over both
-        the operator and RHS leading axis; ``rhs.ndim == 4`` (shared
-        operator) vmaps over the RHS leading axis; otherwise a single
+        Dispatch: ``L.ndim == 5`` (stacked operators) vmaps over the
+        factors' family axis (:func:`_family_axis`) and the RHS
+        component axis together; ``rhs.ndim == 4`` (shared operator)
+        vmaps over the RHS component axis alone; otherwise a single
         operator / single RHS.
 
         The whole solve is one ``shard_map`` region (mirroring the FFT
@@ -1654,11 +1722,12 @@ class PerModeBandedPallasOperator:
         win (Design notes: "The one remaining IMM transpose").
         """
         ca = component_axis
+        fa = _family_axis()
 
         def _local(L_l: Array, U_l: Array, rhs_l: Array) -> Array:
             if L_l.ndim == 5:
                 return jax.vmap(
-                    _banded_mode_solve, in_axes=(0, 0, ca), out_axes=ca
+                    _banded_mode_solve, in_axes=(fa, fa, ca), out_axes=ca
                 )(L_l, U_l, rhs_l)
             if rhs_l.ndim == 4:
                 return jax.vmap(
@@ -1723,10 +1792,15 @@ def _kernel_storage(
 def _stack_pallas_operators(
     *ops: PerModeBandedPallasOperator,
 ) -> PerModeBandedPallasOperator:
-    """Stack Pallas banded operators along a leading component axis."""
+    """Stack Pallas banded operators along the family axis.
+
+    One band family per operator, on :func:`_family_axis`: leading on
+    the kernel path, right after the wall-normal axis on CPU.
+    """
+    axis = _family_axis()
     return PerModeBandedPallasOperator(
-        L=jnp.stack([o.L for o in ops]),
-        U=jnp.stack([o.U for o in ops]),
+        L=jnp.stack([o.L for o in ops], axis=axis),
+        U=jnp.stack([o.U for o in ops], axis=axis),
     )
 
 
@@ -1737,8 +1811,8 @@ def _pack_banded_factors(
 
     *factors* are mode-inner pairs, as :func:`_banded_factor_mode_inner`
     returns them.  One pair becomes a plain operator; several are
-    stacked along a leading component axis
-    (:func:`_stack_pallas_operators`).  Shared tail of the checked
+    stacked along the family axis (:func:`_stack_pallas_operators`).
+    Shared tail of the checked
     :func:`_build_pallas_operator` and the unchecked
     :func:`_factor_pallas_operator`.
     """
