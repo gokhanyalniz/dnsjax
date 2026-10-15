@@ -344,8 +344,10 @@ def _hk_components(hk) -> int:
     grouped operator, and fall back to the formulation's own count for
     the ungrouped Cartesian one.
     """
-    if hk.L.ndim == 5:  # (C, N, p, Nkz, Nkx): one family per slot
-        return int(hk.L.shape[0])
+    from dnsjax.solvers import _family_axis
+
+    if hk.L.ndim == 5:  # one family per slot, on the stored family axis
+        return int(hk.L.shape[_family_axis()])
     return 2 if params.res.consistent_imm else 3
 
 
@@ -747,7 +749,7 @@ def _part_a2(system, flow, sharding, reps, t_step, n) -> None:
     from jax import shard_map
     from jax.sharding import PartitionSpec as P
 
-    from dnsjax.solvers import PerModeBandedPallasOperator
+    from dnsjax.solvers import PerModeBandedPallasOperator, _family_axis
 
     print("\n" + "-" * 72)
     print("PART A2 -- the split-real hoist: is the round trip removable?")
@@ -806,7 +808,8 @@ def _part_a2(system, flow, sharding, reps, t_step, n) -> None:
             R_c = R_l if ca == 0 else jnp.moveaxis(R_l, 1, 0)
             bs = jax.vmap(to_split)(R_c)
             stacked = hL_l.ndim == 5
-            in_ax = (0, 0, 0, None) if stacked else (None, None, 0, None)
+            fa = _family_axis()
+            in_ax = (fa, fa, 0, None) if stacked else (None, None, 0, None)
             xs = jax.vmap(sweep, in_axes=in_ax)(hL_l, hU_l, bs, p_h)
             # ... the map runs *in* the split representation ...
             src_s = _mid(xs[0], xs[1], coeff(w_l))

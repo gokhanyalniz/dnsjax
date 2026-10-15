@@ -482,6 +482,7 @@ def run_child(a: argparse.Namespace) -> None:
 
     from dnsjax.ic.random_field import generate_random_state
     from dnsjax.sharding import sharding
+    from dnsjax.solvers import _family_axis
 
     dev = jax.local_devices()[0]
     env = {
@@ -554,9 +555,13 @@ def run_child(a: argparse.Namespace) -> None:
         if op is None:
             solve_ms[g] = None
             continue
-        factor = op.L if hasattr(op, "L") else op.lu  # pallas / dense
-        if factor.ndim == 5:  # (C, ...): one family per operand slot
-            n_op = int(factor.shape[0])
+        # A stacked operator holds one family per operand slot: on the
+        # dense ``lu``'s leading axis, on the Pallas factors' stored
+        # family axis (``solvers._family_axis``).
+        pallas = hasattr(op, "L")
+        factor = op.L if pallas else op.lu
+        if factor.ndim == 5:
+            n_op = int(factor.shape[_family_axis() if pallas else 0])
         else:
             n_op = operand(params) if callable(operand) else operand
         shape, spec = (
