@@ -5,7 +5,7 @@ The three identification test scripts (``test_ensemble.py``,
 subprocess wrapper (:func:`run`), a real transient-growth operator
 export + controllability bundle for plane-Poiseuille mode ``(3, 0)``
 at the shared tiny resolution (:func:`operator_artifacts`), and
-hand-written synthetic ``probes.bin``/``probes.json`` streams
+synthetic ``probes.bin``/``probes.json`` streams
 (:func:`write_probe_stream`).  Each script stays standalone (its own
 directory is ``sys.path[0]``, so ``import _common`` works run
 directly or through the pytest bridge) and configures the dnsjax
@@ -103,7 +103,7 @@ def write_probe_stream(
     t0: float = 0.0,
     times: np.ndarray | None = None,
 ) -> None:
-    """Hand-written ``probes.bin``/``probes.json`` probing mode (3,0).
+    """Synthetic ``probes.bin``/``probes.json`` probing mode (3,0).
 
     *u* is the ``(nt, 3, NY)`` complex profile series; samples sit at
     ``t0 + k * IT_PROBES * dt``, or at *times* when given.

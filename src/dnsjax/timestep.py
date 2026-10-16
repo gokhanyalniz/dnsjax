@@ -45,7 +45,7 @@ large ``dt`` (the ``L_bf`` solve is only stiff enough to diverge once
 is then redone with the full iterative-CN corrector (``_step_core``,
 reusing the RHS already evaluated at `$u^n$`), deliberately the
 *unsplit* one: the split corrector's coupling tail is the same Picard
-iteration that just failed.  ``lax.cond`` runs that branch, and its
+iteration that failed.  ``lax.cond`` runs that branch, and its
 extra FFTs, only on the hard steps, so the one-FFT path is unchanged
 elsewhere.  It does *not* cover the explicit-``N_nl`` advective
 stability limit that every explicit-nonlinear scheme shares, which is
@@ -175,7 +175,7 @@ def make_stepper(
         fuses with the step (no separate dispatch, one fewer
         state-sized read/write pass); wall-bounded flows pass ``None``
         (their continuity handling lives inside the IMM -- and a
-        state-side finalize projection is violently unstable there,
+        state-side finalize projection is unstable there,
         which is why exact wall-bounded continuity is a *scheme*
         rather than a post-step fix; see the
         ``cartesian._imm_iteration`` docs), which leaves their traces

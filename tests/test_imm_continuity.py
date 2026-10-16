@@ -87,7 +87,7 @@ PIPE_STEPS = 10
 # at ny = 25 and 1.51e-05 / 8.24e-15 at ny = 97.
 #
 # The legacy residual **falls** with resolution in every geometry
-# (~40x over 25 -> 97 on plane-couette, seed-robust over seeds
+# (~40x over 25 -> 97 on plane-couette, at each of seeds
 # 7/11/23; ~110x on taylor-couette and ~1900x on the pipe).  Every
 # default one stays
 # at round-off and follows no `$h^p$` law at all (the mild ny growth
@@ -295,7 +295,7 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
         #   reconstruction -- no solve reads it back, so it does not
         #   re-excite (a post-hoc projection relocating the same
         #   residual *while* the solve still imposes chi-momentum is
-        #   violently unstable; the ``_imm_iteration`` docs).
+        #   unstable; the ``_imm_iteration`` docs).
         #
         # Interior rows and the k = 0 plane excluded, like the
         # divergence measure.

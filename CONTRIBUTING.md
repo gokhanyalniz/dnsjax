@@ -114,7 +114,7 @@ Run **one** heavy suite at a time: each invocation is already serial
 internally and leaves JAX's CPU thread pool unpinned, so concurrent runs
 oversubscribe the machine and produce spurious failures.
 
-Pick the check that fits what a change can actually reach. A docs or
+Pick the check that fits what a change can reach. A docs or
 type-hint pass cannot change behaviour, and a test run that cannot tell
 "the change is fine" from "the change was never involved" buys nothing.
 
@@ -145,7 +145,7 @@ module docstring that owns a detail rather than restating it, which is
 what keeps that affordable. `docs/pypi/README.md`, the README as PyPI
 shows it, is regenerated rather than edited (Releases, below).
 
-The mechanical checks of the prose, from links and anchors and
+The mechanical checks of the prose, from links, their in-page targets and
 backticked names against the tree to docstring style, Oxford spelling,
 parse-validated command lines and a proof that a change is docs-only,
 live in `lab/scripts/docs/`; each script's docstring is its manual.
@@ -160,8 +160,9 @@ Imperative, sentence case, no prefix, at most 72 characters (ideally
 50) with no trailing full stop, and specific about what changed —
 `Refuse a twin stream recorded under other parameters` rather
 than `fix streams`. Wrap the body at 72 columns and use it for the
-reasoning: what was wrong, and why this is the fix. No trailer block,
-and no commit hash: cite another commit by its subject, in quotes,
+reasoning: why the change was made, and what changed at the level of
+modules, equations, numerical schemes or data structures. No trailer
+block, and no commit hash: cite another commit by its subject, in quotes,
 since a hash does not survive a history rewrite. The banned words of
 the docstring checks ([`banned_words.py`](lab/scripts/docs/banned_words.py))
 apply to messages too. The commit-message hook checks these rules as
@@ -262,11 +263,11 @@ uv pip install --python /tmp/rehearsal/bin/python \
 
    `cut` refuses a dirty tree and an existing tag, then, in a
    throwaway worktree of `HEAD`, strips the lab from `pyproject.toml`,
-   relocks `uv.lock`, sets `date-released` in `CITATION.cff` (today,
-   or `--date`), trims the README to the sections a release carries,
-   regenerates the PyPI README with its links pinned to the tag,
-   points every link the archive's Markdown makes to a file the
-   archive leaves out at the tag on GitHub, commits and tags
+   relocks `uv.lock`, sets `date-released` in `CITATION.cff` (the
+   current date, or `--date`), trims the README to the sections a
+   release carries, regenerates the PyPI README with its links pinned
+   to the tag, points every link the archive's Markdown makes to a
+   file the archive leaves out at the tag on GitHub, commits and tags
    (annotated, `v0.2.0`).
 
 3. Push the tag and nothing else:

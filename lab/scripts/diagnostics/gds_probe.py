@@ -56,11 +56,11 @@ Run on a GPU node, from a directory on the **scratch / parallel
 filesystem** the runs write to (``--outdir``)::
 
     .venv/bin/python lab/scripts/diagnostics/gds_probe.py \
-        --outdir /scratch/$USER/gdsprobe
+        --outdir /path/to/scratch/gdsprobe
 
     # add the real snapshot path (single process, all visible GPUs)
     .venv/bin/python lab/scripts/diagnostics/gds_probe.py \
-        --outdir /scratch/$USER/gdsprobe --end-to-end \
+        --outdir /path/to/scratch/gdsprobe --end-to-end \
         --dist.platform cuda --np0 4 --ny 193 --nx 256 --nz 256
 
 Part A alone is cheap and needs no GPU allocation beyond a node with

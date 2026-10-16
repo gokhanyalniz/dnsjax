@@ -252,7 +252,7 @@ tools have a page of their own,
   singletons captured at import, and JAX's platform and precision are
   process-wide, so a test has to own its process: each runs as its own
   script, and `pytest` collects them through a subprocess bridge.
-- **JAX rather than hand-written CUDA or Fortran.** One source targets
+- **JAX rather than CUDA or Fortran kernels.** One source targets
   CPU, GPU and TPU and shards across devices without a second
   implementation. Where standard JAX is not enough, such as for the
   wall-normal banded sweep, a Pallas kernel is used under the same API.

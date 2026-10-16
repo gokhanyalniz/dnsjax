@@ -10,7 +10,7 @@ like the random field, it has no offline CLI.
 perturbation is a compact structure of *fixed physical size*, localized
 in **every homogeneous direction**, peak-normalized so that
 `$\max|\mathbf{u}'| = A$` (the ``amplitude`` argument) at any domain
-size.  Growing a box length therefore just adds laminar flow around the
+size.  Growing a box length therefore only adds laminar flow around the
 spot, so the volume-averaged statistics scale as `$1 / (L_x L_z)$` -- the
 total perturbation energy is domain-independent.  Box-proportional
 sizing would forfeit both properties: a width set as a *fraction* of the
@@ -189,8 +189,8 @@ def _mean_free(signal: np.ndarray) -> np.ndarray:
     invisible to the spectral derivative (`$\mathrm{i}k\,\hat f$` at
     `$k = 0$`), so the partner component and the discrete divergence are
     unchanged; what this *does* fix is the host-side peak normalization,
-    which reads the physical signal and must see the field that is
-    actually built.  Floating-point subtraction leaves an `$O(\epsilon)$`
+    which reads the physical signal and must see the field as
+    built.  Floating-point subtraction leaves an `$O(\epsilon)$`
     residue in the DC bin, so the spectrum still goes through
     :func:`_zero_dc` -- that is what makes the mean mode exact.
     """

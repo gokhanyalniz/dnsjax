@@ -103,7 +103,7 @@ Sharded scatter
 ``shard_map``, the device owning each static global mode index adds
 the replicated column into its local shard (everyone else adds
 zeros), so no global sharded axis is ever indexed.  The real-FFT
-conjugate partner (``i3 = 0``) is just another scatter target; its
+conjugate partner (``i3 = 0``) is one more scatter target; its
 column -- the plain conjugate (every physical component is the
 transform of a real field) -- is built on the host (the placement
 rules of ``transient_growth.single_mode_state``, here in sharded form).
@@ -204,7 +204,7 @@ def build_mode_injector(
 
         to_solver = jax.vmap(to_pm_basis)
     # Owner masks only over mesh axes of size > 1: a size-1 axis has
-    # owner 0 trivially, and querying its ``axis_index`` would stamp
+    # owner 0 by construction, and querying its ``axis_index`` would stamp
     # the output as varying over an axis the (then axis-free)
     # ``out_specs`` declares replicated -- shard_map's vma check
     # rejects that.  (The extractor's ``psum`` re-replicates and
@@ -633,7 +633,7 @@ class ForceHooks(RunHooks):
     immediately before the step, so a resumed continuation never
     double-applies a kick (saved states are pre-kick; the kick belongs
     to the segment that steps from them) and the coefficient stream
-    continues seamlessly.  The coefficient log flushes with the other
+    continues without a gap.  The coefficient log flushes with the other
     streams, unchecked: host-drawn Gaussians are finite by
     construction.
     """

@@ -60,7 +60,7 @@ only once complete, so the loser of the race sees either no file (and,
 not being the main process, does nothing) or the whole of it; the
 rename is atomic on any POSIX filesystem because the ``.partial``
 sibling shares the directory.  A run record a later resume reads back
-is written the same way, where a truncated write would be just as
+is written the same way, where a truncated write would be equally
 fatal.
 """
 

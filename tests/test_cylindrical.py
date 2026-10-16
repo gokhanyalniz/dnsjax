@@ -13,7 +13,7 @@ Tests cover:
    ``res.consistent_imm`` operators -- also the guard on the
    parity-reduced builders' use of the shared
    ``solvers._assemble_banded_operator`` helpers.
-6b. The pipe's ``res.consistent_imm`` structure: the spin pair really
+6b. The pipe's ``res.consistent_imm`` structure: the spin pair
     diagonalizes the vector Laplacian onto the existing
     `$H_{k,\pm}$` operators, every vw quantity lands in the parity
     class its operator assumes, and the packed mean plane reuses the

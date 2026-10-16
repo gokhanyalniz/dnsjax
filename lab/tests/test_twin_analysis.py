@@ -3,7 +3,7 @@ r"""Unit tests for the JAX-free twin analysis and the twin tree builder.
 The package is ``dnsjax_lab.analysis.twin``, the orchestration
 ``ensemble_setup.py build-twin``.
 
-Everything runs on hand-written synthetic files (no solver, no JAX --
+Everything runs on synthetic files (no solver, no JAX --
 asserted): the ``.dat``/``twin.json`` readers with resume-seam
 duplicates, the per-component budget sums, member-tree aggregation
 (mean/std against direct NumPy; every alignment guard tripped on a
@@ -573,7 +573,7 @@ def test_aggregation_at_driver_precision() -> None:
                 }
             )
         )
-        # The plain difference really is that far apart -- what the
+        # The plain difference is that far apart -- what the
         # stack compared before, and refused -- so this case has teeth.
         raw = [
             read_dat(tree / f"m{k}" / "twin.dat")["t"] - p

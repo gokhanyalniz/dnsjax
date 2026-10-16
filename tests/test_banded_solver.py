@@ -312,7 +312,7 @@ def test_pallas_interpret_matches_cpu_path() -> None:
     (``k=1``) / complex-as-real (``k=2``) RHS, and two mode-plane sizes --
     exercising the mode-tiled forward/back ``fori_loop`` sweep (band
     offsets, the reciprocated-diagonal vs super-band split-by-index, the
-    y stash) and, crucially, the **pad-to-full-tiles** path: the
+    y stash) and the **pad-to-full-tiles** path: the
     ``(bm0, bm1) = (2, 32)`` tile (the default, set explicitly here)
     divides neither ``(3, 2)`` nor ``(5, 40)``, so the kernel zero-pads
     the mode plane up to whole tiles, solves, and crops -- the pad/crop
@@ -372,7 +372,7 @@ def _kernel_layout_case(Ny: int, p: int, Nkz: int, Nkx: int, seed: int):
 
 
 def test_pallas_transpose_identity() -> None:
-    r"""The transposed sweep really solves `$A^T \bar b = \bar x$`.
+    r"""The transposed sweep solves `$A^T \bar b = \bar x$`.
 
     Two independent statements, both in interpret mode.  The dot-product
     identity `$\langle A^{-1}b, c\rangle = \langle b, A^{-T}c\rangle$`
@@ -630,7 +630,7 @@ def test_pallas_cuda_lowering_sharded_solve() -> None:
 
 
 def test_pallas_adjoint_composes_in_solve() -> None:
-    """The adjoint works *through* ``.solve``, not just standalone.
+    """The adjoint works *through* ``.solve``, not only standalone.
 
     ``test_pallas_adjoint_matches_portable_sweep`` checks the rule's
     numbers, but it calls the kernel directly -- and on CPU every
@@ -639,7 +639,7 @@ def test_pallas_adjoint_composes_in_solve() -> None:
     inside ``.solve``'s ``shard_map``, with the backward pass adding a
     *second* ``pallas_call`` to that region.  This forces the kernel
     branch and runs both sweeps in interpret mode
-    (``solvers._force_interpret``), so the whole composition actually
+    (``solvers._force_interpret``), so the whole composition
     executes on CPU, and finite-differences the result.
 
     It is an execution check rather than a lowering one on purpose:

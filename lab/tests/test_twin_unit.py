@@ -881,7 +881,7 @@ def test_ybudget_sums() -> None:
             x = np.einsum("j,jk->k", w, yb[f"{name}_x"])
             return np.array([x0[0], x0[1:].sum(), (x - x0).sum()])
 
-        # Form-independent: V is literally the same array.
+        # Form-independent: V is the same array.
         for marg in ("x", "z"):
             assert_allclose(
                 -total("V", marg),
@@ -944,7 +944,7 @@ def test_ybudget_transfer_split() -> None:
       property of the states -- not `$\nabla\cdot\Delta\mathbf{u} =
       0$`, not no-slip, not `$\Delta\boldsymbol{\omega} = \nabla\times
       \Delta\mathbf{u}$` -- so the discriminating axis is the state,
-      not `$N_y$`, and two very different pairs are used.
+      not `$N_y$`, and two widely different pairs are used.
     - **convective**: `$\sum_k T(y) = -\partial_y\langle v^{(2)}
       |\Delta\mathbf{u}|^2/2\rangle_{xz}$` -- the turbulent transport
       of difference energy, carried by the **perturbed** member: the
@@ -1061,7 +1061,7 @@ def test_pressure_solve() -> None:
     r"""The difference pressure solves what it claims to solve.
 
     Three independent identities, none a restatement of the solve:
-    the interior Poisson equation; the wall closure that was actually
+    the interior Poisson equation; the wall closure that was
     imposed (`$D_1(\partial_t\Delta\hat v)|_w = 0$`, machine-exact
     at every mode but `$(0,0)$`, where the influence matrix is
     structurally singular and `$\Delta\hat v \equiv 0$` makes the

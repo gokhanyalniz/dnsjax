@@ -788,7 +788,7 @@ class CurvedCylindricalFlow(CylindricalFlow):
             \frac{Q}{\pi} = 2\sum_m \int r\,\hat w_{s,m}(r)\,c_m(r)\,dr .
 
         The sum runs over the resolved `$m$` only and is **exact** even
-        so: the `$\theta$` integral keeps just the `$m = 0$` component
+        so: the `$\theta$` integral keeps only the `$m = 0$` component
         of the product, and every term of it is resolved.
         """
         return (

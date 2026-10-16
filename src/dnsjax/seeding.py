@@ -13,7 +13,7 @@ that means:
    the run stays reproducible by passing the printed value back.
 2. **Unset and no entropy source** -- the run refuses rather than
    silently falling back to a fixed value.  The refusal fires only for
-   a seed the run would actually *draw* with: a laminar, localized-rolls
+   a seed the run would *draw* with: a laminar, localized-rolls
    or snapshot-resume start needs no entropy at all.
 3. **Set** (command line, ``parameters.toml``, or inherited from a
    snapshot or an extension's sidecar) -- used unchanged.

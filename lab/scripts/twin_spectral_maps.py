@@ -355,7 +355,7 @@ wall-parallel mean, common to both states of a pair and never
 decorrelating, and it dominates the reference total -- a
 plane-Poiseuille `$R_u$` is some 89 % its own.  The perturbation's is
 its own business and stays, which matters nowhere on these maps (the
-`$m = 0$` column is dropped from every one of them) and matters very
+`$m = 0$` column is dropped from every one of them) and matters
 much to their `$k$`-sums, next section.  The subtraction still reaches
 the `$m = 0$` **column** of `$\mathcal{R}$`'s divisor, which is where
 that mode is stored: a column that is not drawn is not a column that
@@ -397,7 +397,7 @@ The difference spectra and the budget once more, as ``spectra_s_x`` /
 *where* their energy (or its rate) sits rather than for how much of it
 there is.  Each panel of each frame is the absolute panel under the
 `$k\,y$` premultiplier, whatever ``--premultiply`` says, divided by
-one number for the whole figure: the frame's peak of its **anchor
+one number for the whole figure: the frame's peak of its **reference
 panel** (:data:`SHAPE_ANCHORS`) -- the summed spectrum on a spectra
 figure, the production `$\mathcal{P}_\Delta$` on a budget one,
 whichever panel it divides,
@@ -415,13 +415,13 @@ wavelength, where the `$k$`-premultiplied map shows its local density
 at each wall distance.  The peak is the frame's own, read over the
 rows the box shows -- the ordinate's floor and ``--ylim`` included, as
 for every colour scale ("Colour scales") -- and taken last, after the
-fold and ``--smooth``, so the anchor panel reaches 1 there.  One
+fold and ``--smooth``, so the reference panel reaches 1 there.  One
 divisor for the figure keeps its panels comparable: a component's map
 is its share of the summed one's peak, which it never exceeds (the
 spectra are non-negative), and a budget term's is its size against
 the production's, which it can.
 
-Under ``--clim series`` and ``frame`` the anchor panel is drawn on a
+Under ``--clim series`` and ``frame`` the reference panel is drawn on a
 scale frozen over the series: `$[0, 1]$` for the summed spectrum, and
 the production's from its most negative value in any frame up to 1.
 The bands are the same in every frame, so a growth phase decades
@@ -441,7 +441,7 @@ Whatever is constant over a frame cancels from the map: the unit
 conversion and ``volume_fac``.  So do the units of `$y$`: a shape map
 is the same in wall and outer units, the `$Re_\tau$` of
 "Premultiplication" included.  All of them survive in the peak, which
-the anchor panel's title reports on its second line, in the plotted
+the reference panel's title reports on its second line, in the plotted
 units: the absolute ``ky`` map is the shape map times it.  A shape
 panel carries a track wherever its absolute panel does ("Peak
 tracking"), and no constant moves one.
@@ -726,7 +726,7 @@ the rest of the run.  That frame is drawn exactly as
 ramps from its own first frame.  So the ramp ends on the frozen scale
 only where the series extreme falls after the perturbation.
 
-A shape map takes neither of the first two: under either, its anchor
+A shape map takes neither of the first two: under either, its reference
 panel is frozen on the series and every other panel takes its own
 frame.  Under ``--clim ramped`` every panel ramps ("Shape maps"), its
 perturbation frame drawn as under ``--clim frame``.
@@ -764,7 +764,7 @@ throughout.  The band is the frame's own rather than the drawn colour
 scale's, so the track is the same under every ``--clim``: it exists in
 a growth-phase frame that a frozen scale leaves blank, and it never
 collapses onto the one cell around the maximum, which the drawn top
-band does whenever the peak has just crossed a level.  The rows are
+band does whenever the peak has barely crossed a level.  The rows are
 the ones the box shows, as for the colour scale (:meth:`Map.drawn`).
 
 Beside the frames of each tracked series goes a directory
@@ -855,7 +855,7 @@ decades on either axis, and the box takes the fitted width instead
 
 Everything around the box is a fixed inch budget (the ``_M_*``
 constants), with one thing free: the top margin grows by a line
-(:data:`_TITLE_LINE`) for the two-line title a shape map's anchor
+(:data:`_TITLE_LINE`) for the two-line title a shape map's reference
 panel carries, so a figure never has to choose between the peak it
 reports and its neighbour's tick labels.
 
@@ -1042,12 +1042,12 @@ DECORR: str = "decorr"
 #: difference spectrum ``e_<suffix>`` and ``s_<term>_<suffix>`` the
 #: budget's ``<term>_<suffix>`` (:func:`shape_source`), premultiplied
 #: by `$k\,y$` whatever ``--premultiply`` says and divided by the
-#: frame's peak of the figure's anchor panel (:data:`SHAPE_ANCHORS`;
+#: frame's peak of the figure's reference panel (:data:`SHAPE_ANCHORS`;
 #: module docstring, "Shape maps").  As a spacetime or history base it
 #: is ``e`` again, each time row over its own peak.
 SHAPE: str = "s"
 
-#: The anchor panel of a shape figure, per stream, as the base and
+#: The reference panel of a shape figure, per stream, as the base and
 #: component of an absolute panel of the same marginal: the panel
 #: whose peak in each frame divides every panel of that frame -- the
 #: summed difference spectrum, and the production (module docstring,
@@ -1313,7 +1313,7 @@ _SUP_HEIGHT: float = 0.36
 _TITLE_PAD: float = 12.0
 
 #: What each title line beyond the first adds to ``_M_TOP``, in
-#: inches at the default font size: a shape map's anchor panel reports
+#: inches at the default font size: a shape map's reference panel reports
 #: the peak its figure is divided by on a second line, and ``_M_TOP``
 #: has no slack to absorb one.
 _TITLE_LINE: float = 0.17
@@ -2202,7 +2202,7 @@ def _phase_offsets(grids: list[np.ndarray], cadence: float) -> np.ndarray:
     members landing on opposite sides of the fold read as the same
     phase rather than as a whole cadence apart.
 
-    ``dnsjax-twin`` anchors every cadence on the member's own
+    ``dnsjax-twin`` counts every cadence from the member's own
     perturbation step, so a set recorded by it is in phase whatever
     iteration numbers its parent snapshots carried
     (``dnsjax_lab.twin.driver``, "Sample-cadence anchor").  Members
@@ -2482,10 +2482,10 @@ class Map:
 
     ``peak`` and ``clim`` are set on a shape map alone (module
     docstring, "Shape maps").  ``peak`` is what it was divided by: the
-    frame's peak of its figure's anchor panel.  ``clim`` is the
+    frame's peak of its figure's reference panel.  ``clim`` is the
     ``--clim`` mode it is drawn under when ``--clim`` is ``series`` or
     ``frame``, which :func:`panel_figure` reads: ``series`` for the
-    anchor panel, whose scale is frozen, and ``frame`` for every other,
+    reference panel, whose scale is frozen, and ``frame`` for every other,
     whose levels show its own shape in that frame.  ``--clim ramped``
     overrides it on every frame past the perturbation's.
     """
@@ -2691,7 +2691,7 @@ def shape_source(name: str) -> str | None:
 def shape_anchor(series: YSeries, source: str) -> tuple[str, int | None]:
     """The absolute ``(name, component)`` a shape panel is over.
 
-    The anchor panel of :data:`SHAPE_ANCHORS` for *series*' stream, on
+    The reference panel of :data:`SHAPE_ANCHORS` for *series*' stream, on
     the marginal of *source* -- what :func:`shape_source` returns.
     """
     base, component = SHAPE_ANCHORS[series.stem]
@@ -2834,7 +2834,7 @@ def field_title(
 
     The symbol behind its premultiplier and ahead of the unit
     conversion it is drawn in (module docstring, "Inner units").  A
-    shape panel names the anchor panel it is over instead; the anchor
+    shape panel names the reference panel it is over instead; the reference
     panel is over its own peak, *peak*, and reports it on a second
     line, in the units the absolute map would be drawn in, which makes
     every colour bar of the figure recoverable as an absolute one
@@ -2957,10 +2957,10 @@ def make_map(
 
     A shape panel is the absolute panel it redraws under the `$k\,y$`
     premultiplier, divided **last** by the frame's peak of its figure's
-    anchor panel (:func:`shape_anchor`) over the rows the box shows --
+    reference panel (:func:`shape_anchor`) over the rows the box shows --
     *ylim*, :func:`y_limits`' default when ``None`` -- so that the
-    anchor panel reaches 1 there.  That peak is :attr:`Map.peak`, which
-    the anchor panel's title reports, and :attr:`Map.clim` says how the
+    reference panel reaches 1 there.  That peak is :attr:`Map.peak`, which
+    the reference panel's title reports, and :attr:`Map.clim` says how the
     panel's levels are read unless ``--clim ramped`` overrides it
     (module docstring, "Shape maps").  Every other map ignores *ylim*.
     """
@@ -2982,7 +2982,7 @@ def make_map(
             )[0]
         )
         # Read off the rows the box shows, as every colour scale is;
-        # an anchor with nothing positive divides nothing, rather than
+        # a reference panel with nothing positive divides nothing, rather than
         # turning the figure nan or flipping its signs.
         rows = _drawn_rows(y, options.y_log, y_limits(series, options, ylim))
         shown = over[rows]
@@ -3706,7 +3706,7 @@ def panel_geometry(
 
     *title_lines* is the tallest panel title of the figure, in lines:
     the top margin grows by :data:`_TITLE_LINE` for each one past the
-    first, which is what makes room for the peak a shape map's anchor
+    first, which is what makes room for the peak a shape map's reference
     panel reports (:func:`field_title`).
 
     *ncols* is the figure's own column count where it is not
@@ -3787,7 +3787,7 @@ def panel_figure(
     track up to this frame (:func:`draw_track`).
 
     Under ``--clim series`` or ``frame`` a shape panel reads its levels
-    under its own :attr:`Map.clim`: frozen on the series for the anchor
+    under its own :attr:`Map.clim`: frozen on the series for the reference
     panel, and its own range in this frame for every other.  Under
     ``--clim ramped`` it ramps like any other panel.  ``--quantile``
     never reaches a shape panel (module docstring, "Shape maps").
@@ -8146,7 +8146,7 @@ def build_parser() -> argparse.ArgumentParser:
         "ramped: frozen on the frames so far, so it grows with the "
         "field, leaving out the perturbation at t = 0, whose frame is "
         "drawn as under frame; ramped reaches every panel, while under "
-        "series and frame a shape map keeps its anchor panel frozen and "
+        "series and frame a shape map keeps its reference panel frozen and "
         "its other panels per figure",
     )
     p.add_argument(

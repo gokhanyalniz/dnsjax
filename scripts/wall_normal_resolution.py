@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-r"""How many wall-normal modes does an FD grid actually resolve?
+r"""How many wall-normal modes does an FD grid resolve?
 
 Offline (JAX-free, milliseconds) answer to the question that comes up
 whenever a spectral-in-`$y$` setup from the literature is reproduced
 in dnsjax: *the paper used N Chebyshev polynomials -- what ``res.ny``
 do I need, given that dnsjax differentiates `$y$` by finite
 differences?*  Guessing high wastes points; guessing low silently
-changes the physics (it can change the dynamics, not just the
+changes the physics (it can change the dynamics, not only the
 statistics).
 
 The metric

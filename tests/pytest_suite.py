@@ -47,7 +47,7 @@ _SCRIPTS: list[Row] = [
     ("test_integration.py", (), (), 1800),
     # Parses the core's sources; no JAX, a few seconds.
     ("test_layering.py", (), (), 1800),
-    # Nine children importing the core under fake entry points; no
+    # Nine children importing the core under simulated entry points; no
     # JAX, a few seconds.
     ("test_plugins.py", (), (), 1800),
     ("test_localized_rolls.py", (), (), 1800),

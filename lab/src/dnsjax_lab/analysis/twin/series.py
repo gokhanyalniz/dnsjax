@@ -265,7 +265,7 @@ def uniform_grid(t: np.ndarray) -> tuple[float, np.ndarray]:
     dt = float(np.median(positive))
     tol = 1e-6 * dt
     resid = np.mod(t - t[0], dt)
-    # Fold onto (-dt/2, dt/2] so a phase just under dt and one just
+    # Fold onto (-dt/2, dt/2] so a phase slightly under dt and one slightly
     # over 0 are the same phase.
     resid = np.where(resid > 0.5 * dt, resid - dt, resid)
     on_grid = np.abs(resid - float(np.median(resid))) <= tol
@@ -351,7 +351,7 @@ def closure_residuals(series: TwinSeries) -> ClosureResiduals:
     # unconditional final row, which can fall off a cadence.  Locate
     # each by *value* -- not by a grid index, which a gap in the energy
     # samples would offset -- and keep only those whose two immediate
-    # neighbours really are `$\mp\Delta t$` away, since that is what
+    # neighbours are `$\mp\Delta t$` away, since that is what
     # the centred difference below consumes.  Anything else is skipped
     # rather than mis-paired.
     idx = np.clip(

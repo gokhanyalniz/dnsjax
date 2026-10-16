@@ -98,7 +98,7 @@ def check_run(stdout: str, name: str, max_sim_time: float, dt: float) -> str:
     err = float(err_match.group(1))
 
     # Reached the end (not cut short by corrector divergence).  The last
-    # step lands t on (or just past) max_sim_time; allow one dt of slack.
+    # step lands t on (or slightly past) max_sim_time; allow one dt of slack.
     if not (t_final >= max_sim_time - dt):
         raise AssertionError(
             f"{name}: run ended early at t={t_final} (< {max_sim_time}); "

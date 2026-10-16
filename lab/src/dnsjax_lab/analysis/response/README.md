@@ -237,7 +237,7 @@ package simpler than it would otherwise be:
   $G(t) = \lVert e^{tA} \rVert_2^2$;
 - a Galerkin restriction onto orthonormal columns preserves the norm;
 - the controllability Gramian with unit-covariance forcing in the
-  energy inner product is just the Lyapunov solution of $(A, I)$.
+  energy inner product is the Lyapunov solution of $(A, I)$.
 
 Because all three routes fit in those coordinates, on the same basis,
 and report the same quantities, their operators can be compared

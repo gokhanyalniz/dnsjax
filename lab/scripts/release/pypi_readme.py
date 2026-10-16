@@ -7,13 +7,14 @@ Usage::
 
 PyPI shows a project's description without the repository around it:
 relative links and images resolve nowhere, ``<picture>`` and in-page
-anchors do not survive, and ``$...$`` math shows raw.  This writes the
-PyPI copy of ``README.md`` (``pyproject.toml``'s ``readme``) with
-relative links (Markdown and HTML) made absolute GitHub URLs at *REF*
-(default ``main``; a release pins its tag, ``prepare_release.py``),
-relative images their ``raw.githubusercontent.com`` URLs, each
-``<picture>`` its light ``<img>``, in-page anchors links into the
-GitHub README, inline math a code span in plain symbols, the
+fragment links do not survive, and ``$...$`` math shows raw.  This
+writes the PyPI copy of ``README.md`` (``pyproject.toml``'s ``readme``)
+with relative links (Markdown and HTML) made absolute GitHub URLs at
+*REF* (default ``main``; a release pins its tag,
+``prepare_release.py``), relative images their
+``raw.githubusercontent.com`` URLs, each ``<picture>`` its light
+``<img>``, in-page fragment links absolute ones into the GitHub
+README, inline math a code span in plain symbols, the
 GitHub-only "Contents" line left out, and the sections
 :data:`DROPPED_SECTIONS` names left out, as a release's ``README.md``
 leaves them out (``prepare_release.py``).  The repository URL comes

@@ -391,7 +391,7 @@ def run_worker(case: dict, name: str, np0: int, np1: int, out_npy: str) -> int:
         # Rolls-less flow: the random state carries the finiteness,
         # determinism and cross-device checks instead -- and it carries
         # them for *all* its components (the conformation block
-        # included), not just the velocity block continuity is solved
+        # included), not only the velocity block continuity is solved
         # on.
         check("finite", bool(np.all(np.isfinite(rand))))
         rand2 = np.asarray(

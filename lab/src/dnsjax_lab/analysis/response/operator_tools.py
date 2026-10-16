@@ -244,7 +244,7 @@ def _gramian_eig_closed_form(a: np.ndarray) -> np.ndarray:
     With `$A = E\Lambda E^{-1}$` and `$\tilde{X} = E^{-1} X E^{-H}$`,
     `$AX + XA^H = -I$` becomes `$\tilde{X}_{ij} = -(E^{-1}E^{-H})_{ij}
     / (\lambda_i + \bar{\lambda}_j)$`: the tests' independent check of
-    SciPy's Bartels-Stewart solve (less robust than it for a
+    SciPy's Bartels-Stewart solve (less stable than it for a
     near-defective `$A$`).
     """
     e_val, e_vec = np.linalg.eig(a)

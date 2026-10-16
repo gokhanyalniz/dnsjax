@@ -146,7 +146,7 @@ def _energy_after_steps(mod, scheme: str):
 
     The steppers donate their inputs, so a caller keeping its own state
     passes a copy -- otherwise the finite-difference evaluations below
-    would consume the very array they perturb.
+    would consume the array they perturb.
     """
     import jax.numpy as jnp
 

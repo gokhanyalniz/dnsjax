@@ -28,10 +28,9 @@ guard: `test_no_cross_geometry_import` in `lab/tests/`).
   `_viscoelastic_common.to_spin_basis` / `from_spin_basis`).
   `__main__` owns the field-level crossings; the lab's
   `dnsjax_lab.extensions.probes` and `.forcing` convert their own mode
-  columns. An unconverted
-  state steps without error, just wrong; templates for converting a
-  freshly built one: `__main__`'s post-IC line,
-  `transient_growth._linear_step`.
+  columns. An unconverted state steps without error and gives a wrong
+  result; templates for converting a freshly built one: `__main__`'s
+  post-IC line, `transient_growth._linear_step`.
 - The pipe family carries two more trailing slots (the spin quad's
   difference halves): its `to_solver_basis` appends them,
   `from_solver_basis` drops them, and RHS arrays and the cnab2 carry

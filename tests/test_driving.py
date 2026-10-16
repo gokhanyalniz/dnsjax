@@ -19,7 +19,7 @@ Four checks, in increasing strength:
 - **laminar**: from `$u' = 0$` the applied forcing is *exactly* zero,
   for every flow that can apply one;
 - **constraint**: the quantity being held (perturbation bulk velocity)
-  really is zero to machine precision, so the recorded number is the
+  is zero to machine precision, so the recorded number is the
   price of an enforced constraint rather than of a drifting one;
 - **identity** (the decisive plumbing guard): re-running the converged
   corrector iterate with the driving switched *off* reproduces the

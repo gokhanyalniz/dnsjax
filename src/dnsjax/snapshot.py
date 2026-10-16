@@ -305,7 +305,7 @@ def _gds_available() -> bool:
       (``import kvikio.defaults as ...``, a ``sys.modules`` lookup)
       rather than reaching for it through the package.
     - **The nvidia-fs driver is loaded.**  Without it kvikIO still
-      imports and still accepts every call; it just services them
+      imports and still accepts every call; it services them
       through its *compat* shim, which is not GDS and is slower than
       the host path.  ``AUTO`` -- the default compat mode -- is exactly
       the case that would otherwise be mistaken for "GDS is on".
@@ -1728,7 +1728,7 @@ def write_archive(
         partial.replace(path)
     # Only after this does the snapshot exist for a reader, on every
     # process -- so a rank that returns early cannot report a
-    # checkpoint the run has not actually committed.
+    # checkpoint the run has not committed.
     _barrier("snapshot_commit")
 
 
@@ -1761,7 +1761,7 @@ def save_snapshot(
     On a multi-device mesh the state is first resharded onto the I/O
     layout (:func:`_to_io_layout`) so those ranges are contiguous;
     the caller's array is left untouched (no buffer donation -- the
-    solver keeps stepping the state it just snapshotted).
+    solver keeps stepping the state it has snapshotted).
 
     Parameters
     ----------

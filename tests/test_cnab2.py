@@ -9,7 +9,7 @@ subprocess smoke tests cannot check directly:
   base-flow part of the full nonlinear RHS to machine precision,
   ``get_rhs(u) - l_bf(u) == get_rhs(u; U = 0)`` (checked with
   ``step.implicit_mean_coupling`` off) -- the explicit AB2 forcing
-  really is the pure self-advection `$u' \times \omega'$`.  The
+  is the pure self-advection `$u' \times \omega'$`.  The
   zero-base-flow reference reuses the geometry ``_get_rhs`` on a
   shallow flow copy with zeroed ``base_flow_padded`` /
   ``curl_base_flow_padded`` (identical transforms, so the difference

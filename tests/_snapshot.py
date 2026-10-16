@@ -398,7 +398,7 @@ def _worker(
         _check_slab_placement(state, snapshot, sharding)
         # The state must survive its own save: nothing in the write
         # path may donate or mutate the caller's array (``__main__``
-        # keeps stepping the state it just snapshotted).
+        # keeps stepping the state it has snapshotted).
         assert np.array_equal(np.asarray(state), state_np), (
             "save_snapshot mutated the caller's state"
         )
@@ -902,7 +902,7 @@ def run_gds_detection_case() -> str | None:
     ABSENT = object()  # "kvikIO is not installed", not a compat mode
 
     def install(value) -> None:
-        """Put a fake kvikIO answering ``get("compat_mode")`` on path.
+        """Put a simulated kvikIO answering ``get("compat_mode")`` on path.
 
         Deliberately faithful: the parent module gets **no**
         ``defaults`` attribute, exactly like the installed package

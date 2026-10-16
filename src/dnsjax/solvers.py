@@ -96,7 +96,7 @@ parallelism is fixed at ``Nkz * Nkx * k`` threads, so a typical DNS
 (~1e3-1e4 modes) is limited by mode-count occupancy on an H100 whatever
 the tile.  The tuning rule: keep ``bm1 >= 32`` (coalescing) and the
 program count ``cdiv(Nkz, bm0) * cdiv(Nkx, bm1)`` at least a few times
-the SM count; shrink the tile for small mode counts, grow it for very
+the SM count; shrink the tile for small mode counts, grow it for
 large DNS, and profile a change (Nsight, or a profile of the solve
 against the device's peak bandwidth).
 
@@ -266,7 +266,7 @@ the restart and chained harnesses agree to 0.03 pp.
 
 The win is step-level, not solve-level: the same interleaved A/B on
 ``Hk_op.solve`` alone gives -0.3 % at plane Couette `$128^3$`, the crop
-and the un-invert costing essentially nothing inside the sweep.  What
+and the un-invert costing nothing measurable inside the sweep.  What
 the padded, reciprocated storage costs is everything *around* it --
 larger factor arrays for XLA to place and move across a step that
 takes them as jit arguments: the stored-layout lesson, running the
@@ -970,7 +970,7 @@ def _pallas_banded_solve(
     covers the mode plane in ``(bm0, bm1)`` tiles (one Pallas program per
     tile); each program runs the sequential banded sweep **vectorized
     across its mode tile**, filling ``bm0 * bm1 * k`` SIMD lanes instead of
-    just ``k`` (one mode's ``k`` re/im columns).  ``interpret`` runs the
+    only ``k`` (one mode's ``k`` re/im columns).  ``interpret`` runs the
     same kernel in pure JAX on CPU (correctness; the GPU path uses
     ``interpret=False``).
 
@@ -1612,7 +1612,7 @@ class PerModeBandedPallasOperator:
         already the CPU storage.
 
         **The layout is shared by both backends; two transforms on top
-        of it are not.**  Only when the run will actually reach the
+        of it are not.**  Only when the run will reach the
         kernel (:func:`_kernel_path`) does this additionally reciprocate
         the ``U`` diagonal -- so the GPU backward sweep multiplies
         instead of dividing, see :func:`_pallas_banded_solve` -- and
