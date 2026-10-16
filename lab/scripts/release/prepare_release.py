@@ -26,15 +26,16 @@ test path), sets ``date-released`` in ``CITATION.cff`` (*--date*,
 default the current date), trims ``README.md`` to the sections a release
 carries (``pypi_readme.DROPPED_SECTIONS``), pins the PyPI README's
 links to the tag (``pypi_readme.py``), points every link the archive's
-Markdown makes to
-a file the archive leaves out (the lab's, the contributor guide) at
-GitHub at the tag
-(:func:`archive_links`), relocks (``uv lock``), commits "Release vVERSION"
-and tags it ``vVERSION`` (annotated).  The commit is reachable from the
-tag alone: ``main`` is untouched, and pushing the tag
-(``git push origin vVERSION``, the author's step) is what starts
-``.github/workflows/release.yml``.  ``--dry-run`` prints the changes and
-leaves no commit or tag.
+Markdown makes to a file the archive leaves out (the lab's, the
+contributor guide) at GitHub at the tag (:func:`archive_links`),
+relocks (``uv lock``), commits "Release vVERSION" and tags it
+``vVERSION`` (annotated).  The repository's commit hooks run on that
+commit as on any other; the message check's ``uv run`` syncs an
+environment of the release's lock inside the worktree, which goes with
+it.  The commit is reachable from the tag alone: ``main`` is untouched,
+and pushing the tag (``git push origin vVERSION``, the author's step) is
+what starts ``.github/workflows/release.yml``.  ``--dry-run`` prints the
+changes and leaves no commit or tag.
 
 ``strip`` applies the ``pyproject.toml`` part in place, for a CI job or
 a release rehearsal that builds from ``main``.
@@ -55,6 +56,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import textwrap
 import tomllib
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -303,18 +305,15 @@ def _cut(version: str, date: str, dry_run: bool) -> int:
                 print("dry run: no commit, no tag")
                 return 0
             _git("add", "-A", cwd=tree)
-            _git(
-                "commit",
-                "-q",
-                "-m",
-                f"Release {tag}",
-                "-m",
+            # The commit-msg hook wraps the body at 72 columns.
+            body = textwrap.fill(
                 "The release's own commit (prepare_release.py): the lab "
                 "taken out of pyproject.toml, uv.lock relocked without "
                 "it, the citation dated and the PyPI README pinned to "
                 "the tag.",
-                cwd=tree,
+                width=72,
             )
+            _git("commit", "-q", "-m", f"Release {tag}", "-m", body, cwd=tree)
             _git("tag", "-a", tag, "-m", f"dnsjax {version}", cwd=tree)
             commit = _git("rev-parse", "--short", "HEAD", cwd=tree)
         finally:
