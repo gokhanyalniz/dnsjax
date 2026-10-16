@@ -10,9 +10,11 @@ writes a new snapshot.  The parent's ``t``/``it`` are kept, so a run
 resumed from the output continues the parent trajectory's clock with
 the perturbation applied -- provided the resuming run's own
 trajectory-defining parameters match the ones the parent recorded.
-``res.consistent_imm`` is one of them, so a parent written before it
-defaulted on resumes as a **new** trajectory unless that run passes
-``--res.consistent_imm False`` (or ``--init.force_resume``).  The
+``res.consistent_imm`` is one of them and, like every ``[res]`` field,
+is inherited from the snapshot: a parent written before it defaulted
+on continues on the legacy scheme, and only a resuming run that
+overrides it starts a **new** trajectory (unless
+``--init.force_resume``).  The
 primary use is seeding perturbed ensemble members from harvested
 turbulent snapshots.
 

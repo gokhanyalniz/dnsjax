@@ -1,6 +1,6 @@
 r"""Unit tests for the viscoelastic (sPTT) cylindrical (pipe) geometry.
 
-Covers what the port from the annular sPTT geometry actually changed
+Covers what the port from the annular sPTT geometry changed
 (see :mod:`dnsjax_lab.geometries.wall_bounded.cylindrical_viscoelastic`);
 the geometry-free algebra it shares with the annulus -- the spin
 `$\leftrightarrow$` physical maps, the Frobenius weights, the pointwise
@@ -237,7 +237,7 @@ def test_parity_signs_match_the_reduced_matrices() -> None:
             atol=1e-12,
             err_msg=f"per-slot parity D1 mismatch for spins {spins}",
         )
-        # The two classes must actually differ on this data, or the
+        # The two classes must differ on this data, or the
         # comparison above would pass for any sign table.
         wrong = _reference_dr(host, spins + 1)
         assert not np.allclose(got, wrong, atol=1e-8)
@@ -413,7 +413,7 @@ def test_laminar_profiles_solve_the_ptt_equilibrium() -> None:
     f = 1.0 - 3.0 * eps + eps * (c_rr + c_thth + c_zz)
     assert_allclose(c_rz, wi * shear / f, atol=1e-13)
     assert_allclose(c_zz, 1.0 + 2.0 * (wi * shear) ** 2 / f**2, atol=1e-13)
-    # ... and the cubic the builder actually solves.
+    # ... and the cubic the builder solves.
     assert_allclose(f**3 - f**2, 2.0 * eps * (wi * shear) ** 2, atol=1e-13)
     # eps = 0 collapses to f = 1 (the Oldroyd-B limit).
     assert_allclose(solve_ptt_f(np.zeros(4)), 1.0, atol=1e-15)

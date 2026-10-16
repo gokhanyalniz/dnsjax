@@ -22,7 +22,7 @@ A run reads `parameters.toml` from its own working directory, so copy it
 into a scratch directory and launch there. Any value can be overridden on
 the command line — `--phys.re 60`, `--res.nx 48 --res.ny 48 --res.nz 48`.
 
-**What to watch — and here it really is `E'`.** `stats.dat` gets one
+**What to watch — and here it is `E'`.** `stats.dat` gets one
 row per 100 steps, with a `#`-commented header, so `numpy.loadtxt` reads
 it directly. The perturbation energy `E'` climbs by orders of magnitude,
 overshoots, and then fluctuates about a plateau. That fluctuation is the

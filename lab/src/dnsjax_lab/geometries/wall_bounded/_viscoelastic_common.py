@@ -5,7 +5,7 @@ The sPTT extension exists in two wall-bounded geometries -- the annulus
 pipe (:mod:`~dnsjax_lab.geometries.wall_bounded.cylindrical_viscoelastic`).
 Both write the same equations in the **same** coordinate system
 (cylindrical `$(z, r, \theta)$`), so everything that is not a radial
-operator or a boundary/axis condition is literally identical between
+operator or a boundary/axis condition is identical between
 them and lives here: the spin `$\leftrightarrow$` physical tensor
 algebra, the basis boundary, the sPTT scalar root, the Frobenius
 weights, and the pointwise physical-space RHS kernel.

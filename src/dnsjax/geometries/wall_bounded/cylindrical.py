@@ -1159,8 +1159,8 @@ class CylindricalFlow:
     # wall value, and the two halves of that unit response across the
     # spin pair: the difference half is what the carried `$d_\Phi$`
     # slot receives with the influence correction, the sum half what a
-    # carried slot receives when its wall datum is re-anchored on the
-    # accepted velocity (all ``None`` on the legacy path).
+    # carried slot receives when its wall datum is reset to the
+    # accepted velocity's (all ``None`` on the legacy path).
     ur_1: Array | None = field(init=False)
     phi_1_diff: Array | None = field(init=False)
     phi_1_sum: Array | None = field(init=False)
@@ -1522,7 +1522,7 @@ class CylindricalFlow:
         phi_1_diff = (phi_pm[0] - phi_pm[1]) / 2
         phi_1_diff = jnp.where(is_mean[..., None], 0.0, phi_1_diff)
         # Its sum half, wall value 1 kept: the carried slots' response
-        # to a re-anchored wall datum.
+        # to a reset wall datum.
         phi_1_sum = jnp.where(is_mean[..., None], 0.0, phi_1_sum)
         M = jnp.einsum("j, mzj -> mz", self.D1_wall.ravel(), ur_1)
         self.M_inv = jnp.where(is_mean, 0.0, 1.0 / jnp.where(is_mean, 1.0, M))

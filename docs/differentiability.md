@@ -31,7 +31,7 @@ has no transpose rule, so `jax.grad` of a step refuses outright.
 `corrector_tolerance`) runs exactly *n* corrections per step in a
 static-trip-count loop, which lowers to a scan and differentiates. It is
 a *different integrator* unless *n* covers what the dynamic corrector
-actually used — `corrector.dat` is where that number comes from, and the
+used — `corrector.dat` is where that number comes from, and the
 `TimeStepping` docstring in `src/dnsjax/parameters.py` carries the rest
 of the trade-off, including the three things that change with it (the
 iteration cap goes inert, the reported corrector error becomes a

@@ -362,7 +362,7 @@ def _correct_component(
 ) -> Array:
     r"""Crank-Nicolson corrector step (vmapped over velocity components).
 
-    The **direct** update, anchored at `$u^n$`:
+    The **direct** update, built on `$u^n$`:
 
     .. math::
         u^{j+1} = \bigl(u^n\,ldt_1 + c\,f(u^j)

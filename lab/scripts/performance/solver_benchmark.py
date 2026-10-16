@@ -1022,8 +1022,8 @@ _INIT_PROBE = (
 )
 
 # A minimal 2-process jax.distributed program exercising the NCCL
-# collective *patterns* the solver uses -- an all-gather and,
-# crucially, a jit resharding between orthogonal partition specs (the
+# collective *patterns* the solver uses -- an all-gather and
+# a jit resharding between orthogonal partition specs (the
 # all-to-all class behind dnsjax's FFT reshard pipeline; a launch mode
 # whose communicator comes up for an all-gather can still hang there).
 # The process_count assert forbids a trivial pass as two independent

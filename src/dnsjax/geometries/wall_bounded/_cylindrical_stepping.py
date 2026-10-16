@@ -148,11 +148,11 @@ same configuration measures 2.00 / 2.00 / 2.02, its errors 8x smaller at
 either half alone leaves it first order (0.98 / 1.02 / 1.09 and 0.95 / 1.01 /
 1.08).  The gap between the carried halves and the ones the velocity implies,
 20 steps from a relaxed state, is 1.1e-1 / 1.2e-2 / 1.1e-3 relative at `$n_r$`
-= 17 / 33 / 65.  Without the re-anchoring, a weakly damped mode of the pipe's
-step (present in the re-derived pass too, at low `$\mathrm{Re}$` on fine
-grids) lets the last iterate's residual accumulate: at Re 100 /
-`$n_r = 128$` and the default tolerance it moves `$E'$` by 1.7e-3 after 1000
-steps.  Re-anchored, that run
+= 17 / 33 / 65.  Unless the carried halves are reset from the accepted
+velocity's wall data, a weakly damped mode of the pipe's step (present in the
+re-derived pass too, at low `$\mathrm{Re}$` on fine grids) lets the last
+iterate's residual accumulate: at Re 100 / `$n_r = 128$` and the default
+tolerance it moves `$E'$` by 1.7e-3 after 1000 steps.  With the reset, that run
 sits 1.6e-5 from its own `$10^{-12}$` result, and at the default tolerance
 (`$10^{-5}$`) the order study reaches the corrector's ordinary floor at its
 smallest step (3.7e-6 against 2.9e-6), still 8-50x below the re-derived pass at
@@ -218,7 +218,7 @@ def mean_driving(state: Array, flow_: CylindricalFlow) -> dict[str, Array]:
 
     Used for the ``t = t0`` ``stats.dat`` row, which has no step behind
     it (:mod:`dnsjax.__main__`); every other row reports the value the
-    corrector actually applied.
+    corrector applied.
     """
     if params.phys.driving != "constant_bulk_velocity":
         return {}
@@ -637,7 +637,7 @@ def _wall_differences(
     :func:`kinematic_differences`, from two wall-row dot products (no
     GEMM, and no parity handling -- the ghost correction only touches
     the first few rows).  The pass's wall rows take them from the
-    corrector iterate, and the carried halves are re-anchored on the
+    corrector iterate, and the carried halves are reset to the
     accepted velocity's (:func:`_imm_iteration_vw`).
     """
     m, kz2 = fourier_.m, fourier_.kz2
@@ -802,7 +802,7 @@ def _imm_iteration_vw(
     data the wall row sources through the wall stencil.  Carried as
     solved, they would keep that iterate's residual, amplified by the
     stencil (whose weight grows like `$n_r^4$`), so the last stage
-    re-anchors both halves on the *accepted* velocity's wall data, a
+    resets both halves to the *accepted* velocity's wall data, a
     rank-one update per mode through the unit response's sum half
     (``phi_1_sum``), leaving what a fully converged corrector would
     carry.  The influence-matrix correction reaches the differences as
@@ -1073,7 +1073,7 @@ def _imm_iteration_vw(
     # (the wall row above), which the accepted velocity differs from by
     # the corrector residual -- amplified by the wall stencil, and,
     # carried, no longer thrown away at the next step.  So they are
-    # re-anchored on the accepted velocity: a wall datum changed by
+    # reset from the accepted velocity: a wall datum changed by
     # `$\pm\Delta$` across the pair moves the difference half by
     # `$\Delta$` times the unit response's *sum* half
     # (``phi_1_sum``), leaving exactly what a fully converged corrector

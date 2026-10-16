@@ -205,8 +205,8 @@ def test_tolerance_table(check) -> None:
 
     # The derivation's sharpest check: the even quartic
     # (1-y^2)(5-y^2) is *exact* on both curvature rows -- which are
-    # literally the same rows in both cases -- and O(1) on each of the
-    # two rows case B adds, so the four rows really are independent
+    # the same rows in both cases -- and O(1) on each of the
+    # two rows case B adds, so the four rows are independent
     # statements.  A polynomial of degree <= fd_order is reproduced
     # exactly by D1/D2, so this can be a machine-level check; a
     # transcendental witness would carry the CGL near-wall D2 roundoff

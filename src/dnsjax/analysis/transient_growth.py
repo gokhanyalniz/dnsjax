@@ -115,7 +115,7 @@ The pipeline per mode is:
    *every* selected mode at once, stepped once, gives column `$(c,j)$`
    of *every* mode's `$\Phi$` simultaneously (the linear step is
    block-diagonal in `$(k_2,k_3)$` because the only `$k=0$` content is
-   the fixed base flow).  So the whole propagator set costs just `$3
+   the fixed base flow).  So the whole propagator set costs only `$3
    N_y$` cheap FFT-free linear steps, independent of the mode count.
 
 2. **Subspace reduction.**  `$\Phi$` maps `$\mathbb{C}^n$` into `$S =
@@ -967,8 +967,8 @@ def _build_propagators(
 
     Steps the `$3 N_y$` wall-normal unit vectors placed at the selected
     (non-mean) modes only -- block-diagonality keeps every other mode
-    zero, so the shared corrector norm reflects just these modes (a
-    near-mean mode in a very long box would otherwise stall the whole
+    zero, so the shared corrector norm reflects only these modes (a
+    near-mean mode in a long box would otherwise stall the whole
     step) -- reading column `$(c,j)$` off each.  Returns ``(phi,
     err_max, nc_max)`` with ``phi`` of shape ``(K, n, n)`` complex, `$n
     = 3 N_y$`, component-major index `$c N_y + j$`.

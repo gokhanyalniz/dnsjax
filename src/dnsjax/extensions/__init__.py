@@ -253,8 +253,8 @@ class RunHooks:
     non-finite value, and the run aborts with it (exit code 3), as on a
     non-finite core diagnostic.
 
-    The fine print: the first iteration's :meth:`sample` sees the very
-    state :meth:`start` just recorded (``it0``), so a cadence hook
+    The fine print: the first iteration's :meth:`sample` sees the same
+    state :meth:`start` recorded (``it0``), so a cadence hook
     gates on ``it > it0`` itself; :meth:`modify` returns the state to
     step from and cannot report (an exception from any hook is an
     ordinary traceback); under ``cnab2`` the carried nonlinear history

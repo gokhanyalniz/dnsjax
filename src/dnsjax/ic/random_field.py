@@ -179,7 +179,7 @@ over 60 units with it, the same two numbers without).
 
 **The window sets the wall-normal distribution.**  The wall-normal
 energy distribution of a windowed draw is set by the window and
-essentially not by the filter: sweeping the filter's `$s_w$` over
+hardly by the filter: sweeping the filter's `$s_w$` over
 `$0.4 \to 0.01$` moves the energy-weighted median wall distance of the
 finished field by under 5 % (and the wrong way), and the bare
 `$(1 - y^2)^2$` energy window alone reproduces the full generator's

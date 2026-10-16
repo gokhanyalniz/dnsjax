@@ -52,7 +52,7 @@ comma-separated lists and report their outer product, one line each,
 rebuilding the field per entry (a per-mode host loop: seconds at a
 production resolution, so a dozen entries take minutes).
 The seed is ``init.random_seed`` as usual (unset: drawn, and printed
-with its source), and `$A$` is essentially seed-independent -- it
+with its source), and `$A$` is nearly seed-independent -- it
 averages over every resolved mode, and moves by under 0.005 across
 seeds at a production box -- so a sweep needs one seed, not an
 ensemble.

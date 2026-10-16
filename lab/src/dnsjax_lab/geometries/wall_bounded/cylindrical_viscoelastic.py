@@ -160,10 +160,11 @@ usable measurement: the corrector collapses from 10 to 0 mid-run and the step
 drops 3.7x, so the arms get sampled at different points of a relaxing transient
 (260 % within-arm spread); the annulus supplies the developed-field point.  The
 fusion is kept on grounds that need no stopwatch: strictly fewer FLOPs (6
-full-width field-GEMMs instead of 12), one fewer field-sized transient -- which
-is what bites at production sizes -- and consistency with the four velocity
-sites.  Whether it pays on GPU is untested and would not follow from any of
-this: the balance there is far less FFT-dominated (~47 % IMM on an H100).
+full-width field-GEMMs instead of 12), one fewer field-sized transient -- the
+cost that dominates at production sizes -- and consistency with the four
+velocity sites.  Whether it pays on GPU is untested and would not follow
+from any of this: the balance there is far less FFT-dominated (~47 % IMM on
+an H100).
 """
 
 from dataclasses import dataclass, field

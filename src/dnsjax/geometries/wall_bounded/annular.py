@@ -1750,7 +1750,7 @@ def _imm_iteration_vw(
     its quad's two *difference* halves, for another reason -- the
     velocity does not determine them, and re-deriving them makes it
     first order in time at coarse radial resolution -- and still
-    re-anchors their wall data on the accepted state:
+    resets their wall data to the accepted state's:
     ``_cylindrical_stepping._imm_iteration_vw``.)
 
     Mean mode and padding

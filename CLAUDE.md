@@ -72,7 +72,7 @@ multi-process runs (a lone process needs none, even across GPUs).
 
 ## Test-run discipline
 
-- Before running anything, ask what the change can actually reach and
+- Before running anything, ask what the change can reach and
   run the cheapest check that covers exactly that, often a one-line
   `uv run python -c "import ..."`. A docstring, comment or type-hint
   change needs no run.

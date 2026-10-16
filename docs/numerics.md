@@ -109,7 +109,7 @@ number of corrections instead of iterating to tolerance. Its purpose is
 differentiability: a dynamic trip count is the one construct in a step
 that reverse-mode automatic differentiation cannot traverse, and a
 static one lowers to a scan that it can. It is a different integrator
-unless the count covers what the dynamic corrector actually used, which
+unless the count covers what the dynamic corrector used, which
 `corrector.dat` records; the `TimeStepping` docstring in
 `src/dnsjax/parameters.py` carries the full trade-off.
 

@@ -102,7 +102,7 @@ physics.
 Each rung spins its **own** parent up with the solver rather than
 re-gridding one fine parent down.  Both would work, but a truncated fine
 state carries more grid-scale content than the coarse scheme would ever
-produce, which is the adverse case for the very FD adjointness defect
+produce, which is the adverse case for the FD adjointness defect
 being measured -- it would manufacture convergence.  A per-rung parent
 is a bona fide solution of its own discretization.  (It is also why
 these numbers are not comparable to ``test_twin_driver.py``'s, which

@@ -435,7 +435,7 @@ def _prepare_output(out: Path, values: ReconParams, main: bool) -> None:
     Runs on **every** rank, so that the refusal is unanimous; the
     ``mkdir`` and the ``unlink`` are both idempotent.  The caller then
     holds every rank at a barrier before rank 0 creates a stream file:
-    a rank still in here could otherwise find a file rank 0 had just
+    a rank still in here could otherwise find a file rank 0 had already
     created, and refuse -- or, under ``--recon.overwrite``, delete it.
     """
     out.mkdir(parents=True, exist_ok=True)

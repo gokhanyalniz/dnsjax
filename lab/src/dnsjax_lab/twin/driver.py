@@ -172,7 +172,7 @@ Design notes
 **What the [twin] cadences cost.**  Neither optional budget stream
 is priced by its cadence alone:
 
-- ``it_budget`` sets the **run's** peak memory, not just its
+- ``it_budget`` sets the **run's** peak memory, not only its
   per-sample cost.  ``_twin_budget_jit`` is a separate compiled
   program whose transient is the driver's global high-water
   mark, since the device allocator's pool grows to the maximum
@@ -237,7 +237,7 @@ working set leaving cache; the step itself is pure FFT/solve work
 either way), and the ``E_d`` vs ``E_dU + E_du1 + E_du2``
 redundancy those percent buy is a deliberate consistency guard,
 not something to trade away.  Either way the default cadence
-needs no tuning, which is just as well: it is the intended
+needs no tuning: it is the intended
 Lyapunov sampling rate.
 
 **The smoothness default.**  ``twin.smoothness`` is set for plane
@@ -1085,7 +1085,7 @@ def run(
             old = json.load(f)
     # Every rank has now read the directory it decides on; only after
     # this may rank 0 write into it.  Without the barrier a lagging rank
-    # can read the ``twin.json`` rank 0 has just written, take another
+    # can read the ``twin.json`` rank 0 has written, take another
     # branch than its peers, and hang the job -- and on the
     # ``twin.e0 = 0`` fresh start no collective runs in between to
     # order the two by accident.
@@ -1189,7 +1189,7 @@ def run(
     else:
         # Fresh start.  Stale streams without the member record mean
         # a corrupt / half-cleaned directory; refuse to append.  All
-        # of them, not just ``twin.dat``: every writer here appends
+        # of them, not only ``twin.dat``: every writer here appends
         # (:data:`_STREAM_FILES`), so a half-cleaned directory would
         # otherwise splice a new trajectory onto an old one's records
         # -- silently for the ``.dat`` streams, and for a ``.bin``
@@ -1298,7 +1298,7 @@ def run(
     # clock every consumer of these streams reads is the relative one
     # `$t - t_\mathrm{parent}$` (``twin.json``'s ``parent_t``;
     # :func:`dnsjax_lab.analysis.twin.ensemble.aggregate_members`,
-    # ``lab/scripts/twin_spectral_maps.py``).  Anchoring on ``it``
+    # ``lab/scripts/twin_spectral_maps.py``).  Counting from ``it``
     # would put a member's relative grid out of phase by
     # ``(-parent_it mod cadence) * dt``, so members whose parents carry
     # different residues would share only `$t = 0$`.  ``parent_it``
@@ -1488,7 +1488,7 @@ def run(
     # each reference output runs on a cadence of its own
     # (:func:`ref_cadence`, by default its difference output's).  A
     # start sample here, in-loop samples before each step, a final one
-    # only on the grid -- all anchored on ``sample_it0`` (above).
+    # only on the grid -- all counted from ``sample_it0`` (above).
     ref_spectra_cad = ref_cadence(twin_params, "it_spectra")
     ref_yspectra_cad = ref_cadence(twin_params, "it_yspectra")
     ref_spectra3d_cad = ref_cadence(twin_params, "it_spectra3d")
@@ -2021,8 +2021,8 @@ def run(
                 state2, e2_dev, c2_dev, drive2 = predict_and_fully_correct(
                     state2
                 )
-        # Each state's own applied driving belongs to the step just
-        # taken, so it is bound here and consumed by the *next*
+        # Each state's own applied driving belongs to the step that
+        # produced it, so it is bound here and consumed by the *next*
         # iteration's ``stats.dat`` / ``stats_twin.dat`` row.
         last_drive1 = drive1
         last_drive2 = drive2

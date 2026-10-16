@@ -650,7 +650,7 @@ def test_np2_run() -> None:
         assert (cols["E_d"] > 0).all()
 
         # The gathered marginals carry every device's mode block, not
-        # just rank 0's: both integrate to twin.dat's own E_d.
+        # only rank 0's: both integrate to twin.dat's own E_d.
         data = read_twin_yspectra(tmp)
         by_t = {round(t, 10): i for i, t in enumerate(np.round(cols["t"], 10))}
         assert data.t.shape[0] == cols["t"].shape[0]
@@ -1110,7 +1110,7 @@ def test_budget_closure() -> None:
     fifteen (configuration, seed) combinations.  What stays here is
     the cheap structural guard -- term counts, ``*_tot``
     sum-consistency, sample count, and an order-of-magnitude bound
-    that an actually missing term would still break.
+    that a missing term would still break.
 
     Run with ``--mean-free`` for the control (module docstring): the
     partner then carries no `$(0,0)$` content.
@@ -1188,7 +1188,7 @@ def test_guards() -> None:
         _expect_error(result, "already holds a twin trajectory")
 
     # Stale streams without twin.json -- every file the driver
-    # appends to, not just twin.dat: a .dat stream is appended
+    # appends to, not only twin.dat: a .dat stream is appended
     # silently (no second header) and a .bin stream whenever its
     # sidecar matches, so a half-cleaned directory would splice a new
     # trajectory onto an old one's records.
@@ -1271,7 +1271,7 @@ def test_yspectra_streams() -> None:
     Then ``twin.spectra_ref = False``, which is a *static* flag on
     both spectra diagnostics rather than a write-time filter: the
     reference branch is not traced at all, so the run has to be
-    exercised, not just the writer.
+    exercised, not only the writer.
     """
     from dnsjax_lab.analysis.twin import (
         bin_energies,

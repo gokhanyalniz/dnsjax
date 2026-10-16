@@ -23,7 +23,7 @@ singletons at import time:
 
 Between 2 and 3 the solver's entry point calls
 :func:`resolve_run_seeds`, which turns an unset seed this run would
-actually draw with into a concrete one (:mod:`dnsjax.seeding`) and
+draw with into a concrete one (:mod:`dnsjax.seeding`) and
 agrees it across processes.  It sits *after* step 2 because the
 agreement is a JAX collective, and *before* step 3 because that is
 where the seed's consumers are built; a script that does no random
@@ -255,7 +255,7 @@ def configure_jax_platform(
     unambiguously (its banner reads the live device), and
     ``--dist.platform cuda`` (via :func:`platform_from_argv`) runs the
     real Pallas / Triton kernels on a GPU from any script or test, not
-    just the production entry point.
+    only the production entry point.
 
     Also line-buffers ``sys.stdout``, so piped output (a log being
     followed, SLURM output) arrives per line instead of in 8 KiB
@@ -281,7 +281,7 @@ def configure_jax_platform(
 def pin_cpu_threads() -> None:
     """Pin XLA's CPU thread pool to one thread; call before JAX loads.
 
-    ``NPROC`` is what actually sizes the pool (one thread per rank:
+    ``NPROC`` is what sizes the pool (one thread per rank:
     the ``Distribution`` docstring); it is only defaulted, so a wide
     node can override it from the environment.  At one thread the
     Eigen pool goes too, through a flag *prepended* to ``XLA_FLAGS``:
@@ -1365,7 +1365,7 @@ def configure_jax_runtime(distributed: bool = True) -> bool:
     # that, while the rank that reports it is only known after.
     # The device count, not ``jax.process_count()``, is what gates the
     # choice: that call goes through ``jax.devices()`` and would build
-    # the very backend the choice has to precede.  Every multi-process
+    # the backend the choice has to precede.  Every multi-process
     # CPU launch is one device per rank, so the two agree there.
     note = None
     if distributed:
@@ -1443,7 +1443,7 @@ def resolve_seed(label: str, flag: str, value: int | None) -> int:
 
 
 def resolve_run_seeds(setup: ResolvedSetup) -> list[str]:
-    r"""Resolve the seeds this run will actually draw with.
+    r"""Resolve the seeds this run will draw with.
 
     Fills in ``init.random_seed`` when the start mode is the random IC
     (:func:`dnsjax.parameters.random_ic_selected`), and the
@@ -1463,7 +1463,7 @@ def resolve_run_seeds(setup: ResolvedSetup) -> list[str]:
     """
 
     def resolve(label: str, flag: str, value: int | None) -> tuple[int, str]:
-        """Resolve one seed, labelled by what actually happened.
+        """Resolve one seed, labelled by its source.
 
         The label follows *value*, not ``setup.seed_layers``: a seed no
         layer set is drawn here and must say so, whatever the map holds.

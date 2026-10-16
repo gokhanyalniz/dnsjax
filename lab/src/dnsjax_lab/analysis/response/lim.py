@@ -52,7 +52,7 @@ Knobs (when to tweak)
   restriction is also what makes the result comparable with the
   other identification routes on the same basis.  Without it the
   fit runs on all ``r_res`` coordinates (fine for small operators
-  or very long streams; a conditioning error tells you when not).
+  or long streams; a conditioning error tells you when not).
 - ``--lags``: several, spread over the correlation time of the mode:
   short lags weight sampling noise (the ``logm`` divides by
   `$\tau$`), long lags weight the whiteness error and eventually hit

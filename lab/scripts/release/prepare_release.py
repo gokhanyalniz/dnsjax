@@ -23,7 +23,7 @@ release is cut from its own commit:
 worktree of ``HEAD``: strips the lab from ``pyproject.toml`` (the
 ``lab`` group and its default, the workspace and its source, the lab's
 test path), sets ``date-released`` in ``CITATION.cff`` (*--date*,
-default today), trims ``README.md`` to the sections a release
+default the current date), trims ``README.md`` to the sections a release
 carries (``pypi_readme.DROPPED_SECTIONS``), pins the PyPI README's
 links to the tag (``pypi_readme.py``), points every link the archive's
 Markdown makes to

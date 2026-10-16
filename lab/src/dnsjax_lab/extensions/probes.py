@@ -42,7 +42,7 @@ JAX-free reader is :mod:`dnsjax_lab.analysis.response.probes`.
 The record layout is fixed across schema versions, so a stale stream
 reads *cleanly* and only its values mean something else -- which makes
 :data:`FORMAT_VERSION` the only thing between an old file and a silent
-misread.  Bump it whenever the stored meaning changes (not just the
+misread.  Bump it whenever the stored meaning changes (not only the
 layout), and raise the reader's ``MIN_FORMAT_VERSION`` with it.
 
 Resume semantics: an existing ``probes.bin``/``probes.json`` pair is
@@ -185,7 +185,7 @@ def build_mode_extractor(
     spin tensor) it is converted to physical components -- the basis of
     ``_component_labels`` and of the written stream -- *after* the gather, on a
     ``(C, N_y)`` slice rather than the whole spectral field, so a sample costs
-    essentially nothing and ``it_probes = 1`` is affordable.  (The map is
+    little and ``it_probes = 1`` is affordable.  (The map is
     linear and maps zero to zero, so it commutes with the owner mask and the
     ``psum``.)  Cartesian carries physical components under both
     ``res.consistent_imm`` formulations and needs no conversion at all.

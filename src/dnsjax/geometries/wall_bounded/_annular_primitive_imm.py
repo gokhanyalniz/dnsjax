@@ -380,7 +380,7 @@ def _imm_iteration_vp(
 
     # Batch the D1 derivatives for the divergence and the explicit
     # Hk^- matvec (u_z included) into a single GEMM; only the
-    # just-solved pP needs a second D1 after the Poisson solve below.
+    # newly solved pP needs a second D1 after the Poisson solve below.
     # Stack y-leading (N_r, 7, ...) so the batched D1 GEMM (shared by
     # the divergence and the Hk^- matvec below) contracts the leading
     # wall-normal axis transpose-free; the component axis is 1.
@@ -417,7 +417,7 @@ def _imm_iteration_vp(
 
     # Stage 3: pressure gradient and explicit Hk^- matvec.  D1 of the
     # velocity (u_+, u_-, u_z) was already formed above as dy_all[:3];
-    # only the just-solved pP needs a fresh D1.
+    # only the newly solved pP needs a fresh D1.
     # y-leading (N_r, 3, ...) Hk construction: the D2 GEMM and the
     # reused D1_vel stay transpose-free (component axis 1); the solve
     # takes this layout (component_axis=1) and we unstack.  inv_r/inv_r2

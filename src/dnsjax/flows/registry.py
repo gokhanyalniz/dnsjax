@@ -276,7 +276,7 @@ def internalize_stored(
     and refuses it for this flow, so a snapshot predating the deferral
     stays loadable and its stored value is judged by
     :func:`dnsjax.parameters.validate_parameters` (inert default:
-    silent; actually used: the deferral's message).
+    silent; any other value: the deferral's message).
 
     ``solver`` is the one core section exempt (unknown keys there are
     dropped with a note): it is execution-only by design -- it selects

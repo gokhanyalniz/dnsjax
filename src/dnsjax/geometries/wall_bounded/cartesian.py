@@ -49,7 +49,7 @@ fails:
    the interior divergence identically on the direct-fit
    operators, and every *linear* gate passes (laminar exact no-op;
    one-step continuity `$\sim 10^{-16}$`).  Nonlinear integration
-   is violently unstable: per-step gain `$\sim 5$`-`$10$` at the
+   is unstable: per-step gain `$\sim 5$`-`$10$` at the
    gravest horizontal modes (`$1/k^2$`-weighted), *worse per unit
    time* at smaller `$\Delta t$`, insensitive to near-wall masking
    of the relocation, linear in its amplitude, and **not** cured
@@ -1413,7 +1413,7 @@ def mean_driving(state: Array, flow_: CartesianFlow) -> dict[str, Array]:
     driving constraint is active.
 
     This is **not** what ``stats.dat`` normally reports: that column is
-    the value the corrector actually applied, threaded out of the
+    the value the corrector applied, threaded out of the
     implicit solve.  This is used for the one row that has no step
     behind it, ``t = t0`` (see :mod:`dnsjax.__main__`), and as the
     independent check the driving test pins the applied value against.
@@ -1530,7 +1530,7 @@ def _imm_iteration_vw(
     The wall-normal velocity and the wall-normal vorticity
     `$\omega_y = i k_z u - i k_x w$` are advanced instead of the three
     velocity components, and `$(u, w)$` are *reconstructed* from them.
-    Pressure is eliminated exactly (discretely, not just formally) and
+    Pressure is eliminated exactly (discretely, not only formally) and
     never appears.
 
     The state stays **physical** `$(u, v, w)$` in both flag states:
@@ -1572,7 +1572,7 @@ def _imm_iteration_vw(
     whole design.  Substituting the reconstruction into a `$v$`
     produced by the primitive `$(v, p)$` solve
     (:func:`_imm_iteration_vp`) reproduces, state for state, the
-    tangential projection that measured violently unstable (Design
+    tangential projection that measured unstable (Design
     notes: "Routes tried and retired", route 3): there the solve
     determines `$\chi$`
     from the `$\chi$`-momentum equation and the reconstruction then

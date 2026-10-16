@@ -37,10 +37,10 @@ from _bridge import MPI, NO_MPI_ONLY, SLOW, Row, script_test  # noqa: E402
 # ``test_transient_growth`` (offline ``--fast`` structure checks + the
 # slow run with the published value).
 _SCRIPTS: list[Row] = [
-    # Seven checks, one subprocess each (the geometry captures kappa at
-    # import); ~3 min, no mpirun.
     ("test_adaptive.py", (), (), 1800),
     ("test_cnab2.py", (), (), 1800),
+    # One subprocess per case (the geometry captures kappa at import);
+    # ~3 min, no mpirun.
     ("test_curved_pipe.py", (), (), 1800),
     ("test_cylindrical.py", (), (), 1800),
     ("test_forcing.py", ("--unit-only",), NO_MPI_ONLY, 1800),

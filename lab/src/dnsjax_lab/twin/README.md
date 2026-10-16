@@ -97,7 +97,7 @@ of $E_{\Delta u_1}$ and $E_{\Delta u_2}$ (without it $E_{\Delta u_2}$
 is resolved in $k_x$ alone).
 
 Three of these are not priced by cadence alone. `it_budget` sets the
-**run's peak memory**, not just its per-sample cost: the budget is a
+**run's peak memory**, not only its per-sample cost: the budget is a
 separate compiled program whose transient is the driver's global
 high-water mark, and the device allocator's pool grows to the maximum
 over every program. `it_ybudget` costs memory in two places — a
@@ -260,7 +260,7 @@ under
 log-coordinate moments over the same terms (`analysis.twin.moments`).
 
 `twin.rotational_ybudget` (default **off**) writes the same budget
-with the *rotational* nonlinear term the solver actually integrates.
+with the *rotational* nonlinear term the solver integrates.
 Then the two transfer terms become exactly redistributive —
 $\Delta\mathbf{u}\cdot(\Delta\mathbf{u}\times\mathbf{b}) = 0$
 pointwise, so $\sum_k T = 0$ at every $y$ whatever the resolution —

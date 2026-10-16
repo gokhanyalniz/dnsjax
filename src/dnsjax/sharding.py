@@ -17,7 +17,7 @@ The device mesh has shape ``(np0, np1)`` with axes ``"np0"`` and
 - Each device holds the full wall-normal extent in spectral space,
   so FD solves are unchanged.
 
-When ``np0 == 1`` the ``"np0"`` axis is trivially size-1 and all
+When ``np0 == 1`` the ``"np0"`` axis has size 1 and all
 partition specs collapse to a 1D decomposition on `$k_x$` / `$z$`.
 Which device sits where on the mesh, across nodes included:
 :func:`device_grid`.
@@ -436,7 +436,7 @@ class Sharding:
             flush=True,
         )
 
-    # Axis-name helpers: None when the axis is trivially size-1,
+    # Axis-name helpers: None when the axis has size 1,
     # so that P(a0, ...) becomes P(None, ...) = replicated,
     # avoiding any size-1 collective overhead.
     a0: str | None = "np0" if np0 > 1 else None

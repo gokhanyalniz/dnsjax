@@ -47,7 +47,8 @@ FIGURES = REPO / "docs" / "figures"
 
 #: The README's font stack, as ``docs/figures/step-pipeline-*.svg`` set
 #: it.  The layout is computed with matplotlib's own sans-serif font;
-#: the SVG text is anchored, so a narrower system font only tightens it.
+#: the SVG keeps each label's alignment point, so a narrower system
+#: font only tightens it.
 FONT_STACK = (
     "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, "
     "sans-serif"

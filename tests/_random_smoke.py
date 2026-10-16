@@ -245,7 +245,7 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
                 f"{name} exited with code {result.returncode}"
             )
 
-        # Default-IC entry: confirm the run actually took the random
+        # Default-IC entry: confirm the run took the random
         # branch (no snapshot, no explicit mode => random default).
         if system.get("omit_random_flag") and (
             "Started from an in-process random IC" not in result.stdout
@@ -328,7 +328,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--dt", type=float, default=0.01)
     parser.add_argument("--amplitude", type=float, default=0.1)
     # The model default, so the smoke test drives the initial
-    # condition users actually get.  The random IC's *wall-normal*
+    # condition users get.  The random IC's *wall-normal*
     # shaping (``init.random_wall_smoothness`` /
     # ``random_wall_confinement``) is not a flag here: it is
     # wall-bounded-only, so a shared flag would have to be withheld

@@ -393,7 +393,7 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
         # is the parity of the **physical** `$m = m_0 j$` (the wedge
         # factor matters: with an even ``geo.m0`` every physical mode
         # is even) and which spans the **padded** m axis -- the axis
-        # the loaded state is actually laid out on.  (Re-deriving it
+        # the loaded state is laid out on.  (Re-deriving it
         # from ``complex_harmonics`` would disagree with both.)
         from .geometries.wall_bounded.cylindrical import fourier
 
@@ -878,7 +878,7 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
     # Every start mode above (snapshot resume + regrid, ``init_state``,
     # localized rolls, random field) builds the state in physical
     # components, and so did the diagnostics, the IC snapshot and the
-    # driving read just taken from it.  This is where it enters the
+    # driving read taken from it.  This is where it enters the
     # solver, once (see the component-basis boundary above); from here
     # on ``state`` is in the solver basis until a consumer asks for the
     # physical view.
@@ -1270,7 +1270,7 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
         # the final state after the last step is covered by the
         # final-snapshot block after the loop).
         if do_snapshot:
-            # ``stats`` was just computed above for this same state.
+            # ``stats`` was computed above for this same state.
             snap_stats = stats if do_stats else get_stats(state_phys)
             # Flush first (checked; also keeps the .dat files
             # consistent with this snapshot): a buffered non-finite
@@ -1305,7 +1305,7 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
         do_record = measure_steps and it % params.outs.it_steps == 0
         do_cfl = adaptive and it % cfl_cadence == 0
         do_measure = do_record or do_cfl
-        # CN/AB2 self-start: take the very first step with the robust
+        # CN/AB2 self-start: take the first step with the
         # iterative-CN corrector (it needs no RHS history and is not
         # advective-CFL bound), then switch to CN/AB2 with the
         # ``rhs_prev`` history seeded from ``u^0`` below.
@@ -1395,7 +1395,7 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
         it += 1
 
         # Adaptive-dt controller: consume the CFL measured at the
-        # just-completed step's pre-step state (that step is booked
+        # completed step's pre-step state (that step is booked
         # at the old dt above) and, on an accepted proposal, switch
         # the live dt -- an on-device leaf rebuild (``set_dt``), no
         # recompilation.  ``reset_ab2_kappa`` restores the AB2 ratio
@@ -1555,7 +1555,7 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
             _abort_non_finite(bad)
 
     # Final snapshot (default-on, independent of it_snapshot); skipped
-    # when the final state was just written (a periodic or IC write at
+    # when the final state was already written (a periodic or IC write at
     # this same iteration).
     if (
         params.outs.snapshot_save_final

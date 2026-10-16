@@ -3,7 +3,7 @@ r"""Premultiplied `$(\lambda, y)$` maps (``twin_spectral_maps.py``).
 ``lab/scripts/twin_spectral_maps.py`` turns the twin `$(y, k)$` streams
 into figures, and everything between the stored entry and the drawn
 contour is arithmetic this file pins.  The streams are built **in
-memory** -- ``_record_dtype`` on a hand-written sidecar, then a
+memory** -- ``_record_dtype`` on a synthetic sidecar, then a
 structured array -- so no case needs a solver run, and the three that
 exercise the reader write those same bytes into a temporary directory.
 
@@ -43,7 +43,7 @@ What each case pins:
 6. **The fold.** ``mean`` averages `$j$` with `$n_y-1-j$` without
    double counting the mid-plane, ``upper`` relabels its rows with the
    opposite half's wall distances, and the grid preconditions each
-   mode actually needs are the ones checked.
+   mode needs are the ones checked.
 7. **The reader.** Members meet on relative time to a tolerance and
    the shared grid is their intersection; ``stride`` / ``first`` /
    ``last`` clip it; a member that is not the same flow, and a stream
@@ -120,12 +120,12 @@ What each case pins:
     lacks.
 18. **Shape maps.** Each panel of each frame is the absolute panel
     premultiplied by `$k\,y^+$`, over the frame's peak of its figure's
-    anchor panel -- the summed spectrum, the production -- on the rows
+    reference panel -- the summed spectrum, the production -- on the rows
     the box shows, whatever ``--premultiply`` says, the same in wall
     and outer units and without ``volume_fac``, and the same in every
-    frame of one shape grown by decades; only the anchor panel's
+    frame of one shape grown by decades; only the reference panel's
     title reports that peak, a zero field keeps zeros; under ``--clim
-    series`` and ``frame`` the anchor's levels are frozen on the
+    series`` and ``frame`` the reference panel's levels are frozen on the
     series -- `$[0, 1]$` for the spectra -- and every other panel's
     are its own frame's, while ``--clim ramped`` ramps every panel on
     the frames so far past the perturbation, whose frame it draws as
@@ -765,7 +765,7 @@ def test_sign_family_is_declared() -> None:
 
 
 def test_fold() -> None:
-    """`$R_y$`, and the grid preconditions each mode actually needs."""
+    """`$R_y$`, and the grid preconditions each mode needs."""
     y = np.linspace(-1.0, 1.0, 5)  # the pairing, not the CGL grid
     assert np.allclose(tsm._half_grid(y, "mean"), [0.0, 0.5, 1.0])
     values = np.arange(5.0)[:, None] * np.ones((1, 3))
@@ -2062,14 +2062,15 @@ def test_peak_track() -> None:
 
 
 def test_shape_maps() -> None:
-    r"""Each panel over its frame's anchor peak, under `$k\,y^+$`.
+    r"""Each panel over its frame's reference peak, under `$k\,y^+$`.
 
     One shape grown by four decades, on a grid fine enough to put rows
     under the ordinate's floor, with a spike planted there: the peak
     is read off the rows the box shows, so the spike sets nothing, and
-    every frame draws the same map.  The anchor -- the summed spectrum,
-    and on the budget the production -- reaches 1 and is frozen on the
-    series; every other panel is over the same peak, on its own range.
+    every frame draws the same map.  The reference panel -- the summed
+    spectrum, and on the budget the production -- reaches 1 and is frozen
+    on the series; every other panel is over the same peak, on its own
+    range.
     """
     units = tsm.Units(RE, RE_TAU)
     options = tsm.MapOptions(units)
@@ -2121,7 +2122,7 @@ def test_shape_maps() -> None:
             assert np.allclose(got.values, absolute(frame, component) / peak)
             shown = float(got.drawn(ylim)[1].max())
             if component is None:
-                # The anchor: 1 on the rows the box shows, the spike
+                # The reference panel: 1 on the rows the box shows, the spike
                 # under the floor far above it and setting nothing,
                 # and the peak on its title's own line, in wall units.
                 assert np.isclose(shown, 1.0)
@@ -2176,7 +2177,7 @@ def test_shape_maps() -> None:
         series, "s_x", 1, options=tsm.MapOptions(outer_units)
     ).title
     assert r"\max = " in outer and r"u_\tau" not in outer, outer
-    # Taken last: a smoothed anchor still reaches 1 in the box.
+    # Taken last: a smoothed reference panel still reaches 1 in the box.
     smoothed = tsm.make_map(
         series, "s_x", 1, options=tsm.MapOptions(units, smooth=3)
     )
@@ -2185,7 +2186,7 @@ def test_shape_maps() -> None:
     spec = tsm.SeriesSpec("twin_yspectra", tsm.SHAPE, "x", tsm.MAP)
     assert not tsm.needs_reference(spec)
 
-    # The anchor's [0, 1] bands in every frame under every --clim, and
+    # The reference panel's [0, 1] bands in every frame under every --clim, and
     # every other panel's own frame's -- ramped on the frames so far
     # under --clim ramped; --quantile reaches none of them.
     panels = tsm.spectra_panels(tsm.SHAPE, "x")

@@ -679,7 +679,7 @@ class Geometry(BaseModel):
        family ``"half-cgl"`` under the default ``iterative-cn``
        scheme or ``"rigged-cgl"`` under ``cnab2`` (see below).
        Because the resolved value is concrete, snapshots embed the
-       grid they actually ran and a resume pins it -- the
+       grid they ran and a resume pins it -- the
        scheme-dependent default never silently re-grids an old
        trajectory.
 
@@ -1041,7 +1041,7 @@ class Initiation(BaseModel):
     )
     # Unset means "draw one": ``bootstrap.resolve_run_seeds`` resolves
     # it from the OS entropy pool at startup -- but only when this run
-    # actually builds a random IC (:func:`random_ic_selected`) -- prints
+    # builds a random IC (:func:`random_ic_selected`) -- prints
     # it with its source, and leaves the concrete value here, so the
     # snapshot records the seed that ran.  A ``default_factory`` would
     # be wrong: see the :mod:`dnsjax.seeding` docstring.
@@ -1228,7 +1228,7 @@ class Outputs(BaseModel):
         default=True,
         description=(
             "Save the final state as a snapshot when the run "
-            "terminates (skipped when it was just written)."
+            "terminates (skipped when it was already written)."
         ),
     )
     snapshot_write_mode: Literal["concurrent", "serial"] = Field(
@@ -1361,7 +1361,7 @@ class TimeStepping(BaseModel):
       **One** expensive nonlinear/FFT evaluation per step; the previous
       nonlinear RHS is carried by the main loop, seeded by a discarded
       priming ``step_cnab2(state, zeros)`` call while ``iterative-cn``
-      takes the very first integration step (see ``step_cnab2`` in
+      takes the first integration step (see ``step_cnab2`` in
       ``timestep.py``).  Explicit *self-advection*, so ``dt`` is
       advective-CFL-limited -- a net win (~3x fewer FFTs) on
       CFL-limited (turbulent) runs.
@@ -1473,7 +1473,7 @@ class TimeStepping(BaseModel):
     ------------------------------------------------------------
     The corrector is a fixed-point iteration whose contraction rate
     scales with ``dt``, so a ``corrector failed to converge`` at *low*
-    CFL -- the final error only just above ``corrector_tolerance`` --
+    CFL -- the final error barely above ``corrector_tolerance`` --
     means the step is too large to contract within
     ``max_corrector_iterations``, **not** a blow-up: reduce ``dt`` (or
     raise the cap).  The limit is per-flow and unrelated to the
@@ -1497,7 +1497,7 @@ class TimeStepping(BaseModel):
     pass and the banded LU sweep already differentiate).
 
     A fixed count is a **different integrator** unless *n* covers what
-    the dynamic corrector actually used, and ``corrector.dat``
+    the dynamic corrector used, and ``corrector.dat``
     (``outs.it_corrector``) is where that number comes from: its ``c``
     column is the count *beyond* the first correction, so *n* must be
     at least ``max(c) + 1`` over the window of interest.  Three
@@ -2532,7 +2532,7 @@ def update_parameters(params_new: Parameters) -> None:
     # Resolve the wall-normal grid's per-flow default when the user /
     # snapshot / TOML never set ``geo.grid_type``.  Resolving to a
     # *concrete* value here (rather than interpreting ``None`` at grid
-    # construction) makes every snapshot embed the grid it actually
+    # construction) makes every snapshot embed the grid it
     # ran, so a resume pins the trajectory's grid independently of
     # later defaults.  Re-resolved on every layer application (a later
     # ``system`` / ``scheme`` override cannot inherit a stale

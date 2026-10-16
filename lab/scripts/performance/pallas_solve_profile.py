@@ -69,7 +69,7 @@ baked into the operator at construction, so it cannot vary in-process)::
         --pallas-block-m0 $m0 --pallas-block-m1 $m1 --steps 40; done; done
 
 Resolution x tile sweep to pick sensible tile defaults across a range.
-``--solve-only`` times just the ``Lk``/``Hk`` solves (the tile affects
+``--solve-only`` times only the ``Lk``/``Hk`` solves (the tile affects
 only the solve; the FFT-bound step is tile-independent and costly at
 large planes) and prints a greppable ``SUMMARY`` line -- collect them
 with ``grep '^SUMMARY'`` instead of reading full dumps::
@@ -1542,7 +1542,7 @@ def _stages_vw_cyl(
             ),
         )
         velocity_new = to_pm_basis(jnp.stack([uz_new, ur_new, ut_new]))
-        # Re-anchor the carried wall data on the accepted velocity.
+        # Reset the carried wall data from the accepted velocity.
         d_phi_j, d_om_j = _wall_differences(velocity_j, fourier, flow)
         d_phi_n, d_om_n = _wall_differences(velocity_new, fourier, flow)
         carried_new = carried_new + jnp.stack(

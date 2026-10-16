@@ -533,7 +533,7 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Quasi-Keplerian flag-on: the same annular machinery at a very
+        # Quasi-Keplerian flag-on: the same annular machinery at a
         # different (re1, r_omega, eta) corner.
         "name": "quasi-keplerian-legacy-imm",
         "cfl_active": CFL_TH_LAMINAR_QK,

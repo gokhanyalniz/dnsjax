@@ -152,8 +152,8 @@ device grid or for FFT-friendly sizes — is silent: every adjustment is
 reported by a one-line startup diagnostic, so its (usually marginal) cost
 stays visible.
 
-Crucially, **every device holds the full wall-normal extent in spectral
-space**, so the per-mode banded solves need no communication. The forward and
+**Every device holds the full wall-normal extent in spectral space**, so
+the per-mode banded solves need no communication. The forward and
 inverse FFTs run per device inside `shard_map`, and two `reshard` calls move
 the data between layouts; with either grid axis at 1 the
 decomposition collapses to a one-dimensional split and only the other
@@ -349,7 +349,7 @@ and 320 and `(1, 128)` pads neither (its oversampled spanwise axis
 rounds from 480 to 512 points). The sweep driver prints every
 layout's padding before anything runs.
 
-**Size the node, not just the rank.** On a node of many cores and a few
+**Size the node, not only the rank.** On a node of many cores and a few
 GiB per core, every rank's own runtime — the interpreter, jaxlib, the
 compiled programs, the MPI library's buffers — is multiplied by the
 rank count, on top of the problem's share, and it is a large fraction
@@ -520,7 +520,7 @@ lab's figure script).
 `(128, n)`, the grid of rule 2, leads `(64, 2n)` from 1 to 16 nodes:
 by 12 % on one node and by 2 to 8 % from 2 to 16. At 32 nodes three
 of its four runs, at 80.6 to 86.5 seconds per time unit, are faster
-than both of `(64, 2n)`'s; the fourth, at 116.1, is an obvious
+than both of `(64, 2n)`'s; the fourth, at 116.1, is an
 outlier, with nothing in its logs to account for it. It is kept in
 the mean, which it puts 6 % behind `(64, 2n)`'s. (`(64, 128)`, the
 next grid of that family, pads the spanwise axis and was not run.)

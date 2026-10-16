@@ -155,7 +155,7 @@ SYSTEMS: list[dict] = [
         # Re = wi/el is derived (no --phys.re).  The kappa > 0 default
         # also builds the conformation Helmholtz operator (``Hc_op``).
         # wi = el = 20 (Re = 1) and a reduced conformation-noise amplitude
-        # (10, against the default 700) keep the coupled system robust at
+        # (10, against the default 700) keep the coupled system stable at
         # the coarse smoke resolution -- the default wi = 105 with the
         # full noise is a genuinely stiff elastic instability on a 32^3
         # grid, not a solver defect.
@@ -206,7 +206,7 @@ SYSTEMS: list[dict] = [
         # conformation Helmholtz operator ``Hc_op`` (kappa > 0) in banded
         # storage on the sharded axis, and solves the 9-component coupled
         # nonlinear path.  CPU runs the pure-JAX banded sweep (the Triton
-        # kernel is GPU-only).  Same robust reduced parameters as the
+        # kernel is GPU-only).  Same stable reduced parameters as the
         # single-device ``viscoelastic-dean`` entry.
         "name": "viscoelastic-dean-pallas-mpi-pad",
         "force_np": 2,
@@ -315,7 +315,7 @@ SYSTEMS: list[dict] = [
         # all FFT-free, so the explicit AB2 remainder is the pure
         # fluctuation-fluctuation nonlinearity -- a distinct cnab2 code
         # path (9 components, elastic coupling) exercised by no other
-        # entry.  Same robust reduced parameters as the iterative-cn
+        # entry.  Same stable reduced parameters as the iterative-cn
         # ``viscoelastic-dean`` entry; cnab2 matches iterative-cn to
         # O(dt^2) at ~1 FFT/step vs its ~4.
         # CN/AB2 on the viscoelastic pipe: the FFT-free ``_l_bf``

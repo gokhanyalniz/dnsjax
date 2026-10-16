@@ -120,7 +120,7 @@ re = data.params.phys.re              # embedded parameters
 # Cartesian systems return (u_x, u_y, u_z) in the native (y, z, x) layout:
 u_x, u_y, u_z = read_state("state00002.tar").physical
 
-# Select components, read just two wall-normal slabs off disk, and also
+# Select components, read only two wall-normal slabs off disk, and also
 # return the spectral coefficients:
 data = read_state(
     "state00001.tar",

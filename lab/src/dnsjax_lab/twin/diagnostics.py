@@ -43,7 +43,7 @@ of :mod:`dnsjax_lab.twin.pressure` (where
 pressure do no work at `$(0,0)$`).  A state that violated it would not
 be an admissible incompressible no-slip field in the first place, and
 the whole `$(y, k)$` half of this module would be wrong for it, not
-just those terms.
+only those terms.
 
 Component decomposition
 -----------------------

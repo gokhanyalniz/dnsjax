@@ -95,7 +95,7 @@ CLOSURE_LEAVES = {
     # The pipe's single wall gives one (a 1x1 influence matrix), plus
     # the two halves of its unit response across the spin pair, which
     # the carried slots take with the influence correction and on
-    # re-anchoring.
+    # the reset from the accepted velocity's wall data.
     "pipe": ("ur_1", "phi_1_diff", "phi_1_sum"),
     # Triply-periodic: the flag does not reach this family at all.
     "kolmogorov": (),
