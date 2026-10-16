@@ -204,9 +204,11 @@ carries the repository with the lab, as an asset the workflow attaches
 `main` is not released as it stands: its `pyproject.toml` installs the
 lab with the solver (the `lab` dependency group, a workspace source),
 which a tree without `lab/` cannot resolve, and the published README
-is trimmed and its links pinned. So each release is a commit of its
-own, cut by `lab/scripts/release/prepare_release.py` and reachable
-only from its tag; `main` is untouched.
+is trimmed, its links pinned, and opens with a pointer to what the
+repository holds beyond the solver (the lab, with its features named;
+`pypi_readme.LAB_LEAD`). So each release is a commit of its own, cut
+by `lab/scripts/release/prepare_release.py` and reachable only from
+its tag; `main` is untouched.
 
 ### Once
 
@@ -264,11 +266,11 @@ uv pip install --python /tmp/rehearsal/bin/python \
    `cut` refuses a dirty tree and an existing tag, then, in a
    throwaway worktree of `HEAD`, strips the lab from `pyproject.toml`,
    relocks `uv.lock`, sets `date-released` in `CITATION.cff` (the
-   current date, or `--date`), trims the README to the sections a
-   release carries, regenerates the PyPI README with its links pinned
-   to the tag, points every link the archive's Markdown makes to a
-   file the archive leaves out at the tag on GitHub, commits and tags
-   (annotated, `v0.2.0`).
+   current date, or `--date`), gives the README its published form,
+   regenerates the PyPI README with its links pinned to the tag,
+   points every link the archive's Markdown makes to a file the
+   archive leaves out at the tag on GitHub, commits and tags
+   (annotated, `v0.2.0`). The commit hooks run on that commit.
 
 3. Push the tag and nothing else:
 
@@ -295,9 +297,12 @@ uv pip install --python /tmp/rehearsal/bin/python \
 
 5. On GitHub, review the draft: the notes, the three attached files,
    and the source archives (no `lab/`, no agent files, no `uv.lock`,
-   no `CONTRIBUTING.md`). Publish it. Zenodo archives the source
-   archive and mints a version DOI, and on the first release the
-   concept DOI.
+   no `CONTRIBUTING.md`). Write the notes: what the release is and
+   what changed, then what the repository holds beyond the released
+   solver, the lab's features named and linked to the README's
+   "The lab" section, since the notes are where a PyPI or Zenodo
+   reader lands. Publish it. Zenodo archives the source archive and
+   mints a version DOI, and on the first release the concept DOI.
 
 6. Afterwards, in one commit on `main`: the concept DOI as `doi:` in
    `CITATION.cff` and a DOI badge in the README. Nothing in the
