@@ -16,6 +16,17 @@ boundary conditions. Five flow systems across four geometries share one
 stepping core, and further flows plug in without editing it. The same
 code works on **CPUs and GPUs**, and distributes across many.
 
+**The released package is the solver core.** The
+[GitHub repository](https://github.com/gokhanyalniz/dnsjax) holds far more, developed alongside it in
+its lab and installed by the same `uv sync` of a clone: five further
+flows (a curved pipe, quasi-Keplerian Taylor–Couette flow, Dean flow,
+and viscoelastic pipe and Dean flows carrying the polymer conformation
+tensor), twin runs that stream the growth of a perturbation to a
+turbulent flow with its energy budget and spectra, runtime probing and
+forcing of chosen spectral modes, response analysis from a turbulent
+run to a data-driven linear operator, and the benchmark, profiling,
+ensemble and diagnostic tools — [The lab](https://github.com/gokhanyalniz/dnsjax/blob/main/README.md#the-lab).
+
 <a id="fig-planes"></a>
 <p align="center">
   <img src="https://raw.githubusercontent.com/gokhanyalniz/dnsjax/main/docs/figures/channel-planes.webp" width="900"

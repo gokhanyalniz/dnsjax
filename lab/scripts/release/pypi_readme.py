@@ -16,8 +16,11 @@ with relative links (Markdown and HTML) made absolute GitHub URLs at
 ``<img>``, in-page fragment links absolute ones into the GitHub
 README, inline math a code span in plain symbols, the
 GitHub-only "Contents" line left out, and the sections
-:data:`DROPPED_SECTIONS` names left out, as a release's ``README.md``
-leaves them out (``prepare_release.py``).  The repository URL comes
+:data:`DROPPED_SECTIONS` names left out and :data:`LAB_LEAD` put after
+the opening paragraph, as a release's ``README.md`` has them
+(:func:`published_readme`, which ``prepare_release.py`` applies too):
+a published copy says that the package is the solver core and what the
+repository holds beyond it, with a link.  The repository URL comes
 from ``pyproject.toml`` (``[project.urls] Repository``).
 
 A LaTeX command the conversion table (:data:`LATEX`) does not know is
@@ -42,6 +45,23 @@ OUT = REPO / "docs" / "pypi" / "README.md"
 #: Sections of ``README.md`` a published copy (PyPI's, a release's)
 #: leaves out, by their ``## `` title.
 DROPPED_SECTIONS: tuple[str, ...] = ("Acknowledgements",)
+#: What a published copy says after the README's opening paragraph:
+#: the package is the solver core, and the repository holds more.
+#: ``{url}`` is the repository; the links are made absolute like the
+#: README's own (the PyPI copy's into GitHub, the archive's by
+#: ``prepare_release.archive_links``).
+LAB_LEAD = """\
+**The released package is the solver core.** The
+[GitHub repository]({url}) holds far more, developed alongside it in
+its lab and installed by the same `uv sync` of a clone: five further
+flows (a curved pipe, quasi-Keplerian Taylor–Couette flow, Dean flow,
+and viscoelastic pipe and Dean flows carrying the polymer conformation
+tensor), twin runs that stream the growth of a perturbation to a
+turbulent flow with its energy budget and spectra, runtime probing and
+forcing of chosen spectral modes, response analysis from a turbulent
+run to a data-driven linear operator, and the benchmark, profiling,
+ensemble and diagnostic tools — [The lab](#the-lab).
+"""
 
 #: LaTeX in the README's inline math -> plain symbols (in order).
 LATEX: list[tuple[str, str]] = [
@@ -103,6 +123,28 @@ def drop_sections(
     return text
 
 
+def published_readme(readme: str, url: str) -> str:
+    """*readme* as a published copy carries it.
+
+    Without the :data:`DROPPED_SECTIONS`, and with :data:`LAB_LEAD` (for
+    the repository at *url*) after the opening paragraph: the first
+    paragraph after the badge lines under the title.  Raises unless
+    that paragraph is found exactly once, so a restructured README
+    fails the generation rather than losing the lead.
+    """
+    text = drop_sections(readme)
+    badges = r"(?:\[!\[|!\[)[^\n]*\n"
+    text, n = re.subn(
+        rf"(\n(?:{badges})+\n(?:[^\n]+\n)+)\n",
+        lambda m: m.group(1) + "\n" + LAB_LEAD.format(url=url) + "\n",
+        text,
+        count=2,
+    )
+    if n != 1:
+        raise ValueError(f"the README's opening paragraph is found {n}x")
+    return text
+
+
 def _outside(text: str, fn, spans: bool) -> str:
     """Apply *fn* to the parts of *text* outside fenced code blocks, and
     outside inline code spans too when *spans*."""
@@ -119,12 +161,12 @@ def pypi_readme(readme: str, url: str, ref: str) -> str:
     )
     raw = f"{raw}/{ref}"
 
-    # The sections :data:`DROPPED_SECTIONS` names, then the GitHub-only
-    # table of contents (PyPI has its own navigation).
+    # The published form (the sections left out, the lead), then the
+    # GitHub-only table of contents (PyPI has its own navigation).
     text = re.sub(
         r"\n\*\*Contents\*\* —.*?\n\n",
         "\n",
-        drop_sections(readme),
+        published_readme(readme, url),
         flags=re.DOTALL,
     )
     # A <picture> becomes its light <img>.
