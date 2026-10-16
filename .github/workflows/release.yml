@@ -11,9 +11,10 @@ name: Release
 # pyproject.toml and uv.lock, so that the sdist and the zipball, which
 # carry no lock, both install with uv.  A rehearsal builds from main,
 # stripped the same way.  The GitHub release alone also carries the
-# repository with the lab, the contributor guide and uv's files, as an
-# asset built from the tag's parent commit; Zenodo takes the source
-# archive alone.
+# whole repository but for the files written for coding agents (the
+# lab, the contributor guide, uv's files and the development
+# configuration in), as an asset built from the tag's parent commit;
+# Zenodo takes the source archive alone.
 
 on:
   push:
@@ -130,11 +131,13 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
 
       # The tag's parent is the commit the release was cut from: the
-      # whole repository.  Its archive lets the lab, the contributor
-      # guide and uv's files in and keeps the agent files and the CI
-      # configuration out, as the zipball does.  GitHub readers get it
-      # as an asset; Zenodo takes the source archive alone, and deleting
-      # the release deletes the asset.
+      # whole repository.  Its archive lets everything the zipball
+      # leaves out back in, the lab, the contributor guide, uv's files
+      # and the development configuration (the hooks, git and CI
+      # settings a reader of the contributor guide needs), but for the
+      # files written for coding agents.  GitHub readers get it as an
+      # asset; Zenodo takes the source archive alone, and deleting the
+      # release deletes the asset.
       - name: Draft the GitHub release, the repository with the lab attached
         if: github.event_name == 'push'
         env:
@@ -144,14 +147,18 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           asset="$RUNNER_TEMP/dnsjax-${version}-with-lab.tar.gz"
           printf '%s -export-ignore\n' /lab /CONTRIBUTING.md /uv.lock \
-            /.python-version >> .git/info/attributes
+            /.python-version /prek.toml /.gitignore /.gitattributes \
+            /.github >> .git/info/attributes
           git archive --format=tar.gz --prefix="dnsjax-${version}-with-lab/" \
             -o "$asset" "${GITHUB_REF_NAME}^"
-          if tar -tzf "$asset" | grep -E 'CLAUDE\.md|/\.claude/|/\.github/'; then
-            echo "the with-lab asset carries agent files or CI configuration"
+          if tar -tzf "$asset" | grep -E 'CLAUDE\.md|/\.claude/'; then
+            echo "the with-lab asset carries agent files"
             exit 1
           fi
-          tar -tzf "$asset" | grep -q '/lab/pyproject.toml$'
+          for f in lab/pyproject.toml CONTRIBUTING.md uv.lock prek.toml \
+            .gitignore .gitattributes .github/workflows/release.yml; do
+            tar -tzf "$asset" | grep -q "/${f}\$"
+          done
           gh release create "${GITHUB_REF_NAME}" dist/* "$asset" --draft \
             --verify-tag --generate-notes \
             --title "dnsjax ${GITHUB_REF_NAME}"
