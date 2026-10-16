@@ -198,8 +198,8 @@ the archive and `source-include` under `[tool.uv.build-backend]` in
 `pyproject.toml` for the sdist; the wheel is the package alone. The
 sdist and the archive both install with `uv sync`, resolving afresh;
 the lock stays in the repository. The GitHub release alone also
-carries the repository with the lab, as an asset the workflow attaches
-(step 4 below).
+carries the whole repository, the lab included, as an asset the
+workflow attaches (step 4 below).
 
 `main` is not released as it stands: its `pyproject.toml` installs the
 lab with the solver (the `lab` dependency group, a workspace source),
@@ -289,11 +289,12 @@ uv pip install --python /tmp/rehearsal/bin/python \
 
 4. Under Actions, open the run and approve the `pypi` deployment. The
    workflow publishes to PyPI, builds the with-lab asset from the
-   tag's parent commit (the repository the release was cut from, with
-   the lab, this guide and uv's files, without the agent files and
-   the CI configuration) and creates a *draft* GitHub release of the
-   tag with generated notes, the sdist, the wheel and that asset
-   attached.
+   tag's parent commit (the repository the release was cut from,
+   with the lab, this guide, uv's files and the development
+   configuration, so everything this guide names; only the files
+   written for coding agents are left out) and creates a *draft*
+   GitHub release of the tag with generated notes, the sdist, the
+   wheel and that asset attached.
 
 5. On GitHub, review the draft: the notes, the three attached files,
    and the source archives (no `lab/`, no agent files, no `uv.lock`,
