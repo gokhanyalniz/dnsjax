@@ -17,12 +17,13 @@ stepping core, and further flows plug in without editing it. The same
 code works on **CPUs and GPUs**, and distributes across many.
 
 **The released package is the solver core.** The
-[GitHub repository](https://github.com/gokhanyalniz/dnsjax) holds far more, developed alongside it in
-its lab and installed by the same `uv sync` of a clone: five further
-flows (a curved pipe, quasi-Keplerian Taylor–Couette flow, Dean flow,
-and viscoelastic pipe and Dean flows carrying the polymer conformation
-tensor), and the benchmark, profiling and diagnostic tools —
-[The lab](https://github.com/gokhanyalniz/dnsjax/blob/main/README.md#the-lab).
+[GitHub repository](https://github.com/gokhanyalniz/dnsjax) also holds its lab, flows and features in
+development that are not shipped with release archives outside GitHub,
+installed with the solver by the same `uv sync` of a clone: five
+further flows (a curved pipe, quasi-Keplerian Taylor–Couette flow, Dean
+flow, and viscoelastic pipe and Dean flows carrying the polymer
+conformation tensor), and the benchmark, profiling and diagnostic
+tools — [The lab](https://github.com/gokhanyalniz/dnsjax/blob/main/README.md#the-lab).
 
 <a id="fig-planes"></a>
 <p align="center">
@@ -363,10 +364,10 @@ The numerics follow these references:
 ## The lab
 
 This repository also holds [`lab/`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/README.md), a second package
-developed alongside the solver and never released with it. It plugs
-into the solver through the same entry points a package of your own
-would use, and `uv sync` installs both into one environment. What it
-adds:
+of flows and features in development alongside the solver, not shipped
+with its release archives outside GitHub. It plugs into the solver
+through the same entry points a package of your own would use, and
+`uv sync` installs both into one environment. What it adds:
 
 - **Five flows** on the solver's geometries — the curved pipe,
   quasi-Keplerian Taylor–Couette, Dean, and the viscoelastic pipe and
@@ -374,9 +375,8 @@ adds:
   [`lab/docs/numerics.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/docs/numerics.md) and their checks in
   [`lab/docs/validation.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/docs/validation.md).
 - **Scripts**: the performance tools (benchmarks, profiles, memory
-  sizing, the scaling figure); functionality checks (differentiability,
-  GPU kernel and storage diagnostics); a refactor regression check, the
-  release tooling and the documentation checkers —
+  sizing, the scaling figure) and functionality checks
+  (differentiability, GPU kernel and storage diagnostics) —
   [`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/README.md#scripts).
 - **Tests**: 36 scripts of its own, collected by the same `pytest` —
   [`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/lab/README.md#tests).

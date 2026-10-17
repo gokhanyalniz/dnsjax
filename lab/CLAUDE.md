@@ -1,8 +1,8 @@
 # dnsjax-lab
 
-The repository's second package, never released (the root note's "Core
-and lab"): flows, `dnsjax-twin`, the `[probes]` / `[force]` sections
-and analyses built on the core. The human overview: `README.md` here;
+The repository's second package (the root note's "Core and lab"):
+flows, `dnsjax-twin`, the `[probes]` / `[force]` sections and analyses
+in development, built on the core. The human overview: `README.md` here;
 the lab flows' maths and checks: `docs/`.
 
 ## Layout (`src/dnsjax_lab/`)
@@ -56,10 +56,12 @@ lab test).
 
 ## Scripts (`scripts/`)
 
-Each script's module docstring is its manual. `twin_spectral_maps.py`
-and `performance/scaling_figure.py` need matplotlib: `uv run --group
-plots python <path>`. The seeds in the benchmarks and diagnostics are
-fixed on purpose.
+Each script's module docstring is its manual; the human index is
+`README.md`'s "Scripts" for `performance/` and `diagnostics/`, and the
+`README.md` of each of `refactor/`, `release/` and `docs/`.
+`twin_spectral_maps.py` and `performance/scaling_figure.py` need
+matplotlib: `uv run --group plots python <path>`. The seeds in the
+benchmarks and diagnostics are fixed on purpose.
 
 - `ensemble_setup.py`: JAX-free `harvest` / `build` / `build-twin` of
   ensemble member trees from a snapshot archive.

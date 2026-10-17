@@ -13,12 +13,15 @@ A release holds the solver alone, in two forms with the same files: the
 PyPI sdist, and the GitHub zipball of the tag, the file deposited on
 Zenodo (the sdist's ``source-include`` and ``.gitattributes`` keep the
 lab, the agent notes, the contributor guide, the development
-configuration and ``uv.lock`` out of both).  Both must install with
-``uv``.  ``main``'s ``pyproject.toml`` cannot serve as is: its default
-``lab`` dependency group names ``dnsjax-lab``, a workspace member
-neither form contains, so ``uv sync`` there would fail -- while in a
-full clone that group is what installs the lab with the solver, which
-must keep working.  So a release is cut from its own commit:
+configuration and ``uv.lock`` out of both).  The lab, flows and
+features in development, is not shipped with release archives outside
+GitHub: of a release's archives, only the with-lab asset (``asset``)
+carries it.  Both forms must install with ``uv``.  ``main``'s
+``pyproject.toml`` cannot serve as is: its default ``lab`` dependency
+group names ``dnsjax-lab``, a workspace member neither form contains,
+so ``uv sync`` there would fail -- while in a full clone that group is
+what installs the lab with the solver, which must keep working.  So a
+release is cut from its own commit:
 
 ``cut`` checks *VERSION* against ``pyproject.toml`` and
 ``CITATION.cff`` (bump both on ``main`` first), then, in a throwaway

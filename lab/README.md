@@ -1,11 +1,7 @@
 # dnsjax-lab
 
-The second package in this repository: features developed alongside
-the [`dnsjax`](../README.md) solver and kept out of its releases. It is
-never published — no PyPI upload, no Zenodo archive (its `pyproject.toml`
-carries the `Private :: Do Not Upload` classifier, which PyPI refuses)
-— and is distributed only through this repository and the archive of
-it attached to each GitHub release.
+The second package in this repository: flows and features in
+development alongside the [`dnsjax`](../README.md) solver.
 
 The lab plugs into the solver through the same entry points any
 package would use ([`docs/extending.md`](../docs/extending.md)): its
@@ -61,47 +57,6 @@ Functionality checks, in [`scripts/diagnostics/`](scripts/diagnostics/):
 | `grad_probe.py` | which stepping configurations differentiate in forward and reverse mode, each gradient checked against a finite difference ([`docs/differentiability.md`](../docs/differentiability.md)) |
 | `pallas_tiling_diagnostic.py` | GPU harness that bisects the partial-tile Triton miscompile the kernel's whole-tile padding avoids |
 | `gds_probe.py` | cluster diagnostic for the snapshot write path through GPUDirect Storage |
-
-A regression check for behaviour-preserving refactors, in
-[`scripts/refactor/`](scripts/refactor/):
-
-| Script | What it does |
-|---|---|
-| `verify.py` | checks a commit out into a throwaway worktree, captures it, and compares the capture with a reference |
-| `capture.py` | the behavioural fingerprint of a tree, through its public command lines only: every flow's `--help` and `--sample-toml`, short fixed-seed runs of every flow, scheme and start mode with variants, resumes, streams and transient growth, their outputs and HLO fingerprints |
-| `compare.py` | diffs two captures, bitwise for arrays and streams, structurally for metadata; reviewed differences are allowed by pattern |
-| `refingerprint.py` | recomputes a capture's HLO fingerprints from its kept dumps |
-| `analysis_fp.py` | fingerprints the JAX-free analysis API on a capture's snapshots, and compares two fingerprints bitwise |
-| `check_imports.py` | checks, without importing, that every `dnsjax` / `dnsjax_lab` import in the repository resolves |
-| `prose_scan.py` | lists the lab's vocabulary in the core's prose, for review |
-
-The release tooling, in [`scripts/release/`](scripts/release/) (how a
-release is cut: the docstring of `prepare_release.py`):
-
-| Script | What it does |
-|---|---|
-| `prepare_release.py` | cuts a release as a commit and tag of its own: the lab taken out of `pyproject.toml`, `uv.lock` relocked without it, the citation dated, the DOI reserved on Zenodo recorded (`--doi`), the README trimmed to the sections a release carries, the PyPI README's links pinned to the tag and the archive's links into the lab pointed at it; it pushes nothing. `files` checks that an sdist holds an archive's files but `uv.lock`; `asset` builds the archive of the repository a GitHub release attaches |
-| `pypi_readme.py` | writes `docs/pypi/README.md`, the README as PyPI shows it, with absolute links and images and plain-text math; `--check` fails on a stale copy |
-| `ci_job.py` | runs one GitHub workflow job's steps locally, in a throwaway clone of a commit — `core-only` checks a release's artefacts before anything is pushed |
-| `check_extras.py` | checks that each extra of `dnsjax` (`cuda13`, `tpu`, ...) is the `jax` extra of the same name and that the installed JAX provides it, since a resolver drops an extra a package lacks with a warning only; CI's lint job runs it |
-
-Documentation checks, in [`scripts/docs/`](scripts/docs/), mechanical
-and read-only unless the row says otherwise:
-
-| Script | What it does |
-|---|---|
-| `check_links.py` | relative links and in-page `#` targets of the given Markdown files, by GitHub's slug rules |
-| `check_refs.py` | every backticked module, symbol, class member, parameter field, flag and path in docstrings, comments and docs resolves in the tree; `check_snake.py` reuses its index to list the backticked `snake_case` tokens that name nothing |
-| `check_docstrings.py` | escape, math-form, doubled-word and tone-word checks over the tracked Python tree; `lint_docs.py` the same for named files, plus multi-line summaries and split Sphinx roles |
-| `banned_words.py` | the banned-word patterns the docstring checks and the commit-message check share |
-| `check_commit_message.py` | a commit message against the rules of the root `CONTRIBUTING.md` ("Commits"), as the commit-msg hook of `prek.toml`; `--commits` checks recorded commits, such as what a push would publish |
-| `check_returns.py` | return-tuple arity and documented parameters against each signature |
-| `docs_only.py` | proves a change against a base ref touches docstrings, comments and `description=` strings only |
-| `parse_cmds.py` | parse-validates one documented command line or TOML file without JAX |
-| `check_render.py` | renders a Markdown file through GitHub's API (a request per file) and compares its math with the source |
-| `oxford.py`, `reflow.py`, `underline.py` | rewrite documentation ranges in place (`doc_ranges.py` finds them): Oxford spelling (`--dry` previews), one reflowed paragraph, section underlines |
-| `doc_inventory.py` | per-file dumps of docstrings and comments and the public docstrings missing, written under the current directory |
-| `crossref.py` | bibliographic metadata for a DOI or a free-text query, from Crossref |
 
 ## Tests
 

@@ -1,14 +1,14 @@
 [project]
 name = "dnsjax-lab"
 version = "0.1.0"
-description = "Features of dnsjax in development, kept out of its releases: further flows, twin runs and response analysis."
+description = "Flows and features of dnsjax in development, not shipped with its release archives outside GitHub."
 authors = [
     { name = "Gökhan Yalnız" }
 ]
 requires-python = ">=3.12"
 license = "MIT"
 # PyPI refuses any upload carrying a "Private ::" classifier: this
-# package lives in the dnsjax repository only and is never published.
+# package is not shipped with release archives outside GitHub.
 classifiers = [
     "Private :: Do Not Upload",
 ]
