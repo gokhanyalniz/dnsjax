@@ -103,7 +103,7 @@ import time
 
 import jax
 
-from dnsjax.bootstrap import configure_jax_platform
+from dnsjax.bootstrap import _VALID_PLATFORMS, configure_jax_platform
 from dnsjax.flows.registry import spec_for
 from dnsjax.parameters import (
     Parameters,
@@ -2257,7 +2257,7 @@ def main() -> None:
         "--dist.platform",
         dest="platform",
         default="cpu",
-        choices=["cpu", "cuda", "rocm", "tpu"],
+        choices=_VALID_PLATFORMS,
         help="JAX backend (default cpu).  Use cuda to run the profile on "
         "a real GPU (Parts A/B need real hardware).",
     )

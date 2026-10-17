@@ -160,7 +160,7 @@ import tomllib
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import ValidationError
 from pydantic_settings import CliApp
@@ -181,6 +181,7 @@ from .param_surface import (
     split_extensions,
 )
 from .parameters import (
+    Distribution,
     Parameters,
     Physics,
     padded_res,
@@ -204,7 +205,12 @@ from .seeding import (
     split_seed,
 )
 
-_VALID_PLATFORMS: tuple[str, ...] = ("cpu", "cuda", "rocm", "tpu")
+# The values ``dist.platform``'s ``Literal`` admits: the model holds the
+# one list, which ``configure_jax_platform`` and the scripts'
+# ``--dist.platform`` choices read.
+_VALID_PLATFORMS: tuple[str, ...] = get_args(
+    Distribution.model_fields["platform"].annotation
+)
 
 
 def platform_from_argv(

@@ -508,7 +508,7 @@ def identify_from_responses(
 
 
 def main(argv: list[str] | None = None) -> int:
-    from dnsjax.bootstrap import configure_jax_platform
+    from dnsjax.bootstrap import _VALID_PLATFORMS, configure_jax_platform
 
     p = argparse.ArgumentParser(
         prog="python -m dnsjax_lab.analysis.response.ensemble",
@@ -520,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
         "--dist.platform",
         dest="platform",
         default="cpu",
-        choices=("cpu", "cuda", "rocm", "tpu"),
+        choices=_VALID_PLATFORMS,
         help="JAX backend for the growth-curve sweeps",
     )
     sub = p.add_subparsers(dest="command", required=True)

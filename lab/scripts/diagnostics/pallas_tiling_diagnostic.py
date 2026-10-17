@@ -76,7 +76,11 @@ from __future__ import annotations
 
 import argparse
 
-from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
+from dnsjax.bootstrap import (
+    _VALID_PLATFORMS,
+    configure_jax_platform,
+    platform_from_argv,
+)
 from dnsjax.parameters import (
     params,
 )
@@ -528,7 +532,7 @@ def main() -> None:
         "--dist.platform",
         dest="platform",
         default="cpu",
-        choices=["cpu", "cuda", "rocm", "tpu"],
+        choices=_VALID_PLATFORMS,
         help="JAX backend (default cpu; already applied at import via "
         "platform_from_argv).  Use cuda to execute the probes on a GPU.",
     )

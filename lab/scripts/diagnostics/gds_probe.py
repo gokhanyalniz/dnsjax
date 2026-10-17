@@ -958,6 +958,8 @@ def _configure(args) -> None:
 
 
 def main() -> None:
+    from dnsjax.bootstrap import _VALID_PLATFORMS
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--outdir",
@@ -1035,7 +1037,7 @@ def main() -> None:
         "--dist.platform",
         dest="platform",
         default="cuda",
-        choices=["cpu", "cuda", "rocm", "tpu"],
+        choices=_VALID_PLATFORMS,
         help="JAX backend for Part C (default cuda)",
     )
     ap.add_argument(

@@ -485,6 +485,8 @@ def main(systems: list[dict], *, console_checks: bool) -> None:
     With *console_checks*, first the ``dnsjax --help`` preflight and the
     bare launch (on the first row's arguments).
     """
+    from dnsjax.bootstrap import _VALID_PLATFORMS
+
     sys.stdout.reconfigure(line_buffering=True)
     parser = argparse.ArgumentParser(
         description="Laminar smoke tests for wall-bounded flows",
@@ -505,7 +507,7 @@ def main(systems: list[dict], *, console_checks: bool) -> None:
         "--dist.platform",
         dest="platform",
         default="cpu",
-        choices=["cpu", "cuda", "rocm", "tpu"],
+        choices=_VALID_PLATFORMS,
         help="JAX backend forwarded to each `python -m dnsjax` child "
         "(default cpu).  Use cuda to run the suite on GPU(s).",
     )

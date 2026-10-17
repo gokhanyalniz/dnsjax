@@ -46,7 +46,7 @@ plane by itself.</a>
 - **Runs where JAX runs, tested on CPUs and NVIDIA GPUs** — on one or
   many, double or single precision, all from the same code path;
   wall-normal solves go through a custom Pallas/Triton banded-LU kernel
-  on GPUs.
+  on NVIDIA and AMD GPUs.
 - **Measured from 1 to 64 CPU nodes** — on ARCHER2 (two 64-core AMD
   EPYC 7742 and 256 GB of DDR4-3200 per node), a turbulent channel at
   `1280 × 383 × 384` runs 60 times faster on 64 nodes (8192
@@ -84,10 +84,13 @@ from PyPI, choosing among `cuda12`, `cuda13`, `cuda12-local`,
 `cuda13-local` (the `-local` pair uses the CUDA already installed),
 `tpu`, `rocm7-local`, `oneapi` and `cpu` as [JAX's installation
 guide](https://docs.jax.dev/en/latest/installation.html) defines them.
-An MPI runtime is needed only to launch several processes, which every
-multi-CPU run does — not for a single process that drives all of one
-node's GPUs, and not for the post-processing API. Multi-CPU runs should
-also let MPI carry their collectives:
+A run then names its backend with `--dist.platform`: `cuda` for an
+NVIDIA GPU, `rocm` for an AMD GPU, `oneapi` for an Intel GPU and `tpu`
+for a Google Cloud TPU, with `cpu` the default. An MPI runtime is
+needed only to launch several processes, which every multi-CPU run
+does — not for a single process that drives all of one node's GPUs,
+and not for the post-processing API. Multi-CPU runs should also let
+MPI carry their collectives:
 [`docs/cpu-collectives.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/cpu-collectives.md).
 
 Output goes to the working directory, so launch from a scratch dir:
@@ -243,9 +246,10 @@ tools have a page of their own,
   process-wide, so a test has to own its process: each runs as its own
   script, and `pytest` collects them through a subprocess bridge.
 - **JAX rather than CUDA or Fortran kernels.** One source targets
-  CPU, GPU and TPU and shards across devices without a second
-  implementation. Where standard JAX is not enough, such as for the
-  wall-normal banded sweep, a Pallas kernel is used under the same API.
+  CPU, GPU and Google Cloud TPU and shards across devices without a
+  second implementation. Where standard JAX is not enough, such as for
+  the wall-normal banded sweep, a Pallas kernel is used under the same
+  API.
 
 ## What's in the box
 
@@ -324,11 +328,18 @@ fields of their own ([`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/bl
 ## Limitations
 
 - **Tested on CPUs and NVIDIA GPUs.** The code paths are
-  backend-agnostic and the solver accepts `cuda`, `rocm` and `tpu`
-  alike, but only CPU and CUDA are exercised regularly; AMD (ROCm) has
-  had minimal testing and TPUs none at all. The banded kernel's adjoint
-  has its numerics checked in interpret mode and is lowered for CUDA,
-  but **reverse mode through it has not yet been run on a GPU**.
+  backend-agnostic and the solver accepts `cuda`, `rocm`, `oneapi` and
+  `tpu` alike, but only CPU and CUDA are exercised regularly; AMD (ROCm)
+  has had minimal testing, and Intel GPUs (oneAPI) and Google Cloud
+  TPUs none at all. The banded kernel's adjoint has its numerics
+  checked in interpret mode and is lowered for CUDA, but **reverse
+  mode through it has not yet been run on a GPU**.
+- **No banded-LU kernel on Intel GPUs or Google Cloud TPUs.** The
+  kernel is written for Pallas's Triton backend, which JAX (0.11.2)
+  lowers for CUDA and ROCm only; a TPU lowers Pallas through Mosaic
+  instead. A wall-bounded run on `oneapi` or `tpu` therefore takes the
+  portable pure-JAX sweep, and `solver.pallas_kernel = true` is refused
+  there.
 - **One wall-bounded direction.** The discretization admits at most one
   non-periodic direction.
 - **CPU collectives over MPI are untested on macOS**, where the library

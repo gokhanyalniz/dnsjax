@@ -363,7 +363,7 @@ from jax.lax import linalg as lax_linalg
 from jax.sharding import PartitionSpec as P
 from jax.typing import DTypeLike
 
-from .parameters import params
+from .parameters import TRITON_PLATFORMS, params
 from .sharding import register_dataclass_pytree, sharding
 
 
@@ -543,8 +543,9 @@ class DenseJAXSolver:
 # ── Pallas per-mode banded solver ────────────────────────────────
 #
 # One independent banded system per Fourier mode, swept along N_y by a
-# Pallas (Triton) kernel on GPU and by pure-JAX scans elsewhere (Design
-# notes: "Why a Pallas kernel", "The Pallas mode tile").
+# Pallas (Triton) kernel on a CUDA or ROCm GPU and by pure-JAX scans
+# elsewhere (Design notes: "Why a Pallas kernel", "The Pallas mode
+# tile").
 #
 # Factors are stored banded: ``L`` carries the ``p`` strict sub-diagonals
 # of the unit-lower factor (``L[i, i-p+d]``, ``d = 0..p-1``); ``U`` carries
@@ -1418,8 +1419,10 @@ def _kernel_path() -> bool:
        custom adjoint, and the reference that adjoint is checked
        against), ``True`` forces the kernel.  ``None`` (the default)
        defers to
-    3. the live backend -- the kernel on GPU, the portable sweep
-       everywhere else.
+    3. ``dist.platform``, which ``bootstrap`` makes the live backend:
+       the kernel on :data:`~dnsjax.parameters.TRITON_PLATFORMS` (CUDA
+       and ROCm), the portable sweep everywhere else, Intel GPUs
+       (``oneapi``) and TPUs included.
 
     A test flipping :data:`_force_kernel_path` must flip it **before
     building the operator**, not merely before solving.
@@ -1428,7 +1431,7 @@ def _kernel_path() -> bool:
         return True
     if params.solver.pallas_kernel is not None:
         return params.solver.pallas_kernel
-    return jax.default_backend() == "gpu"
+    return params.dist.platform in TRITON_PLATFORMS
 
 
 def _family_axis() -> int:
