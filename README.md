@@ -275,7 +275,7 @@ tools have a page of their own,
 | **Crash-consistent diagnostics** | buffered streams flushed before snapshots and on termination; a NaN or inf aborts naming the quantity and writes no snapshot of the broken state |
 | **Graceful shutdown** | an ISO 8601 wall-time budget ends the run cleanly, final snapshot included, before a queue kills it |
 | **Laminarization auto-stop** | a run ends once the perturbation energy falls below a threshold |
-| **In the lab** | lockstep twin runs streaming a perturbation's growth, budget and spectra; `[probes]` and `[force]` run-loop streams; a response analysis from a turbulent run to a linear operator — [The lab](#the-lab) |
+| **In the lab** | five further flows (a curved pipe, quasi-Keplerian Taylor–Couette, Dean, and viscoelastic pipe and Dean) and the performance and diagnostic tools — [The lab](#the-lab) |
 
 ## Documentation
 
@@ -293,7 +293,7 @@ tools have a page of their own,
 | [`tests/README.md`](tests/README.md) | how the suite is laid out and how to run it |
 | [`scripts/README.md`](scripts/README.md) | the offline tools: figures, a snapshot perturbation, wall-normal resolution |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | setup, lint, tests, adding a flow, commit style, releases |
-| [`lab/README.md`](lab/README.md) | the lab: its flows, runs and analyses, scripts and tests |
+| [`lab/README.md`](lab/README.md) | the lab: its flows, scripts and tests |
 | [`lab/docs/numerics.md`](lab/docs/numerics.md) | the lab flows' equations and conventions |
 | [`lab/docs/validation.md`](lab/docs/validation.md) | what the lab's flows and tools are checked against |
 
@@ -327,10 +327,9 @@ surface, the stepping dispatch and the analysis package's geometry sets
 all derive from the registry and extend themselves. A flow with a
 metric of its own adds a geometry module as well, and parameter fields
 and run-loop sections plug in the same way. See
-[`docs/extending.md`](docs/extending.md). The lab is the worked example
-of every extension point: five flows, one with a metric of its own,
-parameter fields and two run-loop sections
-([`lab/README.md`](lab/README.md)).
+[`docs/extending.md`](docs/extending.md). The lab's five flows are the
+worked example: one has a metric of its own, and they bring parameter
+fields of their own ([`lab/README.md`](lab/README.md#flows)).
 
 ## Limitations
 
@@ -342,13 +341,6 @@ parameter fields and two run-loop sections
   but **reverse mode through it has not yet been run on a GPU**.
 - **One wall-bounded direction.** The discretization admits at most one
   non-periodic direction.
-- **Perturbing the mean profile is Cartesian-only.** The
-  $(k_x, k_z) = (0, 0)$ mode may be perturbed only for the two plane
-  channels, whose mean-mode conservation laws are established; every
-  other flow declares the field and refuses it with its own message
-  rather than appearing to offer something it does not implement.
-- **Resume requires matching precision.** Device count, resolution and
-  grid all re-grid on load; a single/double mismatch is rejected.
 - **CPU collectives over MPI are untested on macOS**, where the library
   search cannot fire — [docs/cpu-collectives.md](docs/cpu-collectives.md).
 
@@ -392,21 +384,11 @@ adds:
   Dean — [`lab/README.md`](lab/README.md#flows), their equations in
   [`lab/docs/numerics.md`](lab/docs/numerics.md) and their checks in
   [`lab/docs/validation.md`](lab/docs/validation.md).
-- **Twin runs**: `dnsjax-twin` steps a reference snapshot and a
-  perturbed copy in lockstep and streams the difference field's
-  energies, budget and spectra —
-  [`twin/`](lab/src/dnsjax_lab/twin/README.md).
-- **Runtime streams**: `[probes]` records the wall-normal profiles of
-  chosen spectral modes, `[force]` drives them with white-in-time kicks
-  — [`extensions/`](lab/src/dnsjax_lab/extensions/README.md).
-- **Response analysis**: from a turbulent run to a data-driven linear
-  operator, three interchangeable ways —
-  [`analysis/response/`](lab/src/dnsjax_lab/analysis/response/README.md).
-- **Scripts**: ensembles and twin post-processing; the performance
-  tools (benchmarks, profiles, memory sizing, the scaling figure);
-  functionality checks (differentiability, GPU kernel and storage
-  diagnostics); a refactor regression check, the release tooling and the
-  documentation checkers — [`lab/README.md`](lab/README.md#scripts).
+- **Scripts**: the performance tools (benchmarks, profiles, memory
+  sizing, the scaling figure); functionality checks (differentiability,
+  GPU kernel and storage diagnostics); a refactor regression check, the
+  release tooling and the documentation checkers —
+  [`lab/README.md`](lab/README.md#scripts).
 - **Tests**: 36 scripts of its own, collected by the same `pytest` —
   [`lab/README.md`](lab/README.md#tests).
 

@@ -5,7 +5,10 @@
 # configuration (CI, git and hook settings, uv's pinned interpreter and
 # lock file), and the contributor guide, which describes this
 # repository rather than the solver.  The PyPI sdist holds the same
-# files (pyproject.toml's source-include).
+# files (pyproject.toml's source-include).  The with-lab asset a GitHub
+# release attaches leaves out the agent files alone, as
+# lab/scripts/release/prepare_release.py's agent_file names them:
+# change the two together.
 /lab export-ignore
 /CONTRIBUTING.md export-ignore
 /uv.lock export-ignore

@@ -56,11 +56,8 @@ LAB_LEAD = """\
 its lab and installed by the same `uv sync` of a clone: five further
 flows (a curved pipe, quasi-Keplerian Taylor–Couette flow, Dean flow,
 and viscoelastic pipe and Dean flows carrying the polymer conformation
-tensor), twin runs that stream the growth of a perturbation to a
-turbulent flow with its energy budget and spectra, runtime probing and
-forcing of chosen spectral modes, response analysis from a turbulent
-run to a data-driven linear operator, and the benchmark, profiling,
-ensemble and diagnostic tools — [The lab](#the-lab).
+tensor), and the benchmark, profiling and diagnostic tools —
+[The lab](#the-lab).
 """
 
 #: LaTeX in the README's inline math -> plain symbols (in order).

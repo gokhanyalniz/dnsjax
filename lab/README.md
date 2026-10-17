@@ -9,9 +9,8 @@ it attached to each GitHub release.
 
 The lab plugs into the solver through the same entry points any
 package would use ([`docs/extending.md`](../docs/extending.md)): its
-flows through `dnsjax.flows`, their parameter fields through
-`dnsjax.parameters`, and its run-loop sections through
-`dnsjax.extensions`. The solver never imports the lab, and
+flows through `dnsjax.flows` and their parameter fields through
+`dnsjax.parameters`. The solver never imports the lab, and
 `tests/test_layering.py` fails on any solver file that names it.
 
 ## Install and run
@@ -40,28 +39,10 @@ Their equations and conventions:
 [`docs/numerics.md`](docs/numerics.md). What they are checked against:
 [`docs/validation.md`](docs/validation.md).
 
-## Runs and analyses
-
-| | |
-|---|---|
-| **Twin-run perturbation growth** | `dnsjax-twin` steps a reference snapshot and a perturbed copy in lockstep, streaming difference-field energy, $y$-resolved spectra with the matching budget, $(k_z, k_x)$ spectra, and subsampled $(y, k_z, k_x)$ cubes of both — [`twin/`](src/dnsjax_lab/twin/README.md) |
-| **Runtime streams** | `[probes]` records the wall-normal profiles of chosen spectral modes, `[force]` drives them with white-in-time kicks — [`extensions/`](src/dnsjax_lab/extensions/README.md) |
-| **Response and identification** | from a turbulent run to a data-driven linear operator, three interchangeable ways — [`analysis/response/`](src/dnsjax_lab/analysis/response/README.md) |
-
 ## Scripts
 
-Analysis and ensembles, in [`scripts/`](scripts/):
-
-| Script | What it does |
-|---|---|
-| `twin_spectral_maps.py` | premultiplied $(\lambda, y)$ maps, histories, moment budgets, decorrelation fronts and growth laws of the twin $(y, k)$ streams over an ensemble (needs the `plots` group) |
-| `ensemble_setup.py` | harvests statistically independent parents from a run and builds member trees for response ensembles (`build`) or twin ensembles (`build-twin`), JAX-free |
-| `random_ic_calibrate.py` | scores and sweeps the random initial condition's $(y, k)$ shape against a recorded twin ensemble (`[calib]`) |
-| `twin_postprocess.py` | rebuilds a twin member's difference-field streams from its snapshot pairs (`[recon]`) |
-
-Performance, in [`scripts/performance/`](scripts/performance/), kept
-apart from the analysis scripts; none of them changes how a simulation
-runs:
+Performance, in [`scripts/performance/`](scripts/performance/); none
+of them changes how a simulation runs:
 
 | Script | What it does |
 |---|---|
@@ -87,7 +68,7 @@ A regression check for behaviour-preserving refactors, in
 | Script | What it does |
 |---|---|
 | `verify.py` | checks a commit out into a throwaway worktree, captures it, and compares the capture with a reference |
-| `capture.py` | the behavioural fingerprint of a tree, through its public command lines only: every flow's `--help` and `--sample-toml`, short fixed-seed runs of every flow, scheme and start mode with variants, resumes, streams, a twin member and transient growth, their outputs and HLO fingerprints |
+| `capture.py` | the behavioural fingerprint of a tree, through its public command lines only: every flow's `--help` and `--sample-toml`, short fixed-seed runs of every flow, scheme and start mode with variants, resumes, streams and transient growth, their outputs and HLO fingerprints |
 | `compare.py` | diffs two captures, bitwise for arrays and streams, structurally for metadata; reviewed differences are allowed by pattern |
 | `refingerprint.py` | recomputes a capture's HLO fingerprints from its kept dumps |
 | `analysis_fp.py` | fingerprints the JAX-free analysis API on a capture's snapshots, and compares two fingerprints bitwise |
@@ -99,7 +80,7 @@ release is cut: [`CONTRIBUTING.md`](../CONTRIBUTING.md#releases)):
 
 | Script | What it does |
 |---|---|
-| `prepare_release.py` | cuts a release as a commit and tag of its own: the lab taken out of `pyproject.toml`, `uv.lock` relocked without it, the citation dated, the README trimmed to the sections a release carries, the PyPI README's links pinned to the tag and the archive's links into the lab pointed at it; it pushes nothing. `files` checks that an sdist holds an archive's files but `uv.lock` |
+| `prepare_release.py` | cuts a release as a commit and tag of its own: the lab taken out of `pyproject.toml`, `uv.lock` relocked without it, the citation dated, the DOI reserved on Zenodo recorded (`--doi`), the README trimmed to the sections a release carries, the PyPI README's links pinned to the tag and the archive's links into the lab pointed at it; it pushes nothing. `files` checks that an sdist holds an archive's files but `uv.lock`; `asset` builds the archive of the repository a GitHub release attaches |
 | `pypi_readme.py` | writes `docs/pypi/README.md`, the README as PyPI shows it, with absolute links and images and plain-text math; `--check` fails on a stale copy |
 | `ci_job.py` | runs one GitHub workflow job's steps locally, in a throwaway clone of a commit — `core-only` checks a release's artefacts before anything is pushed |
 
@@ -115,7 +96,7 @@ and read-only unless the row says otherwise:
 | `check_commit_message.py` | a commit message against the rules of the root `CONTRIBUTING.md` ("Commits"), as the commit-msg hook of `prek.toml`; `--commits` checks recorded commits, such as what a push would publish |
 | `check_returns.py` | return-tuple arity and documented parameters against each signature |
 | `docs_only.py` | proves a change against a base ref touches docstrings, comments and `description=` strings only |
-| `parse_cmds.py` | parse-validates one documented command line (solver, twin or TOML) without JAX |
+| `parse_cmds.py` | parse-validates one documented command line or TOML file without JAX |
 | `check_render.py` | renders a Markdown file through GitHub's API (a request per file) and compares its math with the source |
 | `oxford.py`, `reflow.py`, `underline.py` | rewrite documentation ranges in place (`doc_ranges.py` finds them): Oxford spelling (`--dry` previews), one reflowed paragraph, section underlines |
 | `doc_inventory.py` | per-file dumps of docstrings and comments and the public docstrings missing, written under the current directory |
@@ -139,7 +120,6 @@ each suite, sharing a runner in the solver's `tests/`.
   laminarization check cannot fire. Fixing it needs a nonlinear solve for
   the velocity profile; the defect, not small at the defaults, is
   measured in the flow modules' Design notes.
-- **`dnsjax-twin` is Cartesian wall-bounded, fixed step.**
 
 ## References
 
@@ -147,5 +127,5 @@ each suite, sharing a runner in the solver's `tests/`.
   network theory*, J. Non-Newtonian Fluid Mech. **2**(4), 353–365 (1977). The
   (simplified) Phan-Thien–Tanner viscoelastic model.
 
-The papers each analysis or flow reproduces are cited at its
-implementing code and in the subpackage READMEs.
+The papers the lab's code reproduces are cited at the implementing
+code.
