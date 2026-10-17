@@ -115,6 +115,8 @@ fixed on purpose.
   `README.md` (`--check`, in CI's lint job).
 - `release/ci_job.py`: run one CI workflow job's steps locally in a
   throwaway clone (`core-only`: a release's checks; `--with pyyaml`).
+- `release/check_extras.py`: each extra of `dnsjax` is the `jax` extra
+  of the same name and the installed JAX provides it (CI's lint job).
 - `docs/check_links.py`: relative links and in-page `#` targets of the given
   Markdown files (GitHub slugs).
 - `docs/check_refs.py`: every backticked module, symbol, member,

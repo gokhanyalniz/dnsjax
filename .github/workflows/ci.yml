@@ -45,6 +45,9 @@ jobs:
       - run: uv run ruff format --check src tests scripts lab/src lab/tests lab/scripts
       # The PyPI copy of the README must follow every README change.
       - run: uv run python lab/scripts/release/pypi_readme.py --check
+      # Each extra of dnsjax forwards to the jax extra of its name, which
+      # a resolver meeting a renamed one would drop with a warning only.
+      - run: uv run python lab/scripts/release/check_extras.py
       # No tracked file carries an email address: package metadata,
       # docs, notebooks and test fixtures included.
       - name: No email address in the tree
