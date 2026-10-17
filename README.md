@@ -85,12 +85,18 @@ uv sync
 
 The only prerequisite is [`uv`](https://docs.astral.sh/uv/): `uv sync`
 fetches the pinned Python (3.14; the floor is 3.12) and every
-dependency by itself. The default install pulls a CPU build of JAX; for
-**CUDA GPUs** run `uv add "jax[cuda13]"`. An MPI runtime is needed only
-to launch several processes, which every multi-CPU run does — not for a
-single process that drives all of one node's GPUs, and not for the
-post-processing API. Multi-CPU runs should also let MPI carry their
-collectives: [`docs/cpu-collectives.md`](docs/cpu-collectives.md).
+dependency by itself, JAX in its CPU build. An **accelerator** is an
+extra of JAX's name, one per environment: `uv sync --extra cuda13` in
+the clone, or `pip install "dnsjax[cuda13]"` / `uv add "dnsjax[cuda13]"`
+from PyPI, choosing among `cuda12`, `cuda13`, `cuda12-local`,
+`cuda13-local` (the `-local` pair uses the CUDA already installed),
+`tpu`, `rocm7-local`, `oneapi` and `cpu` as [JAX's installation
+guide](https://docs.jax.dev/en/latest/installation.html) defines them.
+An MPI runtime is needed only to launch several processes, which every
+multi-CPU run does — not for a single process that drives all of one
+node's GPUs, and not for the post-processing API. Multi-CPU runs should
+also let MPI carry their collectives:
+[`docs/cpu-collectives.md`](docs/cpu-collectives.md).
 
 Output goes to the working directory, so launch from a scratch dir:
 
@@ -292,7 +298,7 @@ tools have a page of their own,
 | [`docs/cpu-collectives.md`](docs/cpu-collectives.md) | routing multi-process CPU collectives through MPI |
 | [`tests/README.md`](tests/README.md) | how the suite is laid out and how to run it |
 | [`scripts/README.md`](scripts/README.md) | the offline tools: figures, a snapshot perturbation, wall-normal resolution |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | setup, lint, tests, adding a flow, commit style, releases |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | setup, lint, tests, adding a flow, commit style |
 | [`lab/README.md`](lab/README.md) | the lab: its flows, scripts and tests |
 | [`lab/docs/numerics.md`](lab/docs/numerics.md) | the lab flows' equations and conventions |
 | [`lab/docs/validation.md`](lab/docs/validation.md) | what the lab's flows and tools are checked against |

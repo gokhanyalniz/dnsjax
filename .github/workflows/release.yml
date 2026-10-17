@@ -8,8 +8,7 @@ name: Release
 # reviewer, which gates that job alone, so a tag's checks have passed
 # before its reviewer is asked; `draft` (a tag only) drafts the GitHub
 # release.  The Zenodo deposit of the tag's source archive is the
-# maintainer's, by hand, between the checks and the approval
-# (CONTRIBUTING.md, "Releases").
+# maintainer's, by hand, between the checks and the approval.
 #
 # A tag must point at a release commit cut by
 # lab/scripts/release/prepare_release.py: the solver alone in
