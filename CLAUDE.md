@@ -3,10 +3,11 @@
 `dnsjax`: GPU-accelerated pseudo-spectral + finite-difference DNS of
 the 3D incompressible Navier-Stokes equations, in JAX. Two independent
 geometry families: triply-periodic (Kolmogorov) and wall-bounded
-(plane Couette and Poiseuille, pipe, Taylor-Couette; in the
-unreleased lab, `lab/`: curved pipe, quasi-Keplerian, Dean, and the
-sPTT viscoelastic pipe and Dean). Human docs: `README.md`, `docs/`,
-`CONTRIBUTING.md`.
+(plane Couette and Poiseuille, pipe, Taylor-Couette; in development
+in the lab, `lab/`, not shipped with release archives outside GitHub:
+curved pipe, quasi-Keplerian, Dean, and the sPTT viscoelastic pipe and
+Dean).
+Human docs: `README.md`, `docs/`, `CONTRIBUTING.md`.
 
 ## Commands
 
@@ -200,8 +201,9 @@ analysis/         snapshot API, transient_growth, snapshot_import
 ## Core and lab
 
 - One uv workspace, two packages: `dnsjax` (the root, released) and
-  `dnsjax-lab` (`lab/`, never released; its index: `lab/CLAUDE.md`).
-  `uv sync` installs both.
+  `dnsjax-lab` (`lab/`, in development, not shipped with release
+  archives outside GitHub; its index: `lab/CLAUDE.md`). `uv sync`
+  installs both.
 - One way only: the core never imports or names the lab
   (`tests/test_layering.py`). The lab plugs in through the
   `dnsjax.flows` / `dnsjax.parameters` / `dnsjax.extensions` entry

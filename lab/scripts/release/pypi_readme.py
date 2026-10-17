@@ -52,12 +52,13 @@ DROPPED_SECTIONS: tuple[str, ...] = ("Acknowledgements",)
 #: ``prepare_release.archive_links``).
 LAB_LEAD = """\
 **The released package is the solver core.** The
-[GitHub repository]({url}) holds far more, developed alongside it in
-its lab and installed by the same `uv sync` of a clone: five further
-flows (a curved pipe, quasi-Keplerian Taylor–Couette flow, Dean flow,
-and viscoelastic pipe and Dean flows carrying the polymer conformation
-tensor), and the benchmark, profiling and diagnostic tools —
-[The lab](#the-lab).
+[GitHub repository]({url}) also holds its lab, flows and features in
+development that are not shipped with release archives outside GitHub,
+installed with the solver by the same `uv sync` of a clone: five
+further flows (a curved pipe, quasi-Keplerian Taylor–Couette flow, Dean
+flow, and viscoelastic pipe and Dean flows carrying the polymer
+conformation tensor), and the benchmark, profiling and diagnostic
+tools — [The lab](#the-lab).
 """
 
 #: LaTeX in the README's inline math -> plain symbols (in order).

@@ -20,9 +20,9 @@ scripts/snapshot_figure.py`. An accelerator is an extra of JAX's name,
 
 The repository is a
 [uv workspace](https://docs.astral.sh/uv/concepts/projects/workspaces/)
-of two packages in one lockfile and one `.venv`: `dnsjax`, the released
-solver at the root, and `dnsjax-lab` in `lab/`, developed alongside it
-and never released ([`lab/README.md`](lab/README.md)). `uv sync`
+of two packages in one lockfile and one `.venv`: `dnsjax`, the solver
+at the root, and `dnsjax-lab` in `lab/`, flows and features in
+development alongside it ([`lab/README.md`](lab/README.md)). `uv sync`
 installs both, the lab with its own console script, `dnsjax-twin`. The
 solver finds the lab only through its entry points and never imports
 it: `tests/test_layering.py` fails on a core file that names it. A
