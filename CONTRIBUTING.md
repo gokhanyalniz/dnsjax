@@ -198,8 +198,9 @@ the archive and `source-include` under `[tool.uv.build-backend]` in
 `pyproject.toml` for the sdist; the wheel is the package alone. The
 sdist and the archive both install with `uv sync`, resolving afresh;
 the lock stays in the repository. The GitHub release alone also
-carries the whole repository, the lab included, as an asset the
-workflow attaches (step 4 below).
+carries the repository, the lab included, as an asset the workflow
+attaches (step 6 below): every file but those written for coding
+agents.
 
 `main` is not released as it stands: its `pyproject.toml` installs the
 lab with the solver (the `lab` dependency group, a workspace source),
@@ -210,29 +211,36 @@ repository holds beyond the solver (the lab, with its features named;
 by `lab/scripts/release/prepare_release.py` and reachable only from
 its tag; `main` is untouched.
 
+A release's sdist, its wheel's description and its source archive
+carry its DOI. Zenodo reserves a DOI only for a deposit made by hand,
+not for the record its GitHub integration makes when a release is
+published, which comes too late for the files the tag has fixed. So
+the DOI is reserved first, the cut records it, and the tag's source
+archive is deposited by hand before the PyPI upload.
+
 ### Once
 
 - GitHub: under `Settings → Environments`, `pypi` and `testpypi`, each
-  with a required reviewer. The workflow deploys through them and
-  waits for the approval.
+  with a required reviewer. The workflow's `publish` job deploys
+  through them and waits for the approval; its `build` job, which
+  makes and checks the artefacts, runs before it unapproved.
 - PyPI and TestPyPI: an account with two-factor authentication and a
   pending trusted publisher for the project `dnsjax`: owner
   `gokhanyalniz`, repository `dnsjax`, workflow `release.yml`,
   environment `pypi` on PyPI and `testpypi` on TestPyPI. No token is
   stored anywhere; a pending publisher reserves nothing, the first
   upload does.
-- Zenodo: log in with GitHub and switch `gokhanyalniz/dnsjax` on
-  before the first release. From then on Zenodo archives every release
-  published on GitHub, from its source archive alone: a release's
-  assets never reach it.
+- Zenodo: an account. Its GitHub integration stays off for this
+  repository: it would archive every published GitHub release as a
+  further record with a DOI of its own.
 
 ### Rehearsal
 
 Under Actions, run the Release workflow by hand on `main`. It strips
 the lab from `main`'s `pyproject.toml` as a release commit does, runs
-every check of step 3, waits for the `testpypi` reviewer and uploads
-to TestPyPI (a repeated version is skipped, not an error); no tag and
-no GitHub release. Then, in a fresh environment:
+every check of step 4 that needs no tag, waits for the `testpypi`
+reviewer and uploads to TestPyPI (a repeated version is skipped, not
+an error); no tag and no GitHub release. Then, in a fresh environment:
 
 ```bash
 uv venv /tmp/rehearsal
@@ -254,60 +262,84 @@ uv pip install --python /tmp/rehearsal/bin/python \
    uv run --no-project --with pyyaml python lab/scripts/release/ci_job.py core-only
    ```
 
-2. Cut the release commit and the tag, first as a dry run, which
+2. On Zenodo, reserve the release's DOI: a new upload for the first
+   release, "New version" on the record for a later one (the record's
+   concept DOI, which cites all versions, stays). Under "Digital Object
+   Identifier", answer "No" to "Do you already have a DOI for this
+   upload?", press "Get a DOI now!" and save the draft. The DOI,
+   `10.5281/zenodo.N`, resolves once the deposit is published
+   (step 5); deleting the draft loses it.
+
+3. Cut the release commit and the tag, first as a dry run, which
    prints the diff and leaves nothing behind:
 
    ```bash
-   uv run python lab/scripts/release/prepare_release.py cut 0.2.0 --dry-run
-   uv run python lab/scripts/release/prepare_release.py cut 0.2.0
+   uv run python lab/scripts/release/prepare_release.py cut 0.2.0 --doi 10.5281/zenodo.N --dry-run
+   uv run python lab/scripts/release/prepare_release.py cut 0.2.0 --doi 10.5281/zenodo.N
    git show --stat v0.2.0
    ```
 
    `cut` refuses a dirty tree and an existing tag, then, in a
    throwaway worktree of `HEAD`, strips the lab from `pyproject.toml`,
    relocks `uv.lock`, sets `date-released` in `CITATION.cff` (the
-   current date, or `--date`), gives the README its published form,
-   regenerates the PyPI README with its links pinned to the tag,
-   points every link the archive's Markdown makes to a file the
-   archive leaves out at the tag on GitHub, commits and tags
+   current date, or `--date`), records the DOI (`doi:` in
+   `CITATION.cff`; in the README a DOI badge and a sentence after the
+   first paragraph of "License and citation"), gives the README its
+   published form, regenerates the PyPI README with its links pinned
+   to the tag, points every link the archive's Markdown makes to a
+   file the archive leaves out at the tag on GitHub, commits and tags
    (annotated, `v0.2.0`). The commit hooks run on that commit.
 
-3. Push the tag and nothing else:
+4. Push the tag and nothing else:
 
    ```bash
    git push origin v0.2.0
    ```
 
-   This runs `.github/workflows/release.yml`, which checks that the
-   tag points at a release commit and that the tag, `pyproject.toml`
-   and `CITATION.cff` name one version; builds the sdist and the
-   wheel; checks both for lab and agent files, and the sdist against
-   the tag archive file for file; fetches the tag's zipball from
-   GitHub, checks it the same way and installs it with `uv sync`;
-   installs the wheel alone on the floor Python; then waits for the
-   `pypi` reviewer.
+   This runs `.github/workflows/release.yml`. Its `build` job checks
+   that the tag points at a release commit and that the tag,
+   `pyproject.toml` and `CITATION.cff` name one version; builds the
+   sdist and the wheel; checks both for lab and agent files, and the
+   sdist against the tag archive file for file; fetches the tag's
+   zipball and tarball from GitHub, checks both for lab and agent
+   files and the zipball against the sdist, and installs the zipball
+   with `uv sync`; installs the wheel alone on the floor Python; and
+   keeps the sdist and the wheel for the next job. The `publish` job then waits for the `pypi` reviewer. If
+   `build` fails, nothing is published: delete the tag on GitHub and
+   locally, fix on `main` and cut again, with the same DOI.
 
-4. Under Actions, open the run and approve the `pypi` deployment. The
-   workflow publishes to PyPI, builds the with-lab asset from the
-   tag's parent commit (the repository the release was cut from,
-   with the lab, this guide, uv's files and the development
-   configuration, so everything this guide names; only the files
-   written for coding agents are left out) and creates a *draft*
-   GitHub release of the tag with generated notes, the sdist, the
-   wheel and that asset attached.
+5. Once `build` has passed, deposit the release on Zenodo: download the
+   tag's source archive,
+   `https://github.com/gokhanyalniz/dnsjax/archive/refs/tags/v0.2.0.zip`
+   (the files `build` checked), upload it to the draft of step 2, check
+   its metadata against `CITATION.cff` (title, creator, the abstract
+   as the description, licence, keywords, version) and publish it. The
+   DOI resolves from then on; the deposited file can no longer change,
+   the metadata can.
 
-5. On GitHub, review the draft: the notes, the three attached files,
+6. Under Actions, open the run and approve the `pypi` deployment. The
+   `publish` job uploads the sdist and the wheel `build` checked to
+   PyPI; the `draft` job builds the with-lab asset from the tag's
+   parent commit (`prepare_release.py asset`: the repository the
+   release was cut from, with the lab, this guide, uv's files and the
+   development configuration, so everything this guide names; only the
+   files written for coding agents are left out, and its README is
+   trimmed as a release's is) and creates a *draft* GitHub release of
+   the tag with generated notes, the sdist, the wheel and that asset
+   attached.
+
+7. On GitHub, review the draft: the notes, the three attached files,
    and the source archives (no `lab/`, no agent files, no `uv.lock`,
    no `CONTRIBUTING.md`). Write the notes: what the release is and
-   what changed, then what the repository holds beyond the released
-   solver, the lab's features named and linked to the README's
-   "The lab" section, since the notes are where a PyPI or Zenodo
-   reader lands. Publish it. Zenodo archives the source archive and
-   mints a version DOI, and on the first release the concept DOI.
+   what changed, its DOI, then what the repository holds beyond the
+   released solver, the lab's flows and tools named and linked to the
+   README's "The lab" section, since the notes are where a reader of
+   the release lands. Publish it.
 
-6. Afterwards, in one commit on `main`: the concept DOI as `doi:` in
-   `CITATION.cff` and a DOI badge in the README. Nothing in the
-   repository promises a DOI before then.
+8. After the first release, in one commit on `main`: the concept DOI
+   as `doi:` in `CITATION.cff` and a DOI badge in the README; `main`
+   names no DOI before then. Each later cut replaces both, in the
+   release's own commit, with that release's DOI.
 
 A release can be deleted on GitHub, assets included; the tag, the PyPI
 files and Zenodo's copy stay.

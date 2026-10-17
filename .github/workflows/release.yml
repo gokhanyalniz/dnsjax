@@ -2,19 +2,23 @@ name: Release
 
 # Inert until a maintainer acts: pushing a v* tag publishes to PyPI and
 # drafts the GitHub release; running the workflow by hand rehearses on
-# TestPyPI.  Both go through trusted publishing, each behind its
-# environment's required reviewer.  Publishing the draft release is the
-# separate, manual step that has Zenodo archive it.
+# TestPyPI.  Three jobs: `build` makes and checks the artefacts, with no
+# approval and no publishing rights; `publish` uploads exactly those
+# files through trusted publishing, behind its environment's required
+# reviewer, which gates that job alone, so a tag's checks have passed
+# before its reviewer is asked; `draft` (a tag only) drafts the GitHub
+# release.  The Zenodo deposit of the tag's source archive is the
+# maintainer's, by hand, between the checks and the approval
+# (CONTRIBUTING.md, "Releases").
 #
 # A tag must point at a release commit cut by
 # lab/scripts/release/prepare_release.py: the solver alone in
 # pyproject.toml and uv.lock, so that the sdist and the zipball, which
 # carry no lock, both install with uv.  A rehearsal builds from main,
 # stripped the same way.  The GitHub release alone also carries the
-# whole repository but for the files written for coding agents (the
-# lab, the contributor guide, uv's files and the development
-# configuration in), as an asset built from the tag's parent commit;
-# Zenodo takes the source archive alone.
+# repository but for the files written for coding agents (the lab, the
+# contributor guide, uv's files and the development configuration in),
+# as an asset built from the tag's parent commit.
 
 on:
   push:
@@ -25,18 +29,12 @@ permissions:
   contents: read
 
 jobs:
-  release:
-    name: build, check and publish
+  build:
+    name: build and check
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: ${{ github.event_name == 'push' && 'pypi' || 'testpypi' }}
-    permissions:
-      contents: write # the draft release
-      id-token: write # trusted publishing
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 2 # the tag's parent too, for the with-lab asset
       - uses: astral-sh/setup-uv@v10.0.1
 
       - name: The tag points at a release commit
@@ -89,22 +87,34 @@ jobs:
       # honours the .gitattributes export-ignore of lab/, the agent
       # notes, the contributor guide and the development configuration,
       # uv.lock included: the sdist's files.  It must install with uv
-      # without a lock.
-      - name: The tag's zipball holds no lab or agent files, and installs
+      # without a lock.  The tarball, the release page's other source
+      # archive, is made the same way.
+      - name: The tag's zipball and tarball hold no lab or agent files
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
           curl -sSfL -H "Authorization: Bearer ${GH_TOKEN}" \
-            -o zipball.zip \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/zipball/${GITHUB_REF_NAME}"
+            -o zipball.zip "${api}/zipball/${GITHUB_REF_NAME}"
+          curl -sSfL -H "Authorization: Bearer ${GH_TOKEN}" \
+            -o "$RUNNER_TEMP/tarball.tar.gz" "${api}/tarball/${GITHUB_REF_NAME}"
           if python3 -m zipfile -l zipball.zip | grep -E '/lab/|CLAUDE\.md|/\.claude/'; then
             echo "the release zipball carries lab or agent files"
             exit 1
           fi
+          if tar -tzf "$RUNNER_TEMP/tarball.tar.gz" | grep -E '/lab/|CLAUDE\.md|/\.claude/'; then
+            echo "the release tarball carries lab or agent files"
+            exit 1
+          fi
           uv run --no-project python lab/scripts/release/prepare_release.py \
             files dist/dnsjax-*.tar.gz zipball.zip
+
+      - name: The tag's zipball installs with uv
+        if: github.event_name == 'push'
+        run: |
+          set -eu
           mkdir zipball && python3 -m zipfile -e zipball.zip zipball
           cd zipball/*/
           uv sync
@@ -118,6 +128,26 @@ jobs:
           "$RUNNER_TEMP/core/bin/dnsjax" --help > /dev/null
           "$RUNNER_TEMP/core/bin/dnsjax" --sample-toml pipe > /dev/null
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: publish (after the reviewer's approval)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ github.event_name == 'push' && 'pypi' || 'testpypi' }}
+    permissions:
+      id-token: write # trusted publishing
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+
       - name: Publish to TestPyPI (rehearsal)
         if: github.event_name == 'workflow_dispatch'
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -130,27 +160,40 @@ jobs:
         if: github.event_name == 'push'
         uses: pypa/gh-action-pypi-publish@release/v1
 
-      # The tag's parent is the commit the release was cut from: the
-      # whole repository.  Its archive lets everything the zipball
-      # leaves out back in, the lab, the contributor guide, uv's files
-      # and the development configuration (the hooks, git and CI
-      # settings a reader of the contributor guide needs), but for the
-      # files written for coding agents.  GitHub readers get it as an
-      # asset; Zenodo takes the source archive alone, and deleting the
-      # release deletes the asset.
+  draft:
+    name: draft the GitHub release
+    if: github.event_name == 'push'
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # the draft release
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2 # the tag's parent too, for the with-lab asset
+      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+
+      # The tag's parent is the commit the release was cut from.  The
+      # asset holds its every file but those written for coding agents
+      # (prepare_release.py asset), so everything the zipball leaves out
+      # is back in: the lab, the contributor guide, uv's files and the
+      # development configuration (the hooks, git and CI settings a
+      # reader of the contributor guide needs).  GitHub readers get it
+      # as an asset; deleting the release deletes it.
       - name: Draft the GitHub release, the repository with the lab attached
-        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           version="${GITHUB_REF_NAME#v}"
           asset="$RUNNER_TEMP/dnsjax-${version}-with-lab.tar.gz"
-          printf '%s -export-ignore\n' /lab /CONTRIBUTING.md /uv.lock \
-            /.python-version /prek.toml /.gitignore /.gitattributes \
-            /.github >> .git/info/attributes
-          git archive --format=tar.gz --prefix="dnsjax-${version}-with-lab/" \
-            -o "$asset" "${GITHUB_REF_NAME}^"
+          uv run --no-project python lab/scripts/release/prepare_release.py \
+            asset HEAD^ "$asset" --prefix "dnsjax-${version}-with-lab/"
           if tar -tzf "$asset" | grep -E 'CLAUDE\.md|/\.claude/'; then
             echo "the with-lab asset carries agent files"
             exit 1

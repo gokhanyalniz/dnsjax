@@ -107,9 +107,10 @@ fixed on purpose.
   the repository resolves, checked without importing.
 - `refactor/prose_scan.py`: the lab's vocabulary in the core's prose,
   for review.
-- `release/prepare_release.py`: `cut VERSION`, a release's own commit
-  and tag; `strip`, the same `pyproject.toml` edit for CI; `files`, an
-  sdist against an archive. Never push its tag.
+- `release/prepare_release.py`: `cut VERSION [--doi DOI]`, a release's
+  own commit and tag; `strip`, the same `pyproject.toml` edit for CI;
+  `files`, an sdist against an archive; `asset REF OUT`, the with-lab
+  archive the release workflow attaches. Never push its tag.
 - `release/pypi_readme.py`: write `docs/pypi/README.md` from the root
   `README.md` (`--check`, in CI's lint job).
 - `release/ci_job.py`: run one CI workflow job's steps locally in a

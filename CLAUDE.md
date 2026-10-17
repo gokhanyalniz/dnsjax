@@ -212,9 +212,10 @@ analysis/         snapshot API, transient_growth, snapshot_import
 - A release (PyPI's sdist and wheel; the tag's GitHub archive, which
   Zenodo keeps) leaves out what `.gitattributes` lists, the lab and
   every agent file (`CLAUDE.md`, `.claude/`) among them: a new kind of
-  agent file gets a pattern there and in `pyproject.toml`'s
-  `[tool.uv.build-backend]`. `lab/scripts/release/prepare_release.py`
-  cuts it; only the author pushes the tag or publishes.
+  agent file gets a pattern there, in `pyproject.toml`'s
+  `[tool.uv.build-backend]` and in `prepare_release.agent_file` (the
+  with-lab asset). `lab/scripts/release/prepare_release.py` cuts it;
+  only the author pushes the tag or publishes.
 
 ## Other notes
 

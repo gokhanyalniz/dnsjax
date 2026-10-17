@@ -21,12 +21,8 @@ abstract: >-
   https://github.com/gokhanyalniz/dnsjax holds far more, developed
   alongside it in its lab: five further flows (a curved pipe,
   quasi-Keplerian Taylor-Couette flow, Dean flow, and viscoelastic pipe
-  and Dean flows carrying the polymer conformation tensor), twin runs
-  that stream the growth of a perturbation to a turbulent flow with its
-  energy budget and spectra, runtime probing and forcing of chosen
-  spectral modes, response analysis from a turbulent run to a
-  data-driven linear operator, and the benchmark, profiling, ensemble
-  and diagnostic tools.
+  and Dean flows carrying the polymer conformation tensor), and the
+  benchmark, profiling and diagnostic tools.
 keywords:
   - computational fluid dynamics
   - direct numerical simulation
