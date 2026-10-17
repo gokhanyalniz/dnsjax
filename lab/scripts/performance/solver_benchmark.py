@@ -2547,6 +2547,8 @@ def _cpu_bench(args: argparse.Namespace, workdir: Path) -> int:
 
 
 def main() -> None:
+    from dnsjax.bootstrap import _VALID_PLATFORMS
+
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2561,7 +2563,7 @@ def main() -> None:
         "--dist.platform",
         dest="platform",
         default="cpu",
-        choices=["cpu", "cuda", "rocm", "tpu"],
+        choices=_VALID_PLATFORMS,
         help=argparse.SUPPRESS,
     )
     ap.add_argument("--nx", type=int, default=64)

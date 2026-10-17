@@ -495,7 +495,7 @@ def identify_ssi(
 
 
 def main(argv: list[str] | None = None) -> int:
-    from dnsjax.bootstrap import configure_jax_platform
+    from dnsjax.bootstrap import _VALID_PLATFORMS, configure_jax_platform
     from dnsjax.harmonics import parse_mode_pairs
 
     ap = argparse.ArgumentParser(
@@ -508,7 +508,7 @@ def main(argv: list[str] | None = None) -> int:
         "--dist.platform",
         dest="platform",
         default="cpu",
-        choices=("cpu", "cuda", "rocm", "tpu"),
+        choices=_VALID_PLATFORMS,
         help="JAX backend for the growth-curve sweeps",
     )
     ap.add_argument(

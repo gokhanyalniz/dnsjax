@@ -1211,6 +1211,8 @@ def run_carry_integration(timeout: float) -> str | None:
 
 
 if __name__ == "__main__":
+    from dnsjax.bootstrap import _VALID_PLATFORMS
+
     parser = argparse.ArgumentParser(description="Resume-lineage tests")
     parser.add_argument(
         "--unit-only",
@@ -1227,7 +1229,7 @@ if __name__ == "__main__":
         "--dist.platform",
         dest="platform",
         default="cpu",
-        choices=["cpu", "cuda", "rocm", "tpu"],
+        choices=_VALID_PLATFORMS,
         help="JAX backend for the mpirun integration children "
         "(default cpu; cuda runs the resume integration on a GPU).",
     )

@@ -560,7 +560,7 @@ class Distribution(BaseModel):
             "total)."
         ),
     )
-    platform: Literal["cpu", "cuda", "rocm", "tpu"] = Field(
+    platform: Literal["cpu", "cuda", "rocm", "oneapi", "tpu"] = Field(
         default="cpu", description="JAX backend platform to run on."
     )
 
@@ -1760,6 +1760,14 @@ class Termination(BaseModel):
     )
 
 
+#: The ``dist.platform`` values the Triton banded kernel runs on: those
+#: JAX's ``pallas_call`` lowers through its Triton backend.  JAX 0.11.2
+#: has no ``pallas_call`` rule for ``oneapi``, and a TPU lowers Pallas
+#: through Mosaic, which refuses the kernel's ``pltriton.CompilerParams``;
+#: both take the portable sweep (``solvers._kernel_path``).
+TRITON_PLATFORMS: tuple[str, ...] = ("cuda", "rocm")
+
+
 class Solver(BaseModel):
     """Numerical-kernel execution configuration.
 
@@ -1778,8 +1786,8 @@ class Solver(BaseModel):
 
     # ``"pallas"`` (the default for all wall-bounded systems): the
     # production backend -- a one-program-per-mode sequential banded
-    # sweep via a Pallas/Triton kernel on GPU (validated on one GPU and
-    # on several), the same banded math as a sequential
+    # sweep via a Pallas/Triton kernel on CUDA and ROCm GPUs (validated
+    # on one GPU and on several), the same banded math as a sequential
     # pure-JAX sweep on CPU, and the smallest operator storage
     # (``O(N_y p)`` no-pivot banded factors per mode vs the dense
     # ``O(N_y^2)``).  Operators are assembled directly in banded
@@ -1812,18 +1820,20 @@ class Solver(BaseModel):
     # A *modifier* on the pallas backend, not a third backend:
     # ``backend == "pallas"`` means banded **storage**, which both the
     # Triton kernel and the portable pure-JAX sweep read.  Which sweep
-    # runs is normally decided by the live device (kernel on GPU,
-    # portable elsewhere -- ``solvers._kernel_path``); this pins it.
-    # ``False`` on GPU buys reverse-mode differentiability without the
-    # custom adjoint, and is the reference that adjoint is checked
-    # against; it costs the kernel's speed.  ``True`` off GPU cannot
-    # execute a Triton kernel and is refused.
+    # runs is normally decided by the platform (kernel on
+    # ``TRITON_PLATFORMS``, portable elsewhere --
+    # ``solvers._kernel_path``); this pins it.  ``False`` on a GPU buys
+    # reverse-mode differentiability without the custom adjoint, and is
+    # the reference that adjoint is checked against; it costs the
+    # kernel's speed.  ``True`` on any other platform cannot execute a
+    # Triton kernel and is refused.
     pallas_kernel: bool | None = Field(
         default=None,
         description=(
             "Pallas backend only: force (true) or forbid (false) the "
             "Triton banded kernel, overriding the automatic choice "
-            "(kernel on GPU, portable pure-JAX sweep elsewhere)."
+            "(kernel on CUDA and ROCm GPUs, portable pure-JAX sweep "
+            "elsewhere)."
         ),
     )
     # How the wall-normal FD matrices (``D1``, ``D2``, the curvilinear
@@ -2803,16 +2813,16 @@ def validate_parameters() -> None:
                 "(Triton block-load constraint)."
             )
 
-    # Pinning the Triton kernel needs a GPU to run it on.
-    if params.solver.pallas_kernel and params.dist.platform not in (
-        "cuda",
-        "rocm",
+    # Pinning the Triton kernel needs a platform it lowers for.
+    if (
+        params.solver.pallas_kernel
+        and params.dist.platform not in TRITON_PLATFORMS
     ):
         raise ValueError(
-            "solver.pallas_kernel=true needs a GPU platform "
-            f"(dist.platform is {params.dist.platform!r}): the Triton "
-            "banded kernel has no CPU or TPU lowering.  Leave it "
-            "unset for the automatic choice."
+            "solver.pallas_kernel=true needs a dist.platform the Triton "
+            f"banded kernel lowers for ({', '.join(TRITON_PLATFORMS)}; "
+            f"it is {params.dist.platform!r}).  Leave it unset for the "
+            "automatic choice."
         )
 
     # The dense backend is a readability/regression reference, not a

@@ -94,8 +94,10 @@ SEED = 1
 
 def full_rows(platform: str) -> tuple[_Row, ...]:
     """The cross product behind ``--full``."""
+    from dnsjax.parameters import TRITON_PLATFORMS
+
     kernels: tuple[bool | None, ...] = (None, False)
-    if platform in ("cuda", "rocm"):
+    if platform in TRITON_PLATFORMS:
         kernels += (True,)
     rows: list[_Row] = []
     for system in SYSTEMS:
@@ -308,6 +310,8 @@ def render(rows: tuple[_Row, ...], results: list[dict]) -> str:
 
 
 def main() -> None:
+    from dnsjax.bootstrap import _VALID_PLATFORMS
+
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -324,7 +328,7 @@ def main() -> None:
         "--dist.platform",
         dest="platform",
         default="cpu",
-        choices=["cpu", "cuda", "rocm", "tpu"],
+        choices=_VALID_PLATFORMS,
         help="JAX backend the children run on (default cpu).",
     )
     ap.add_argument(

@@ -43,5 +43,5 @@
 
   <text class="n" x="450" y="222" text-anchor="middle">two reshards move the data across the device grid on the way out, two more on the way back</text>
   <text class="n" x="450" y="242" text-anchor="middle">every device holds the full wall-normal extent in spectral space, so the per-mode solves need no communication</text>
-  <text class="n" x="450" y="262" text-anchor="middle">Pallas/Triton banded-LU kernel on GPU &#183; the same banded math as a sequential sweep on CPU</text>
+  <text class="n" x="450" y="262" text-anchor="middle">Pallas/Triton banded-LU kernel on NVIDIA and AMD GPUs &#183; the same banded math as a sequential sweep on CPUs, TPUs and Intel GPUs</text>
 </svg>

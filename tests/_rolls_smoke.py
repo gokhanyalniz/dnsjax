@@ -112,6 +112,8 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
 
 
 def _parse_args() -> argparse.Namespace:
+    from dnsjax.bootstrap import _VALID_PLATFORMS
+
     parser = argparse.ArgumentParser(
         description="Localized-rolls IC smoke tests (wall-bounded flows)",
     )
@@ -128,7 +130,7 @@ def _parse_args() -> argparse.Namespace:
         "--dist.platform",
         dest="platform",
         default="cpu",
-        choices=["cpu", "cuda", "rocm", "tpu"],
+        choices=_VALID_PLATFORMS,
         help="JAX backend forwarded to each `python -m dnsjax` child "
         "(default cpu).  Use cuda to run the suite on GPU(s).",
     )
