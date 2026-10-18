@@ -1,13 +1,15 @@
-"""Compare return-tuple arity with annotations and docstring claims.
+"""Check return-tuple arity and documented parameters against the code.
 
-For each function:
-  - annotation ``-> tuple[A, B, C]`` (fixed arity) vs every
-    ``return (x, y, ...)`` tuple literal directly in its body;
-  - docstring patterns ``Returns ``(a, b, c)``" / "-> (a, b, c)`` vs
-    the same.
-Also flags documented parameters (numpy-style ``Parameters`` sections,
-``name:`` lines) that are not in the signature, and signature params
-with a ``Parameters`` section that omits them (public functions only).
+For each function of the tracked Python tree:
+
+- a fixed-arity ``-> tuple[A, B, C]`` against each tuple literal its own
+  body returns (``return (x, y, ...)``; nested functions aside);
+- a docstring's ``Return``/``Returns``/``->`` before a double-backticked
+  tuple, ``(a, b, c)``, against those returns when they share one arity;
+- a numpy-style ``Parameters`` (``Args``, ``Arguments``) section's
+  ``name:`` lines against the signature: a name it documents that the
+  signature lacks and, in a public function (no leading ``_``), a
+  parameter but ``self`` / ``cls`` it omits.
 """
 
 import ast
@@ -115,12 +117,36 @@ for f in files:
             re.S,
         )
         if sec:
-            documented = re.findall(
-                r"^\s{0,4}\**([A-Za-z_][\w]*)\**\s*(?::|$)", sec.group(1), re.M
-            )
+            # Entry names sit at the section's own indentation (a wrapped
+            # description line indented deeper is never a name); an RST
+            # escape (``name\_``) reads as the name.
+            body = [
+                ln.replace("\\_", "_")
+                for ln in sec.group(1).splitlines()
+                if ln.strip()
+            ]
+            indent = len(body[0]) - len(body[0].lstrip()) if body else 0
+            documented = [
+                name.strip("* ")
+                for ln in body
+                if len(ln) - len(ln.lstrip()) == indent
+                for group in re.findall(
+                    r"^\s*((?:\**[A-Za-z_]\w*\**\s*,\s*)*"
+                    r"\**[A-Za-z_]\w*\**)\s*(?::|$)",
+                    ln,
+                )
+                for name in group.split(",")
+            ]
             for d in documented:
                 if d not in argnames:
                     print(
                         f"{f}:{fn.lineno}: {fn.name}: documents '{d}' "
                         f"not in signature {sorted(argnames)[:8]}"
+                    )
+            # signature params the section omits (public functions only)
+            if not fn.name.startswith("_"):
+                for d in sorted(argnames - set(documented) - {"self", "cls"}):
+                    print(
+                        f"{f}:{fn.lineno}: {fn.name}: Parameters section "
+                        f"omits '{d}'"
                     )
