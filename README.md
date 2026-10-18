@@ -18,9 +18,13 @@ boundary conditions. Five flow systems across four geometries share one
 stepping core, and further flows plug in without editing it. The same
 code works on **CPUs and GPUs**, and distributes across many.
 
+**The released package is the solver core along with the core geometries
+and flows.** The [GitHub repository](https://github.com/gokhanyalniz/dnsjax) holds far more,
+developed alongside the core: [The lab](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/README.md#the-lab).
+
 <a id="fig-planes"></a>
 <p align="center">
-  <img src="docs/figures/channel-planes.webp" width="900"
+  <img src="https://raw.githubusercontent.com/gokhanyalniz/dnsjax/v0.1.0.1/docs/figures/channel-planes.webp" width="900"
        alt="Animation of the streamwise velocity fluctuations on three
             wall-parallel planes through turbulent channel flow,
             stacked in a 3D view.">
@@ -30,40 +34,23 @@ code works on **CPUs and GPUs**, and distributes across many.
 Turbulent channel flow at Re<sub>&tau;</sub> &asymp; 180: streamwise
 velocity fluctuations on three wall-parallel planes (near each
 wall, and at the centreline), over 10 advective time units.<br>
-<a href="docs/snapshots.md#fig-streaks">&#128279;&nbsp;See one near-wall
+<a href="https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/snapshots.md#fig-streaks">&#128279;&nbsp;See one near-wall
 plane by itself.</a>
 </em></p>
-
-**Contents** — [Highlights](#highlights) ·
-[Quick start](#quick-start) ·
-[Flows and geometries](#flows-and-geometries) ·
-[Parallelization](#parallelization) ·
-[Validation](#validation) ·
-[Design decisions](#design-decisions) ·
-[What's in the box](#whats-in-the-box) ·
-[Documentation](#documentation) ·
-[Testing](#testing) ·
-[Extending](#extending) ·
-[Limitations](#limitations) ·
-[References](#references) ·
-[The lab](#the-lab) ·
-[License and citation](#license-and-citation) ·
-[Acknowledgements](#acknowledgements) ·
-[Use of AI](#use-of-ai)
 
 ## Highlights
 
 - **Runs where JAX runs, tested on CPUs and NVIDIA GPUs** — on one or
   many, double or single precision, all from the same code path: a run
   moves to a GPU with one install extra and one flag,
-  `--dist.platform cuda` ([On a GPU](#on-a-gpu)). Wall-normal solves go
+  `--dist.platform cuda` ([On a GPU](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/README.md#on-a-gpu)). Wall-normal solves go
   through a custom Pallas/Triton banded-LU kernel on NVIDIA and AMD
   GPUs.
 - **Measured from 1 to 64 CPU nodes** — on ARCHER2 (two 64-core AMD
   EPYC 7742 and 256 GB of DDR4-3200 per node), a turbulent channel at
-  $1280 \times 383 \times 384$ runs 60 times faster on 64 nodes (8192
+  `1280 × 383 × 384` runs 60 times faster on 64 nodes (8192
   MPI ranks) than on one, at a parallel efficiency of 0.75 to 0.94 on
-  every node count from 2 to 64 ([figure](#fig-scaling)).
+  every node count from 2 to 64 ([figure](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/README.md#fig-scaling)).
 - **Machine-precision discrete incompressibility, by default** — a
   stepped state's divergence sits at round-off *at any resolution*,
   with less operator storage than in a primitive-variable formulation
@@ -71,7 +58,7 @@ plane by itself.</a>
 - **Five flow systems across four geometries**, all on one stepping
   core; a package of your own adds flows, parameter fields and run-loop
   sections through entry points, without editing the solver — as the
-  repository's lab does, with five flows more ([The lab](#the-lab)).
+  repository's lab does, with five flows more ([The lab](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/README.md#the-lab)).
 - **Non-modal optimal growth built on the solver itself** — linear
   transient growth about an arbitrary wall-normal profile, reusing the
   solver's own linear step mode by mode.
@@ -90,11 +77,11 @@ uv sync
 The only prerequisite is [`uv`](https://docs.astral.sh/uv/): `uv sync`
 fetches the pinned Python (3.14; the floor is 3.12) and every
 dependency by itself, JAX in its CPU build; a GPU needs one extra more
-([On a GPU](#on-a-gpu)). An MPI runtime is needed only to launch
+([On a GPU](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/README.md#on-a-gpu)). An MPI runtime is needed only to launch
 several processes, which every multi-CPU run does — not for a single
 process that drives all of one node's GPUs, and not for the
 post-processing API. Multi-CPU runs should also let MPI carry their
-collectives: [`docs/cpu-collectives.md`](docs/cpu-collectives.md).
+collectives: [`docs/cpu-collectives.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/cpu-collectives.md).
 
 Output goes to the working directory, so launch from a scratch dir:
 
@@ -116,8 +103,8 @@ and decays again — a few minutes on one core of a modern CPU. The first
 step takes noticeably longer than the rest (JIT compilation);
 statistics then stream to `stats.dat`. The same run as a configuration
 file is
-[`examples/pipe-re2500/parameters.toml`](examples/pipe-re2500/parameters.toml).
-[`examples/`](examples/) has three more — plane-Poiseuille,
+[`examples/pipe-re2500/parameters.toml`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/examples/pipe-re2500/parameters.toml).
+[`examples/`](https://github.com/gokhanyalniz/dnsjax/tree/v0.1.0.1/examples/) has three more — plane-Poiseuille,
 plane-Couette and Kolmogorov flow (sinusoidally driven flow in a
 triply-periodic box) — each small enough to run easily on one core of a
 modern laptop.
@@ -128,7 +115,7 @@ one flow's full surface (replace `pipe` for other flows), and
 more flags, the four start modes (from a snapshot file, a random
 perturbation of the laminar flow, localized rolls, and the laminar flow
 itself), and the output streams, see
-[`docs/running.md`](docs/running.md).
+[`docs/running.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/running.md).
 
 ### On a GPU
 
@@ -155,11 +142,11 @@ GPU and `tpu` for a Google Cloud TPU, with `cpu` the default.
 
 | Flow | Geometry | Laminar base / driving | Defining controls |
 |---|---|---|---|
-| **Pipe** | cylindrical | $U_z = 1 - r^2$, pressure-driven | `re`, axial length `lz` |
-| **Taylor–Couette** | annular | $U_\theta = A_0 r + B_0/r$, wall rotation | `re1`, `re2`, `eta`, `lz` |
-| **Plane-Poiseuille** | Cartesian | $U = 1 - y^2$, pressure-driven | `re`, `lx`, `lz`, `tilt_degree` |
-| **Plane-Couette** | Cartesian | $U = y$, wall-driven | `re`, `lx`, `lz`, `tilt_degree` |
-| **Kolmogorov** | triply-periodic | $U = \sin(2\pi y / L_y)$, sine body force | `re`, `lx`, `lz`, `tilt_degree` |
+| **Pipe** | cylindrical | `U_z = 1 - r²`, pressure-driven | `re`, axial length `lz` |
+| **Taylor–Couette** | annular | `U_θ = A_0 r + B_0/r`, wall rotation | `re1`, `re2`, `eta`, `lz` |
+| **Plane-Poiseuille** | Cartesian | `U = 1 - y²`, pressure-driven | `re`, `lx`, `lz`, `tilt_degree` |
+| **Plane-Couette** | Cartesian | `U = y`, wall-driven | `re`, `lx`, `lz`, `tilt_degree` |
+| **Kolmogorov** | triply-periodic | `U = sin(2π y / L_y)`, sine body force | `re`, `lx`, `lz`, `tilt_degree` |
 
 Each flow exposes only the parameters that apply to it, under the names
 natural to its geometry: a pipe takes
@@ -167,15 +154,15 @@ natural to its geometry: a pipe takes
 takes `--geo.lx`/`--res.nx`/`--res.ny`/`--res.nz` (the pipe's `nz` is
 axial, the channel's spanwise). For the various conventions involved,
 see
-[Conventions](docs/numerics.md#conventions).
+[Conventions](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/numerics.md#conventions).
 
 The repository's lab adds five flows on the same geometries, installed
-by the same `uv sync` and run the same way ([The lab](#the-lab)).
+by the same `uv sync` and run the same way ([The lab](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/README.md#the-lab)).
 
 ## Parallelization
 
 One time step: the spectral state is inverse-transformed onto the
-$\tfrac{3}{2}$-oversampled grid (which dealiases the quadratic
+`3/2`-oversampled grid (which dealiases the quadratic
 nonlinearity), the rotational nonlinear term is formed pointwise, and
 the result is transformed back and truncated. Two reshards carry the
 data across the device grid each way. By default, a semi-implicit
@@ -184,33 +171,25 @@ iteration solving a few small banded systems per Fourier mode. **Every
 device holds the full wall-normal extent in spectral space, so those
 solves need no communication at all.**
 
-<picture>
-  <source media="(prefers-color-scheme: dark)"
-          srcset="docs/figures/step-pipeline-dark.svg">
-  <img src="docs/figures/step-pipeline-light.svg" width="820"
+<img src="https://raw.githubusercontent.com/gokhanyalniz/dnsjax/v0.1.0.1/docs/figures/step-pipeline-light.svg" width="820"
        alt="One time step: the sharded spectral state, the 3/2-dealiased pseudo-spectral nonlinear term, a per-mode banded influence-matrix solve, and the corrector loop back to the state.">
-</picture>
 
 The two sharded axes are **not** equivalent: the `np1` exchange moves
-$3/2$ as many bytes as the `np0` one, and a second grid axis adds an
+`3/2` as many bytes as the `np0` one, and a second grid axis adds an
 exchange rather than subdividing the first, so the choice of device grid
-is not trivial. [`docs/scaling.md`](docs/scaling.md) has the array layout
-per geometry, a symbolic memory model linear in $n_x n_y n_z$ that sizes
+is not trivial. [`docs/scaling.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/scaling.md) has the array layout
+per geometry, a symbolic memory model linear in `n_x n_y n_z` that sizes
 a configuration before it is launched, and how to pick the device grid
-$(n_{p0}, n_{p1})$ on one node and across many.
+`(n_p0, n_p1)` on one node and across many.
 
 The tools behind those numbers — a layout and strong-scaling sweep
 driver, a per-rank memory budget from XLA's buffer assignment, a
 per-node memory sampler and GPU profiles of the banded solve — are the
-lab's: [performance scripts](lab/README.md#scripts).
+lab's: [performance scripts](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/lab/README.md#scripts).
 
 <a id="fig-scaling"></a>
-<picture>
-  <source media="(prefers-color-scheme: dark)"
-          srcset="docs/figures/archer2-scaling-dark.svg">
-  <img src="docs/figures/archer2-scaling-light.svg" width="820"
+<img src="https://raw.githubusercontent.com/gokhanyalniz/dnsjax/v0.1.0.1/docs/figures/archer2-scaling-light.svg" width="820"
        alt="Strong scaling on ARCHER2 from 1 to 64 nodes for the device grids (128, n) and (64, 2n): the speed-up over one node follows the ideal line closely, and the parallel efficiency falls from 1.00 on one node to 0.75 on 16, then rises to 0.92 on 32 and stands at 0.94 on 64.">
-</picture>
 
 <p align="center"><em>
 Strong scaling of a turbulent channel at 1280 &times; 383 &times; 384 on
@@ -226,7 +205,7 @@ nodes, as the site documented them on 7 October 2026.
 Every run reproduces the same trajectory to round-off. The efficiency's
 rise after 16 nodes is a per-rank speed-up, not the network's: one node
 shows it too when each of its ranks holds the same share of the problem.
-[`docs/scaling.md`](docs/scaling.md#strong-scaling-on-archer2) has the
+[`docs/scaling.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/scaling.md#strong-scaling-on-archer2) has the
 machine, the method, the tables and that breakdown.
 
 ## Validation
@@ -236,9 +215,9 @@ its flows to about 2 % or better, and the rest of the suite pins the
 discrete divergence, the energy budget, the temporal order, the banded
 kernel against the pure-JAX sweep and a dense reference, and the
 analysis API against the solver's own operators. Every claim is mapped
-to the test that backs it in [`docs/validation.md`](docs/validation.md).
+to the test that backs it in [`docs/validation.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/validation.md).
 The lab's flows and tools have a page of their own,
-[`lab/docs/validation.md`](lab/docs/validation.md).
+[`lab/docs/validation.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/lab/docs/validation.md).
 
 ## Design decisions
 
@@ -256,11 +235,11 @@ The lab's flows and tools have a page of their own,
   primitive-variable-based stepping is optionally provided.
 - **Influence matrix, not a projection.** One wall condition can only be
   fixed indirectly: the wall pressure in the primitive form, and
-  $(D_1 v)|_\text{wall} = 0$ in the velocity–vorticity one. Precomputing
-  the homogeneous responses once turns that into a $1\times1$ or
-  $2\times2$ per-mode solve. Tangential no-slip is then exact as a
+  `(D_1 v)|_wall = 0` in the velocity–vorticity one. Precomputing
+  the homogeneous responses once turns that into a `1×1` or
+  `2×2` per-mode solve. Tangential no-slip is then exact as a
   consequence rather than a separately imposed condition — which is why
-  the wall values of $u$ and $w$ double as a live diagnostic that the
+  the wall values of `u` and `w` double as a live diagnostic that the
   influence matrix is healthy. A fractional-step projection avoids all of
   it at the cost of a splitting error no resolution removes.
 - **Two sharded axes, deliberately asymmetric.** The linear wall-normal
@@ -281,41 +260,41 @@ The lab's flows and tools have a page of their own,
 
 | | |
 |---|---|
-| **Banded-LU GPU kernel** | $O(N_y p)$ factors instead of dense $O(N_y^2)$, with a dense reference solver; checked in interpret mode *and* by lowering to CUDA on GPU-less machines |
-| **Differentiable time steps** | `jax.grad` through a step, opt-in: a fixed-count corrector replaces the one construct reverse mode cannot traverse, and the banded GPU kernel carries a custom adjoint — [docs/differentiability.md](docs/differentiability.md) |
-| **Optimal-growth analysis** | linear optimal energy growth $G(t)$ about an arbitrary wall-normal profile, reusing the solver's own linear step per mode — [docs/validation.md](docs/validation.md#non-modal-optimal-growth-against-published-values) |
-| **Two-axis device mesh** | $(n_{p0}, n_{p1})$ with an in-FFT reshard pipeline — [docs/scaling.md](docs/scaling.md#parallelization) |
-| **A memory–throughput dial** | `solver.rhs_transform_chunks` splits the batched inverse transform $k$ ways, cutting its working set $k$-fold at identical results |
-| **Snapshots and resume** | tar + zarr3, written by every device in parallel; resume across any device count, re-gridding every changed axis — [docs/snapshots.md](docs/snapshots.md) |
-| **Reduced-resolution snapshots** | on a cadence of their own: Fourier axes truncated, the wall-normal axis interpolated, every field computed at full resolution first, optionally with the static pressure on the plane channels — [docs/running.md](docs/running.md#reduced-resolution-snapshots) |
-| **External-data import** | pack a field produced elsewhere into a valid snapshot — [docs/snapshots.md](docs/snapshots.md#importing-a-field-from-elsewhere) |
+| **Banded-LU GPU kernel** | `O(N_y p)` factors instead of dense `O(N_y²)`, with a dense reference solver; checked in interpret mode *and* by lowering to CUDA on GPU-less machines |
+| **Differentiable time steps** | `jax.grad` through a step, opt-in: a fixed-count corrector replaces the one construct reverse mode cannot traverse, and the banded GPU kernel carries a custom adjoint — [docs/differentiability.md](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/differentiability.md) |
+| **Optimal-growth analysis** | linear optimal energy growth `G(t)` about an arbitrary wall-normal profile, reusing the solver's own linear step per mode — [docs/validation.md](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/validation.md#non-modal-optimal-growth-against-published-values) |
+| **Two-axis device mesh** | `(n_p0, n_p1)` with an in-FFT reshard pipeline — [docs/scaling.md](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/scaling.md#parallelization) |
+| **A memory–throughput dial** | `solver.rhs_transform_chunks` splits the batched inverse transform `k` ways, cutting its working set `k`-fold at identical results |
+| **Snapshots and resume** | tar + zarr3, written by every device in parallel; resume across any device count, re-gridding every changed axis — [docs/snapshots.md](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/snapshots.md) |
+| **Reduced-resolution snapshots** | on a cadence of their own: Fourier axes truncated, the wall-normal axis interpolated, every field computed at full resolution first, optionally with the static pressure on the plane channels — [docs/running.md](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/running.md#reduced-resolution-snapshots) |
+| **External-data import** | pack a field produced elsewhere into a valid snapshot — [docs/snapshots.md](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/snapshots.md#importing-a-field-from-elsewhere) |
 | **Initial conditions** | divergence-free random fields and deterministic localized spots, reproducible independent of device count |
-| **Adaptive CFL stepping** | re-selects $\Delta t$ and rebuilds the implicit operators on device with no recompilation |
+| **Adaptive CFL stepping** | re-selects `Δ t` and rebuilds the implicit operators on device with no recompilation |
 | **Moving frame** | integrate in a translating frame, implicitly in both time schemes |
 | **Crash-consistent diagnostics** | buffered streams flushed before snapshots and on termination; a NaN or inf aborts naming the quantity and writes no snapshot of the broken state |
 | **Graceful shutdown** | an ISO 8601 wall-time budget ends the run cleanly, final snapshot included, before a queue kills it |
 | **Laminarization auto-stop** | a run ends once the perturbation energy falls below a threshold |
-| **In the lab** | five further flows (a curved pipe, quasi-Keplerian Taylor–Couette, Dean, and viscoelastic pipe and Dean) and the performance and diagnostic tools — [The lab](#the-lab) |
+| **In the lab** | five further flows (a curved pipe, quasi-Keplerian Taylor–Couette, Dean, and viscoelastic pipe and Dean) and the performance and diagnostic tools — [The lab](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/README.md#the-lab) |
 
 ## Documentation
 
 | file | what it covers |
 |---|---|
-| [`docs/numerics.md`](docs/numerics.md) | equations, discretization, wall-normal grids, the influence-matrix method, per-flow conventions |
-| [`docs/scaling.md`](docs/scaling.md) | array layout, the memory model, choosing the device grid, measured strong scaling |
-| [`docs/running.md`](docs/running.md) | a worked run, start modes, seeds, the moving frame, every output stream |
-| [`docs/configuration.md`](docs/configuration.md) | how the parameter layers combine; extension sections; where each field is documented |
-| [`docs/snapshots.md`](docs/snapshots.md) | the snapshot format, resume and re-gridding, the JAX-free API, the importer |
-| [`docs/validation.md`](docs/validation.md) | what is checked against what, and which test pins each claim |
-| [`docs/differentiability.md`](docs/differentiability.md) | what differentiates through a step, the two opt-in knobs, the banded solve's adjoint |
-| [`docs/extending.md`](docs/extending.md) | adding a flow system, in this package or from your own |
-| [`docs/cpu-collectives.md`](docs/cpu-collectives.md) | routing multi-process CPU collectives through MPI |
-| [`tests/README.md`](tests/README.md) | how the suite is laid out and how to run it |
-| [`scripts/README.md`](scripts/README.md) | the offline tools: figures, a snapshot perturbation, wall-normal resolution |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | setup, lint, tests, adding a flow, commit style |
-| [`lab/README.md`](lab/README.md) | the lab: its flows, scripts and tests |
-| [`lab/docs/numerics.md`](lab/docs/numerics.md) | the lab flows' equations and conventions |
-| [`lab/docs/validation.md`](lab/docs/validation.md) | what the lab's flows and tools are checked against |
+| [`docs/numerics.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/numerics.md) | equations, discretization, wall-normal grids, the influence-matrix method, per-flow conventions |
+| [`docs/scaling.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/scaling.md) | array layout, the memory model, choosing the device grid, measured strong scaling |
+| [`docs/running.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/running.md) | a worked run, start modes, seeds, the moving frame, every output stream |
+| [`docs/configuration.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/configuration.md) | how the parameter layers combine; extension sections; where each field is documented |
+| [`docs/snapshots.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/snapshots.md) | the snapshot format, resume and re-gridding, the JAX-free API, the importer |
+| [`docs/validation.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/validation.md) | what is checked against what, and which test pins each claim |
+| [`docs/differentiability.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/differentiability.md) | what differentiates through a step, the two opt-in knobs, the banded solve's adjoint |
+| [`docs/extending.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/extending.md) | adding a flow system, in this package or from your own |
+| [`docs/cpu-collectives.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/cpu-collectives.md) | routing multi-process CPU collectives through MPI |
+| [`tests/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/tests/README.md) | how the suite is laid out and how to run it |
+| [`scripts/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/scripts/README.md) | the offline tools: figures, a snapshot perturbation, wall-normal resolution |
+| [`CONTRIBUTING.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/CONTRIBUTING.md) | setup, lint, tests, adding a flow, commit style |
+| [`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/lab/README.md) | the lab: its flows, scripts and tests |
+| [`lab/docs/numerics.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/lab/docs/numerics.md) | the lab flows' equations and conventions |
+| [`lab/docs/validation.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/lab/docs/validation.md) | what the lab's flows and tools are checked against |
 
 ## Testing
 
@@ -328,9 +307,9 @@ machinery, second-order temporal convergence, energy-budget closure); the
 machinery (snapshot round-trips, device-count-agnostic resume, the
 JAX-free import guarantee); and the published optimal-growth values.
 Several launch real `mpirun` multi-device runs; none needs a GPU. See
-[`tests/README.md`](tests/README.md). The lab's suite adds 36 scripts of
+[`tests/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/tests/README.md). The lab's suite adds 36 scripts of
 its own, collected by the same `pytest`
-([`lab/README.md`](lab/README.md#tests)).
+([`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/lab/README.md#tests)).
 
 ## Extending
 
@@ -342,9 +321,9 @@ nothing else is edited: the surfaces, the dispatch and the analysis
 geometry sets all derive from the registry. A flow with a metric of its
 own adds a geometry module as well, and parameter fields and run-loop
 sections plug in the same way:
-[`docs/extending.md`](docs/extending.md). The lab's five flows are the
+[`docs/extending.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/extending.md). The lab's five flows are the
 worked example: one has a metric of its own, and they bring parameter
-fields of their own ([`lab/README.md`](lab/README.md#flows)).
+fields of their own ([`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/lab/README.md#flows)).
 
 ## Limitations
 
@@ -364,7 +343,7 @@ fields of their own ([`lab/README.md`](lab/README.md#flows)).
 - **One wall-bounded direction.** The discretization admits at most one
   non-periodic direction.
 - **CPU collectives over MPI are untested on macOS**, where the library
-  search cannot fire — [docs/cpu-collectives.md](docs/cpu-collectives.md).
+  search cannot fire — [docs/cpu-collectives.md](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/docs/cpu-collectives.md).
 
 ## References
 
@@ -372,7 +351,7 @@ The numerics follow these references:
 
 - A. P. Willis, *The Openpipeflow Navier–Stokes solver*, SoftwareX **6**,
   124–127 (2017). Predictor–corrector time stepping and the decoupled
-  $u_\pm$ pipe/annular formulation.
+  `u_±` pipe/annular formulation.
 - S. A. Orszag, *On the elimination of aliasing in finite-difference
   schemes by filtering high-wavenumber components*, J. Atmos. Sci.
   **28**(6), 1074 (1971). The 3/2 dealiasing rule.
@@ -395,7 +374,7 @@ The numerics follow these references:
 
 ## The lab
 
-This repository also holds [`lab/`](lab/README.md), a second package
+This repository also holds [`lab/`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/lab/README.md), a second package
 of flows and features in development alongside the solver, not shipped
 with its release archives outside GitHub. It plugs into the solver
 through the same entry points a package of your own would use, and
@@ -403,35 +382,23 @@ through the same entry points a package of your own would use, and
 
 - **Five flows** on the solver's geometries — the curved pipe,
   quasi-Keplerian Taylor–Couette, Dean, and the viscoelastic pipe and
-  Dean — [`lab/README.md`](lab/README.md#flows), their equations in
-  [`lab/docs/numerics.md`](lab/docs/numerics.md) and their checks in
-  [`lab/docs/validation.md`](lab/docs/validation.md).
+  Dean — [`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/lab/README.md#flows), their equations in
+  [`lab/docs/numerics.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/lab/docs/numerics.md) and their checks in
+  [`lab/docs/validation.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/lab/docs/validation.md).
 - **Scripts**: the performance tools (benchmarks, profiles, memory
   sizing, the scaling figure) and functionality checks
   (differentiability, GPU kernel and storage diagnostics) —
-  [`lab/README.md`](lab/README.md#scripts).
+  [`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/lab/README.md#scripts).
 - **Tests**: 36 scripts of its own, collected by the same `pytest` —
-  [`lab/README.md`](lab/README.md#tests).
+  [`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/lab/README.md#tests).
 
-Its own limitations: [`lab/README.md`](lab/README.md#limitations).
+Its own limitations: [`lab/README.md`](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/lab/README.md#limitations).
 
 ## License and citation
 
-Released under the [Apache License 2.0](LICENSE), © 2025–2026 Gökhan Yalnız.
+Released under the [Apache License 2.0](https://github.com/gokhanyalniz/dnsjax/blob/v0.1.0.1/LICENSE), © 2025–2026 Gökhan Yalnız.
 If `dnsjax` supports your work, a citation of this repository
 (<https://github.com/gokhanyalniz/dnsjax>) is appreciated.
-
-## Acknowledgements
-
-I developed most of `dnsjax` (everything before 1 August 2026) during
-my year as a postdoctoral researcher in Björn Hof's group at the
-Institute of Science and Technology Austria, and I am grateful for that
-opportunity and for the time it gave me to work on this. Substantial
-changes have followed, and continue, since I joined Yongyun Hwang's
-group at Imperial College London. I also thank Ashley P. Willis for
-[`openpipeflow`](https://openpipeflow.org), from which I learned a great
-deal. None of them was involved in the development of this code. Any
-errors are my own.
 
 ## Use of AI
 

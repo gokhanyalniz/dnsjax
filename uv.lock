@@ -7,12 +7,6 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 
-[manifest]
-members = [
-    "dnsjax",
-    "dnsjax-lab",
-]
-
 [[package]]
 name = "annotated-types"
 version = "0.8.0"
@@ -304,9 +298,6 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
 ]
-lab = [
-    { name = "dnsjax-lab" },
-]
 plots = [
     { name = "matplotlib" },
 ]
@@ -335,23 +326,7 @@ dev = [
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.15.0" },
 ]
-lab = [{ name = "dnsjax-lab", editable = "lab" }]
 plots = [{ name = "matplotlib", specifier = ">=3.10" }]
-
-[[package]]
-name = "dnsjax-lab"
-version = "0.1.0.1"
-source = { editable = "lab" }
-dependencies = [
-    { name = "dnsjax" },
-    { name = "scipy" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "dnsjax", editable = "." },
-    { name = "scipy", specifier = ">=1.18.0" },
-]
 
 [[package]]
 name = "dpcpp-cpp-rt"

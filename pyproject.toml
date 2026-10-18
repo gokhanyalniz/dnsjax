@@ -2,9 +2,9 @@
 name = "dnsjax"
 version = "0.1.0.1"
 description = "A GPU-accelerated pseudo-spectral solver for direct numerical simulation of the 3D incompressible Navier–Stokes equations, written in JAX."
-# The README rewritten for PyPI (absolute links, plain math), generated
-# from README.md by lab/scripts/release/pypi_readme.py.
-readme = "docs/pypi/README.md"
+# The README rewritten for PyPI (absolute links, plain math): a
+# release's README.md is that copy (lab/scripts/release/).
+readme = "README.md"
 authors = [
     { name = "Gökhan Yalnız" }
 ]
@@ -74,20 +74,9 @@ dev = [
 plots = [
     "matplotlib>=3.10",
 ]
-# The unpublished workspace member (lab/), installed by default so one
-# `uv sync` gives the whole codebase; `--no-group lab` leaves it out.
-lab = [
-    "dnsjax-lab",
-]
 
 [tool.uv]
-default-groups = ["dev", "lab"]
-
-[tool.uv.workspace]
-members = ["lab"]
-
-[tool.uv.sources]
-dnsjax-lab = { workspace = true }
+default-groups = ["dev"]
 
 [build-system]
 requires = ["uv_build>=0.11.4,<0.13.0"]
@@ -110,8 +99,7 @@ source-exclude = ["**/CLAUDE.md"]
 wheel-exclude = ["**/CLAUDE.md"]
 
 [tool.pytest.ini_options]
-# The core suite, then the lab's (lab/ is absent from a release).
-testpaths = ["tests", "lab/tests"]
+testpaths = ["tests"]
 # Only the subprocess bridges are collected: the standalone test_*.py
 # scripts configure JAX / global singletons at module import, so
 # pytest must never import them (see tests/_bridge.py).
