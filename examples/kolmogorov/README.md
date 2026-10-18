@@ -18,10 +18,10 @@ cp /path/to/dnsjax/examples/kolmogorov/parameters.toml .
 /path/to/dnsjax/.venv/bin/dnsjax
 ```
 
-Any value can be overridden on the command line (`--phys.re 60`); what
-the four examples share, from the scratch directory to the
-laminarization stop and their sizes, is in
-[`examples/README.md`](../README.md).
+Any value can be overridden on the command line (`--phys.re 60`), and
+`--dist.platform cuda` runs it on a GPU; what the four examples share,
+from the scratch directory and the GPU set-up to the laminarization
+stop and their sizes, is in [`examples/README.md`](../README.md).
 
 **What to watch — and here it is `E'`.** `stats.dat` gets one row per
 100 steps. The perturbation energy `E'` climbs by orders of magnitude,

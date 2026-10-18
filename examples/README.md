@@ -30,6 +30,14 @@ Any value in the file can be overridden on the command line
 (`--phys.re 200`), and `dnsjax --help <system>` lists everything a given
 flow accepts.
 
+**On a GPU**, sync the environment with JAX's CUDA build
+(`uv sync --extra cuda13` in the clone; the other backends:
+[On a GPU](../README.md#on-a-gpu)) and add one flag:
+
+```bash
+/path/to/dnsjax/.venv/bin/dnsjax --dist.platform cuda
+```
+
 **Reading the result.** Each example writes `stats.dat`, one row per
 diagnostic interval (its format and columns:
 [`docs/running.md`](../docs/running.md#the-diagnostic-streams)). For the
@@ -72,10 +80,12 @@ horizon with the flow already laminar but `E'` still decaying.
 | `plane-poiseuille-re5000` | $16 \times 49 \times 16$ ($n_x, n_y, n_z$) | 250 |
 | `pipe-re2500` | $24 \times 32 \times 32$ ($n_z, n_r, n_\theta$) | 200 |
 
-These are not GPU-sized problems: cases this small do not come close to
-filling one, so there is no reason to expect a GPU to help here and some
-reason to expect it to hurt. How a production-sized run scales, from 1
-to 64 CPU nodes, is measured in
+They run on a GPU unchanged, but they are not GPU-sized problems: cases
+this small do not come close to filling one, so there is no reason to
+expect a GPU to help here and some reason to expect it to hurt. Sizing a
+run for a GPU node is in
+[`docs/scaling.md`](../docs/scaling.md#target-nodes), and how a
+production-sized run scales, from 1 to 64 CPU nodes, in
 [`docs/scaling.md`](../docs/scaling.md#strong-scaling-on-archer2).
 
 The production-scale run these are the small counterpart to — a

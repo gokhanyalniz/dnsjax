@@ -44,9 +44,11 @@ plane by itself.</a>
 ## Highlights
 
 - **Runs where JAX runs, tested on CPUs and NVIDIA GPUs** — on one or
-  many, double or single precision, all from the same code path;
-  wall-normal solves go through a custom Pallas/Triton banded-LU kernel
-  on NVIDIA and AMD GPUs.
+  many, double or single precision, all from the same code path: a run
+  moves to a GPU with one install extra and one flag,
+  `--dist.platform cuda` ([On a GPU](https://github.com/gokhanyalniz/dnsjax/blob/main/README.md#on-a-gpu)). Wall-normal solves go
+  through a custom Pallas/Triton banded-LU kernel on NVIDIA and AMD
+  GPUs.
 - **Measured from 1 to 64 CPU nodes** — on ARCHER2 (two 64-core AMD
   EPYC 7742 and 256 GB of DDR4-3200 per node), a turbulent channel at
   `1280 × 383 × 384` runs 60 times faster on 64 nodes (8192
@@ -77,21 +79,12 @@ uv sync
 
 The only prerequisite is [`uv`](https://docs.astral.sh/uv/): `uv sync`
 fetches the pinned Python (3.14; the floor is 3.12) and every
-dependency by itself, JAX in its CPU build. An **accelerator** is an
-extra of JAX's name, one per environment: `uv sync --extra cuda13` in
-the clone, or `pip install "dnsjax[cuda13]"` / `uv add "dnsjax[cuda13]"`
-from PyPI, choosing among `cuda12`, `cuda13`, `cuda12-local`,
-`cuda13-local` (the `-local` pair uses the CUDA already installed),
-`tpu`, `rocm7-local`, `oneapi` and `cpu` as [JAX's installation
-guide](https://docs.jax.dev/en/latest/installation.html) defines them.
-A run then names its backend with `--dist.platform`: `cuda` for an
-NVIDIA GPU, `rocm` for an AMD GPU, `oneapi` for an Intel GPU and `tpu`
-for a Google Cloud TPU, with `cpu` the default. An MPI runtime is
-needed only to launch several processes, which every multi-CPU run
-does — not for a single process that drives all of one node's GPUs,
-and not for the post-processing API. Multi-CPU runs should also let
-MPI carry their collectives:
-[`docs/cpu-collectives.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/cpu-collectives.md).
+dependency by itself, JAX in its CPU build; a GPU needs one extra more
+([On a GPU](https://github.com/gokhanyalniz/dnsjax/blob/main/README.md#on-a-gpu)). An MPI runtime is needed only to launch
+several processes, which every multi-CPU run does — not for a single
+process that drives all of one node's GPUs, and not for the
+post-processing API. Multi-CPU runs should also let MPI carry their
+collectives: [`docs/cpu-collectives.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/cpu-collectives.md).
 
 Output goes to the working directory, so launch from a scratch dir:
 
@@ -126,6 +119,27 @@ more flags, the four start modes (from a snapshot file, a random
 perturbation of the laminar flow, localized rolls, and the laminar flow
 itself), and the output streams, see
 [`docs/running.md`](https://github.com/gokhanyalniz/dnsjax/blob/main/docs/running.md).
+
+### On a GPU
+
+**One install extra and one flag.** Sync JAX's CUDA build in place of
+its CPU one, then add `--dist.platform cuda` to any run; nothing else
+changes. The pipe above, from its configuration file:
+
+```bash
+cd /path/to/dnsjax && uv sync --extra cuda13
+mkdir -p /tmp/run-gpu && cd /tmp/run-gpu
+cp /path/to/dnsjax/examples/pipe-re2500/parameters.toml .
+/path/to/dnsjax/.venv/bin/dnsjax --dist.platform cuda
+```
+
+From PyPI the install is `pip install "dnsjax[cuda13]"` or
+`uv add "dnsjax[cuda13]"`. The extras are JAX's own, one per 
+environment, as [its installation guide](https://docs.jax.dev/en/latest/installation.html) defines them: `cuda12`, `cuda13`, `cuda12-local`, `cuda13-local` 
+(the `-local` pair uses the CUDA already installed), `rocm7-local`, 
+`oneapi`, `tpu` and `cpu`. `--dist.platform` then names the backend: 
+`cuda` for an NVIDIA GPU, `rocm` for an AMD GPU, `oneapi` for an Intel 
+GPU and `tpu` for a Google Cloud TPU, with `cpu` the default.
 
 ## Flows and geometries
 

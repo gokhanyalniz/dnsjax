@@ -68,7 +68,9 @@ Reading the flags:
 - `--stop.max_sim_time 500` — integrate 500 advective units past the
   initial condition, so here $t = 500$ (transition develops over
   $O(100)$ units; the run also stops early if the flow relaminarizes).
-- `--dist.platform cpu` — a single CPU device.
+- `--dist.platform cpu` — a single CPU device; `cuda` runs it on a GPU
+  instead, in an environment synced with a CUDA extra
+  ([On a GPU](../README.md#on-a-gpu)).
 
 This configuration fits comfortably in laptop memory — the
 [Memory footprint](scaling.md#memory-footprint) section shows how to

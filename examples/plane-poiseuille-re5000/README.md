@@ -18,9 +18,10 @@ cp /path/to/dnsjax/examples/plane-poiseuille-re5000/parameters.toml .
 
 Any value can be overridden on the command line
 (`--phys.driving constant_pressure_gradient`,
-`--init.localized_rolls_amplitude 0.5`); what the four examples share —
-the scratch directory, why `D` and not `E'`, the laminarization stop,
-their sizes — is in [`examples/README.md`](../README.md).
+`--init.localized_rolls_amplitude 0.5`), and `--dist.platform cuda`
+runs it on a GPU; what the four examples share — the scratch directory,
+the GPU set-up, why `D` and not `E'`, the laminarization stop, their
+sizes — is in [`examples/README.md`](../README.md).
 
 **What to watch.** `stats.dat` gets one row per 50 steps. Follow the
 **dissipation `D`** against its laminar value, $4/(3Re)$: it rises

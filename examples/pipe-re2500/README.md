@@ -19,9 +19,10 @@ cp /path/to/dnsjax/examples/pipe-re2500/parameters.toml .
 ```
 
 Any value can be overridden on the command line (`--phys.re 3000`,
-`--geo.lz 12 --res.nz 36`); what the four examples share — the scratch
-directory, why `D` and not `E'`, the laminarization stop, their sizes —
-is in [`examples/README.md`](../README.md).
+`--geo.lz 12 --res.nz 36`), and `--dist.platform cuda` runs it on a
+GPU; what the four examples share — the scratch directory, the GPU
+set-up, why `D` and not `E'`, the laminarization stop, their sizes — is
+in [`examples/README.md`](../README.md).
 
 **The forcing moves, not the flow rate.** `phys.driving` is set to
 `constant_bulk_velocity`, so the axial pressure gradient responds and

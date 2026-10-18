@@ -15,9 +15,10 @@ cp /path/to/dnsjax/examples/plane-couette-re500/parameters.toml .
 ```
 
 Any value can be overridden on the command line (`--phys.re 400`,
-`--step.scheme cnab2`); what the four examples share — the scratch
-directory, why `D` and not `E'`, the laminarization stop, their sizes —
-is in [`examples/README.md`](../README.md).
+`--step.scheme cnab2`), and `--dist.platform cuda` runs it on a GPU;
+what the four examples share — the scratch directory, the GPU set-up,
+why `D` and not `E'`, the laminarization stop, their sizes — is in
+[`examples/README.md`](../README.md).
 
 **What to watch.** `stats.dat` gets one row per 50 steps. The column to
 follow is the **dissipation `D`**, against its laminar value $1/Re$.
