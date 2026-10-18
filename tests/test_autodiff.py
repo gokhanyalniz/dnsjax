@@ -17,10 +17,8 @@ automatic differentiation, and the gradient is right.
   fixed-count rows would pass whether or not the feature did anything.
 - **A fixed count is the same integrator when it is long enough.**  A
   step taken with ``corrector_iterations`` well above what the dynamic
-  corrector used reproduces the dynamic stepper's state to
-  ``corrector_tolerance``.  The corrector count is read when
-  ``make_stepper`` runs, so the second stepper is rebuilt in place --
-  the ``tests/test_cnab2.py`` idiom for ``split_corrector``.
+  corrector used reproduces the dynamic stepper's state to a tight
+  ``corrector_tolerance`` (``1e-12``).
 - **``solver.pallas_kernel`` selects the sweep.**
   :func:`dnsjax.solvers._kernel_path` must honour all three states, and
   the trace-only ``_force_kernel_path`` override must still win.
@@ -218,11 +216,7 @@ def _check_grad(system: str, scheme: str) -> None:
 
 
 def _check_dynamic_refused() -> None:
-    """The default (dynamic) corrector must *not* differentiate.
-
-    Without this the fixed-count rows would pass whether or not
-    ``corrector_iterations`` did anything.
-    """
+    """The default (dynamic) corrector must *not* differentiate."""
     import importlib
 
     _configure("plane-couette", "iterative-cn", 0)
@@ -255,7 +249,7 @@ def _check_fixed_matches_dynamic() -> None:
     """A long enough fixed count is the dynamic corrector's own answer.
 
     The count is read once when ``make_stepper`` runs, so the second
-    stepper is rebuilt after changing it -- the ``test_cnab2.py``
+    stepper is rebuilt after changing it -- the ``_cnab2`` worker's
     ``split_corrector`` idiom.
 
     Run at a **tight** ``corrector_tolerance`` (also read at trace

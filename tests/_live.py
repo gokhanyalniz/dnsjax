@@ -10,13 +10,14 @@ tailing the run sees progress immediately (and can abort early).
 
 The child environment gets ``PYTHONUNBUFFERED=1`` (prompt output from
 the child and its own children, e.g. ``mpirun`` ranks) and, unless the
-caller's environment already sets it, ``DNSJAX_QUIET_STARTUP=1`` (skip
-the dnsjax solver's ~60-80 line startup parameter dump, which is pure
-repeated noise across the many solver launches of a smoke test; inert
-for non-solver children).  Both are added to *env*, or to a copy of
-``os.environ`` when *env* is ``None``; a given *env* is otherwise
-passed through unchanged, so deliberately stripped environments stay
-stripped.
+caller's environment already sets it, ``DNSJAX_QUIET_STARTUP=1``: the
+solver's ~60-80 line startup parameter dump, redundant with the
+launched command, would repeat on each of a smoke test's dozens of
+launches (``DNSJAX_QUIET_STARTUP=0`` brings it back when debugging;
+non-solver children ignore the variable).  Both are added to *env*, or
+to a copy of ``os.environ`` when *env* is ``None``; a given *env* is
+otherwise passed through unchanged, so deliberately stripped
+environments stay stripped.
 
 Semantics mirrored from ``subprocess.run``: on *timeout* expiry the
 child is killed and :class:`subprocess.TimeoutExpired` is raised with
@@ -68,11 +69,6 @@ def run_live(
     """
     child_env = dict(os.environ if env is None else env)
     child_env["PYTHONUNBUFFERED"] = "1"
-    # Quiet the dnsjax solver's verbose startup parameter dump: a smoke
-    # test may spawn the solver dozens of times and the dump (~60-80
-    # lines) is redundant with the launched command.  ``setdefault`` so
-    # ``DNSJAX_QUIET_STARTUP=0`` in the environment can re-enable it when
-    # debugging.  Inert for non-solver children (they ignore it).
     child_env.setdefault("DNSJAX_QUIET_STARTUP", "1")
     if echo:
         print("+", " ".join(str(c) for c in cmd), flush=True)
@@ -131,18 +127,15 @@ _REASON_CLIP = 200
 def report(passed: int, failures: Sequence[tuple[str, str]]) -> int:
     """Print the closing summary; return the process exit code.
 
-    *failures* is one ``(name, reason)`` per failed entry.  The
-    reasons are repeated **after** the counts on purpose: these
-    scripts tee thousands of lines of child output, so the inline
-    ``FAIL`` line scrolls far out of a ``tail`` and leaves
-    ``"16 passed, 1 failed."`` as the only visible signal -- which
-    says nothing about *which* entry broke or why, and costs a full
-    re-run to find out.  A run's outcome must be readable from its
-    last few lines alone.
-
-    Reasons are collapsed to their first line and clipped, so a long
-    assertion message cannot push the summary out of a short tail
-    either; the full text is still inline at the point of failure.
+    *failures* is one ``(name, reason)`` per failed entry.  The reasons
+    are repeated **after** the counts on purpose, since a run's outcome
+    must be readable from its last few lines alone: these scripts tee
+    thousands of lines of child output, so the inline ``FAIL`` line
+    scrolls out of a ``tail``, and ``"16 passed, 1 failed."`` names
+    neither the entry nor the cause without a full re-run.  Each reason
+    is collapsed to its first line and clipped, so a long assertion
+    message cannot push the summary out of a short tail either; the
+    full text stays inline at the point of failure.
     """
     print(f"\n{passed} passed, {len(failures)} failed.")
     for name, reason in failures:

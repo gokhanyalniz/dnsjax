@@ -13,23 +13,30 @@ Pins the ``step.adaptive`` machinery end to end:
   single CPU device, x64): build the flow at ``DT0``, step once, then
   ``set_dt(DT1)`` and compare every ``dt``-dependent leaf against a
   freshly constructed flow at ``DT1`` (direct ``params.step.dt``
-  assignment before construction -- the ``test_cnab2`` idiom).  The
+  assignment before construction -- the ``_cnab2`` worker's idiom).  The
   jitted rebuild's fusion may differ from the eager setup build, so
   the comparison is a tight ``allclose``, not bitwise.
 - **Step parity at the new dt**: one CN/AB2 and one iterative-CN step
-  of the module steppers (rebuilt leaves, ``ab2_kappa`` reset) vs the
-  same steps of freshly built steppers at ``DT1`` -- catches any
-  ``params.step.dt`` still baked into the module trace.
+  of the module steppers (rebuilt leaves) vs the same steps of freshly
+  built steppers at ``DT1`` -- catches any ``params.step.dt`` still
+  baked into the module trace.
 - **No-recompile guard**: with ``jax_log_compiles`` captured, a
   second ``set_dt`` plus plain+measured steps of both schemes must
   produce **zero** JAX log records (no trace, no compile) -- the
   core promise that a dt change swaps pytree leaves only.
+- **Kappa carry-cancellation identity**: with the carry equal to
+  `$N^n$` a CN/AB2 step is independent of ``ab2_kappa`` (to
+  ``rtol = 1e-9``, ``atol = 1e-11``), and with another carry it is
+  not: `$\kappa$` multiplies exactly `$N^n - \mathrm{carry}$` in both
+  cnab2 branches.
 - **Live-dt embed**: ``recorded_params_dump`` follows a mutated
   ``params.step.dt`` (the invariant that makes every snapshot embed
   the adapted dt).
 
 The plane-Couette case runs under both solver backends (pallas and
-dense).  The workers and the leaf tables: ``tests/_adaptive.py``; the
+dense), and each wall-bounded geometry also runs the legacy
+``res.consistent_imm = False`` scheme, whose ``dt``-dependent leaf set
+differs.  The workers and the leaf tables: ``tests/_adaptive.py``; the
 lab's flows have cases of their own, ``lab/tests/test_adaptive.py``.
 
 Usage::
@@ -135,10 +142,8 @@ def main() -> None:
         # The dense backend shares the rebuild contract; one geometry
         # covers its DenseJAXSolver/from_factors path.
         cases.append(("plane-couette", "dense"))
-    # The legacy ``res.consistent_imm = False`` path has a different
-    # dt-dependent leaf set in every geometry (it carries pressure
-    # responses where the default carries wall-normal-velocity ones);
-    # one case per implementation.
+    # The legacy leaf set (pressure responses where the default carries
+    # wall-normal-velocity ones): one case per implementation.
     cases += [
         (s, "pallas", False)
         for s in ("plane-couette", "taylor-couette", "pipe")

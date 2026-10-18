@@ -19,7 +19,7 @@ import sys
 
 from _live import run_live
 
-# Small but nontrivial resolutions (see ``test_cnab2``).
+# Small but nontrivial resolutions, as in ``_cnab2``.
 NX, NY, NZ = 8, 17, 8
 NY_PERIODIC = 16
 LX, LZ = 5.0, 5.0
@@ -225,7 +225,7 @@ def _leaf_arrays(val: object) -> dict[str, object]:
 def worker(
     system: str, backend: str, consistent_imm: bool, case: dict
 ) -> None:
-    """The rebuild, step-parity, no-recompile and embed checks.
+    """The rebuild, step-parity, no-recompile, kappa and embed checks.
 
     *case*: the flow's dt-dependent ``leaves`` (the legacy
     ``res.consistent_imm = False`` set), the default scheme's
@@ -300,9 +300,7 @@ def worker(
     )
 
     # -- step parity at the new dt ---------------------------------
-    # Fresh steppers at DT1 bake the (migrated) dt everywhere a
-    # stale ``params.step.dt`` read would hide; identical inputs
-    # through both must agree.  kappa is reset so both flows step
+    # Identical inputs through both; kappa is reset so both flows step
     # with the uniform-step AB2 weights.
     fmod.reset_ab2_kappa()
     tup = getattr(gmod, builder)(fresh)
@@ -337,8 +335,8 @@ def worker(
     )
 
     # -- no-recompile guard ----------------------------------------
-    # Everything is warm: a further set_dt + every stepper variant
-    # must neither trace nor compile anything (leaf swaps only).
+    # Everything is warm, so any jax log record below is a trace or a
+    # compile.
     jax.block_until_ready((a_cn, a_ic))
     cap = _LogCapture()
     jax_logger = logging.getLogger("jax")
@@ -367,11 +365,9 @@ def worker(
 
     # -- kappa carry-cancellation identity -------------------------
     # The variable-step AB2 forcing is
-    # F = N^n + (kappa/2) (N^n - carry): with carry == N^n the step
-    # must be kappa-independent, and with a different carry it must
-    # not be.  Pins that kappa multiplies exactly (N^n - carry) in
-    # BOTH cnab2 branches (the wall-bounded _cnab2_lbf_core and the
-    # plain triply-periodic forcing).
+    # F = N^n + (kappa/2) (N^n - carry), in both cnab2 branches (the
+    # wall-bounded _cnab2_lbf_core and the plain triply-periodic
+    # forcing); n_ref is N^n.
     _, n_ref, *_ = fmod.step_cnab2(jnp.copy(state0), jnp.copy(rhs0))
     fmod.reset_ab2_kappa()
     a_id, *_ = fmod.step_cnab2(jnp.copy(state0), jnp.copy(n_ref))

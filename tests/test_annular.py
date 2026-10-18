@@ -253,17 +253,14 @@ def test_pallas_vs_dense_on_annular_operators() -> None:
     r"""The banded Pallas operator matches the dense solver (annular).
 
     ``PerModeBandedPallasOperator`` against ``DenseJAXSolver`` on
-    Lk/Hk_plus/Hk_minus/Hk_z.
-
-    Validates the Pallas band assembly (``_build_{Lk,Hk}_band_gpu``):
+    Lk/Hk_plus/Hk_minus/Hk_z and the ``res.consistent_imm`` operators
+    (`$L_{v,\mathrm{mod}}$` and the `$(\Phi, \omega_r)$` pair),
+    validating the Pallas band assembly (``_build_{Lk,Hk}_band_gpu``):
     the banded operator equals ``banded(dense)`` exactly, and the
     no-pivot banded sweep (CPU pure-JAX path) reproduces the dense
-    solve on a complex RHS.
-
-    Both flags share one direct-fit `$A_{\mathrm{base}}$` at the
-    ``fd_order`` band, so there is a single variant, and the
-    ``res.consistent_imm`` operators (`$L_{v,\mathrm{mod}}$` and the
-    `$(\Phi, \omega_r)$` pair) go through the same checks below.
+    solve on a complex RHS.  Both flags share one direct-fit
+    `$A_{\mathrm{base}}$` at the ``fd_order`` band, so there is a
+    single variant.
     """
     Nr = params.res.ny
 
@@ -356,19 +353,14 @@ def test_vw_mean_plane_packing_reuses_the_primitive_operators() -> None:
     r"""The packed `$k^2 = 0$` plane holds the primitive mean-mode operators.
 
     The primitive scheme's own mean-mode Helmholtz operators,
-    **bit-exactly**.
-
-    Flag-on, the two evolved slots are structurally zero at the mean
-    mode, so they carry `$u_{z,00}$` and `$u_{\theta,00}$` instead
-    (``annular._imm_iteration_vw``).  That only reproduces the
-    primitive mean-mode update if the operators match: the `$\Phi$`
-    slot must be the mean `$H_{k,z}$` (`$m_{\mathrm{eff}}^2 = 0$`) and
-    the `$\omega$` slot the mean `$H_{k,\pm}$`
-    (`$m_{\mathrm{eff}}^2 = 1 = m^2 + 1$` at `$m = 0$`).  Asserted as
-    band equality on the mean column, and as *inequality* off it (the
-    pair shares `$m^2 + 1$` there, which is neither `$(m \pm 1)^2$`
-    nor `$m^2$`), so a builder that dropped the mean exception would
-    fail rather than pass vacuously.
+    **bit-exactly**, or the packed update would not reproduce the
+    primitive one: the `$\Phi$` slot the mean `$H_{k,z}$` and the
+    `$\omega$` slot the mean `$H_{k,\pm}$`
+    (``annular._imm_iteration_vw``, "Mean mode and padding").
+    Asserted as band equality on the mean column, and as *inequality*
+    off it (the pair shares `$m^2 + 1$` there, which is neither
+    `$(m \pm 1)^2$` nor `$m^2$`), so a builder that dropped the mean
+    exception would fail rather than pass vacuously.
     """
     m_s = fourier.m[0, ..., None]
     kz2_s = fourier.kz2[0, ..., None]
@@ -402,16 +394,10 @@ def test_vw_mean_plane_packing_reuses_the_primitive_operators() -> None:
 def test_vw_reconstruction_is_exactly_solenoidal() -> None:
     r"""The `$u_r$`-`$\omega_r$` reconstruction zeroes the divergence.
 
-    The identity ``res.consistent_imm`` rests on
-    (``annular._imm_iteration_vw``): for any `$u_r$` and `$\omega_r$`,
-    solving
-
-    .. math::
-        i k_z u_z + \frac{im}{r} u_\theta
-            = -\Bigl(D_1 + \frac1r\Bigr) u_r , \qquad
-        \frac{im}{r} u_z - i k_z u_\theta = \omega_r
-
-    makes the solver's own divergence
+    The identity ``res.consistent_imm`` rests on: for any `$u_r$` and
+    `$\omega_r$`, solving the stage-7 per-point system
+    (``annular._imm_iteration_vw``, "Why the discrete divergence
+    vanishes") makes the solver's own divergence
     `$(D_1 + 1/r) u_r + (im/r) u_\theta + i k_z u_z$` vanish at
     **every** row -- walls included -- as algebra, for any `$D_1$`,
     any grid, any mode.  Checked against the production `$D_1$` on
@@ -462,16 +448,11 @@ def test_vw_reconstruction_is_exactly_solenoidal() -> None:
 def test_vw_source_projections_kill_gradients() -> None:
     r"""`$S_\Phi$` and `$S_\omega$` annihilate a discrete gradient.
 
-    They do so only with the **conservative** axial curl.
-
-    This is the discrete pressure elimination of the
-    `$u_r$`-`$\omega_r$` scheme.  Both sources are built from the
-    discrete curl, whose axial component must be written
-    `$C_z = (1/r)[D_1(r N_\theta) - i m N_r]$`: in that form the only
-    metric facts used are the *diagonal* identities
-    `$r \cdot (1/r) = 1$` and `$1/r^2 = (1/r)^2$`, so the commutator
-    `$[D_1, 1/r]$` never appears and the curl of a discrete gradient
-    `$(i k_z q, D_1 q, (im/r) q)$` is exactly zero.  The direct form
+    They do so only with the **conservative** axial curl
+    `$C_z = (1/r)[D_1(r N_\theta) - i m N_r]$`: the discrete pressure
+    elimination of the `$u_r$`-`$\omega_r$` scheme, exact only in that
+    form (``annular._imm_iteration_vw``, "Discrete pressure
+    elimination: the conservative curl", says why).  The direct form
     `$C_z = (D_1 + 1/r) N_\theta - (im/r) N_r$` is mathematically the
     same operator and fails outright -- asserted here as a *floor*, so
     a silent regression to it cannot pass.

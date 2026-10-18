@@ -7,8 +7,8 @@ Tests cover:
 2. Composite polynomial weights on arbitrary non-uniform grids
    (``build_integration_weights``): weight sum, polynomial exactness,
    convergence rate.
-3. The parity-free axis-augmented radial quadrature (the cylindrical
-   solver rule): positivity and even+odd exactness; the wall-clustered
+3. The parity-free axis-augmented radial quadrature (non-CGL pipe
+   grids): positivity and even+odd exactness; the wall-clustered
    one-sided tanh grid; and the positive-order rule every non-CGL grid
    takes (``positive_quadrature``): positive and exact at its order on
    the grids where ``fd_order = 8`` is not, unchanged where it is.
@@ -302,7 +302,7 @@ def _radial_cgl_grid(nr, gap):
 
 
 def test_augmented_axis_quadrature():
-    """Parity-free axis-augmented radial quadrature (the solver rule):
+    """Parity-free axis-augmented radial quadrature (non-CGL pipe grids):
     strictly positive AND exact for even *and odd* monomials up to the
     interior order.  The rule integrates via the axis node g(0)=0,
     which holds for any bounded f, so no parity assumption enters (an
@@ -441,12 +441,10 @@ def test_cgl_radial_quadrature_weights():
             if nr >= 16:
                 assert abs(w_even @ np.cos(2.0 * rs) - ref_even) < 1e-10
                 assert abs(w_odd @ (rs * np.cos(2.0 * rs)) - ref_odd) < 1e-10
-    # Non-CGL grid -> None (caller uses the composite fallback).
     assert cgl_radial_quadrature_weights(np.linspace(0.1, 1.0, 20), 4) is None
     # Boundary pin: the *fully exact* even rule (spectral axis
-    # completion) is uniquely determined by its exactness conditions
-    # and goes negative on rigged grids from nr = 48 -- the reason the
-    # quadrature keeps the local axis rule while the interpolation
+    # completion) goes negative on rigged grids from nr = 48, the reason
+    # the quadrature keeps the local axis rule while the interpolation
     # completion is spectral (fd._cgl_completion_matrices docstring).
     from dnsjax.fd import _cgl_completion_matrices, _halfrange_r_moments
 

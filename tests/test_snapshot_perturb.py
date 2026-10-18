@@ -1,9 +1,8 @@
 r"""``scripts/snapshot_perturb.py`` injection tests (offline, np = 1).
 
-Builds small plane-Poiseuille snapshots in-process (synthetic spectral
-states via ``snapshot.assemble_local_shards`` + ``save_snapshot``),
-runs the injection CLI as a subprocess in a temporary directory, and
-verifies against the reloaded arrays:
+Builds small synthetic plane-Poiseuille snapshots in-process, runs the
+injection CLI as a subprocess (the fixtures: ``tests/_snapshot_perturb.py``)
+and verifies against the reloaded arrays:
 
 1. **Exactness**: a ``--perturb.npy`` injection at ``(i2, i3) =
    (3, 0)`` adds exactly ``scale * vec`` at the target column and
@@ -22,8 +21,10 @@ verifies against the reloaded arrays:
    actual writer.  Its ``--tg.save_operator`` bundle keeps the
    coordinate contract it documents, and full-state profiles built
    from it inject through ``--perturb.modes_npz``.
-5. **Error paths**: out-of-range mode, complex ``(0,0)`` profile,
-   mode missing from the TG bundle, wrong-system bundle.
+5. **Error paths**: out-of-range mode, complex ``(0,0)`` profile, an
+   ``--init.snapshot`` that is not a snapshot (one line, no traceback),
+   mode missing from the TG bundle, ``--perturb.index`` past the modes
+   bundle, wrong-system bundle.
 6. **Mean mode** ``(0,0)``: a profile that satisfies the conservation
    laws of :mod:`dnsjax.ic.mean_mode` injects (even under
    ``constant_bulk_velocity``) and writes that one self-conjugate
@@ -314,8 +315,7 @@ def test_error_paths() -> None:
             [*common, "--perturb.mode", "0,0"], expect_fail="must be real"
         )
 
-        # Not a snapshot at all: a tar of something else, and a path
-        # that does not exist, each refused in one line (no traceback).
+        # Not a snapshot at all: a tar of something else, a missing path.
         import tarfile
 
         with tarfile.open(tmp / "junk.tar", "w") as tf:

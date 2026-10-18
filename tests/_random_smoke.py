@@ -38,11 +38,8 @@ def _build_command(
 ) -> list[str]:
     """Build the ``mpirun ... -m dnsjax`` command for one system.
 
-    Per-system ``force_np`` / ``force_np0`` / ``res`` /
-    ``oversubscribe`` / ``max_sim_time`` / ``it_stats`` /
-    ``check_laminarization`` override the suite defaults (used by the
-    multi-device padded entries and the nan-guard entry); ``lowres``
-    adds the ``[lowres]`` flags (:func:`_check_lowres`).
+    The row keys of the module docstring override the suite defaults;
+    ``lowres`` adds the ``[lowres]`` flags (:func:`_check_lowres`).
     """
     np_count = system.get("force_np", args.np)
     np0 = system.get("force_np0", args.np0)
@@ -89,12 +86,9 @@ def _build_command(
         str(max_sim_time),
         "--outs.it_stats",
         str(it_stats),
-        # Laminarization check off unless the entry keeps it on: a
-        # decaying transient must not cut the run short before
-        # max_sim_time.  The multi-process entries keep it on (their
-        # E' stays decades above the threshold), because its E' read
-        # is a jitted program only a real multi-process run can fail
-        # to trace.
+        # Off unless the entry keeps it on: a decaying transient must
+        # not cut the run short before max_sim_time (why the
+        # multi-process entries keep it: tests/test_random_smoke.py).
         "--stop.check_laminarization",
         str(system.get("check_laminarization", False)),
     ]

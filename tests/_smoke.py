@@ -14,8 +14,8 @@ row is a dict: ``name``, the CLI ``args`` (naming the flow with
    dt``): it was not cut short by corrector divergence (the main loop
    stops once ``err`` reaches ``corrector_tolerance``);
 3. the final corrector error is finite and below
-   ``corrector_tolerance`` (catches a late divergence in the last
-   ``it_error_check`` steps);
+   ``corrector_tolerance`` (catches a divergence in the last
+   ``it_error_check`` steps, which the loop does not stop on);
 4. every numeric value on the final summary line is finite (NaN/Inf
    print as ``nan``/``inf``).
 
@@ -50,8 +50,7 @@ def res_flags(row_args: list[str], nx: str, ny: str, nz: str) -> list[str]:
 
     The cylindrical and annular flows take the aliased names (axial
     ``nz``, radial ``nr``, azimuthal ``ntheta``); the internal meaning
-    (``nx`` axial, ``ny`` radial, ``nz`` azimuthal) is unchanged.  The
-    flow's geometry comes from the registry.
+    (``nx`` axial, ``ny`` radial, ``nz`` azimuthal) is unchanged.
     """
     from dnsjax.flows.registry import spec_for
 
@@ -97,23 +96,20 @@ def check_run(stdout: str, name: str, max_sim_time: float, dt: float) -> str:
     t_final = float(t_match.group(1))
     err = float(err_match.group(1))
 
-    # Reached the end (not cut short by corrector divergence).  The last
-    # step lands t on (or slightly past) max_sim_time; allow one dt of slack.
+    # The last step lands t on (or slightly past) max_sim_time; allow one
+    # dt of slack.
     if not (t_final >= max_sim_time - dt):
         raise AssertionError(
             f"{name}: run ended early at t={t_final} (< {max_sim_time}); "
             "integration did not complete"
         )
 
-    # Final corrector error finite and converged (catches a divergence
-    # in the last it_error_check steps that the loop did not stop on).
     if not (math.isfinite(err) and err < CORRECTOR_TOLERANCE):
         raise AssertionError(
             f"{name}: final corrector error {err:.3e} not in "
             f"[0, {CORRECTOR_TOLERANCE:.0e})"
         )
 
-    # No NaN / Inf anywhere on the summary line (every diagnostic finite).
     values = [float(v) for v in VALUE_PATTERN.findall(summary)]
     if not all(math.isfinite(v) for v in values):
         raise AssertionError(

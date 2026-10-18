@@ -20,7 +20,7 @@ The residual is finite-difference/truncation level: a central-difference
 both convergent.  The guard is deliberately loose (``< BUDGET_TOL``
 relative to the *term* magnitudes ``max(|I|, |D|, |dE/dt|)``, **excluding
 the first-step projection transient**) so it catches an ``O(1)`` leak,
-not the expected ``O(dt)`` finite-difference size.  Normalizing by the
+not the expected truncation-level residual.  Normalizing by the
 term magnitudes -- not by ``I - D``, which is near-zero for a
 laminar-dominated pipe roll -- keeps it well-conditioned in every case.
 
@@ -30,12 +30,11 @@ notes ("Consistent influence matrix").  The pipe entries start
 from a resolved IC (``localized_rolls``) to keep the two formulations
 comparable; neither *needs* it.
 
-Plane-Poiseuille carries the only mean streamwise pressure gradient in
-this file, so it is the only flow whose ``I`` has driving-dependent
-branches, and the only Cartesian config with a moving frame
-(``phys.u_grid = 2/3``).  Both branches are covered, plus spanwise
-blocking on both Cartesian flows: ``I`` has **no** spanwise term, so
-those entries fail visibly if the blocking force did any work.  Each
+Plane-Poiseuille is the only flow here run under both drivings (both
+``I`` branches), and the only Cartesian config with a moving frame
+(``phys.u_grid = 2/3``).  Spanwise blocking runs on both Cartesian
+flows: ``I`` has **no** spanwise term, so those entries fail visibly
+if the blocking force did any work.  Each
 entry with an active hold additionally checks that the force is
 non-zero and the bulk it holds is zero to rounding -- "no work" is
 only informative when the force is real.  Which `$\Pi$` estimate
@@ -66,10 +65,8 @@ STEPS = 40  # total steps; the budget is read after the startup skip
 SKIP = 12  # drop the first-step projection transient before judging
 BUDGET_TOL = 0.05  # max|dE/dt-(I-D)| / max(|I|,|D|,|dE/dt|), steady
 
-# Each entry: (label, system, [extra CLI flags]).  A random IC (the
-# default start mode) unless the flags select localized_rolls; the pipe
-# entries use a localized-rolls spot so both flag settings are judged
-# on the same resolved field.
+# The pipe entries' localized-rolls spot (module docstring); every
+# other entry starts from the default random IC.
 _ROLLS = [
     "--init.localized_rolls",
     "True",
@@ -105,13 +102,10 @@ CONFIGS = [
     ),
     ("pipe default", "pipe", [*_ROLLS, "--res.consistent_imm", "True"]),
     ("pipe legacy", "pipe", [*_ROLLS, "--res.consistent_imm", "False"]),
-    # Plane-Poiseuille is the only flow here whose mean streamwise
-    # pressure gradient does work, so it is the only one whose ``I``
-    # has driving-dependent branches (``plane_poiseuille.py``'s
-    # ``I_cpg`` / ``I_cbv``) -- and the only Cartesian config with a
-    # moving frame (``phys.u_grid = 2/3``).  The plain flow keeps the
-    # default/legacy pairing; the three driving variants do not,
-    # because ``_apply_bulk_corrections`` is called by *both* IMM
+    # Plane-Poiseuille's ``I`` branches (module docstring) are
+    # ``plane_poiseuille.py``'s ``I_cpg`` / ``I_cbv``.  The plain flow
+    # keeps the default/legacy pairing; the three driving variants do
+    # not, because ``_apply_bulk_corrections`` is called by *both* IMM
     # paths (``cartesian._imm_iteration_vw`` and
     # ``_cartesian_primitive_imm``), so pairing them re-runs one
     # shared function.
@@ -127,18 +121,15 @@ CONFIGS = [
     ),
     # Constant bulk velocity: the applied gradient is time-varying and
     # its work is ``U_b_lam * (-dPds')`` with ``U_b_lam = 2/3``, the
-    # one row of the driving table where neither factor vanishes.
+    # one driving configuration here where neither factor vanishes.
     (
         "plane-poiseuille cbv",
         "plane-poiseuille",
         ["--phys.driving", "constant_bulk_velocity"],
     ),
     # Spanwise blocking applies a real, time-varying uniform force
-    # ``-dPdn'`` that ``I`` has **no term for** -- correctly, because
-    # the bulk it holds is *zero*, so the force does no work.  If that
-    # argument were wrong the budget here would visibly fail to close,
-    # which is what makes these two entries a test and not a
-    # restatement.
+    # ``-dPdn'`` that ``I`` has **no term for**, correctly: the bulk it
+    # holds is *zero*, so the force does no work (module docstring).
     (
         "plane-poiseuille cbv+span",
         "plane-poiseuille",
@@ -175,8 +166,7 @@ _SEED_FLAGS = ["--init.random_seed", "1"]
 def _base_flags(system: str) -> list[str]:
     """Resolution / Reynolds per family (moderate, resolved).
 
-    Carries :data:`_SEED_FLAGS`, so every launch below is on the one
-    measured trajectory.
+    Carries :data:`_SEED_FLAGS`.
     """
     if system == "plane-poiseuille":
         # The minimal-channel box (lx+ ~ 270, lz+ ~ 108 at Re_tau ~ 135)
@@ -346,9 +336,9 @@ _APPLIED_NY = (33, 49, 65, 97)
 #: test anything.
 _APPLIED_T = 60.0
 _APPLIED_FROM = 40.0
-#: Below this the wall-normal grid is too coarse for the
-#: budget to close at all (see the table): those rungs are
-#: measured and printed, not asserted on.
+#: Below this the wall-normal grid is too coarse for the budget to
+#: close at all (see the table): those rungs enter the two convergence
+#: checks only, not the closure or the cancellation one.
 _APPLIED_RESOLVED = 49
 
 
@@ -386,13 +376,12 @@ def _check_applied_vs_inferred() -> str | None:
 
     ``get_stats`` is a function of the *state* alone, so under
     ``constant_bulk_velocity`` it can only infer `$\Pi$` from the wall
-    shear (``plane_poiseuille.py``'s ``dpds_pert``).  That drops
-    `$\mathrm{bulk}(\bar N_s)$`, the mean-mode bulk of the discrete
-    nonlinear term -- continuously zero, a finite wall-normal
-    truncation residual discretely.  The corrector's **applied** value
-    is a different, exact quantity, recorded in ``stats.dat`` as
-    ``-dPds'``, so the total-field budget can be closed both ways and
-    the two compared.
+    shear (``plane_poiseuille._get_stats_jit``'s ``dpds_pert``),
+    dropping `$\mathrm{bulk}(\bar N_s)$`, the mean-mode bulk of the
+    discrete nonlinear term (zero continuously, a truncation residual
+    discretely).  The corrector's **applied** value is exact,
+    recorded in ``stats.dat`` as ``-dPds'``, so the total-field budget
+    can be closed both ways and the two compared.
 
     Measured here (plane-Poiseuille MFU, ``Re = 3000``, ``nx = nz =
     16``, judged over the developed window ``t`` in ``[40, 60]``):
@@ -406,17 +395,14 @@ def _check_applied_vs_inferred() -> str | None:
     97      3.0e-3              5.3e-3             9.3e-3
     ======  ==================  =================  ==============
 
-    Two things to read off, and the second is the non-obvious one.
-
     The `$\Pi$` gap **converges** (7.7e-1 to 9.3e-3): the wall-shear
     inference and the applied force agree in the limit, as they must.
     At ``ny = 33`` nothing closes at all -- that rung is here to show
     what an under-resolved wall-normal grid looks like, not to pass.
 
     But the *inferred* `$\Pi$` closes the budget **better** than the
-    applied one at every resolved rung.  That is not a statement about
-    which estimate is right -- the applied force is the exact input
-    rate -- but about ``I - D`` being an incomplete discrete
+    applied one at every resolved rung, although the applied force is
+    the exact input rate, because ``I - D`` is an incomplete discrete
     budget.  Writing
     `$I_{ws} = I_{app} - \tfrac23\,\mathrm{bulk}(\bar N_s)$`, the true
     discrete defect of `$dE/dt = I_{app} - D$` is the nonlinear term's
@@ -431,8 +417,7 @@ def _check_applied_vs_inferred() -> str | None:
     So **do not** "fix" ``get_stats`` to report the applied column:
     that would make ``I`` a better estimate of the physical input rate
     and a worse partner for ``D`` in the discrete budget.  The applied
-    column stays the right answer to "what force is being applied",
-    which is what ``lab/tests/test_twin_budget.py`` uses it for.
+    column stays the right answer to "what force is being applied".
 
     Asserts the two convergences, that the ``I`` column closes for
     ``ny >= _APPLIED_RESOLVED``, and that the cancellation above still

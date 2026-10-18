@@ -5,8 +5,8 @@ The launched-run machinery both suites' ``test_run_status.py`` share
 a launched run's output while it runs, :func:`check_stopped` judges a
 graceful stop, :func:`live_natural` is the natural finish whose initial
 snapshot a case of another entry point may start from, :func:`live_stop`
-builds a stop case,
-and :func:`run_cases` runs a list of cases and reports.
+builds a stop case, and :func:`run_cases` runs a list of cases and
+reports.
 """
 
 from __future__ import annotations

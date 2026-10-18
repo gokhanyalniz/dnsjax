@@ -1,9 +1,8 @@
 r"""A simulated second host, for the ``mpirun`` launches of the tests.
 
 XLA's distributed runtime tells hosts apart by their boot id
-(``/proc/sys/kernel/random/boot_id``) and gives each host's devices a
-``slice_index`` of their own, so a rank that reads another boot id is
-on another node as far as JAX is concerned.  :data:`FAKE_HOST` wraps
+(``/proc/sys/kernel/random/boot_id``), so a rank that reads another
+boot id is on another node as far as JAX is concerned.  :data:`FAKE_HOST` wraps
 one rank's command (``sh -c FAKE_HOST sh CMD...``): a rank for which
 the shell expression ``$DNSJAX_TEST_SECOND_HOST`` is nonzero -- written
 in terms of ``rank``, e.g. ``rank % 2`` -- re-runs the command in a

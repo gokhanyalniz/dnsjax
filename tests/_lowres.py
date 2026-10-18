@@ -132,8 +132,7 @@ def host_reduce(np, field, *, scalar: bool):
             for row in wall_velocity_rows():
                 field[:3, row] = 0.0
         else:
-            # The pressure's gauge, re-pinned after the truncation: its
-            # (0, 0) mode zero at the upper wall.
+            # The pressure's gauge, re-pinned after the truncation.
             top = field[:, -1, 0, 0].copy()
             field[:, :, 0, 0] -= top[:, None]
     field = field[:, :, wrap_keep(res.nz - 1, lo.nz - 1)]

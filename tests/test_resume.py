@@ -15,26 +15,31 @@ Two layers:
    resumes); switching ``geo.grid_type`` (rigged <-> half-CGL) *is* a
    trajectory change; a trajectory-defining extension section (one the
    test registers) is compared alongside; a pre-v6 ``format_version``
-   is rejected.  Plus
-   ``run_grid_validation_checks`` (the half-CGL rules: rejected for
-   non-cylindrical systems and with ``cnab2``, accepted on the pipe
-   with ``iterative-cn``) and ``run_grid_default_resolution_checks``
-   (``update_parameters`` resolves an unset ``geo.grid_type`` from
-   the flow spec: cylindrical ``"half-cgl"`` under ``iterative-cn``
-   / ``"rigged-cgl"`` under cnab2, ``"cgl"`` for Cartesian/annular,
+   is rejected.  Plus ``run_grid_validation_checks`` (the half-CGL
+   rules: rejected for non-cylindrical systems and with ``cnab2``,
+   accepted on the pipe with ``iterative-cn``),
+   ``run_grid_default_resolution_checks`` (``update_parameters``
+   resolves an unset ``geo.grid_type`` from the flow spec, on every
+   layer: cylindrical ``"half-cgl"`` under ``iterative-cn`` /
+   ``"rigged-cgl"`` under cnab2, ``"cgl"`` for Cartesian/annular,
    ``None`` for periodic and ``wall_grid`` runs; a user-set value
-   survives layer flips).
+   survives layer flips), the one-line refusal of a non-checkpoint
+   ``--init.snapshot`` and of a recorded section nothing registers, and
+   an inherited cadence switched off by ``0`` (the docstrings of
+   ``run_refusal_message_checks``, ``run_unknown_section_checks`` and
+   ``run_off_cadence_checks``).
 
 2. **Subprocess integration** driving ``python -m dnsjax`` (via
    ``mpirun``, one device) end to end in temporary directories,
-   asserting the new snapshot behaviour:
+   asserting:
 
    - a non-snapshot start saves its IC as ``state00000.tar`` and a final
      ``stateNNNNN.tar`` on termination, each carrying an ``isnap``
      metadata field and an embedded ``_dnsjax_stats.json`` member;
    - a resume with unchanged Physics/Geometry/Resolution **continues**
      the lineage (no IC re-save; numbering picks up at the resumed
-     index + 1) -- even with competing ``--init.random_field`` /
+     index + 1; ``stop.max_sim_time`` counts from the resumed ``t``)
+     -- even with competing ``--init.random_field`` /
      ``--init.start_from_laminar`` flags passed, confirming a provided
      snapshot takes precedence over every in-process init mode;
    - a resume with a changed ``phys.re`` starts a **new trajectory**
@@ -53,13 +58,14 @@ Two layers:
 
 3. **Carried fields** (the pipe family's ``carry/`` member,
    :mod:`dnsjax.snapshot`): a pipe run's periodic snapshots carry the
-   member and name it in their metadata, while the IC snapshot, a
-   Cartesian one and a run with ``outs.snapshot_embed_carry False``
-   carry none.  The JAX-free reader returns the state alone.  A resume
-   from a snapshot with the member continues the uninterrupted run to
-   round-off ("restored").  A resume from the same state without it
-   re-derives the fields from the velocity and lands measurably off
-   that run.  A resume that re-grids re-derives them too.
+   member and name it in their metadata, while the IC snapshot and a
+   run with ``outs.snapshot_embed_carry False`` carry none.  The
+   JAX-free reader returns the state alone.  A resume from a snapshot
+   with the member continues the uninterrupted run to round-off
+   (``CARRY_RESTORED_TOL``, "restored").  A resume from the same state
+   without it re-derives the fields from the velocity and lands
+   measurably off that run (``CARRY_REDERIVED_MIN``).  A resume that
+   re-grids re-derives them too.
 
 Run as a script::
 
@@ -215,12 +221,8 @@ CARRY_REDERIVED_MIN = 1e-9
 def run_unit_checks() -> str | None:
     """Offline units of the resume comparison and the solver-section skip.
 
-    ``trajectory_defining_changes`` and ``read_snapshot_params``'s
-    solver-section skip (no JAX/mpirun).
-
-    Stored dumps are built with ``recorded_params_dump`` -- the
-    public-named representation snapshots embed -- so
-    these units exercise the internalize-on-compare path.
+    Stored dumps are built with ``recorded_params_dump`` (the module
+    docstring), so these units exercise the internalize-on-compare path.
     """
     from dnsjax.param_surface import recorded_params_dump
     from dnsjax.parameters import params, trajectory_defining_changes
@@ -266,9 +268,7 @@ def run_unit_checks() -> str | None:
         assert changes == [], ("step.adaptive", changes)
 
         # A stored core-section key this version does not define is a
-        # hard error: the snapshot means something by it, and resuming
-        # against a setup that differs from the stored one with nothing
-        # reporting it is the failure mode being refused here.
+        # hard error (why: the ``trajectory_defining_changes`` docstring).
         snap_unknown = recorded_params_dump(params)
         snap_unknown["geo"]["no_such_field"] = 0
         try:
@@ -315,12 +315,11 @@ def run_unit_checks() -> str | None:
         example.values = example.model()
         assert changes == [], ("extension match", changes)
 
-        # A snapshot embedding solver params the current model no
-        # longer defines (a retired backend name and its knobs) must
-        # still resume: ``read_snapshot_params`` drops the
-        # execution-only [solver] section before validation.  A stored
-        # extension section comes back as an extension overlay; with
-        # nothing configured, none was recorded and none comes back.
+        # Retired solver params (a backend name and its knobs) must still
+        # resume: ``read_snapshot_params`` drops the section (module
+        # docstring).  A stored extension section comes back as an
+        # extension overlay; with nothing configured, none was recorded
+        # and none comes back.
         import io
         import json
         import tarfile
@@ -412,7 +411,6 @@ def run_grid_validation_checks() -> str | None:
 
     ok = True
     try:
-        # half-CGL on a non-cylindrical system -> rejected.
         params.phys.system = "plane-couette"
         params.geo.grid_type = "half-cgl"
         params.step.scheme = "iterative-cn"
@@ -424,7 +422,6 @@ def run_grid_validation_checks() -> str | None:
         params.step.scheme = "cnab2"
         ok = ok and raises()
 
-        # half-CGL on the pipe with iterative-cn -> accepted.
         params.step.scheme = "iterative-cn"
         ok = ok and not raises()
     finally:
@@ -435,10 +432,7 @@ def run_grid_validation_checks() -> str | None:
 
 
 def _restore_params(saved_dump: dict, saved_user_set: set) -> None:
-    """Restore the sections the grid units mutate.
-
-    Plus the ``_user_set_fields`` layer bookkeeping.
-    """
+    """Restore what the grid units mutate (``_user_set_fields`` too)."""
     import dnsjax.parameters as P
 
     for section in ("phys", "geo", "res", "step"):
@@ -450,15 +444,7 @@ def _restore_params(saved_dump: dict, saved_user_set: set) -> None:
 
 
 def run_grid_default_resolution_checks() -> str | None:
-    """Offline unit: scheme-dependent ``geo.grid_type`` resolution.
-
-    ``update_parameters`` resolves an unset ``grid_type`` to a
-    concrete per-family/per-scheme value (re-resolved on every layer,
-    like ``solver.backend``): cylindrical half-CGL under
-    ``iterative-cn``, rigged (``"cgl"``) under cnab2, ``"cgl"`` for
-    Cartesian/annular, ``None`` for periodic systems and custom
-    ``wall_grid`` runs; an explicitly-set value is never overridden.
-    """
+    """Offline unit: scheme-dependent ``geo.grid_type`` resolution."""
     import dnsjax.parameters as P
     from dnsjax.parameters import Parameters, params, update_parameters
 
@@ -581,12 +567,10 @@ def run_refusal_message_checks() -> str | None:
 def run_unknown_section_checks() -> str | None:
     """Offline unit: a recorded section nothing registers refuses the resume.
 
-    A snapshot records a parameter section only while it is in use
-    (``extension_metadata``), so one this installation does not
-    register -- a plugin's, absent here -- was in use when the snapshot
-    was written and may define its trajectory.  The resume refuses in
-    one ``<prog>: error:`` line naming the section and the way out,
-    under the solver's name or another entry point's own; with
+    The section is a plugin's this installation lacks (why that refuses:
+    :func:`dnsjax.parameters.unregistered_sections`).  The resume
+    refuses in one ``<prog>: error:`` line naming the section and the
+    way out, under the solver's name or another entry point's own; with
     ``init.force_resume`` it goes on without the section, which the
     resolved setup reports for the banner.  The override follows the
     layers' precedence: a ``parameters.toml`` setting it is overruled
@@ -782,8 +766,7 @@ def _snap_indices(workdir: str) -> list[int]:
     return sorted(out)
 
 
-# JAX backend for the mpirun integration children; set from
-# --dist.platform in __main__ (cuda runs the resume integration on a GPU).
+# The mpirun integration children's JAX backend (--dist.platform).
 _PLATFORM = "cpu"
 
 
@@ -861,13 +844,10 @@ def run_integration(timeout: float) -> str | None:
         assert read_snapshot_stats(final_path), "final snapshot lacks stats"
 
         # --- Run 2: continuation resume (same params, same dir) ------
-        # Also pass competing in-process init flags (random_field +
-        # start_from_laminar): a provided snapshot must take precedence
-        # over every other init mode, so this still resumes (and, with
-        # unchanged params, continues the trajectory).
-        # ``max_sim_time`` is the horizon *past the resumed state*:
-        # 0.02 from t = 0.03 ends at t = 0.05 (as an absolute stop
-        # time it would have ended the run before its first step).
+        # With the competing in-process init flags (module docstring).
+        # ``max_sim_time`` 0.02 from t = 0.03 ends at t = 0.05 (as an
+        # absolute stop time it would have ended the run before its
+        # first step).
         r2 = _run_dnsjax(
             work1,
             [
@@ -888,8 +868,6 @@ def run_integration(timeout: float) -> str | None:
             return _fail("run2 (continuation)", r2)
         assert "NEW trajectory" not in r2.stdout, "unexpected new trajectory"
         assert "Resumed from snapshot" in r2.stdout, r2.stdout[-1500:]
-        # Snapshot precedence: neither in-process IC was used despite the
-        # competing flags above.
         assert "in-process random IC" not in r2.stdout, (
             "snapshot must take precedence over --init.random_field"
         )
@@ -1052,10 +1030,10 @@ def run_integration(timeout: float) -> str | None:
         ]
 
         # --- Run 8: --init.snapshot that is not a dnsjax snapshot ----
-        # Must refuse loudly.  Falling through to an in-process mode
-        # would start a run that silently computes something else --
-        # a typo'd path is the common case -- so the competing
-        # random_field flag below must NOT rescue it.
+        # Falling through to an in-process mode would start a run that
+        # silently computes something else -- a typo'd path is the
+        # common case -- so the competing random_field flag of
+        # RUN1_ARGS must not rescue it.
         work_bad = os.path.join(base, "bad_snapshot")
         os.makedirs(work_bad)
         not_a_snapshot = os.path.join(base, "not_a_snapshot.tar")

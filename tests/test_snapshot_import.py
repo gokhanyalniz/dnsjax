@@ -9,10 +9,11 @@ process).  Run directly::
     uv run python tests/test_snapshot_import.py --system pipe   # one
 
 The converter takes input already in dnsjax's **native** component/axis
-order (shape ``(3, ny, nz, nx)``; pipe/TC components
-``(u_z, u_r, u_theta)`` over ``(r, theta, z_ax)``, every component a
-real field), so the checks pin the *native* contract:
+order (the :mod:`dnsjax.analysis.snapshot_import` docstring), so the
+checks pin that contract:
 
+- **strict surface**: an internal or irrelevant resolution name is
+  refused before any singleton is touched.
 - **single-mode placement**: a pure cosine along one native input axis
   lands in exactly the expected dnsjax spectral slot with the
   ``norm="forward"`` amplitude 1/2 -- pins the native component basis,
@@ -127,8 +128,7 @@ def _run_one(system: str) -> int:
 
     from dnsjax.analysis import snapshot_import as si
 
-    # Strictness of the public surface: an internal / irrelevant name
-    # must be rejected before any singleton is touched.
+    # Strictness of the public surface (module docstring).
     bad = "nx" if "nr" in cfg else "ntheta"
     try:
         si.configure_target(system, **{**cfg, bad: 4})
@@ -215,7 +215,7 @@ def _run_one(system: str) -> int:
     else:  # pipe / annular: native (u_z, u_r, u_theta) over (r, th, z_ax)
         # Identical for pipe and TC: u_z is component 0 along the axial
         # real axis (3); u_r/u_theta are components 1/2 along the
-        # azimuthal complex axis (2).  No swap, no component mixing.
+        # azimuthal complex axis (2).
         k0 = 2
         s = si.to_spectral_state(_single_mode_field(0, 3, k0))
         exp = jnp.zeros_like(s).at[0, :, 0, k0].set(0.5)

@@ -1,17 +1,14 @@
 r"""Shared machinery of the host-placement tests, core and lab.
 
-The contract the scripts pin, and why:
-
-``jax.device_put`` of a host (NumPy) value onto a sharding that spans
-several processes first checks that every process passed the same
-value, by gathering all ``W`` copies onto every process
-(``jax.experimental.multihost_utils.assert_equal``): each process
-briefly holds about twice ``W`` times the array, so the cost grows
-with the job, not with the problem.  On ARCHER2 that check, on the two
-dense wall-normal derivative matrices alone, was the per-rank memory
-peak of every 4-node layout (``sharding.Sharding.distribute`` has the
-numbers).  Host arrays reach the mesh through ``distribute`` instead,
-which builds each process's shards from its own copy.
+The contract the scripts pin: no host (NumPy) array reaches a sharding
+that spans several processes through ``jax.device_put``, which first
+checks that every process passed the same value by gathering all
+``W`` copies onto every process
+(``jax.experimental.multihost_utils.assert_equal``), a cost that grows
+with the job, not with the problem.  Host arrays go through
+``sharding.Sharding.distribute`` instead (the why and the ARCHER2
+numbers: the :mod:`dnsjax.sharding` Design notes, "Why not
+jax.device_put").
 
 Each case runs an entry point (the solver, or a plugin's driver) on
 two ranks (``mpirun -np 2``) with a recorder on ``assert_equal``,

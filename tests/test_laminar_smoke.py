@@ -1,27 +1,22 @@
 r"""Laminar smoke tests for the core wall-bounded flows.
 
 Runs each core wall-bounded system from its laminar state for a few
-time steps at low resolution (the runner: ``tests/_laminar_smoke.py``;
-the lab's flows have a table of their own,
-``lab/tests/test_laminar_smoke.py``), verifying that:
+time steps at low resolution against the criteria of the runner,
+``tests/_laminar_smoke.py``: a single corrector iteration, a stepping
+error of `$O(10^{-18})$` or less, a perturbation energy of
+`$O(10^{-32})$` or less, a roundoff-sized ``corrector.dat`` error on
+every step, and a ``steps.dat`` CFL that matches the laminar base flow
+in the default moving frame.  The lab's flows have a table of their
+own, ``lab/tests/test_laminar_smoke.py``.
 
-- The corrector converges in a single iteration.
-- The stepping error is `$O(10^{-18})$` or less.
-- The perturbation energy stays at `$O(10^{-32})$` or less.
-- The CFL diagnostic (``steps.dat``, written every
-  ``it_steps = 1`` steps) matches the laminar base flow in the
-  (default) moving frame of reference: the active grid-direction
-  column is `$\Delta t \, \max|U - U_{grid}| \, n / l$` and the
-  remaining columns are roundoff-sized.  ``phys.u_grid`` defaults to
-  the laminar bulk velocity, so the active CFL is `$\max|U_x| = 1$`
-  for plane-Couette (`$U_{grid} = 0$`), `$2/3$` of it for
-  plane-Poiseuille (`$U_{grid} = 2/3$`, max at the walls), `$1/2$` of
-  it for the pipe (`$U_{grid} = 1/2$`, max at the `$r = 1$` wall), and
-  the azimuthal `$\max|U_\theta/r| = 1$` for Taylor-Couette
-  (`$U_{grid} = 0$`), doubled on its ``geo.m0 = 2`` wedge.
-- The corrector diagnostic (``corrector.dat``, written every
-  ``it_corrector = 1`` steps) records ``c = 0`` (a single corrector
-  step) and a roundoff-sized error for every step.
+The active CFL column is `$\Delta t \, \max|U - U_{grid}| \, n / l$`
+and the others are roundoff-sized.  ``phys.u_grid`` defaults to the
+laminar bulk velocity, so the active CFL is `$\max|U_x| = 1$` for
+plane-Couette (`$U_{grid} = 0$`), `$2/3$` of it for plane-Poiseuille
+(`$U_{grid} = 2/3$`), `$1/2$` of it for the pipe (`$U_{grid} = 1/2$`),
+and the azimuthal `$\max|U_\theta/r| = 1$` for Taylor-Couette
+(`$U_{grid} = 0$`), doubled on its ``geo.m0 = 2`` wedge (where each
+maximum sits: the runner's ``CFL_*`` constants).
 
 Caveat: the laminar state has ``u' = 0``, so every `$\omega'$`/
 `$u'$`-proportional term vanishes -- this checks the base-flow fixed
@@ -30,22 +25,22 @@ rotational nonlinear term (a wrong ``rhs.py``/advection change can
 still report ``err = 0``); ``tests/test_random_smoke.py`` drives that
 path.
 
-The suite also guards the ``dnsjax`` console script: a ``--help``
-preflight (exit 0, usage text, **no files created**: ``--help`` must
-never start a simulation), a ``bare-launch`` pair
-running the console script with **no** ``mpirun`` at all (a lone
-process starts no distributed runtime, so it must step to the same
-``err`` / `$E'$` as the launched rows -- and must refuse to hold
-several CPU devices by itself), one smoke case launched
-through the installed ``dnsjax`` script under ``mpirun`` (the
-distributed init through the console path; same
-:func:`dnsjax.__main__.main` as ``python -m dnsjax``), and a
-``plane-couette-nz-pad`` case whose ``nz = 6`` yields the odd natural
-``nz_padded = 9`` -- stepped as-is where ``np1`` divides it (asserting
-that no rounding note appears; pad parity is unconstrained), rounded
-up for ``np1`` divisibility otherwise (asserting the startup
-diagnostic, e.g. 9 -> 10 at ``np1 = 2``).  Console-script entries are
-skipped with a notice when the script is not installed (``uv sync``).
+The suite also guards the ``dnsjax`` console script (the why of each
+check: its runner function): a ``--help`` preflight (exit 0, usage
+text, **no files created**), a ``bare-launch`` pair running the
+console script with **no** ``mpirun`` at all (it must meet the
+``err`` / `$E'$` thresholds of the launched rows, and refuse to hold
+several CPU devices in one process, naming the launch that works), and
+one smoke case launched through the installed ``dnsjax`` script under
+``mpirun`` (the CLI parse and the distributed init through the console
+entry point; same :func:`dnsjax.__main__.main` as
+``python -m dnsjax``).  Console-script entries are skipped with a
+notice when the script is not installed (``uv sync``).  A
+``plane-couette-nz-pad`` case, whose ``nz = 6`` yields the odd natural
+``nz_padded = 9``, steps as-is where ``np1`` divides it (asserting that
+no rounding note appears) and is rounded up for ``np1`` divisibility
+otherwise (asserting the startup diagnostic, e.g. 9 -> 10 at
+``np1 = 2``).
 
 Usage (single device)::
 
@@ -108,11 +103,8 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # nz = 6 gives the odd natural nz_padded = 9: an odd
-        # dealiasing pad (9 - 6 = 3) that steps as-is wherever np1
-        # divides 9 (pad parity is unconstrained), and is rounded up
-        # for np1 divisibility otherwise (np1 = 2: 9 -> 10) -- the
-        # layout-dependent expectation lives in ``_nz_pad_note``.
+        # An odd dealiasing pad (9 - 6 = 3), allowed: pad parity is
+        # unconstrained.  The expectation per layout: ``_nz_pad_note``.
         # The laminar CFL checks are nz-agnostic for plane-Couette
         # (streamwise-active).
         "name": "plane-couette-nz-pad",
@@ -136,10 +128,7 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # The base case launched through the installed ``dnsjax``
-        # console script instead of ``python -m dnsjax``: proves the
-        # CLI parse and the distributed init through the console entry
-        # point (skipped with a notice when not installed).
+        # The base case, launched through the installed console script.
         "name": "plane-couette-console-script",
         "cfl_active": CFL_X_LAMINAR,
         "console": True,
@@ -383,13 +372,12 @@ SYSTEMS: list[dict] = [
     {
         # The legacy res.consistent_imm = False path: the primitive
         # (v, p) scheme must leave the laminar fixed point exactly
-        # fixed too.  Every entry above already covers the default
+        # fixed too.  Every entry above covers the default
         # reconstruction scheme, whose every term is linear in u' and
-        # so vanishes identically at u' = 0 -- err = 0 there is the
-        # cheap structural proof that it adds nothing spurious (it is
-        # the *nonlinear* smoke that has teeth; see
-        # tests/test_random_smoke.py).  One legacy entry per geometry
-        # covers the three implementations.
+        # so vanishes identically at u' = 0: err = 0 there is the cheap
+        # structural proof that it adds nothing spurious (the teeth are
+        # the nonlinear smoke's: the module docstring's caveat).  One
+        # legacy entry per geometry covers the three implementations.
         "name": "plane-couette-legacy-imm",
         "cfl_active": CFL_X_LAMINAR,
         "args": [
@@ -440,8 +428,8 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Pipe opt-in (the spin-quad formulation): same cheap
-        # structural proof that it leaves u' = 0 fixed.
+        # The pipe's legacy primitive scheme: same cheap structural
+        # proof that it leaves u' = 0 fixed.
         "name": "pipe-legacy-imm",
         "cfl_active": CFL_GRID_LAMINAR_PIPE,
         "args": [

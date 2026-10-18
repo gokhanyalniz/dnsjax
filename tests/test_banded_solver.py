@@ -2,14 +2,16 @@
 
 Pallas banded backend (``PerModeBandedPallasOperator``):
 
-1. Pure-JAX banded-sweep path and Pallas interpret-mode parity vs
-   dense over an ``fd_order`` sweep, real + complex RHS, single +
-   stacked operators (built via ``from_banded_factors`` into the
-   mode-inner layout).
+1. Pure-JAX banded-sweep path vs dense over an ``fd_order`` sweep,
+   real + complex RHS, single + stacked operators (built via
+   ``from_banded_factors`` into the mode-inner layout); Pallas
+   interpret-mode parity vs the pure-JAX sweep ``_banded_solve_batched``
+   (factors from ``_mode_inner_factors``), and vs dense for stacked
+   operators (item 6).
 2. The interpret-parity test sweeps two mode-plane sizes so the
    ``(bm0, bm1)`` tile does *not* divide the plane, exercising the
    kernel's pad-to-whole-tiles path (pad/crop checked against the
-   CPU sweep).
+   mode-outer pure-JAX sweep ``_banded_solve_batched``).
 3. ``test_pallas_cuda_lowering``: compile-only guard (no GPU needed)
    -- lowers the mode-tiled kernel for ``cuda`` and asserts a Triton
    custom call, catching the f64-TMA / non-power-of-two /
@@ -25,12 +27,12 @@ Pallas banded backend (``PerModeBandedPallasOperator``):
    round-off).
 5. The reverse-mode rule: the transposed sweep solves `$A^T x = b$`
    (``test_pallas_transpose_identity``); the ``custom_vjp`` matches
-   the portable sweep's own autodiff in all three cotangents, with a
-   finite-difference check on every band slot
-   (``test_pallas_adjoint_matches_portable_sweep`` -- the portable
-   :func:`_banded_solve_batched` is the independent reference, so it
-   must never be routed through the rule); and the adjoint composes
-   inside ``.solve``'s ``shard_map``
+   the portable sweep's own autodiff in all three cotangents, with
+   finite differences on an in-band slot of each factor and on the
+   reciprocated diagonal (``test_pallas_adjoint_matches_portable_sweep``
+   -- the portable :func:`_banded_solve_batched` is the independent
+   reference, so it must never be routed through the rule); and the
+   adjoint composes inside ``.solve``'s ``shard_map``
    (``test_pallas_adjoint_composes_in_solve``).
 6. Stacked operators solve on both paths, whose stored family axes
    differ (``test_pallas_stacked_operators``), and a stacked CPU solve
@@ -41,10 +43,13 @@ The interpret/lowering tests call ``_pallas_banded_solve`` directly
 with local, uncommitted factors (``_mode_inner_factors``; in
 production the kernel runs only inside the ``.solve`` shard_map
 region, where arrays are local by construction) and clear the
-Explicit mesh (``jax.set_mesh(None)``): the kernel's indexed ref
-stores discharge to a sharding-checked ``dynamic_update_slice`` only
-in interpret mode.  Real-GPU execution and perf (tile tuning) are
-outside this suite: they are what the lab's
+Explicit mesh (``jax.set_mesh(None)``): in interpret mode only, the
+kernel's indexed ref stores discharge to a sharding-checked
+``dynamic_update_slice``, which rejects the ``{Explicit}`` vs ``{}``
+sharding pair under that mesh.  The real Triton path lowers the store
+natively (no discharge), and the mesh here is a trivial 1-device one,
+so clearing it leaves the numerics unchanged.  Real-GPU execution and
+perf (tile tuning) are outside this suite: they are what the lab's
 ``lab/scripts/performance/solver_benchmark.py`` and
 ``pallas_solve_profile.py`` measure on a GPU node.
 Multi-device solve coverage (per-shard factor padding on a
@@ -61,11 +66,10 @@ from __future__ import annotations
 import sys
 
 # Select the JAX backend from --dist.platform (default cpu) and enable
-# float64 *before* importing any dnsjax module that captures the platform
-# (``sharding.Sharding`` does so at class-definition time) or creating any
-# JAX array (float64 avoids a silent float32 downcast that fails the
-# comparisons below).  ``--dist.platform cuda`` then executes the real
-# Pallas kernels on a GPU.
+# float64 *before* any dnsjax module captures the platform
+# (``sharding.Sharding``, at class definition) or any JAX array exists:
+# a silent float32 downcast would fail the comparisons below.
+# ``--dist.platform cuda`` then executes the real Pallas kernels on a GPU.
 from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
 from dnsjax.parameters import (
     params,
@@ -144,13 +148,10 @@ def _mode_inner_factors(Lo: jnp.ndarray, Uo: jnp.ndarray):
     """Kernel-layout factors from the ``_banded_factor`` output, locally.
 
     Mode-inner, reciprocated-diagonal factors from the mode-outer
-    output, as plain local arrays.
-
-    Bypasses ``from_banded_factors``, whose shard_map commits the
-    result to the Explicit mesh: the direct ``_pallas_banded_solve``
-    calls below unit-test the *local* kernel function with local,
-    uncommitted inputs (in production the kernel only ever runs inside
-    the ``.solve`` shard_map region).  Leaving the factors unpadded
+    output, as plain local arrays: bypasses ``from_banded_factors``,
+    whose shard_map commits the result to the Explicit mesh, so the
+    direct ``_pallas_banded_solve`` calls below unit-test the *local*
+    kernel function (module docstring).  Leaving the factors unpadded
     also exercises the kernel's internal pad-to-whole-tiles fallback.
     """
     Li = jnp.moveaxis(Lo, (-2, -1), (0, 1))
@@ -257,17 +258,15 @@ def test_mode_inner_sweep_matches_mode_outer() -> None:
 def test_pallas_factors_prepadded_to_tiles() -> None:
     """Per-backend factor storage, under one ``.solve`` contract.
 
-    Whole-tile on the kernel path, true-plane on the CPU one;
-    ``.solve`` keeps the true-plane contract on both.
-
-    On the kernel path the stored mode plane is rounded up to the
-    ``(bm0, bm1)`` Pallas tile at construction, so no per-solve factor
-    pad/copy remains.  A CPU run never reaches the kernel, so it stores
-    the true plane and the plain ``U`` diagonal instead -- both
-    transforms would otherwise be undone on every solve (measured; see
-    the ``from_banded_factors`` docstring).  Either way ``.solve``
-    takes and returns the true (non-tiling) plane and matches the dense
-    reference on its last true mode, adjacent to any padding.
+    The ``PerModeBandedPallasOperator`` table: on the kernel path the
+    stored mode plane is rounded up to whole ``(bm0, bm1)`` Pallas
+    tiles at construction (so no solve pads the factors:
+    ``from_mode_inner_factors``) and the ``U`` diagonal reciprocated; a CPU
+    run stores the true plane and the plain diagonal (measured: the
+    ``solvers`` Design notes, "Per-backend storage").  Either way
+    ``.solve`` takes and returns the true (non-tiling) plane and
+    matches the dense reference on its last true mode, adjacent to any
+    padding.
     """
     import dnsjax.solvers as solvers_mod
 
@@ -316,16 +315,11 @@ def test_pallas_interpret_matches_cpu_path() -> None:
     ``(bm0, bm1) = (2, 32)`` tile (the default, set explicitly here)
     divides neither ``(3, 2)`` nor ``(5, 40)``, so the kernel zero-pads
     the mode plane up to whole tiles, solves, and crops -- the pad/crop
-    result is checked against the CPU sweep.  Factors are converted to the
-    kernel's mode-inner layout (``from_banded_factors``); RHS/solution are
-    moved between mode-outer and mode-inner around the kernel.
-
-    Run with the global Explicit mesh cleared: the kernel's indexed ref
-    stores discharge (interpret only) to ``dynamic_update_slice``, which
-    rejects the ``{Explicit}`` vs ``{}`` sharding pair under that mesh.
-    The real Triton path lowers the store natively (no discharge), so
-    this is an interpret-mode artefact; the mesh is a trivial 1-device
-    mesh here, so clearing it leaves the numerics unchanged."""
+    result is checked against the mode-outer pure-JAX sweep
+    (``_banded_solve_batched``).  Factors are converted to the
+    kernel's mode-inner layout (``_mode_inner_factors``); RHS/solution are
+    moved between mode-outer and mode-inner around the kernel.  Run with
+    the global Explicit mesh cleared (module docstring)."""
     rng = np.random.default_rng(3)
     orig_mesh = sharding.mesh
     orig_bm = (params.solver.pallas_block_m0, params.solver.pallas_block_m1)
@@ -415,21 +409,21 @@ def test_pallas_transpose_identity() -> None:
 def test_pallas_adjoint_matches_portable_sweep() -> None:
     r"""The kernel's ``custom_vjp`` matches the portable sweep's autodiff.
 
-    In all three cotangents, and every band slot survives a finite
-    difference.
+    In all three cotangents; an in-band slot of each factor, and the
+    reciprocated diagonal, also survive a finite difference.
 
     The pure-JAX :func:`_banded_solve_batched` differentiates through
-    its ``lax.scan`` with no custom rule, so it is an
-    **independent** reference -- the one place a sign or a chain-rule slip
-    in the hand-derived rule would show.  It is fed the same stored
-    factors with the diagonal slot un-reciprocated inside the
-    differentiated function, so its ``dU`` comes back in the stored
-    (reciprocated) coordinates the kernel's rule reports.
+    its ``lax.scan`` with no custom rule, so it is an **independent**
+    reference -- the one place a sign or a chain-rule slip in the
+    hand-derived rule would show.  It is fed the same stored factors
+    with the diagonal slot un-reciprocated inside the differentiated
+    function, so its ``dU`` comes back in the stored (reciprocated)
+    coordinates the kernel's rule reports.
 
-    The finite differences are the second, weaker check, and they pick
-    their slots deliberately: ``L[i, d]`` addresses column ``i - p + d``,
-    so any ``d < p - i`` is structurally zero and would "pass" while
-    testing nothing.  ``d = p - 1`` (the first sub-diagonal) is in band
+    The finite differences are the second, weaker check, and pick their
+    slots deliberately: ``L[i, d]`` addresses column ``i - p + d``, so
+    any ``d < p - i`` is structurally zero and would "pass" while
+    testing nothing; ``d = p - 1`` (the first sub-diagonal) is in band
     for every row.  The diagonal slot is checked separately because it
     stores `$1/U_{ii}$`, so its cotangent carries a reciprocal chain
     rule that no other slot exercises.
@@ -516,14 +510,13 @@ def test_pallas_cuda_lowering() -> None:
     ``(bm0, bm1) = (2, 32)`` tile (the default, set explicitly here)
     does not divide ``(Nkz, Nkx)``, so the kernel zero-pads the plane up to
     whole tiles; this guards the padded-plane lowering.  The factors are in
-    the kernel's mode-inner layout; the Explicit mesh is cleared as in the
-    interpret test and the lowering runs under an abstract H100 mesh
+    the kernel's mode-inner layout; the Explicit mesh is cleared (module
+    docstring) and the lowering runs under an abstract H100 mesh
     (:func:`_abstract_gpu_mesh`) so Triton can resolve the target GPU.
 
     Both sweeps are lowered: the forward one and the transposed one
-    that backs the ``custom_vjp``.  The transposed kernel has two
-    output refs and its own window recurrence, so it is a distinct
-    lowering, not a variant of the first.
+    that backs the ``custom_vjp``, a distinct lowering (two output refs
+    and its own window recurrence), not a variant of the first.
 
     ``p`` is a **static loop bound** in the kernel, so every band width
     a caller can produce needs its own lowering: ``p = 3`` for a typical
@@ -577,15 +570,13 @@ def test_pallas_cuda_lowering_sharded_solve() -> None:
     tracing on CPU reaches ``pallas_call`` *inside* the ``.solve``
     ``shard_map`` -- the composition ``test_pallas_cuda_lowering`` above
     cannot cover (it calls the kernel standalone), and where trace-time
-    rules differ: under shard_map's default ``check_vma=True`` the
+    rules differ on the kernel path only, which no CPU run of the
+    solver reaches: under shard_map's default ``check_vma=True`` the
     kernel's ``ShapeDtypeStruct`` out-shape must carry a
-    ``manual_axis_type`` or tracing raises -- on the kernel path only,
-    which the CPU branch never reaches (it never calls
-    ``pallas_call``), so no CPU run of the solver would see it.
-    ``.solve`` opts out via ``check_vma=False`` (the region is
-    communication-free).  This guards the composition end to end --
-    stored pre-padded factors, complex re/im split, Explicit-mesh
-    shard_map wiring.
+    ``manual_axis_type`` or tracing raises, so ``.solve`` opts out
+    (its ``check_vma=False`` comment says why).  This guards the
+    composition end to end -- stored pre-padded factors, complex re/im
+    split, Explicit-mesh shard_map wiring.
 
     Because ``.solve``'s ``shard_map`` binds ``mesh=sharding.mesh``,
     the abstract H100 device that lets Triton lower without a GPU
@@ -730,11 +721,10 @@ def test_pallas_stacked_operators() -> None:
 def test_stacked_cpu_solve_copies_no_factor() -> None:
     """A stacked CPU solve reads its factors in place.
 
-    The CPU sweep is a ``lax.scan`` down the wall-normal axis, and a
-    ``vmap``-ed scan batches over the axis right after the scanned one,
-    so factors stored with their families leading are transposed in full
-    on every solve: the results stay right, and a factor-sized copy per
-    solve stays live across a step.  In the layout
+    The guard of the ``solvers`` Design notes, "Stacked factors on
+    CPU": factors stored with their families leading are transposed in
+    full on every solve, and the results stay right, so only the
+    compiled program shows it.  In the layout
     :func:`~dnsjax.solvers._family_axis` gives the CPU path, the
     compiled solve makes no array of a factor's shape, for either
     ``component_axis`` (the influence-matrix ``Hk`` pairs take ``1``,
@@ -870,10 +860,9 @@ def test_factor_checked_measures() -> None:
     behind a tiled one.  The factors come back mode-inner and multiply
     back to each mode's matrix; the growth planes are each mode's
     ``max|U|`` and ``max|A|`` exactly; the residual is the probe NumPy
-    computes, checked on the
-    real factors (round-off) and on factors with a perturbed diagonal,
-    where the probe is far above round-off and must match NumPy's to
-    many digits.
+    computes, checked on the real factors (round-off) and on factors
+    with a perturbed diagonal, where the probe is far above round-off
+    and must match NumPy's to many digits.
     """
     Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
     p, Ny = 4, 16

@@ -6,7 +6,8 @@ Builds the deterministic streamwise-localized-rolls IC
 *construction* properties the smoke test (``tests/test_rolls_smoke.py``)
 cannot -- without time-stepping -- plus, in the same subprocess (no
 extra launch), the divergence guard on the random-field IC
-(``dnsjax.ic.random_field``, the default start mode).  The workers:
+(``dnsjax.ic.random_field``, the default start mode: a machine-zero
+relative divergence over the whole field, ``RAND_DIV_TOL``).  The workers:
 ``tests/_localized_rolls.py``, which the lab's flows share
 (``lab/tests/test_localized_rolls.py``).  The checks:
 
@@ -97,12 +98,9 @@ CASES: dict[str, dict] = {
     },
 }
 
-# Peak-velocity / domain-scaling guard.  The spot is peak-normalized so
-# max|u'| = amplitude and is domain-independent (a single-mode
-# construction, whose amplitude grows with box length, would not be).
-# Built at two resolved boxes (the spot fits and is well sampled at
-# both) with the spanwise/axial wavelength a fixed physical value, so
-# peak ~ amplitude must hold at both and agree across them.
+# Peak-velocity / domain-scaling guard: two resolved boxes (the spot
+# fits and is well sampled at both), with the spanwise/axial wavelength
+# a fixed physical value.
 PEAK_SYSTEMS = ["kolmogorov", "plane-couette", "pipe", "taylor-couette"]
 PEAK_AMP, PEAK_WIDTH, PEAK_WAVE = 0.1, 2.0, 4.0
 PEAK_BOXES = ((20.0, 48), (40.0, 96))  # (box length, resolution)

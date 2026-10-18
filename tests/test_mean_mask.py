@@ -1,14 +1,12 @@
 """Spectral mask and padding-wavenumber tests under forced padding.
 
 Padding slots (appended for 2D mesh divisibility) carry nonzero
-beyond-resolution placeholder wavenumbers (``pad_harmonics`` in
-``dnsjax.operators``), so the mean mode (global index ``(0, 0)``)
-is the only mode with ``k^2 = 0``.  ``Fourier.mean_mask`` is the
-one-hot mask of that mode; all mean-mode handling (operator pin
-row, influence-matrix mean branch, projections, bulk-velocity
-writes) keys on it.  Padding-mode fields stay identically zero
-because the forward FFT re-zeroes the padding slots and their
-regular operators map zero RHS to zero solutions.
+placeholder wavenumbers, so the mean mode (global index ``(0, 0)``)
+is the only mode with ``k^2 = 0`` and ``Fourier.mean_mask`` is its
+one-hot mask: all mean-mode handling (operator pin row,
+influence-matrix mean branch, projections, bulk-velocity writes) keys
+on it.  Why the placeholders, and why padding-mode fields stay
+identically zero: ``pad_harmonics`` in ``dnsjax.operators``.
 
 Each case needs its own process because the geometry/sharding
 singletons are captured at import time; multiple CPU devices are
@@ -59,9 +57,8 @@ def _worker(system: str, nx: int, nz: int, np0: int, np1: int) -> None:
 
     params.phys.system = system
     if system == "taylor-couette":
-        # Taylor-Couette needs inner/outer Reynolds numbers and a
-        # radius ratio; their values do not affect the mask (which
-        # depends only on resolution/wavenumbers), so fix them here.
+        # Taylor-Couette needs re1, re2 and eta; the mask depends only
+        # on resolution/wavenumbers, so their values do not matter.
         params.phys.re1 = 100.0
         params.phys.re2 = 0.0
         params.geo.eta = 0.5

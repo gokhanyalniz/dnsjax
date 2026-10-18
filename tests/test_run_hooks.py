@@ -155,7 +155,7 @@ def check_order(log: list[dict]) -> str | None:
 
 
 def run_checks(timeout: float) -> list[tuple[str, str | None]]:
-    """The four cases; one ``(name, reason or None)`` each."""
+    """One ``(name, reason or None)`` per case, ``read_dat`` its own."""
     tmp = Path(tempfile.mkdtemp(prefix="dnsjax_hooks_"))
     results: list[tuple[str, str | None]] = []
     try:

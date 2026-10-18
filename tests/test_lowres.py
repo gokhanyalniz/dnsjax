@@ -8,7 +8,7 @@ reduce check: ``tests/_lowres.py``):
    the parity class; Taylor-Couette; and Kolmogorov, which cuts its
    third Fourier axis instead of interpolating.  Each reduced file
    equals the host-NumPy reduction of its full field, on one device and
-   on a ``(2, 2)`` mesh.
+   on a ``(2, 2)`` mesh, and the resume path refuses it.
 2. **pressure** -- plane Poiseuille and plane Couette (moving walls,
    where only the convective source keeps the mean mode's zero Neumann
    row exact): the interior Poisson residual and the influence-matrix
@@ -19,7 +19,7 @@ reduce check: ``tests/_lowres.py``):
    wall-normal truncation.
 3. **kind** -- a replicated real array written by ``write_archive``
    under a ``kind`` of its own is refused by the field readers and by
-   the resume path, and the resume path refuses a reduced snapshot too.
+   the resume path.
 
 Run as a script: ``uv run python tests/test_lowres.py``.
 """

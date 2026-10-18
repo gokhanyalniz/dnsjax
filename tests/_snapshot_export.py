@@ -296,13 +296,8 @@ def check_system(system: str, outdir: str, case: dict) -> None:
     rel_div = np.linalg.norm(div_nz.ravel()) / scale
     assert rel_div < DIV_TOL, f"{system}: div {rel_div:.2e}"
 
-    # divergence vs the solver's own operator, node-for-node.  The
-    # check above cannot see an operator mismatch (both sides return
-    # zero on a solenoidal field), so this one runs on DIV_PROBE --
-    # the per-component rescaling of the same state, which carries
-    # O(1) divergence.  The ground truth came from the solver's
-    # decoupled basis, so this also pins the physical <-> u_pm
-    # equivalence the stored basis relies on.
+    # divergence vs the solver's own operator, node-for-node, on
+    # DIV_PROBE (what it pins: the core script's docstring).
     div_path = d / "div_true.npy"
     if div_path.exists():
         probe = [

@@ -29,7 +29,6 @@ CASES: dict[str, dict[str, object]] = {
 
 _LEGACY = {"consistent_imm": False}
 
-# The call sites the three above do not reach.
 CASES |= {
     "plane-couette-legacy": {
         **CASES["plane-couette"],

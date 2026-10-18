@@ -18,10 +18,9 @@ divergence-free band-limited state:
 
 All references sum the *stored* modes with the ``k_metric`` weight,
 which makes them equal both the full-spectrum Parseval sum and the
-physical-space
-`$\langle|\nabla u|^2\rangle$`.  The laminar limit (zero perturbation)
-is pinned too: `$E = E_{\mathrm{lam}}$`, `$I = D = I_{\mathrm{lam}}$`,
-`$E' = 0$`.
+physical-space `$\langle|\nabla u|^2\rangle$`.  The laminar limit
+(zero perturbation) is pinned too: `$E = E_{\mathrm{lam}}$`,
+`$I = D = I_{\mathrm{lam}}$`, `$E' = 0$`.
 
 Offline, single CPU device, in-process singletons (configured once at
 module top via ``update_parameters`` -- the tilt factors and the flow

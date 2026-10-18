@@ -3,11 +3,9 @@ r"""The skewed two-rank runs of the wall-clock stop tests, core and lab.
 Each process times ``stop.max_wall_time`` from its own start, so the
 budget runs out at a different moment on each.  Were each process to
 decide alone, a budget running out between two processes' readings
-would hang the run: one would leave the loop for the closing
-collectives, the other enter another step's, and both would wait for
-the rest until the job was killed.  The drivers therefore decide it
-together (``sharding.Sharding.any_process``, at the
-``outs.it_error_check`` cadence).
+would hang the run (how: ``sharding.Sharding.any_process``), so the
+drivers decide it together through that method, at the
+``outs.it_error_check`` cadence.
 
 Here rank 1 starts ``--skew`` seconds after rank 0, which puts that
 split on every run rather than on an unlucky one: both drivers must

@@ -56,8 +56,7 @@ DIV_TOL = 5e-2  # loose truncation-level discrete-divergence bound
 DIV_TOL_SPECTRAL = 1e-13
 
 # Random-field IC guard: amplitude / smoothness / seed, and the
-# *relative* divergence bound over the whole field, k_z = 0 included
-# (the builders solve continuity on every mode, so this is machine-zero).
+# *relative* divergence bound over the whole field (the check below).
 RAND_AMP, RAND_SMOOTH, RAND_SEED = 0.2, 0.4, 7
 # The wall-normal pair, at the model defaults: the divergence bound
 # below is what proves the scale-dependent wall window is structurally
@@ -74,8 +73,8 @@ RAND_DIV_TOL = 1e-11
 # That single factor multiplies the whole block: measured <= 2 ulp
 # relative, with the laminar mean-mode column -- added after the
 # scaling -- bit-identical.  The structural property, exact discrete
-# continuity, is bit-exact at every configuration and is checked as
-# such above.
+# continuity, holds at every configuration and is checked separately,
+# against ``RAND_DIV_TOL``.
 RAND_CROSS_TOL = 1e-13
 
 
@@ -85,11 +84,9 @@ RAND_CROSS_TOL = 1e-13
 def configure(case: dict, name: str, np0: int, np1: int) -> None:
     """Configure JAX and the parameter singletons on forced CPU devices.
 
-    *np0* x *np1* devices, for the case *name* of a script's table:
-    its flow (``system``, the name unless given) at ``phys.re = 100`` in
-    an ``LX`` x ``LZ`` box, with the case's own ``phys`` / ``geo``
-    overrides.  Must run before importing ``sharding`` / the geometry
-    modules.
+    *np0* x *np1* devices, for the case *name* of a script's table (its
+    keys: the module docstring).  Must run before importing
+    ``sharding`` / the geometry modules.
     """
     os.environ["XLA_FLAGS"] = (
         f"--xla_force_host_platform_device_count={np0 * np1}"
@@ -109,7 +106,6 @@ def configure(case: dict, name: str, np0: int, np1: int) -> None:
     phys = {"system": system, "re": 100.0, **case.get("phys", {})}
     phys = {k: v for k, v in phys.items() if v is not None}
     geo = {"lx": LX, "lz": LZ, **case.get("geo", {})}
-    # Kolmogorov's ``ny`` is a Fourier mode count (even), not a grid size.
     periodic = system in periodic_systems
     update_parameters(
         Parameters(
@@ -303,8 +299,6 @@ def run_worker(case: dict, name: str, np0: int, np1: int, out_npy: str) -> int:
         if "rolls_divergence" in case:
             check(*case["rolls_divergence"](div, true))
         elif periodic:
-            # Fully spectral: the cancellation is analytic, so this is
-            # a machine-precision statement, not a truncation bound.
             tscale = float(np.max(np.abs(true)))
             check(
                 "divergence at machine precision",
@@ -318,15 +312,12 @@ def run_worker(case: dict, name: str, np0: int, np1: int, out_npy: str) -> int:
                 f"max|div|={div:.2e}",
             )
 
-        # Reality (Kolmogorov only): the periodic family stores the
-        # ``k_x = 0`` plane under the *joint* conjugate symmetry
-        # ``f(k_y, k_z, 0) = conj(f(-k_y, -k_z, 0))``.  The rolls get it
-        # from separability -- every 1-D factor is the transform of a
-        # real signal -- where the random-field builder needs
-        # ``_periodic_hermitian_raw``; this is what would catch a factor
-        # that stopped being real.  The index flip below pairs
-        # `$q \leftrightarrow -q$`, which every stored Fourier axis
-        # supports because its mode count is even (``NY_PERIODIC``).
+        # Reality (the core script's docstring; the random-field
+        # builder's helper is ``_periodic_hermitian_raw``): this is what
+        # would catch a roll factor that stopped being real.  The index
+        # flip below pairs `$q \leftrightarrow -q$`, which every stored
+        # Fourier axis supports because its mode count is even
+        # (``NY_PERIODIC``).
         if periodic:
             nky, nkz = ny - 1, nz - 1
             fy = np.array([0] + [nky - i for i in range(1, nky)])
@@ -341,10 +332,9 @@ def run_worker(case: dict, name: str, np0: int, np1: int, out_npy: str) -> int:
                 f"max defect={defect:.2e}",
             )
 
-        # The spot contributes **nothing** to the (0, 0) mean mode, so
-        # it moves neither the bulk velocity nor the wall shear.  Stated
-        # against an ``amplitude = 0`` build so it reads the same for
-        # the perturbation flows (whose mean column is then identically
+        # The exactly zero (0, 0) mode, stated against an
+        # ``amplitude = 0`` build so it reads the same for the
+        # perturbation flows (whose mean column is then identically
         # zero) and the total-field ones (whose mean column carries the
         # analytical laminar profile).  Bit-exact, not a tolerance --
         # the roll factors' DC bins are hard zeros (``_zero_dc``).

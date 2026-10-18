@@ -2,11 +2,9 @@
 
 Exercises the host (non-GDS) I/O path:
 
-- save -> load equality for ``walled`` and
-  ``periodic`` layouts;
-- **np-agnostic** resume: save at one ``(np0, np1)``
-  configuration, load at a different one (clean global
-  per-component chunks with true modes only);
+- save -> load equality for ``walled`` and ``periodic`` layouts;
+- **np-agnostic** resume: save at one ``(np0, np1)`` configuration,
+  load at a different one (why it works: the ``snapshot`` docstring);
 - the snapshot is a single uncompressed tar wrapping a zarr3 store,
   readable with **standard tools and no dnsjax**: the metadata
   member parses as plain JSON (stdlib ``tarfile`` + ``json``), and
@@ -18,55 +16,54 @@ Exercises the host (non-GDS) I/O path:
   alias-aware stored-``nr`` lookup (the metadata stores public names) plus the
   spectral parity interpolation across a rigged-CGL -> half-CGL radial-grid
   change;
+- the Fourier-resolution regrid at load (``MODE_CASES``: ``nx``, ``nz``
+  and the periodic ``ny``): a mode the snapshot kept comes back
+  bit-identical at its own wavenumber, an added one zero, a dropped
+  one gone, the padding slots zero (``_check_mode_regrid``);
 - ``serial`` write mode produces a valid snapshot whose stored
-  component data is identical to the ``concurrent`` one (the
-  archives are not byte-identical as *files*: the metadata records
-  the write mode).  True cross-process ordering needs MPI
-  multi-process and is not exercised here -- single-process serial
-  reduces to one write;
+  component data is identical to the ``concurrent`` one; true
+  cross-process ordering needs MPI multi-process and is not exercised
+  here (single-process serial reduces to one write);
 - a truncated archive fails **loudly**, and in words that name the
   file and the cause, rather than loading the zeros of the
-  sparse-reserved skeleton;
+  sparse-reserved skeleton; a gzip'd copy is refused, in words that
+  name the compression;
 - a save that dies mid-write leaves the *previous* snapshot intact
   and the final name untouched (the archive is built under a
   ``.partial`` name and renamed), with the partial file left behind
   as evidence;
 - an archive whose component chunks do not match the ``native_shape``
-  describing them is refused -- every read position is computed from
-  that shape alone, so a disagreement would return a neighbouring
-  component's bytes as state without an error;
+  describing them is refused (why: ``snapshot_meta._check_chunks_match_meta``);
 - 2D mesh round-trips: save and load with ``np0 > 1``, including
   padding-mode stripping and re-padding;
-- the **I/O-layout reshard** the multi-device paths run (save
-  reshards onto contiguous leading-axis slabs at the true mode
-  counts, load reshards back): every mesh family is covered --
-  ``np1``-only, ``np0``-only and 2D -- because the slab a device
-  owns is decided by its *flat* mesh position, and each engine call
-  is checked for the SPMD ``Involuntary full rematerialization``
-  warning, which is what a reshard routed through both mesh axes at
-  once would print;
+- the **I/O-layout reshard** of the multi-device paths (the
+  ``snapshot`` docstring): every mesh family is covered --
+  ``np1``-only, ``np0``-only and 2D -- because the slab a device owns
+  is decided by its *flat* mesh position, and each engine call is
+  checked for the SPMD ``Involuntary full rematerialization`` warning,
+  which a reshard routed through both mesh axes at once would print;
 - both mode-padding trims that reshard performs, through a real
   writer and a real reader: the `$k_x$` one needs an ``nx`` whose
   true mode count does not divide ``np1``, and the `$k_z$` one comes
   free with every ``np0``-only row (``nz - 1`` is odd, so no even
-  ``np0`` divides it).  An ``ny`` smaller than the device count
-  gives a device whose slab is entirely padding;
+  ``np0`` divides it).  ``ny = 5`` over four devices gives a clipped
+  slab and a device whose slab is entirely padding;
+- the slab arithmetic itself, in-process over more shapes: the slabs
+  tile the leading axis and reassemble each chunk byte for byte;
 - the ``isnap`` lineage index round-trips through the metadata, and the
   optional ``_dnsjax_stats.json`` member is written when stats are
   supplied and omitted otherwise;
 - the ``git_hash`` provenance agrees with ``git describe``, and git is
   spawned with ``posix_spawn`` (never CPython's ``vfork`` path).
 
-Each (system, device count) needs its own process because the
-geometry/sharding singletons are captured at import time, and
-multiple CPU devices are obtained via
-``--xla_force_host_platform_device_count``.  A case whose save and
-load np-config is identical runs save + reload in **one** worker
-process (one JAX init); the cross-np cases keep the separate
-cold-process load, so the fresh-process read path stays covered for
-both families.  The GDS path needs a GPU + kvikIO and is not
-unit-tested here; it shares the same span generator (offsets and
-coalescing tiers) as the host path.
+Every save and load runs in a worker process (why: the machinery's
+docstring).  A case whose save and load np-config is identical runs
+save + reload in **one** worker process (one JAX init); the cross-np
+cases keep the separate cold-process load, so the fresh-process read
+path stays covered for both families.  The GDS transfers need a GPU +
+kvikIO and are not tested here (their detection is, against a
+simulated kvikIO); they share the slab arithmetic (``_a_ranges``,
+``_a_offset``) with the host path.
 
 The machinery and the workers: ``tests/_snapshot.py``.  The lab's
 flows have cases of their own, ``lab/tests/test_snapshot.py``: the
@@ -253,7 +250,7 @@ SHAPE_CASES: list[dict] = [
 # load.  ``nx`` is the real-FFT half axis (append / prefix-slice),
 # ``nz`` the wrap-ordered complex one (insert / drop at the high-|k|
 # end from *both* blocks) -- the two need different arithmetic, so
-# every case moves them independently at least once.  The 2D-mesh rows
+# the rows move each one alone at least once.  The 2D-mesh rows
 # are the ones that matter: the resize happens inside the I/O-layout
 # reshard, where only a (2, 2) mesh exercises both legs.
 MODE_CASES: list[dict] = [
@@ -365,9 +362,6 @@ if __name__ == "__main__":
         (case[0], run_case(*case)) for case in CASES
     ]
     results.extend((case["name"], run_case(**case)) for case in SHAPE_CASES)
-
-    # Fourier-resolution regrid on resume (nx / nz, and the periodic
-    # ny) -- zero-padding on the way up, truncation on the way down.
     results.extend(
         (case["name"], run_mode_case(**case)) for case in MODE_CASES
     )
@@ -410,8 +404,7 @@ if __name__ == "__main__":
     # isnap metadata + optional embedded-stats member
     results.append(("isnap + embedded stats", run_stats_isnap_case()))
 
-    # Which I/O engine gets picked, and the archive-level guarantees:
-    # a short archive is rejected, and the two write modes agree.
+    # The I/O engine choice and the archive-level guarantees.
     results.append(("GDS detection branches", run_gds_detection_case()))
     results.append(("truncated archive rejected", run_truncation_case()))
     results.append(("compressed archive rejected", run_compressed_case()))
@@ -431,8 +424,7 @@ if __name__ == "__main__":
         )
     )
 
-    # The I/O-layout slab arithmetic, over shapes the round-trip cases
-    # above cannot reach (see run_io_layout_case).
+    # The I/O-layout slab arithmetic (run_io_layout_case).
     results.append(("I/O layout slabs", run_io_layout_case()))
 
     # The provenance every snapshot records, and how git is spawned.

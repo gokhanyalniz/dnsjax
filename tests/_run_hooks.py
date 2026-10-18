@@ -1,13 +1,12 @@
 r"""The ``[hookcheck]`` section of ``test_run_hooks.py``, and its hooks.
 
-The core's own sections take no part in the run loop, so the test
-registers this one: the solver child it launches imports this module
-before the parameters resolve, which registers the section, and the
-section's ``runtime`` names :class:`Recorder` back here.  Once
-``hookcheck.on`` is set, each hook appends one JSON line to
-:data:`LOG` in the run directory: the hook's name, ``it``, ``t`` and
-the squared norm of the state it was handed.  ``hookcheck.scale_at``
-makes :meth:`Recorder.modify` halve the state at that iteration, and
+The solver child the test launches imports this module before the
+parameters resolve, which registers the section, and the section's
+``runtime`` names :class:`Recorder` back here.  Once ``hookcheck.on``
+is set, each hook appends one JSON line to :data:`LOG` in the run
+directory: the hook's name, ``it``, ``t`` and the squared norm of the
+state it was handed.  ``hookcheck.scale_at`` makes
+:meth:`Recorder.modify` halve the state at that iteration, and
 ``hookcheck.fail_at`` makes :meth:`Recorder.sample` report a
 non-finite value there.
 

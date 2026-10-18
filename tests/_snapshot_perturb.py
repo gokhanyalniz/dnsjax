@@ -1,12 +1,11 @@
 r"""Shared fixtures of the ``scripts/snapshot_perturb.py`` tests.
 
 The core suite's ``test_snapshot_perturb.py`` and the lab's script of
-the same name build
-the same small plane-Poiseuille configuration (:func:`configure`, once
-per process before anything imports ``sharding``), write synthetic
-snapshots (:func:`make_snapshot`), run the injection CLI
-(:func:`run_perturb`) and a transient-growth export to inject from
-(:func:`tg_bundle`).
+the same name build the same small plane-Poiseuille configuration
+(:func:`configure`, once per process before anything imports
+``sharding``), write synthetic snapshots (:func:`make_snapshot`), run
+the injection CLI (:func:`run_perturb`) and a transient-growth export
+to inject from (:func:`tg_bundle`).
 """
 
 from __future__ import annotations

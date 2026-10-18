@@ -15,9 +15,11 @@ in three tiers (the live-run machinery: ``tests/_run_status.py``):
 2. **One process** (``dnsjax``, no launcher): a natural finish;
    ``rm RUNNING`` and ``SIGUSR1`` mid-run, each ending ``STOPPED`` with
    exit 0 and a final snapshot whose time the last ``stats.dat`` row
-   carries; ``SIGTERM`` ending ``TERMINATED`` with exit 143; a corrector
-   that cannot converge ending ``TERMINATED`` with exit 4; a second
-   launch into a live run's directory refused, the live run untouched.
+   carries; ``SIGTERM`` mid-run and during setup (exit 143), a resume
+   at the other precision (one ``dnsjax: error:`` line, exit 1) and a
+   corrector that cannot converge (exit 4), each ending
+   ``TERMINATED``; a second launch into a live run's directory
+   refused, the live run untouched.
 3. **Two processes** (``mpirun -np 2``): ``rm RUNNING``; ``SIGUSR1`` to
    rank 1 alone, which only an agreed stop survives (a rank leaving
    the loop alone hangs both); ``SIGUSR1`` to ``mpirun``, which must
@@ -299,11 +301,11 @@ def live_sigterm(d: Path, ctx: dict) -> None:
 def live_sigterm_setup(d: Path, ctx: dict) -> None:
     """SIGTERM during setup, before any stream exists: exit 143, TERMINATED.
 
-    The solver claims ``RUNNING`` as the first thing it does, minutes
-    before the first step at production size; the scheduler's SIGTERM
-    in that window must still end in ``TERMINATED`` rather than leave
-    ``RUNNING`` behind.  A larger box makes the window long enough for
-    the signal to land in it, which the case checks.
+    The solver claims ``RUNNING`` as soon as its JAX runtime is
+    configured, minutes before the first step at production size; the
+    scheduler's SIGTERM in that window must still end in ``TERMINATED``
+    rather than leave ``RUNNING`` behind.  A larger box makes the window
+    long enough for the signal to land in it, which the case checks.
     """
     big = list(SOLVER)
     for name, value in (

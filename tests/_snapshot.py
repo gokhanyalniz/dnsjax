@@ -232,12 +232,7 @@ def _read_state_with_tensorstore(state_dir):
 
 
 def _check_standard_tools(d, ref_true, system):
-    """The snapshot is a single tar readable with stdlib + zarr3.
-
-    Validates the user-facing guarantee: ``_dnsjax_meta.json`` parses
-    with the standard library alone, and ``tar xf`` + a zarr3 reader
-    (TensorStore) recovers exactly the stored component data.
-    """
+    """The snapshot is a single tar readable with stdlib + zarr3."""
     import json
     import os
     import tarfile
@@ -270,8 +265,8 @@ def _check_standard_tools(d, ref_true, system):
         on_disk.shape,
         meta["native_shape"],
     )
-    # The on-disk bytes ARE the native (solver) spectral layout at
-    # true mode counts -- no transpose between memory and disk.
+    # The on-disk bytes are the native (solver) spectral layout at
+    # true mode counts: no transpose between memory and disk.
     assert np.array_equal(on_disk, ref_true), (
         "TensorStore read of the extracted zarr3 store does not match "
         "the native-layout reference"
@@ -279,16 +274,16 @@ def _check_standard_tools(d, ref_true, system):
 
 
 def _check_slab_placement(state, snapshot, sharding) -> None:
-    """The I/O layout must place the slab this module's math assumes.
+    """The I/O layout must place the slab ``snapshot``'s math assumes.
 
     Every byte range a device writes comes from
     ``_a_ranges(_shard_device_index(shard), ...)`` -- the device's
     *flat* mesh position -- while the placement is chosen by
     ``P(None, (a0, a1), None, None)``.  The two agree only because a
     tuple of mesh axes splits the array axis in row-major (a0-major)
-    order, which is a JAX convention this module reads but cannot
-    enforce.  A silent change of it would hand every device another
-    one's slab, so pin it against the real sharding.
+    order, a JAX convention ``snapshot`` reads but cannot enforce.  A
+    silent change of it would hand every device another one's slab, so
+    pin it against the real sharding.
 
     The mode axes are pinned here too.  Each writer sends
     ``vec[comp][:na]`` in a single call, which is that device's file
@@ -408,9 +403,8 @@ def _worker(
         )
         if action == "save":
             return
-        # "roundtrip": same-np case -- fall through to the load checks
-        # in this same process (one JAX init instead of two; the
-        # cold-process load path stays covered by the cross-np cases).
+        # "roundtrip" (same np): fall through to the load checks in
+        # this process (why: the core script's docstring).
 
     if action == "save_stats":
         import jax.numpy as jnp
@@ -424,20 +418,16 @@ def _worker(
         snapshot.save_snapshot(
             state, T_SAVE, IT_SAVE, d, stats=stats, isnap=ISNAP_SAVE
         )
-        # A second snapshot with no stats: the member must be omitted and
-        # ``isnap`` defaults to 0.
+        # A second snapshot with no stats (``run_stats_isnap_case``).
         snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d + ".nostats")
         print("worker-save-stats-ok", flush=True)
         return
 
     if action == "save_fail":
         # A save that dies mid-write must not take the previous
-        # snapshot with it.  The archive is laid out full-length with
-        # zero-filled component regions before anything is written, so
-        # a half-finished save under the final name would be a valid
-        # tar that loads without complaint and is blank where the
-        # writes did not reach -- zeros being a legal state, nothing
-        # downstream could tell.
+        # snapshot with it (the ``snapshot`` docstring, "I/O engine"):
+        # under the final name, a half-finished save would load without
+        # complaint, its zeros a legal state nothing downstream can tell.
         ref_true = _make_reference(np, tshape)
         state_np = _embed_true_into_padded(ref_true, padded_shape, system)
         state = jax.device_put(state_np, vshard)
@@ -597,9 +587,8 @@ def _worker(
         return
 
     if action == "load_shape":
-        # ny-mismatch load only: the assembled global state must carry
-        # the flow's component count at the *snapshot's* radial count;
-        # interpolation is a separate step.
+        # The load alone (``run_load_shape_case``); interpolation is a
+        # separate step.
         snapshot.validate_snapshot_params(d)
         state, t, it = snapshot.load_snapshot(d)
         assert state.shape[:2] == (_n_comp(system), NY), state.shape
@@ -618,7 +607,6 @@ def _worker(
     assert t == T_SAVE, (t, T_SAVE)
     assert it == IT_SAVE, (it, IT_SAVE)
 
-    # Single uncompressed tar, readable with standard tools / no dnsjax.
     _check_standard_tools(d, ref_true, system)
 
     print("worker-load-ok", flush=True)
@@ -810,11 +798,10 @@ def run_mode_case(
 def run_io_layout_case() -> str | None:
     """Check the I/O-layout slab arithmetic exhaustively, in-process.
 
-    ``_a_ranges`` and ``_a_offset`` are pure, so the branch the
-    round-trip cases cannot reach is cheapest to check directly: a
-    device whose slab is **entirely padding** (``n_rows == 0``), which
-    needs ``a_true <= (ndev - 1) * ceil(a_true / ndev)`` -- 5 rows over
-    4 devices, never produced by the ``ny = 8`` grids used above.
+    ``_a_ranges`` and ``_a_offset`` are pure, so they are checked
+    directly over more shapes than the round-trip cases use (up to 193
+    rows over 8 devices), among them devices whose slab is **entirely
+    padding** (``n_rows == 0``; when: :func:`dnsjax.snapshot._a_ranges`).
 
     The invariants are the ones the format depends on: the slabs tile
     ``[0, a_true)`` exactly, and written at the offsets ``_a_offset``
@@ -943,8 +930,8 @@ def run_gds_detection_case() -> str | None:
                     sys.modules.pop("kvikio.defaults", None)
                 else:
                     install(mode)
-                # A real cupy (a GPU box) must not decide the outcome
-                # either way, so stub both states explicitly.
+                # A real cupy (on a GPU machine) must not decide the
+                # outcome either way, so stub both states explicitly.
                 sys.modules["cupy"] = (
                     types.ModuleType("cupy") if cupy else None
                 )
@@ -994,10 +981,8 @@ def run_truncation_case() -> str | None:
         if r_load.returncode == 0:
             print(f"  FAIL  {name}: truncated archive loaded silently")
             return "truncated archive loaded silently"
-        # ...and it must say so.  Untranslated this is a bare
-        # ``ReadError: unexpected end of data`` naming neither the
-        # file nor the reason, which on a resume reads as a dnsjax
-        # bug rather than a damaged checkpoint.
+        # ...and it must say so (why: the ``dnsjax.snapshot_meta``
+        # Design notes, "Truncated archives").
         out = (r_load.stdout or "") + (r_load.stderr or "")
         if "truncated or corrupt" not in out:
             print(f"  FAIL  {name}: rejected, but not intelligibly")
@@ -1009,10 +994,9 @@ def run_truncation_case() -> str | None:
 def run_compressed_case() -> str | None:
     """A compressed copy of a snapshot is refused, never read.
 
-    The data chunks are read at raw byte offsets, so a gzip'd archive
-    (which ``tarfile`` would open transparently) must fail every
-    reader's archive check rather than be read at offsets of the
-    decompressed stream.
+    ``is_snapshot_file`` rejects a gzip'd archive and
+    ``read_snapshot_meta`` refuses it naming the compression (why:
+    ``snapshot_meta._snapshot_tar``).
     """
     import gzip
     import shutil
@@ -1053,13 +1037,9 @@ def run_compressed_case() -> str | None:
 def run_meta_chunk_consistency_case() -> str | None:
     """The chunks must match the ``native_shape`` describing them.
 
-    Every read position is computed arithmetically from
-    ``native_shape``; nothing consults the member it lands in.  So a
-    snapshot whose metadata outgrew its chunks reads the *next*
-    component's bytes as state -- well-formed complex numbers, no
-    error.  Built by hand here (stdlib only, no JAX, no subprocess):
-    a matching pair must be accepted, and each way of disagreeing
-    must be refused.
+    Why: ``snapshot_meta._check_chunks_match_meta``.  Built by hand here
+    (stdlib only, no JAX, no subprocess): a matching pair must be
+    accepted, and each way of disagreeing must be refused.
     """
     import io
     import json
@@ -1119,8 +1099,8 @@ def run_meta_chunk_consistency_case() -> str | None:
 def run_git_hash_case() -> str | None:
     """``git_hash`` must spawn git with ``posix_spawn`` and match it.
 
-    CPython's other spawn path, ``vfork``, killed rank 0 under an
-    exec-wrapping launcher tool (the ``git_hash`` docstring), and
+    CPython's other spawn path, ``vfork``, can corrupt a solver rank
+    under an exec-wrapping launcher (the ``git_hash`` docstring), and
     nothing else would notice a return to it: the provenance string
     comes out the same.  Spy on ``os.posix_spawn`` (CPython's
     ``posix_spawn`` path calls it through the module) and compare the

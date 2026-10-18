@@ -7,11 +7,11 @@ divergence-free perturbation of its base flow (the in-process
 number above the onset of transition, on a small domain at low
 resolution, and integrates a short time -- verifying the run
 completes with no error, NaN, or blow-up.  ``plane-poiseuille`` needs
-no entries of its own: it binds the plane-couette machinery (see the
-SYSTEMS comments), with its flow-specific pieces covered by
-``test_laminar_smoke.py`` and the published transient-growth values.
-The runner and the per-row keys: ``tests/_random_smoke.py``; the lab's
-flows have a table of their own, ``lab/tests/test_random_smoke.py``.
+no entries of its own: it binds the plane-couette machinery, with its
+flow-specific pieces covered by ``test_laminar_smoke.py`` and the
+published transient-growth values.  The runner and the per-row keys:
+``tests/_random_smoke.py``; the lab's flows have a table of their own,
+``lab/tests/test_random_smoke.py``.
 
 Unlike ``tests/test_laminar_smoke.py`` (which starts from ``u' = 0``, so
 all `$\omega'$`/`$u'$`-proportional terms -- including the rotational
@@ -20,118 +20,73 @@ the full nonlinear path, catching advection / ``rhs.py`` regressions a
 laminar run reports as ``err = 0``.  It is also the triply-periodic
 family's first stepping test (via Kolmogorov).
 
-The base ``plane-couette`` entry doubles as two extra guards: it
-omits ``--init.random_field`` to verify random is the **default**
-start mode (with no snapshot and no explicit mode selected, the run
-must start from a random field, not the laminar state -- the
-snapshot-first / random-default precedence in ``__main__.py``), and
-it passes ``--solver.rhs_transform_chunks 2`` to drive the chunked
-RHS inverse transform of ``rhs.get_nonlin`` (``fft.chunked_transform``)
-through the jitted stepper -- every other entry runs the default
-fused 6-field batch, and the chunk-vs-fused bit-parity is
-unit-covered by ``test_padding.py``.
-Three ``*-gemm`` entries (``plane-couette-gemm``, ``pipe-gemm``,
-``taylor-couette-gemm``) pass ``--solver.wall_normal_matvec dense``:
-on CPU the wall-normal derivatives default to the stencil, so these
-keep the dense GEMM -- the GPU path, and the reference -- stepping
-here, one per geometry (the two paths' agreement:
-``test_wall_normal_matvec.py``).
-A ``pipe-half-tanh`` entry runs the pipe on its one named non-CGL
-radial grid, whose weights take the positive-order composite rule
-(``fd.positive_quadrature``) that no CGL entry reaches.
-Four entries (``plane-couette-cnab2``,
-``pipe-cnab2``, ``taylor-couette-cnab2``, ``kolmogorov-cnab2``) pass
-``--step.scheme cnab2`` to drive the alternative CN/AB2 time-stepping
-scheme -- Crank-Nicolson viscous + explicit 2nd-order Adams-Bashforth
-nonlinear, one FFT eval per step -- across all four geometry families.
-For the wall-bounded families this exercises the implicit treatment of
-the stiff base-flow coupling (an FFT-free corrector; see ``_l_bf``
-/ ``step_cnab2``) plus the iterative-CN self-start, so cnab2 stays
-stable on the wall-clustered CGL grid where a naive explicit-AB2 of the
-coupling blows up at CFL << 1; triply-periodic (Kolmogorov) drives the
-plain no-corrector path (uniform Fourier grid, no coupling stiffness).
-The two moving-wall entries use ``ny = 48`` on purpose (the coupling
-stiffness that treatment targets scales with the near-wall clustering);
-the stationary-wall pipe uses ``ny = 32`` (its coupling is mild --
-``U -> 0`` at the wall -- so cnab2 there is bounded only by the
-ordinary explicit
-self-advection CFL, which ``ny = 48`` on the fine near-wall CGL grid
-would violate at this ``Re``, an inherent explicit-scheme limit, not a
-coupling instability).
+What the entries pin beyond a clean run (each entry's comment says how
+it is built and why):
 
-The wall-bounded iterative-cn entries run the **unsplit** corrector
-(``step.split_corrector`` defaults off).  A trailing
-``taylor-couette-split-corrector`` entry passes
-``--step.split_corrector True`` to cover the opt-in split corrector
-(linear coupling iterated FFT-free between full-RHS refreshes; see
-``_split_core`` in ``timestep.py``) on the annular machinery.
+- ``plane-couette``: random is the **default** start mode (it omits
+  ``--init.random_field``; the snapshot-first / random-default
+  precedence in ``__main__.py``), and the chunked RHS inverse transform
+  of ``rhs.get_nonlin`` steps through the jitted stepper
+  (``--solver.rhs_transform_chunks 2``).
+- ``plane-couette-gemm``, ``pipe-gemm``, ``taylor-couette-gemm``: the
+  dense wall-normal GEMM, the GPU path and the reference, steps
+  (``--solver.wall_normal_matvec dense``; CPU defaults to the stencil).
+- ``pipe-half-tanh``: the pipe's one named non-CGL radial grid, whose
+  weights take the positive-order composite rule
+  (``fd.positive_quadrature``) no CGL entry reaches.
+- ``plane-couette-cnab2``, ``pipe-cnab2``, ``taylor-couette-cnab2``,
+  ``kolmogorov-cnab2``: the CN/AB2 scheme (``--step.scheme cnab2``;
+  Crank-Nicolson viscous, explicit second-order Adams-Bashforth
+  nonlinear, one FFT evaluation per step) on all four geometry families
+  -- on the wall-bounded ones the implicit base-flow coupling and the
+  iterative-CN self-start, which keep it stable on the wall-clustered
+  CGL grid, on Kolmogorov the plain no-corrector path.
+- ``taylor-couette-split-corrector``: the opt-in split corrector
+  (``--step.split_corrector True``) on the annular machinery; every
+  other wall-bounded iterative-cn entry runs the unsplit default.
+- Every entry but the ``*-legacy-imm`` ones runs the **default**
+  ``res.consistent_imm`` reconstruction, so the nonlinear stability gate
+  the one-step ``test_imm_continuity.py`` guard cannot provide covers the
+  whole table.  The five ``*-legacy-imm`` entries (plane-couette and
+  taylor-couette under both schemes, the pipe under iterative-cn) drive
+  the legacy primitive `$(v, p)$` path (``--res.consistent_imm False``)
+  through the same nonlinear runs.  No pipe entry reaches the
+  cylindrical default scheme's low-``Re`` limit: they run decades above
+  its threshold, deliberately (the ``_cylindrical_stepping`` Design
+  notes).
+- ``plane-couette-mpi-pad``, ``pipe-pallas-mpi-pad``
+  (``mpirun --oversubscribe -np 2``, ``np1 = 2``, ``nx // 2`` not
+  divisible by ``np1``): the per-device (no-replication) random-IC build with
+  spectral padding and the banded operators on that sharded padded
+  axis, and ``[lowres]`` snapshots written and read back
+  (``_check_lowres``).  The multi-process entries alone keep
+  ``stop.check_laminarization`` on (their `$E'$` stays decades above its
+  threshold): a flow's global arrays must reach every jitted program as
+  arguments, a closed-over one traces on one process and is refused on
+  two, and the laminarization read and the basis crossing are such
+  programs.
+- ``plane-couette-adaptive``, ``pipe-adaptive-cnab2``,
+  ``kolmogorov-adaptive``: the adaptive CFL step grows ``dt`` (the
+  asserted ``[adaptive]`` line) through the on-device ``set_dt`` rebuild.
+- ``plane-couette-error-max``: the corrector-error check judges every
+  step since the previous host sync, not only the one it lands on (its
+  closing ``err =`` against its own ``corrector.dat``).
+- ``kolmogorov-nan-guard``: inverted criteria -- a genuine blow-up must
+  end in the solver's own non-finite guard, exit code 3 and one
+  ``FATAL: non-finite ...`` line (the ``__main__`` module docstring),
+  not a completed or uncontrolled run.
 
-Every entry above runs the **default** ``res.consistent_imm``
-reconstruction scheme, so the nonlinear stability gate the one-step
-``test_imm_continuity.py`` guard cannot provide is covered for the
-whole table (a state-side projection passes every linear gate yet
-goes non-finite within ~6 steps of exactly the plane-couette
-configuration here).  Five ``*-legacy-imm`` entries then drive the
-legacy primitive `$(v, p)$` path (``--res.consistent_imm False``)
-through the same nonlinear runs, so the non-default formulation keeps
-its own coverage:
-plane-couette and taylor-couette under both schemes, plus the pipe
-under iterative-cn.  None of the pipe
-entries can see the cylindrical default scheme's low-``Re`` limit --
-they run decades above its threshold, deliberately (that limit and its
-measurements: the ``_cylindrical_stepping`` Design notes).
-
-A trailing forced multi-device, padding-inducing entry (``mpi-pad``:
-``mpirun --oversubscribe -np 2``, ``np1 = 2``, ``nx // 2`` not
-divisible by ``np1``) is the regression guard for the per-device
-(no-replication) random-IC build with spectral padding -- and, since
-``solver.backend`` defaults to pallas, it also runs the *cartesian*
-banded operator build/solve on that sharded padded axis.  A
-``pipe-pallas-mpi-pad`` entry repeats the sharded/padded shape for the
-banded-operator variant that entry does not reach (the CPU pure-JAX
-banded path; the Triton kernel itself is GPU-only): the pipe's
-parity-selected base band; single-device band-vs-dense parity per
-geometry is unit-covered by ``test_cartesian.py`` /
-``test_cylindrical.py`` / ``test_annular.py``, the shard_map-local
-solve by ``test_banded_solver_sharded.py``.  ``plane-couette-mpi-pad`` and
-``pipe-pallas-mpi-pad`` also write ``[lowres]`` snapshots (the static
-pressure in the first, the radial parity regrid in the second) and
-read them back (``_check_lowres``).  The multi-process entries are
-also the only ones that keep ``stop.check_laminarization`` on (their
-`$E'$` stays decades above its threshold): a flow's global arrays must
-reach every jitted program as arguments, a closed-over one traces on
-one process and is refused on two, and the laminarization read and
-the basis crossing are such programs.
-
-A ``plane-couette-error-max`` entry pins that the corrector-error
-check judges every step since the previous host sync, not only the one
-it lands on (its closing ``err =`` against its own ``corrector.dat``;
-see the entry).
-
-A trailing ``kolmogorov-nan-guard`` entry inverts the success
-criteria: it forces a genuine blow-up (cnab2 at a dt far past the
-advective limit) and requires the solver's non-finite guard to abort
-the run itself -- exit code 3 and one ``FATAL: non-finite ...``
-diagnostic line (see the ``__main__`` module docstring) -- instead of
-completing or dying uncontrolled.  A small ``nbuffer`` makes the
-in-loop buffered-stats scan see the blow-up promptly.
-
-Transition to turbulence is **not** expected to develop by the default
-``t = 1`` at this resolution/box; the success metric is purely that
-integration completes cleanly, not that the flow becomes turbulent.
-
-Each system steps at ``--dt`` (default 0.01) unless its entry forces
-its own (``force_dt``: the adaptive and non-finite-guard entries).
-
-Each system runs in a separate subprocess (the geometry modules capture
-global singletons at import time) in its own temporary directory, so
-``parameters.toml`` is not loaded (model defaults + CLI args only) and
-the per-system ``stats.dat`` does not collide.
-
-Success criteria per system: exit code 0, the shared criteria of
-``tests/_smoke.py`` (reached the end, no corrector failure, a finite
-converged final error, a finite summary line), and on CPU the closing
-memory lines over every rank (``tests/_random_smoke.py``).
+Transition to turbulence is **not** expected by the default ``t = 1``
+at this resolution and box: success is a clean integration, not
+turbulence.  Each system steps at ``--dt`` (default 0.01) unless its
+entry forces its own (``force_dt``: the adaptive and non-finite-guard
+entries), in a separate subprocess (the
+geometry modules capture global singletons at import time) and its own
+temporary directory, so ``parameters.toml`` is not loaded (model
+defaults + CLI args only) and the per-system ``stats.dat`` does not
+collide.  Success criteria per system: exit code 0, the shared criteria
+of ``tests/_smoke.py``, and on CPU the closing memory lines over every
+rank (``tests/_random_smoke.py``).
 
 Usage (single device)::
 
@@ -174,21 +129,13 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # The base Cartesian entry doubles as two extra guards.  It
-        # OMITS --init.random_field: with no snapshot and no explicit
-        # mode the run must fall through to the random-IC default
-        # (start_from_laminar defaults off) -- the snapshot-first /
-        # random-default precedence in __main__.py; run_smoke_test
-        # asserts the random-IC startup line.  And it passes
-        # --solver.rhs_transform_chunks 2 to drive the chunked RHS
-        # inverse transform of rhs.get_nonlin (fft.chunked_transform)
-        # end to end through the jitted stepper -- every other entry
+        # No snapshot and no explicit mode (start_from_laminar defaults
+        # off): run_smoke_test asserts the random-IC startup line.  The
+        # chunked transform is fft.chunked_transform; every other entry
         # runs the default fused 6-field batch, and chunk-vs-fused
-        # bit-parity is unit-guarded (test_padding.py).
-        # plane-poiseuille needs no entry of its own: it shares this
-        # entry's Cartesian nonlinear machinery, and its
-        # driving/base-flow specifics are covered by the laminar
-        # smoke (pp + pp-cbv) and the transient-growth PP case.
+        # bit-parity is unit-guarded (test_padding.py).  The
+        # plane-poiseuille specifics: the laminar smoke (pp + pp-cbv)
+        # and the transient-growth PP case.
         "name": "plane-couette",
         "omit_random_flag": True,
         "args": [
@@ -205,6 +152,13 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # The default spin-quad formulation on a *random* IC: the guard
+        # that it carries no resolved-IC restriction (a composed,
+        # non-grid-scale-dissipative `$D_2$` would blow up on a
+        # grid-white draw near the axis; the reformulation composes
+        # nothing).  The half-CGL grid (the iterative-cn default) puts
+        # the innermost node closest to the axis, the hardest case for
+        # every 1/r term.
         "name": "pipe",
         "args": [
             "--phys.system",
@@ -215,9 +169,7 @@ SYSTEMS: list[dict] = [
             "5",
         ],
     },
-    # The pipe's wall-clustered one-sided tanh grid, the one named
-    # non-CGL radial grid: it steps on the positive-order composite
-    # quadrature (``fd.positive_quadrature``), which no CGL row reaches.
+    # The pipe's wall-clustered one-sided tanh grid.
     {
         "name": "pipe-half-tanh",
         "args": [
@@ -232,6 +184,10 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # The default u_r-omega_r pair, whose spin coupling is the one
+        # linear term still lagged to the corrector iterate (measured
+        # contraction <= 0.02, but on *linear* data): the baseline
+        # entry where that loop meets a real nonlinear source.
         "name": "taylor-couette",
         "args": [
             "--phys.system",
@@ -246,11 +202,8 @@ SYSTEMS: list[dict] = [
             "5",
         ],
     },
-    # The GEMM path of the wall-normal derivatives, one row per
-    # geometry: ``solver.wall_normal_matvec`` defaults to the stencil on
-    # CPU, so without these the GEMM -- the GPU path, and the reference
-    # -- would never step here.  Agreement of the two paths is pinned by
-    # test_wall_normal_matvec.py; these drive the GEMM end to end.
+    # The GEMM rows, one per geometry; the two paths' agreement is
+    # pinned by test_wall_normal_matvec.py.
     {
         "name": "plane-couette-gemm",
         "args": [
@@ -297,10 +250,9 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Regression guard for the per-device (no-replication) random
-        # build with spectral padding: always multi-device on the kx axis
-        # (np1 = 2), with nx // 2 = 17 not divisible by np1 (padded to
-        # 18).  Exercises the multi-device spectral-padding path.
+        # nx // 2 = 17 on np1 = 2 (padded to 18); solver.backend
+        # defaults to pallas, so this also builds and solves the
+        # cartesian banded operators on the sharded padded axis.
         "name": "plane-couette-mpi-pad",
         "force_np": 2,
         "force_np0": 1,
@@ -327,14 +279,13 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Regression guard for the Pallas banded backend
-        # (solver.backend=pallas) on a sharded, padded mode axis:
-        # multi-device on the kx/axial axis (np1 = 2) with nx // 2 = 3
-        # not divisible by np1 (padded to 4).  The per-mode banded
-        # operators are built and the nonlinear path solved on the
-        # sharded axis -- catching sharding bugs the single-device run
-        # misses.  On CPU the backend runs the pure-JAX banded sweep
-        # (the Triton kernel is GPU-only).
+        # The banded backend on a sharded, padded mode axis: nx // 2 = 3
+        # on np1 = 2 (padded to 4), the pipe's parity-selected base
+        # band.  On CPU the backend runs the pure-JAX banded sweep (the
+        # Triton kernel is GPU-only).  Single-device band-vs-dense
+        # parity per geometry: test_cartesian.py / test_cylindrical.py /
+        # test_annular.py; the shard_map-local solve:
+        # test_banded_solver_sharded.py.
         "name": "pipe-pallas-mpi-pad",
         "force_np": 2,
         "force_np0": 1,
@@ -361,19 +312,17 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # CN/AB2 scheme (step.scheme=cnab2) on the Cartesian
-        # (plane-Couette) geometry, driven through the full nonlinear
-        # path.  Run at a **higher wall-normal resolution** (ny=48) than
-        # the other Cartesian entries on purpose: plane-Couette is a
-        # *moving-wall* flow (``U = y``, so ``U ~ O(1)`` at the walls),
-        # so on the wall-clustered CGL grid the rotational base-flow
-        # coupling ``U d(u')/dy`` is a stiff explicit term and a naive
-        # explicit-AB2 nonlinear blows up at dt=0.01 once ny >~ 40
-        # (CFL << 1).  This guards the implicit treatment of the
-        # base-flow coupling (FFT-free corrector; see ``_l_bf`` /
-        # ``step_cnab2``), so cnab2 reports a *real* corrector
-        # count/error and criterion 4 (err < tol) is a genuine check,
-        # integrating cleanly like the iterative-cn entries.
+        # ny = 48, above the other Cartesian entries on purpose:
+        # plane-Couette is a *moving-wall* flow (``U = y``, ``O(1)`` at
+        # the walls), so on the wall-clustered CGL grid the coupling
+        # ``U d(u')/dy`` is stiff and a naive explicit AB2 blows up at
+        # dt = 0.01 once ny >~ 40 (CFL << 1).  The implicit coupling
+        # (FFT-free corrector: ``_l_bf`` / ``step_cnab2``) reports a
+        # *real* corrector count and error, so ``tests/_smoke.py``'s
+        # criterion 3 (err < tol) is a genuine check.  Under cnab2 the
+        # default scheme's v-omega_y source projections act on the AB2/CN
+        # combination assembled from ``_l_bf`` and the carried nonlinear
+        # history.
         "name": "plane-couette-cnab2",
         "res": {"nx": 32, "ny": 48, "nz": 32},
         "args": [
@@ -390,18 +339,13 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # The legacy primitive (v, p) path, driven nonlinearly: the
-        # plane-couette entry above already covers the default
-        # v-omega_y scheme, and this one keeps the legacy formulation
-        # under the same nonlinear load.  The laminar smoke cannot
-        # separate them (every term is linear in u', so all vanish at
-        # u' = 0) and the discrete-continuity guard
-        # (``tests/test_imm_continuity.py``) takes one step, so only
-        # entries of this shape integrate either formulation through a
-        # real nonlinear run.  That matters more here than anywhere
-        # else in this file: a state-side projection passes every
-        # *linear* gate and still goes non-finite within ~6 steps of
-        # exactly this configuration (the
+        # The laminar smoke cannot separate the two formulations (every
+        # term is linear in u', so all vanish at u' = 0) and
+        # ``tests/test_imm_continuity.py`` takes one step, so only
+        # entries of this shape integrate either through a real
+        # nonlinear run.  That matters most here: a state-side
+        # projection passes every *linear* gate and still goes
+        # non-finite within ~6 steps of exactly this configuration (the
         # ``cartesian._imm_iteration`` docs).
         "name": "plane-couette-legacy-imm",
         "res": {"nx": 32, "ny": 48, "nz": 32},
@@ -419,12 +363,10 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # The same scheme under cnab2, which is a genuinely different
-        # path into it: the AB2/CN split hands ``_imm_iteration`` a
+        # Under cnab2 the AB2/CN split hands ``_imm_iteration`` a
         # combination assembled from ``_l_bf`` and the carried
-        # nonlinear history, and that combination is what the
-        # v-omega_y source projections act on, and no other entry
-        # integrates this combination nonlinearly.
+        # nonlinear history, which no other entry integrates
+        # nonlinearly.
         "name": "plane-couette-legacy-imm-cnab2",
         "res": {"nx": 32, "ny": 48, "nz": 32},
         "args": [
@@ -443,11 +385,8 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # The annular half of the same guard: the u_r-omega_r pair,
-        # whose spin coupling is the one linear term still lagged to
-        # the corrector iterate (measured contraction <= 0.02, but
-        # measured on *linear* data -- this entry is where the loop
-        # meets a real nonlinear source).
+        # The annular half of the same guard: the legacy primitive
+        # path on the annular machinery.
         "name": "taylor-couette-legacy-imm",
         "res": {"nx": 24, "ny": 40, "nz": 24},
         "args": [
@@ -466,11 +405,8 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # The annular flag-on scheme under cnab2 -- a genuinely
-        # different path in: the AB2/CN split hands ``_imm_iteration``
-        # a combination assembled from ``_l_bf`` and the carried
-        # nonlinear history, and the lagged spin coupling then reads a
-        # *carry*-derived iterate rather than a corrector one.
+        # The annular legacy path under cnab2 (the combination as
+        # above).
         "name": "taylor-couette-legacy-imm-cnab2",
         "res": {"nx": 24, "ny": 40, "nz": 24},
         "args": [
@@ -491,14 +427,9 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # The pipe half: the spin-quad formulation, on a *random* IC
-        # -- the guard that the flag carries no resolved-IC
-        # restriction (a composed, non-grid-scale-dissipative `$D_2$`
-        # would blow up on a grid-white draw near the axis; the
-        # reformulation composes nothing).  Half-CGL grid
-        # (the iterative-cn default), i.e. the innermost node sits
-        # closest to the axis -- the hardest case for every 1/r term
-        # in the scheme.
+        # The pipe half: the legacy primitive path, on the half-CGL grid
+        # (the iterative-cn default), whose innermost node sits closest
+        # to the axis.
         "name": "pipe-legacy-imm",
         "res": {"nx": 24, "ny": 40, "nz": 24},
         "args": [
@@ -513,13 +444,11 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # CN/AB2 on the cylindrical (pipe) geometry, guarding the
-        # cylindrical ``_l_bf`` build + step path.  Pipe is a
-        # *stationary-wall* flow (``U_z = 1 - r^2``, ``U -> 0`` at the
-        # wall), so its base-flow coupling is mild (the ``U`` weight
-        # kills the near-wall stiffness) and cnab2 is bounded only by
-        # the ordinary explicit self-advection CFL.  For the pipe the
-        # binding term is the **near-axis azimuthal** advection: the
+        # The cylindrical ``_l_bf`` build and step.  Pipe is a
+        # *stationary-wall* flow (``U -> 0`` at the wall), so its
+        # coupling is mild and cnab2 is bounded only by the ordinary
+        # explicit self-advection CFL, whose binding term is the
+        # **near-axis azimuthal** advection: the
         # innermost radial node sits at ``r_0 ~ pi/(2 ny)`` (the
         # rigged-CGL grid, the cnab2 default this entry resolves to)
         # where the azimuthal arc length
@@ -555,14 +484,13 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # CN/AB2 on the annular (Taylor-Couette) geometry at ny=48,
-        # guarding the annular ``_l_bf`` (three stacked Hk) build +
-        # implicit-coupling corrector + iterative-CN self-start.  Uses a
-        # standard (inner-rotating, stationary-outer) config, which is a
-        # *moving-wall* flow (``U_theta ~ O(1)`` at the inner wall): its
-        # ``U_theta d(u')/dr`` coupling is stiff on the wall-clustered
-        # grid, so ny=48 stresses exactly the stiffness the implicit
-        # coupling removes.
+        # The annular ``_l_bf`` (three stacked Hk) build at ny = 48: the
+        # inner-rotating, stationary-outer configuration is a
+        # *moving-wall* flow (``U_theta ~ O(1)`` at the inner wall), so
+        # ``U_theta d(u')/dr`` is stiff on the wall-clustered grid,
+        # exactly the stiffness the implicit coupling removes.  Under
+        # cnab2 the default scheme's lagged spin coupling reads a
+        # *carry*-derived iterate rather than a corrector one.
         # NOTE: *strongly counter-rotating* Taylor-Couette
         # (re1=400/re2=-400) is deliberately **not** used here -- its
         # base flow is so non-normal that the explicit self-advection is
@@ -588,12 +516,10 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # CN/AB2 on the triply-periodic (Kolmogorov) geometry: the plain
-        # no-corrector explicit-AB2 path (l_bf_fn is None -- the uniform
-        # Fourier grid has no wall clustering and no base-flow-coupling
-        # stiffness, so there is nothing to make implicit).  ``err`` is
-        # reported as 0 (no corrector).  Guards the triply-periodic
-        # ``step_cnab2`` branch and its self-start seeding.
+        # l_bf_fn is None: the uniform Fourier grid has no wall
+        # clustering and no coupling stiffness to make implicit, so
+        # ``err`` is reported as 0 (no corrector).  Also the
+        # triply-periodic ``step_cnab2`` self-start seeding.
         "name": "kolmogorov-cnab2",
         "args": [
             "--phys.system",
@@ -609,11 +535,10 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Split iterative-cn corrector (step.split_corrector=True):
-        # every other iterative-cn entry runs the unsplit corrector
-        # (the default), so this opt-in override keeps the split
-        # corrector integration-covered, on the annular machinery.
-        # Same config as the iterative-cn ``taylor-couette`` entry.
+        # The split corrector iterates the linear coupling FFT-free
+        # between full-RHS refreshes (``_split_core`` in
+        # ``timestep.py``).  Same config as the iterative-cn
+        # ``taylor-couette`` entry.
         "name": "taylor-couette-split-corrector",
         "args": [
             "--phys.system",
@@ -631,14 +556,10 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Adaptive CFL dt (iterative-cn, Cartesian): a deliberately
-        # small initial dt keeps the measured CFL far below
-        # cfl_target, so the controller must grow dt (1.2x per
-        # accepted evaluation) up to dt_max during the run -- the
-        # asserted "[adaptive]" log line.  Guards the on-device
-        # Hk/IMM leaf rebuild (set_dt) inside a full solver run --
-        # on 2 devices (np1 = 2), so the sharded rebuild (shard_map
-        # tile pad, sharded IMM solves) is integration-covered.
+        # A small initial dt keeps the CFL far below cfl_target, so the
+        # controller must grow dt (1.2x per accepted evaluation) up to
+        # dt_max.  On 2 devices (np1 = 2), so the sharded Hk/IMM leaf
+        # rebuild (shard_map tile pad, sharded IMM solves) runs too.
         "name": "plane-couette-adaptive",
         "force_np": 2,
         "oversubscribe": True,
@@ -665,11 +586,10 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Adaptive CFL dt under CN/AB2 on the cylindrical geometry:
-        # exercises the kappa-weighted AB2 step and the stacked
-        # (+,-,z) Hk rebuild.  dt_max stays below the rigged-grid
-        # cnab2 stability step (~0.0125 at 32^3; see pipe-cnab2) and
-        # cfl_target below the azimuthal AB2 limit.
+        # The kappa-weighted AB2 step and the stacked (+,-,z) Hk
+        # rebuild.  dt_max stays below the rigged-grid cnab2 stability
+        # step (~0.0125 at 32^3; see pipe-cnab2) and cfl_target below
+        # the azimuthal AB2 limit.
         "name": "pipe-adaptive-cnab2",
         "force_dt": 0.002,
         "slack_dt": 0.008,
@@ -694,8 +614,7 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Adaptive CFL dt on the triply-periodic path: the
-        # ldt_1/ildt_2 recompute.  The CFL is tiny here, so the
+        # The ldt_1/ildt_2 recompute.  The CFL is tiny here, so the
         # controller grows dt until dt_max stops it: any dt_max above
         # force_dt exercises the rebuild.
         "name": "kolmogorov-adaptive",
@@ -722,10 +641,7 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Corrector-error guard between host checks: the loop syncs the
-        # error every it_error_check steps and must judge every step
-        # since the previous check, not only the one it lands on.  At
-        # it_error_check = it_corrector = 10 over 10 steps, the single
+        # At it_error_check = it_corrector = 10 over 10 steps, the single
         # corrector.dat row is step 1's error (the largest of the
         # decaying post-IC sequence) and the closing "err =" -- the
         # maximum since the last check -- must not fall below it; a
@@ -750,11 +666,9 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Non-finite guard (inverted criteria; see run_smoke_test):
         # cnab2 at dt = 1.0 (100x the default dt, CFL >> 1) blows up
-        # within tens of steps; the run must abort
-        # itself with exit code 3 and a "FATAL: non-finite ..." line
-        # (whichever guard layer sees it first).  it_stats = 1 with
+        # within tens of steps; whichever guard layer sees it first
+        # aborts (run_smoke_test inverts the criteria).  it_stats = 1 with
         # nbuffer = 10 makes the in-loop buffered-stats scan the
         # likely detector; max_sim_time is only the safety ceiling.
         # force_np = 1 keeps the mpirun exit-code propagation exact.

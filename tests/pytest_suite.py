@@ -22,13 +22,12 @@ from _bridge import MPI, NO_MPI_ONLY, SLOW, Row, script_test  # noqa: E402
 # (offline ``--unit-only`` subset + full mpirun run),
 # ``test_device_grid``/``test_seeding`` (the no-mpirun unit fallback +
 # the full run), ``test_driving`` (the always-run unit half + the slow
-# full run: its full row launches no mpirun, so it is marked slow only
-# and its unit row carries no NO_MPI_ONLY, or the fast tiers would never
-# run it), ``test_transient_growth`` (offline ``--fast`` structure
-# checks + the slow full run with the published values),
-# ``test_run_status`` (the ``--no-mpi`` tiers + the ``--mpi-only`` one,
-# disjoint), and ``test_laminar_smoke`` (single-device + the ``--np 2``
-# mesh row whose reason is spelled out at that entry).
+# full run, which launches no mpirun: hence no NO_MPI_ONLY on the unit
+# row, or the fast tiers would never run it), ``test_transient_growth``
+# (offline ``--fast`` structure checks + the slow full run with the
+# published values), ``test_run_status`` (the ``--no-mpi`` tiers + the
+# ``--mpi-only`` one, disjoint), and ``test_laminar_smoke``
+# (single-device + the ``--np 2`` mesh row, its reason at that entry).
 _SCRIPTS: list[Row] = [
     ("test_adaptive.py", (), (), 1800),
     ("test_annular.py", (), (), 1800),
@@ -41,14 +40,14 @@ _SCRIPTS: list[Row] = [
     ("test_cartesian.py", (), (), 1800),
     ("test_cnab2.py", (), (), 1800),
     ("test_cylindrical.py", (), (), 1800),
-    # Offline (no mpirun), but it runs five full solver steps in
-    # subprocesses, so it is a slow row.
+    # Offline (no mpirun), but it steps the solver in six subprocesses
+    # (one step each, ten on the pipe), so it is a slow row.
     ("test_imm_continuity.py", (), SLOW, 3600),
     ("test_integration.py", (), (), 1800),
     # Parses the core's sources; no JAX, a few seconds.
     ("test_layering.py", (), (), 1800),
-    # Nine children importing the core under simulated entry points; no
-    # JAX, a few seconds.
+    # Seventeen children importing the core under simulated entry
+    # points; no JAX, a few seconds.
     ("test_plugins.py", (), (), 1800),
     ("test_localized_rolls.py", (), (), 1800),
     # In-process (forced CPU device) workers, one per case; no mpirun.
@@ -63,7 +62,7 @@ _SCRIPTS: list[Row] = [
     ("test_driving.py", ("--unit-only",), (), 1800),
     ("test_seeding.py", ("--unit-only",), NO_MPI_ONLY, 1800),
     ("test_resume.py", ("--unit-only",), (), 1800),
-    # ~2 min: the units plus six one-process solver launches (no
+    # ~2 min: the units plus nine one-process solver launches (no
     # launcher); the mpirun tier is its own row below.
     ("test_run_status.py", ("--no-mpi",), (), 1800),
     # ~25 s: four one-process solver launches of four steps each.

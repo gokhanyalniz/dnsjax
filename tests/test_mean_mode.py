@@ -5,13 +5,13 @@ Cartesian perturbation must respect -- at three levels:
 
 1. **The constraint rows are the right discretization.**  Profiles that
    satisfy the relations analytically (`$\sin(k\pi(y+1)/2)$` for case A,
-   `$\sin(m\pi y)$` and `$1-y^2$` for case B) score below
-   ``COMPAT_TOL`` on every ``(grid_type, ny, fd_order)`` in the table
-   the tolerance is read off, while a profile that genuinely violates a
-   relation scores `$O(1)$` -- the separation the single tolerance
-   rests on.  A compatible profile's *correction* also falls with
-   ``ny``, which is what makes "these rows discretize those relations"
-   an empirical statement rather than an assertion.
+   `$\sin(m\pi y)$` for case B) score below ``COMPAT_TOL`` on every
+   ``(grid_type, ny, fd_order)`` in the table the tolerance is read
+   off, while a profile that genuinely violates a relation (`$1-y^2$`,
+   in both cases) scores `$O(1)$` -- the separation the single
+   tolerance rests on.  A compatible profile's *correction* also falls
+   with ``ny``, which is what makes "these rows discretize those
+   relations" an empirical statement rather than an assertion.
 2. **The projector is a projector.**  Machine-level residual,
    machine-level idempotence *as an operator* -- every input at once,
    not one draw -- exactly preserved no-slip (the kernel's window
@@ -24,12 +24,10 @@ Cartesian perturbation must respect -- at three levels:
    with ``init.random_mean_flow`` on, across both flows, both driving
    knobs, tilt, both grid types and two ``fd_order``s: a real, wall-
    vanishing `$(0,0)$` column with no wall-normal component, machine-
-   level residuals per tilted direction -- which include the
-   vanishing wall curvature in **every** direction under **every**
-   driving, the statement that the pair starts at one mean pressure
-   gradient -- and an exactly zero bulk in each direction whose mean
-   is held.  Plus device-count independence over ``(np0, np1)``, and
-   the per-flow deferral for every flow whose laws are not
+   level residuals of every row of each tilted direction's case, under
+   **every** driving, and an exactly zero bulk in each direction whose
+   mean is held.  Plus device-count independence over ``(np0, np1)``,
+   and the per-flow deferral for every flow whose laws are not
    established.
 
 The rolls' own claim -- that their `$(0,0)$` content is a cubic, which
@@ -81,7 +79,7 @@ CASES = [
     ("plane-poiseuille", "constant_bulk_velocity", True, 30.0, "tanh", 6),
 ]
 
-#: Device meshes the `$(0,0)$` column must come out bit-identical on.
+#: Device meshes the `$(0,0)$` column must agree on (to ``CROSS_TOL``).
 MESHES = [(1, 1), (1, 2), (2, 1)]
 
 #: Machine-level bound for a residual the projector zeroed.  Loose
@@ -344,19 +342,16 @@ def test_projector_properties(check) -> None:
                 res * min(keep, 1.0) < EXACT_TOL,
                 f"{res:.2e} (keep={keep:.3f})",
             )
-            # Idempotent as algebra, so a recompute shows roundoff
-            # only.  Measured on the operator, not on the draw above:
-            # what the draw comes back with is a fraction of what went
-            # in (``keep`` above), so normalizing its drift by its own
-            # norm reports that shrinkage rather than the projector --
-            # on the s=0.99 case-B row it reads 8e-14 at this seed and
+            # Idempotence, measured on the operator, not on the draw
+            # above: what the draw comes back with is a fraction of what
+            # went in (``keep`` above), so normalizing its drift by its
+            # own norm reports that shrinkage rather than the projector
+            # -- on the s=0.99 case-B row it reads 8e-14 at this seed and
             # up to 2e-11 at others, and a draw-normalized drift is
             # sensitive to BLAS summation order.  So the check runs
             # column by column through the same entry point instead:
-            # ``|P(Pd) - Pd| <=
-            # ||P^2 - P||_inf |d|_inf`` bounds every input at once,
-            # with no draw in it.  (The no-slip check below *is* an
-            # equality -- exact by construction, the window factor.)
+            # ``|P(Pd) - Pd| <= ||P^2 - P||_inf |d|_inf`` bounds every
+            # input at once, with no draw in it.
             basis = np.eye(len(y))
             P = np.stack([project_profile(e, C, K) for e in basis], axis=1)
             P2 = np.stack([project_profile(c, C, K) for c in P.T], axis=1)
@@ -711,7 +706,7 @@ def _run_worker(args: list[str], devices: int, timeout: int = 900):
 
 
 def _check_device_independence() -> str | None:
-    """The `$(0,0)$` column must be bit-identical at any (np0, np1)."""
+    """The `$(0,0)$` column must agree at any (np0, np1), to roundoff."""
     with tempfile.TemporaryDirectory(prefix="mean_mode_") as tmp:
         cols = []
         for np0, np1 in MESHES:
@@ -727,7 +722,7 @@ def _check_device_independence() -> str | None:
         # by the *global* index and so is bit-identical, but the final
         # ``amplitude / get_norm(...)`` scaling reduces over devices,
         # and that sum's order is device-count dependent (the same
-        # convention as ``RAND_CROSS_TOL`` in test_localized_rolls).
+        # convention as ``RAND_CROSS_TOL`` in _localized_rolls).
         scale = float(np.max(np.abs(cols[0])))
         for (np0, np1), col in zip(MESHES[1:], cols[1:], strict=True):
             drift = float(np.max(np.abs(col - cols[0])))

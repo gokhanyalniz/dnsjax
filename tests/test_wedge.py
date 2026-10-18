@@ -1,11 +1,10 @@
 r"""Azimuthal-wedge tests (``geo.m0``).
 
-Offline checks of the annular / cylindrical azimuthal wedge, the
-``geo.m0`` support in the annular / cylindrical ``Fourier`` classes.
-Each case runs in its own subprocess (the ``test_*``
-subprocess-per-config idiom: ``dnsjax.parameters`` -- and, for the
-wedge-Fourier cases, the sharding / geometry singletons -- capture the
-global ``params`` once).
+Offline checks of the azimuthal wedge, the ``geo.m0`` support in the
+annular / cylindrical ``Fourier`` classes.  Each case runs in its own
+subprocess (the ``test_*`` subprocess-per-config idiom:
+``dnsjax.parameters`` -- and, for the wedge-Fourier cases, the
+sharding / geometry singletons -- capture the global ``params`` once).
 
 Cases:
 
@@ -16,19 +15,22 @@ Cases:
    azimuthal spacing, and the unique mean mode.
 3. ``wedge_cylindrical``: m0 = 3 pipe Fourier -- the m0-scaled
    wavenumbers and the parity mask ``m_is_even`` tracking the *physical*
-   wavenumber parity (the r = 0 axis-regularity condition).
+   wavenumber parity (the r = 0 axis-regularity condition), not the
+   harmonic index.
 4. ``wedge_nonlinear``: the wedge's **physical-space / nonlinear**
    path, which no other wedge check reaches (the laminar smoke test has
    u' = 0; the transient-growth wedge equivalence is FFT-free).  Steps
    one physical Taylor-Couette field two ways -- as an m0 = 3 wedge at
    nz = 8 and as the full circle at nz = 24 with the coefficients
    re-indexed onto the m0-multiples -- through a full nonlinear step,
-   and requires (a) the m0-multiples agree and (b) nothing leaks to the
-   other m.  This pins that the inverse FFT of the m = m0*j coefficients
-   yields ``nz`` points spanning the *wedge* [0, 2*pi/m0) rather than
-   the whole azimuth: were it the latter, the pseudo-spectral product
-   would be evaluated on an m0-times too coarse theta grid and (a)
-   would fail outright.  Runs two subprocess arms sharing a state file.
+   and requires, to ``WEDGE_TOL`` relative, (a) the m0-multiples agree
+   and (b) nothing leaks to the other m.  This pins that the inverse
+   FFT of the m = m0*j coefficients yields ``nz`` points spanning the
+   *wedge* [0, 2*pi/m0) rather than the whole azimuth (the
+   ``parameters`` Design notes, "The azimuthal wedge is resolved, not
+   decimated"): were it the latter, the pseudo-spectral product would
+   be evaluated on an m0-times too coarse theta grid and (a) would fail
+   outright.  Runs two subprocess arms sharing a state file.
 
 Usage::
 
@@ -137,8 +139,6 @@ def case_wedge_cylindrical() -> None:
     m_true = np.asarray(fourier.m).ravel()[:7]
     expected = 3 * np.asarray(complex_harmonics(8))
     assert np.array_equal(m_true, expected), (m_true, expected)
-    # m_is_even must track the *physical* wavenumber parity (r=0
-    # regularity), not the raw harmonic index.
     par = np.asarray(fourier.m_is_even).ravel()[:7].astype(int)
     assert np.array_equal(par, (np.abs(expected) % 2 == 0).astype(int)), par
     print("case-ok")
@@ -146,24 +146,8 @@ def case_wedge_cylindrical() -> None:
 
 # ── nonlinear wedge-vs-full-circle equivalence ──────────────────
 #
-# The wedge's *physical-space* path.  The FFT is purely index-based
-# (it never sees theta), so the inverse transform of the m = m0*j
-# coefficients yields ``nz_padded`` points spanning one period of the
-# m0-periodic field -- i.e. the wedge [0, 2*pi/m0), at m0-times finer
-# spacing than the full circle at the same nz -- and *not* nz_padded
-# points spread over the whole azimuth.  Everything below rides on
-# that: if it were false, the pseudo-spectral product would be
-# evaluated on the wrong grid and the wedge would silently disagree
-# with the full circle.
-#
-# Neither existing wedge check reaches this path: the laminar smoke
-# test has u' = 0 (no nonlinear term) and the transient-growth wedge
-# equivalence is FFT-free (per-mode linear propagator).  So step the
-# *same physical field* two ways -- as an m0 wedge at nz = NZ_WEDGE,
-# and as the full circle at nz = m0*NZ_WEDGE with the coefficients
-# re-indexed onto the m0-multiples -- through a full nonlinear step
-# and require they agree.  Agreement is to round-off, not bit-exact:
-# the two runs use different FFT lengths.
+# The wedge_nonlinear case (module docstring).  Agreement is to
+# round-off, not bit-exact: the two runs use different FFT lengths.
 
 WEDGE_M0 = 3
 NZ_WEDGE = 8
@@ -294,7 +278,7 @@ def case_wedge_nonlinear_full() -> None:
     scale = np.max(np.abs(wedge_out))
     assert scale > 1e-6, f"degenerate reference state (scale {scale:.2e})"
 
-    # 1. The m0-multiples reproduce the wedge step exactly.
+    # 1. The m0-multiples reproduce the wedge step (to round-off).
     err = np.max(np.abs(out[:, :, idx, :] - wedge_out[:, :, : len(idx), :]))
     assert err / scale < WEDGE_TOL, (
         f"wedge and full circle disagree on the m0-multiples: "

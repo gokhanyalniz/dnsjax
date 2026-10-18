@@ -7,7 +7,8 @@ localized-rolls IC (the in-process ``init.localized_rolls`` start mode,
 no snapshot file), judged by the exit code and :mod:`_smoke`'s
 criteria.  Row keys beyond ``name`` and ``args``: ``force_np`` /
 ``force_np0`` / ``res`` / ``oversubscribe`` (overriding the suite
-defaults) and ``expect_pattern``.
+defaults, for a forced multi-device padded entry) and
+``expect_pattern``.
 """
 
 from __future__ import annotations
@@ -24,11 +25,7 @@ from _smoke import check_run, res_flags, run_rows
 def _build_command(
     system: dict, args: argparse.Namespace, dt: float
 ) -> list[str]:
-    """Build the ``mpirun ... -m dnsjax`` command for one system.
-
-    Per-system ``force_np`` / ``force_np0`` / ``res`` / ``oversubscribe``
-    override the suite defaults (used by the multi-device padded entry).
-    """
+    """Build the ``mpirun ... -m dnsjax`` command for one system."""
     np_count = system.get("force_np", args.np)
     np0 = system.get("force_np0", args.np0)
     res = system.get("res", {})
@@ -52,7 +49,6 @@ def _build_command(
         str(np0),
         "--dist.np1",
         str(np_count // np0),
-        # In-process deterministic localized-rolls IC (no snapshot file).
         "--init.localized_rolls",
         "True",
         "--init.localized_rolls_amplitude",

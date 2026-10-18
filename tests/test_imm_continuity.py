@@ -1,32 +1,25 @@
 r"""Discrete continuity of a stepped state, under both IMM formulations.
 
-Checked on the default ``res.consistent_imm`` formulation and on the
-legacy one.
-
-The influence-matrix method's continuity argument (Kleiser-Schumann;
-Canuto, Hussaini, Quarteroni & Zang 1988, sec. 7.3) is derived for
-*continuous* differentiation operators.  Discretely it needs
-`$\nabla\cdot\nabla = L_k$` (i.e. `$D_1 D_1 = D_2$`) and
-`$[D_1, D_2] = 0$`, and -- separately -- an accounting of the momentum
-wall rows the Dirichlet replacement discards.  With none of that, a
-stepped state carries a truncation-level discrete divergence,
-amplified at the walls (converging under refinement): not a bug, but
-not zero either.  That is the legacy ``res.consistent_imm = False``
-path.  The **default** removes it in all three geometries by
-*reformulating* -- advancing the wall-normal velocity and vorticity and
-reconstructing the tangential components, so continuity is algebra
-rather than something a solve has to deliver (see the ``Resolution``
-docstring).  Both are exercised here, each passed explicitly.
+The legacy ``res.consistent_imm = False`` path leaves a stepped state a
+truncation-level discrete divergence, amplified at the walls
+(converging under refinement): not a bug, but not zero either.  The
+**default** removes it in all three geometries by *reformulating* --
+advancing the wall-normal velocity and vorticity and reconstructing the
+tangential components, so continuity is algebra rather than something a
+solve has to deliver.  The discrete identities the legacy path misses,
+the reformulation and its measurements: ``res.consistent_imm``'s field
+description and the :mod:`dnsjax.parameters` Design notes ("Consistent
+influence matrix").  Both are exercised here, each passed explicitly.
 
 Each case measures ``max|div| / max|individual term|`` on the true-mode
 slice of a state that has been through one full predictor-corrector
-step, using the solver's *own* divergence assembly (the one
-``dnsjax.analysis.snapshot_ops.divergence`` mirrors).  The measurement
-must use a **stepped** state: a divergence-free field cannot
-discriminate two divergence operators -- both return zero -- so an
-un-stepped check is unfalsifiable.  The real-FFT `$k = 0$` plane is
-excluded, since ``random_field`` solves continuity only off it by
-design.
+step (``PIPE_STEPS`` on the pipe), using the solver's *own* divergence
+assembly (the one ``dnsjax.analysis.snapshot_ops.divergence``
+mirrors).  The measurement must use a **stepped** state: a
+divergence-free field cannot discriminate two divergence operators --
+both return zero -- so an un-stepped check is unfalsifiable.  The
+measure excludes the real-FFT `$k = 0$` plane; the bounds and floors
+below are measured on that slice.
 
 What is asserted: under the default, continuity holds *by algebra* at
 every row and for any operator, grid or axis fit, so all three
@@ -35,15 +28,19 @@ residual, **at every `$N_y$`**, which is why the default bounds are
 asserted across the whole ``--ny`` sweep.  Operator identities would
 instead leave the annulus and the pipe at `$8\times10^{-6}$` /
 `$5.6\times10^{-5}$`, floors set by a commutator each cannot remove;
-the reconstruction has no such floor.
+the reconstruction has no such floor.  Each legacy case must exceed
+``OFF_FLOOR`` and stay under a loose regression pin, both asserted
+only at the default ``ny = 25`` (at another ``--ny`` its value is
+reported: an absolute number that moves a long way with resolution).
 The plane-couette legacy case additionally reports the momentum side of
 the trade (see ``_worker``): what relocating the residual out of
 continuity costs in momentum units.
 
 The pipe uses the deterministic axis-regular rolls IC.  A random IC
 steps stably too (``tests/test_random_smoke.py`` carries random-IC
-pipe entries), but a grid-white draw near the axis swamps the
-legacy-case measurement with under-resolved-noise divergence.
+pipe entries), but a grid-white draw has no continuum limit near the
+axis: its under-resolved-noise divergence swamps the legacy-case
+measurement, and the gate shows no clean gain.
 
 A final ``--pipe-accepts`` subprocess asserts the flag is *settable*
 on the pipe surface at all.
@@ -74,10 +71,8 @@ PIPE_STEPS = 10
 
 # ``--ny`` overrides NY for both the driver and its workers, so the
 # resolution dependence can be swept.  ``ny = 25`` is the suite
-# default because it is fast, and is the only resolution the
-# *annular/pipe* bounds are pinned at; other ``--ny`` values report
-# those without asserting (``main``).  The Cartesian default bound is
-# asserted at every ny -- see the module docstring.  Measured, seed 7:
+# default because it is fast, and the only resolution the *legacy*
+# bounds are pinned at (module docstring).  Measured, seed 7:
 #
 #     ny    plane-couette legacy / default  taylor-couette legacy / default
 #     25    4.48e-02 / 2.91e-16             6.39e-02 / 5.62e-16
@@ -89,11 +84,8 @@ PIPE_STEPS = 10
 # The legacy residual **falls** with resolution in every geometry
 # (~40x over 25 -> 97 on plane-couette, at each of seeds
 # 7/11/23; ~110x on taylor-couette and ~1900x on the pipe).  Every
-# default one stays
-# at round-off and follows no `$h^p$` law at all (the mild ny growth
-# is the longer `$D_1$` dot product), because the reconstruction makes
-# continuity an algebraic identity rather than something a solve has
-# to deliver.
+# default one stays at round-off (the mild ny growth is the longer
+# `$D_1$` dot product).
 #
 # The legacy numbers depend on the IC's wall-normal smoothness:
 # ``random_field.wall_normal_filter`` keeps grid-white Nyquist
@@ -105,11 +97,11 @@ PIPE_STEPS = 10
 # (label, system, consistent_imm, max relative divergence allowed).
 # Both formulations are named explicitly, so the pair stays a contrast
 # whatever the model default is.  The legacy bounds are loose
-# regression pins on the current behaviour (measured ~4e-2 / ~6e-2 at NY);
-# the default bounds are the claim.  Every default bound is round-off,
-# by algebra rather than by a solve, and pinned tight enough that an
-# operator-identity mechanism (floors 4.2e-14 Cartesian, 8.0e-06
-# annular, 5.6e-05 pipe) could not pass it.
+# regression pins on the current behaviour (the table above); the
+# default bounds are the claim, round-off and tight enough that an
+# operator-identity mechanism could not pass them on the annulus or
+# the pipe (floors 8.0e-06 / 5.6e-05; the Cartesian one, 4.2e-14, sits
+# below the bound).
 CASES = [
     ("plane-couette  legacy", "plane-couette", False, 1e0),
     ("plane-couette  default", "plane-couette", True, 1e-13),
@@ -168,10 +160,6 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
                 consistent_imm=consistent_imm,
             ),
             init=(
-                # The pipe uses the deterministic axis-regular rolls IC
-                # (a grid-white random draw has no continuum limit near
-                # the axis, so its divergence is under-resolved noise and
-                # the gate shows no clean gain).
                 Initiation(
                     localized_rolls=True, localized_rolls_amplitude=0.15
                 )
@@ -206,10 +194,7 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
         from dnsjax.ic.random_field import generate_random_state
 
         state = generate_random_state(0.2, 0.4, 0.4, 0.14, 7)
-    # A random IC produces a clear legacy divergence in one step; the
-    # axis-regular rolls IC (pipe) starts divergence-free and its
-    # projection-splitting divergence accumulates over a few steps, so
-    # the pipe is stepped a short horizon to expose a clear signal.
+    # A random IC gives a clear legacy divergence in one step.
     n_steps = PIPE_STEPS if system == "pipe" else 1
     stepped = jnp.copy(to_solver(state))
     for _ in range(n_steps):
@@ -279,23 +264,22 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
         # field.
         #
         # - ``CHI-MOM``: an *upper bound* on the momentum price of the
-        #   Cartesian v-omega_y route.  That route relocates the
-        #   divergence residual out of continuity and into the
-        #   chi-momentum equation (which it never solves), so what
-        #   continuity gains, that equation loses:
-        #   `$\\max|\\tilde H \\delta| / \\max|\\tilde H u|$` with
-        #   `$\\delta = (i k_x, i k_z)\\,Q/k^2$`, i.e. this step's own
+        #   Cartesian v-omega_y route, which relocates the divergence
+        #   residual out of continuity and into the chi-momentum
+        #   equation (which it never solves):
+        #   `$\max|\tilde H \delta| / \max|\tilde H u|$` with
+        #   `$\delta = (i k_x, i k_z)\,Q/k^2$`, i.e. this step's own
         #   divergence residual expressed in momentum units
         #   (4.5e-2 at ny = 25 -> 1.6e-3 at ny = 97).  It is only a
         #   bound because it assumes all of Q lands in the tangential
         #   pair at fixed v; differencing the two schemes' stepped
-        #   states directly gives 2.4e-3 / 3.2e-5, ~20x smaller (the
-        #   ``parameters`` Design notes).  Either way it is
-        #   truncation-level and refines, and -- the point of the
-        #   reconstruction -- no solve reads it back, so it does not
-        #   re-excite (a post-hoc projection relocating the same
-        #   residual *while* the solve still imposes chi-momentum is
-        #   unstable; the ``_imm_iteration`` docs).
+        #   states directly gives 2.4e-3 / 3.2e-5, ~20x smaller.  Why
+        #   the residual is harmless (truncation-level, refining, read
+        #   back by no solve): the ``parameters`` Design notes
+        #   ("Consistent influence matrix", *Price*); a post-hoc
+        #   projection relocating the same residual *while* the solve
+        #   still imposes chi-momentum is unstable (the
+        #   ``_imm_iteration`` docs).
         #
         # Interior rows and the k = 0 plane excluded, like the
         # divergence measure.
@@ -378,11 +362,7 @@ def main(ny: int) -> None:
         flush=True,
     )
     passed, failures = 0, []
-    # The *legacy* bounds are pinned at ``NY`` only; ``--ny`` is a
-    # *diagnostic* sweep for them (see the module docstring), reported
-    # and not asserted, because they are absolute numbers that move a
-    # long way with resolution.  The default bounds are ny-independent
-    # and always asserted.
+    # The legacy bounds hold at ``NY`` only (module docstring).
     asserted = ny == NY
     if not asserted:
         print(
@@ -403,9 +383,8 @@ def main(ny: int) -> None:
             print(f"FAIL {label}: {err}", flush=True)
             failures.append((label, err))
             continue
-        # Every default-formulation claim is an algebraic identity, so
-        # its bound holds at any resolution -- asserting it across a
-        # ``--ny`` sweep is the refinement-flatness guard.
+        # The default bounds hold at any ny: the refinement-flatness
+        # guard.
         flat = cimm
         if not asserted and not flat:
             print(f"REPORT {label}: rel div {rel:.2e}")

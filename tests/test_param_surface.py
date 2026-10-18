@@ -1,25 +1,26 @@
 r"""Flow-spec registry and per-flow parameter-surface tests.
 
-Offline and JAX-free end to end: the registry (``dnsjax.flows.
-registry``), the spec hooks wired into ``update_parameters`` /
-``validate_parameters`` (per-flow defaults materialization, derive,
-grid defaults, strict relevance for direct assignment), and the
-surface machinery (``dnsjax.param_surface``): dynamic CLI/TOML models,
-alias round-trips, strict rejection of irrelevant parameters,
-deferred-feature messages, ``externalize``/``internalize_stored``
-mapping, the annotated sample-TOML rendering, and ``--help`` listing
-every field of the bare and of each flow's surface.  The entry-point
-smoke cases additionally shell out ``python -m dnsjax --help`` /
-``--help <system>`` / ``--sample-toml``, and the transient-growth help
-(no ``mpirun``: help exits at the parser).
+Offline and JAX-free end to end: the registry (``dnsjax.flows.registry``,
+its total-field axis included), the spec hooks wired into
+``update_parameters`` / ``validate_parameters`` (per-flow defaults
+materialization, derive, grid defaults, strict relevance for direct
+assignment), and the surface machinery (``dnsjax.param_surface``):
+dynamic CLI/TOML models, alias round-trips, strict rejection of
+irrelevant parameters, deferred-feature messages, the ``[lowres]``
+names, pressure knob and refusals, ``externalize`` /
+``internalize_stored`` mapping, the annotated sample-TOML rendering,
+and ``--help`` listing every field of the bare and of each flow's
+surface.  The entry-point smoke cases additionally shell out
+``python -m dnsjax --help`` / ``--help <system>`` / ``--sample-toml``,
+and the transient-growth help (no ``mpirun``: help exits at the
+parser).
 
-Cases mutate the ``params`` singleton and restore it via ``_reset``
-(fresh section models + cleared explicit-set tracking + reset
-extension singletons), so ordering is free.  The extension case covers
-the extension mechanism end to end on a section of its own: surface
-split, layering, validation dispatch, and the metadata dump.  The
-shared pieces: ``tests/_param_surface.py``; the lab's flows and
-sections: ``lab/tests/test_param_surface.py``.
+Cases mutate the ``params`` singleton and restore it via ``_reset``,
+so ordering is free (the shared pieces: ``tests/_param_surface.py``).
+The extension case covers the extension mechanism end to end on a
+section of its own: surface split, layering, validation dispatch, and
+the metadata dump.  The lab's flows and sections:
+``lab/tests/test_param_surface.py``.
 
 Run as a script::
 
@@ -220,9 +221,9 @@ def case_surface_strictness() -> None:
             check(True, f"kolmogorov rejects {bad}")
     # The mean-mode knob is *deferred* here, not absent: it parses
     # (deferred fields stay in the surface model) and ``internalize``
-    # is what refuses it -- exercised in ``case_deferred``.  An
-    # explicit inert default is a no-op and passes, which is what lets
-    # a snapshot predating the deferral resume.
+    # refuses it (``case_deferred``).  An explicit inert default is a
+    # no-op and passes, which lets a snapshot predating the deferral
+    # resume.
     v = kol_model.model_validate({"init": {"random_mean_flow": False}})
     PS.internalize(v.model_dump(exclude_unset=True), kol)
     check(True, "kolmogorov accepts an inert init.random_mean_flow")
@@ -445,9 +446,9 @@ def case_derive_and_defaults() -> None:
     P.validate_parameters()
 
     # taylor-couette: re derived from re1; a direct assignment is
-    # overwritten.
+    # silently overwritten.
     _reset()
-    P.params.phys.re = 123.0  # direct assignment, silently overwritten
+    P.params.phys.re = 123.0
     P.update_parameters(
         P.Parameters(
             phys={"system": "taylor-couette", "re1": 500.0, "re2": -200.0},
@@ -698,9 +699,10 @@ class _Example:
 def _example_extension():
     """Register (once) and return ``[example]``, a wall-bounded section.
 
-    All-or-none ``modes`` with ``it_example``; its validate refuses a
-    configured section on a flow without walls, as a section that only
-    makes sense there must (validate hooks dispatch unconditionally).
+    ``modes`` switches it on and ``it_example`` is its off cadence; its
+    validate refuses a configured section on a flow without walls, as a
+    section that only makes sense there must (validate hooks dispatch
+    unconditionally).
     """
     from pydantic import BaseModel
 

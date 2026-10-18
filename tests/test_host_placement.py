@@ -1,19 +1,9 @@
 r"""No host array goes through JAX's cross-process equality check.
 
-``jax.device_put`` of a host (NumPy) value onto a sharding that spans
-several processes first checks that every process passed the same
-value, by gathering all ``W`` copies onto every process
-(``jax.experimental.multihost_utils.assert_equal``): each process
-briefly holds about twice ``W`` times the array, so the cost grows
-with the job, not with the problem.  On ARCHER2 that check, on the two
-dense wall-normal derivative matrices alone, was the per-rank memory
-peak of every 4-node layout (``sharding.Sharding.distribute`` has the
-numbers).  Host arrays reach the mesh through ``distribute`` instead,
-which builds each process's shards from its own copy.
-
-Each case runs the solver on two ranks under a recorder of that check,
-with a positive control (the machinery: ``tests/_host_placement.py``;
-the lab's cases: ``lab/tests/test_host_placement.py``).
+The contract, its why and the machinery: ``tests/_host_placement.py``;
+the lab's cases: ``lab/tests/test_host_placement.py``.  Each case runs
+the solver on two ranks under a recorder of that check, with a
+positive control.
 
 The cases build every core flow family and step it a few times:
 Cartesian, resumed onto a changed ``ny`` (the regrid matrix), with

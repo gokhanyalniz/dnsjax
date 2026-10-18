@@ -2,7 +2,7 @@
 r"""Temporal-order guard for the two time-stepping schemes (offline).
 
 Pins the second-order accuracy of ``step.scheme == "cnab2"`` against
-``"iterative-cn"`` with two complementary studies, each stepping
+``"iterative-cn"`` with complementary studies, each stepping
 in-process on 1 forced CPU device (no ``mpirun``), one subprocess per
 ``(system, scheme, dt)``:
 
@@ -24,9 +24,11 @@ in-process on 1 forced CPU device (no ``mpirun``), one subprocess per
   ``implicit_mean_coupling`` on, so the mean-flow coupling's CN
   treatment is covered by the order check too.
 - **plane-Couette, ``res.consistent_imm`` contrast**: the difference
-  proxy above cancels the shared projection error, so it cannot judge
-  a formulation that *removes* that error.  This study instead
-  measures each configuration's own self-convergence, asserts that
+  proxy above works only while the shared projection error dominates
+  both schemes and cancels in the difference, so it cannot judge a
+  formulation that *removes* that error.  This study instead measures
+  each configuration's own self-convergence against a fine-``dt`` run
+  of the same configuration, asserts that
   the default is second order (every slope at least
   ``DEFAULT_ORDER_MIN``), and that it strictly improves both the error
   size and its decay rate over the legacy primitive path (measured at
@@ -90,12 +92,12 @@ with a discarded ``step_cnab2(copy(u0), zeros)`` call, take the first
 step with iterative-CN, then chain cnab2 (the steppers donate their
 arguments, hence the copies).
 
-**Variable-step (vardt) studies.**  Two further studies drive the
+**Variable-step (vardt) studies.**  Three further studies drive the
 adaptive-dt machinery under a *prescribed* dt sequence (no
 controller) through the flow module's ``set_dt`` /
 ``reset_ab2_kappa`` hooks, sweeping the AB2 step ratio
 `$\kappa = \Delta t_n / \Delta t_{n-1}$` through 1/2, 1, and 2 with
-an on-device operator rebuild at every change.  Both must fall at
+an on-device operator rebuild at every change.  Each must fall at
 slope ~2 under base-dt halving -- a first-order-in-``dt`` kappa bug
 shows up directly here.
 
@@ -126,10 +128,13 @@ shows up directly here.
   difference proxy is unusable for the reason the fixed-dt contrast
   study gives -- so this one measures the variable-step sequence's own
   self-convergence and compares it, error for error, against the
-  fixed-``dt`` sweep of the same configuration sharing one reference.
-  It is the only study that steps the *default* operator set through a
-  mid-run ``set_dt`` rebuild (it rebuilds one band family fewer than
-  the legacy path).
+  fixed-``dt`` sweep of the same configuration sharing one reference:
+  it must stay second order (``DEFAULT_ORDER_MIN``) with every error
+  below the fixed-``dt`` one.  It is the only study that steps the
+  *default* operator set (the v-omega families, one band family fewer
+  than the legacy path's) through a mid-run ``set_dt`` rebuild.
+  Measured: fixed 6.29e-6 at orders 2.02 / 2.08, variable 3.92e-6 at
+  2.03 / 2.12.
 
 ::
 
@@ -172,15 +177,10 @@ DTS_PC = [0.01, 0.005, 0.0025]
 # finest DTS_PC entry).
 DT_SELF_REF = 0.000625
 
-# Wall-bounded workers first relax the random IC: N_RELAX steps at
-# DT_RELAX (0.05 time units, iterative-CN, via ``set_dt`` -- no
-# recompile), then switch to the study dt.  The IC's continuity-derived
-# tangential velocity satisfies the *discrete* constraints only to
-# truncation, so the first steps project that mismatch out, and an
-# order study started from the raw IC measures the projection -- an
-# O(dt) global error -- instead of the scheme (module docstring).
-# Every run of a study, reference included, relaxes identically, so
-# all start from the same discretely consistent state.
+# The wall-bounded IC relaxation (module docstring): N_RELAX
+# iterative-CN steps at DT_RELAX, identical in every run of a study,
+# reference included, so all start from the same discretely consistent
+# state.
 DT_RELAX = 5e-4
 N_RELAX = 100
 # Absolute order the default formulation must reach in every
@@ -248,8 +248,8 @@ def _worker(
     """Integrate to ``T_END`` and save the final spectral state.
 
     With (*system*, *scheme*, *dt*), to *out* (.npy).  With *vardt*,
-    step the dyadic ``(dt, dt/2, dt/2)`` pattern via ``set_dt``
-    (docstring).  The Crank-Nicolson weight is ``IMPLICITNESS`` unless
+    step the study's variable ``dt`` sequence via ``set_dt`` (module
+    docstring).  The Crank-Nicolson weight is ``IMPLICITNESS`` unless
     *default_implicitness* leaves the model default.
     """
     os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1"
@@ -326,15 +326,11 @@ def _worker(
         generate_random_state(amp, SMOOTH, WALL_SMOOTH, WALL_CONF, SEED)
     )
     if vardt and system == "kolmogorov":
-        # Dense dyadic alternation: a change at 2 of every 3 steps.
         n_periods = round(T_END / (2 * dt))
         assert abs(2 * dt * n_periods - T_END) < 1e-12
         seq = [dt, dt / 2, dt / 2] * n_periods
     elif vardt:
-        # Wall-bounded: four equal-duration blocks (d, d/2, d, d/2)
-        # -- a fixed count of dt changes (3) for every base d, so the
-        # per-change projection-splitting decorrelation stays
-        # O(dt^2) total (module docstring).
+        # Wall-bounded: four equal-duration blocks (module docstring).
         n_hi = round(T_END / 4 / dt)
         n_lo = 2 * n_hi
         seq = ([dt] * n_hi + [dt / 2] * n_lo) * 2
@@ -348,8 +344,6 @@ def _worker(
     thresh = TOL_ASSERT
 
     def _converged(err, i: int) -> None:
-        # An unconverged corrector silently degrades the temporal
-        # order; fail the worker loudly instead.
         assert float(err) <= thresh, (
             f"{system} {scheme} dt={dt}: corrector not converged at "
             f"step {i} (err {float(err):.3e} > {thresh:.1e})"
@@ -373,10 +367,9 @@ def _worker(
     prev_dt = dt
     kappa_pending = False
     if scheme == "cnab2":
-        # __main__ bootstrap: discarded priming call seeds the AB2
-        # history, the first integration step is iterative-CN.
-        # (RHS-shaped seed: every system here has 3 physical
-        # components; a pipe state also carries 2 solver slots.)
+        # The __main__ self-start (module docstring).  RHS-shaped seed:
+        # every system here has 3 physical components; a pipe state
+        # also carries 2 solver slots.
         _, carry, *_ = fmod.step_cnab2(
             jnp.copy(state), jnp.zeros_like(state[:3])
         )
@@ -456,12 +449,12 @@ def _self_convergence(
     """Errors and orders of one configuration's self-convergence.
 
     Every run is iterative-CN at the same ``consistent_imm``
-    formulation; the
-    reference is that configuration's own **fixed**-``dt`` run at
-    ``DT_SELF_REF`` (the converged solution both sequences approach),
-    so the measured slope is an absolute order, not a proxy.  A
-    fixed-``dt`` and a variable-``dt`` sweep of the same configuration
-    share one reference via *ref_stem* (built on first use)."""
+    formulation; the reference is that configuration's own
+    **fixed**-``dt`` run at ``DT_SELF_REF`` (the converged solution
+    both sequences approach), so the measured slope is an absolute
+    order, not a proxy.  A fixed-``dt`` and a variable-``dt`` sweep of
+    the same configuration share one reference via *ref_stem* (built
+    on first use)."""
     ref = tdir / f"{ref_stem or stem}_ref.npy"
     if not ref.exists():
         _run(
@@ -594,13 +587,9 @@ def main() -> None:
                 _run("kolmogorov", "cnab2", dt, out)
                 errs.append(_err(out, ref))
             _check_orders(errs, "kolmogorov cnab2")
-            # Same-limit cross-check: iterative-CN, measured against
-            # the *same* cnab2 reference, must converge to it at slope
-            # 2 too (same equation, both second order) -- which is
-            # what upgrades cnab2's self-convergence into an absolute
-            # order -- with an error of cnab2's own size, not a
-            # plateau (a wrong-equation offset) or a floor (a corrector
-            # that stops contracting; module docstring).
+            # The iterative-CN cross-check against the same reference:
+            # a plateau would be a wrong-equation offset, a floor a
+            # corrector that stops contracting.
             e_icn = []
             for dt in DTS_KOLM:
                 icn = tdir / f"kolm_icn_{dt}.npy"
@@ -625,16 +614,6 @@ def main() -> None:
             _check_orders(errs, "plane-couette cnab2-icn")
 
         if "plane-couette-consistent-imm" in studies:
-            # NOT the scheme-difference proxy of the study above: that
-            # proxy works only while the shared IMM projection error
-            # dominates *both* schemes and cancels in the difference,
-            # and ``res.consistent_imm`` is precisely what removes it.
-            # The fair measurement is each configuration's own
-            # self-convergence against a fine-dt run of the same
-            # configuration.
-            # The legacy path's absolute order is ~0.5-0.8 (its
-            # projection-splitting error, 1.4e-2 at dt = 0.01), the
-            # default's 2 (6.3e-6).
             print("=== plane-couette: consistent_imm self-convergence ===")
             _consistent_imm_contrast(
                 tdir,
@@ -645,15 +624,11 @@ def main() -> None:
             )
 
         if "taylor-couette-consistent-imm" in studies:
-            # The annular/cylindrical half of the study above, and the
-            # detector for the time-discretization elements the
-            # default formulation adds over the legacy path: the spin
-            # coupling lagged to the corrector iterate, and the
-            # `$\Phi^n$` wall rows recomputed from the carried
-            # `$u_\pm$` state.  Either would show here as a lost
-            # order.  (Lagging the *recovery* coupling too measures
-            # as a small wrong-constant first-order shift, which this
-            # study is sized to see.)
+            # A broken time-discretization element of the default (the
+            # module docstring's two) would show here as a lost order;
+            # lagging the *recovery* coupling too measures as a small
+            # wrong-constant first-order shift, which this study is
+            # sized to see.
             print("=== taylor-couette: consistent_imm self-convergence ===")
             _consistent_imm_contrast(
                 tdir,
@@ -664,18 +639,10 @@ def main() -> None:
             )
 
         if "pipe-consistent-imm" in studies:
-            # The cylindrical geometry, whose default mechanism is
-            # neither of the other two: the **spin quad**
-            # `$(\Phi_\pm, \omega_\pm)$` solved through the existing
-            # `$H_{k\pm}$` families with the recovery coupling
-            # identically un-lagged (the near-axis lag diverges).  It
-            # is the one geometry where the two formulations differ in
-            # *which* operator families the corrector iterates on, so
-            # its order is not implied by either study above.
-            # Measured: legacy 1.1e-2 at orders 0.87 / 0.97 -> default
-            # 4.1e-5 at 2.02 / 2.07; re-deriving the difference halves
-            # every step instead of carrying them gives 1.1e-3 at
-            # ~1.06 from the raw IC and ~1.0 from the relaxed one.
+            # The recovery coupling is un-lagged because the near-axis
+            # lag diverges.  Re-deriving the difference halves every
+            # step instead of carrying them gives 1.1e-3 at ~1.06 from
+            # the raw IC and ~1.0 from the relaxed one.
             print("=== pipe: consistent_imm self-convergence ===")
             _consistent_imm_contrast(
                 tdir,
@@ -686,11 +653,9 @@ def main() -> None:
             )
 
         if "default-implicitness" in studies:
-            # The model default off-centres the Crank-Nicolson weight
-            # (module docstring); every other study pins the
-            # trapezoidal rule.  Same configuration and reference as
-            # the pipe contrast's default row, whose c = 0.5 runs are
-            # reused when that study ran first.
+            # Same configuration and reference as the pipe contrast's
+            # default row, whose c = 0.5 runs are reused when that
+            # study ran first.
             print("=== pipe: model-default implicitness vs c = 0.5 ===")
             ref = tdir / "pipe_sc_default_ref.npy"
             if not ref.exists():
@@ -757,23 +722,12 @@ def main() -> None:
             _check_orders(errs, "plane-couette vardt cnab2-icn")
 
         if "plane-couette-consistent-imm-vardt" in studies:
-            # The vardt study above is the cnab2-icn difference proxy,
-            # which cancels the shared projection error -- so, exactly
-            # as for the fixed-dt pair, it cannot judge the flag that
-            # removes that error.  With the flag on the fair
-            # measurement is again self-convergence, here of the
-            # *variable-step* sequence.  What it pins is the mid-run
-            # ``set_dt`` rebuild in the gated configuration: flag-on
-            # rebuilds a different operator set (the v-omega families,
-            # one fewer than flag-off), and no other study steps it at
-            # a changing dt.  Reference and dt list are shared with
-            # the fixed-dt run, so the two errors are directly
-            # comparable: a kappa/rebuild bug shows up as a fixed->var
-            # error blow-up or a flattened slope, neither of which
-            # survives the assertions below.  Measured: fixed 6.29e-6
-            # at orders 2.02 / 2.08, variable 3.92e-6 at 2.03 / 2.12
-            # -- the rebuild is order-preserving, at the error ratio
-            # the half-length steps predict (below).
+            # Reference and dt list are shared with the fixed-dt run,
+            # so the two errors are directly comparable: a
+            # kappa/rebuild bug shows up as a fixed->var error blow-up
+            # or a flattened slope, neither of which survives the
+            # assertions below.  The measured errors (module docstring)
+            # stand at the ratio the half-length steps predict (below).
             print("=== plane-couette: consistent_imm vardt vs fixed ===")
             e_fix, o_fix = _self_convergence(
                 tdir, "plane-couette", "pc_ci_seq", consistent_imm=True

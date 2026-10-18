@@ -261,16 +261,15 @@ def test_measured_band_half_width() -> None:
     r"""``matrix_half_bandwidth`` sizes the band correctly.
 
     The banded builders take the half-width from the *assembled*
-    operator rather than assuming ``fd_order`` (``CartesianFlow.
-    __post_init__``).  Two properties matter: with
-    the direct-fit `$D_2$` every operator in every geometry uses
-    (both ``res.consistent_imm`` formulations) it must reproduce
-    ``fd_order`` exactly -- that is what pins the band -- and a
-    composed `$D_1 D_1$`, which an operator-identity route would use,
-    must measure wider, its boundary-adjacent rows reaching
-    further than the direct fit.
-    Rows 0 and Ny-1 are excluded because every operator overwrites
-    them with BC rows.
+    operator rather than assuming ``fd_order``
+    (``CartesianFlow.__post_init__``).  Two properties matter: with the
+    direct-fit `$D_2$` every operator in every geometry uses (both
+    ``res.consistent_imm`` formulations) it must reproduce ``fd_order``
+    exactly -- that is what pins the band -- and a composed
+    `$D_1 D_1$`, which an operator-identity route would use, must
+    measure wider, its boundary-adjacent rows reaching further than the
+    direct fit.  Rows 0 and Ny-1 are excluded because every operator
+    overwrites them with BC rows.
     """
     for ny in (25, 49):
         for p in (4, 6, 8):
@@ -366,15 +365,11 @@ def test_vw_reconstruction_is_exactly_solenoidal() -> None:
 
     The identity ``res.consistent_imm`` rests on
     (:func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration_vw`):
-    for any `$v$` and `$\omega_y$`,
-
-    .. math::
-        u = \frac{i}{k^2}(k_x D_1 v - k_z \omega_y), \qquad
-        w = \frac{i}{k^2}(k_z D_1 v + k_x \omega_y)
-
-    satisfies `$i k_x u + D_1 v + i k_z w = 0$` at **every** row --
-    walls included -- as algebra, so in floating point the residual is
-    a few ulps and does not care about the grid, the operator or the
+    for any `$v$` and `$\omega_y$`, the stage-7 reconstruction of
+    `$(u, w)$` (``cartesian._from_solver``) satisfies
+    `$i k_x u + D_1 v + i k_z w = 0$` at **every** row -- walls
+    included -- as algebra, so in floating point the residual is a few
+    ulps and does not care about the grid, the operator or the
     wavenumber.  Checked with the production `$D_1$` (the same object
     the divergence diagnostic uses) on random data, including the
     `$k_x = 0$` and `$k_z = 0$` lines, where a route that recovered

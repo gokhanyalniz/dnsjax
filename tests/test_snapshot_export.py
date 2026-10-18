@@ -9,9 +9,10 @@ public ``derivative``/``gradient`` wrappers (axis wiring, ``ik``
 scaling, plain ``D1``, the pipe parity requirement), ``curl`` and
 ``divergence`` against the solver's own operators node-for-node, and
 ``integrate`` -- all **without importing JAX in the test process**, so
-the import-time JAX-free guarantee is asserted directly.  The machinery:
-``tests/_snapshot_export.py``; the lab's flows have cases of their own,
-``lab/tests/test_snapshot_export.py``.
+the JAX-free guarantee is asserted directly, at import and again after
+the reads (a flow's ``analysis_metric`` module is imported on its first
+read).  The machinery: ``tests/_snapshot_export.py``; the lab's flows
+have cases of their own, ``lab/tests/test_snapshot_export.py``.
 
 Fixtures are generated in JAX subprocesses (forced CPU devices, one per
 flow system, no MPI), mirroring ``tests/test_localized_rolls.py``: each
@@ -26,14 +27,12 @@ azimuthal wavenumber ``m = m0 * h``, which for every *odd* ``m0``
 (the full circle included) agrees with the harmonic index ``h`` -- so
 only an even wedge can catch a selector keyed on ``h``.
 
-``div_true.npy`` does the same for ``divergence``, with one wrinkle:
-operator *equality* is invisible on a solenoidal field, so the ground
-truth is taken on ``DIV_PROBE`` -- the IC rescaled per component,
-which carries O(1) divergence -- and computed in the solver's
-decoupled ``u_pm`` basis (``_solver_divergence``, transcribed from
-``_imm_iteration``).  A physical-component reference would only
-restate the analysis formula; going through the solver basis pins the
-discretization the solver's influence-matrix pass constrains.
+``div_true.npy`` does the same for ``divergence``: the ground truth is
+taken on ``DIV_PROBE``, the IC rescaled per component to carry O(1)
+divergence (why: its comment in ``tests/_snapshot_export.py``), in the
+solver's decoupled ``u_pm`` basis (``solver_divergence`` there; why:
+its docstring), so the check also pins the physical <-> u_pm
+equivalence the stored basis relies on.
 
 Run directly::
 
@@ -85,12 +84,8 @@ def _periodic(state, probe, outdir):
     return get_stats, None, None
 
 
-# Families exercise both basis paths + the pipe's parity.  The pipe runs
-# twice: the axis parity class is set by the *physical* azimuthal
-# wavenumber ``m = m0 * h``, so the full circle (m0 = 1) cannot tell
-# that selector apart from one keyed on the harmonic index ``h`` alone
-# -- the two agree for every odd m0.  The ``m0 = 2`` wedge separates
-# them.
+# Both basis paths and the pipe's parity, the pipe at m0 = 1 and 2 (why
+# both: the module docstring).
 CASES: list[dict] = [
     {"system": "plane-couette", "fixtures": _cartesian},
     {"system": "pipe", "fixtures": _pipe},

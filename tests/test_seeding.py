@@ -5,39 +5,36 @@ Covers :mod:`dnsjax.seeding` and the resolution point that uses it
 
 1. **Units** (offline, no JAX): :func:`draw_seed` stays inside the
    62-bit range and does not repeat; :func:`split_seed` /
-   :func:`join_seed` round-trip exactly at the range's ends -- the
-   property the cross-process ``int32`` payload rests on, since
-   ``jax_enable_x64`` follows ``res.double_precision`` and an
-   ``int64`` payload would be truncated in single precision.
+   :func:`join_seed` round-trip exactly at the range's ends, past which
+   :func:`split_seed` refuses -- the property the cross-process
+   ``int32`` payload rests on (:mod:`dnsjax.seeding`, "Width and
+   cross-process transport").
 2. **Refusal**: with ``os.urandom`` raising, an unset seed that the run
    would draw with exits naming the flag that fixes it, while a
-   supplied seed still resolves -- i.e. the refusal is scoped to the
-   draw, not to the run.
+   supplied seed still resolves: the refusal is scoped to the draw, not
+   to the run.
 3. **Gating**: ``resolve_run_seeds`` resolves ``init.random_seed`` only
-   when the start mode is the random IC (a laminar / rolls /
-   snapshot-resume run needs no entropy at all), and an extension
-   section's ``seed_fields`` only once the section is configured
-   (``ParamExtension.configured``, on a section of the test's own),
-   and never one whose owner resolves it itself
-   (``ParamExtension.seeds_at_start`` false).  All are checked with the
-   entropy source disabled, so a spurious draw *fails* rather than
-   passing silently.
+   when the start mode is the random IC (checked on a laminar start),
+   an extension section's ``seed_fields`` only once the section is
+   configured (``ParamExtension.configured``, on a section of the
+   test's own), and never one whose owner resolves it itself
+   (``seeds_at_start`` false); each with the entropy source disabled,
+   so a spurious draw *fails* rather than passing silently.
 4. **Provenance**: the layer -> label mapping, and that a seed a layer
    supplied is used unchanged and reported with that layer's label,
-   never re-drawn.  Writing a drawn seed back is also checked to touch
-   nothing else: it goes through ``update_parameters``, which re-runs
-   the flow's derive hook and the restore-then-materialize pass
-   *after* ``validate_parameters`` already ran.
+   never re-drawn, while a drawn one lands in ``params`` and is
+   reported as drawn.  Writing it back changes nothing else, in
+   ``params`` or ``derived_params``.
 5. **Reproducibility** (subprocess): a solver run with no
    ``--init.random_seed`` prints the drawn seed, and re-running at that
-   printed value reproduces ``stats.dat`` byte for byte.  This is the
-   guard that the seed printed is the seed used.
+   printed value reproduces ``stats.dat`` byte for byte: the guard that
+   the seed printed is the seed used.
 6. **Multi-process agreement** (``mpirun -np 2``): an unset seed is
    drawn once and broadcast, so the two ranks build one random field.
-   Checked against a single-process run at the printed seed -- the
-   failure this catches (per-rank draws) is silent otherwise: the
-   field stays divergence-free and correctly normalized, and the
-   snapshot records rank 0's seed for a trajectory no seed reproduces.
+   Checked against a single-process run at the printed seed
+   (``stats.dat`` to 1e-10 relative): per-rank draws fail silently
+   otherwise, the snapshot recording rank 0's seed for a trajectory no
+   seed reproduces (:mod:`dnsjax.seeding`, the same section).
 
 Run as a script::
 
@@ -123,12 +120,7 @@ def run_unit_checks() -> str | None:
 
 
 def run_resolution_checks() -> str | None:
-    """``resolve_seed`` / ``resolve_run_seeds`` with entropy disabled.
-
-    Disabling the source is what turns "did not draw" from an
-    unobservable claim into a failing one: any check below that
-    silently drew would exit instead of returning.
-    """
+    """``resolve_seed`` / ``resolve_run_seeds`` (module docstring, 2-4)."""
     from dnsjax.bootstrap import (
         ResolvedSetup,
         _seed_layers,

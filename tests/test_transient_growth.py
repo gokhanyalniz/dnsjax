@@ -2,7 +2,8 @@ r"""Transient-growth analysis (`dnsjax.analysis.transient_growth`).
 
 Three test layers, run from the parent process:
 
-* **Host unit checks** (JAX-free): the profile reader / regridder /
+* **Host unit checks** (JAX-free): ``import dnsjax.analysis`` pulls in
+  no JAX (in a fresh interpreter), and the profile reader / regridder /
   mode selector, exercised by importing the module directly (it keeps
   JAX out of module scope, like the rest of ``dnsjax.analysis``).
 * **In-process workers** (one forced-CPU subprocess per system; the
@@ -11,11 +12,13 @@ Three test layers, run from the parent process:
   coupling, and the linear step is block-diagonal per Fourier mode (the
   property the propagator build relies on).
 * **CLI subprocesses** (``python -m dnsjax.analysis.transient_growth``):
-  a per-system smoke run, the wall-BC / folder / snapshot-export
-  features, and the published values.
+  a per-system smoke run, the ``geo.m0`` wedge equivalence (``m0 = 4``
+  against the full circle, Taylor-Couette), the wall-BC / folder /
+  snapshot-export features, and the published values.
 
 Published values (each a single mode; digits are the paper values,
-matched here on the solver's FD-in-``y`` discretization to ~2 %):
+matched on the solver's FD-in-``y`` discretization: ``G_max`` to 2 %,
+Maretzke's to 1 %, the time of the optimum to 4 %):
 
 * plane-Poiseuille ``Re=1000``, ``(alpha,beta)=(0,2.05)``:
   ``G_max ~ 196`` at ``t ~ 76`` (Reddy & Henningson 1993, p. 231).
@@ -37,14 +40,15 @@ matched here on the solver's FD-in-``y`` discretization to ~2 %):
 
 ``--slow`` adds the Orszag (1971) plane-Poiseuille eigenvalue
 (``Re=1e4, alpha=1``): the extracted generator's leading eigenvalue has
-``Re(lambda) ~ +0.00374`` (a spectrum check -- FD-in-``y`` limits the
-precision, so it is matched loosely).
+``Re(lambda) ~ +0.00374`` (a spectrum check, matched to 15 %: FD-in-``y``
+limits the precision).
 
 The lab's flows have their own cases, ``lab/tests/test_transient_growth.py``.
 
 Run: ``uv run python tests/test_transient_growth.py`` (``--fast`` skips
-the published values; ``--slow`` adds Orszag; ``--system`` /
-``--worker`` select one flow).
+the published values; ``--slow`` adds Orszag; ``--legacy-imm`` runs the
+CLI on ``res.consistent_imm = False``; ``--system`` / ``--worker``
+select one flow).
 """
 
 import argparse
@@ -477,8 +481,7 @@ def _anchor_tc() -> None:
     print("  Taylor-Couette (annular):")
     with tempfile.TemporaryDirectory() as d:
         p = Path(d)
-        # (a) Re_i=100, Re_o=0, eta=1/2 is linearly unstable (the
-        # centrifugal Taylor-vortex onset): positive spectral abscissa.
+        # (a) The linearly unstable case (module docstring).
         _write_laminar(
             "taylor-couette", p / "u.txt", re1=100.0, re2=0.0, eta=0.5
         )
@@ -520,11 +523,9 @@ def _anchor_tc() -> None:
             f"    unstable mode spectral abscissa "
             f"{float(z['spectral_abscissa'][0]):.4g} > 0  OK"
         )
-        # (b) Maretzke et al. 2014, table 3, row 1: eta=0.881,
-        # Re_i=591, Re_o=-2588 -> the global optimum is at n=10,
-        # k=1.997 with G_max=71.58.  The axial length lz = 2 pi / 1.997
-        # makes mode i3=1 that wavenumber; ntheta=22 makes the
-        # azimuthal mode m=10 available at i2=10.
+        # (b) Maretzke et al. 2014, table 3, row 1 (module docstring):
+        # lz = 2 pi / 1.997 makes mode i3=1 that axial wavenumber, and
+        # ntheta=22 makes the azimuthal mode m=10 available at i2=10.
         _write_laminar(
             "taylor-couette", p / "m.txt", re1=591.0, re2=-2588.0, eta=0.881
         )
@@ -569,7 +570,8 @@ def _test_wedge_equivalence() -> None:
     The TG linear step is FFT-free and block-diagonal per Fourier mode,
     so the reduced operator for physical wavenumber m = 4 is identical
     whether it sits at index i2 = 4 on the full circle (m0 = 1) or at
-    i2 = 1 on the quarter-annulus wedge (m0 = 4).  G(t) must agree.
+    i2 = 1 on the quarter-annulus wedge (m0 = 4): ``G_max`` must agree
+    to 1e-9 relative.
     """
     print("  wedge equivalence (m0 = 4 vs full circle, m = 4):")
     # Re-independent structural check; a co-rotating, linearly stable
@@ -626,8 +628,6 @@ def _test_wedge_equivalence() -> None:
     assert abs(gf - gw) <= 1e-9 * max(1.0, abs(gf)), (
         f"wedge G_max {gw} != full-circle {gf}"
     )
-    # Both resolve the same physical azimuthal wavenumber m = 4, from
-    # different stored indices (i2 = 4 full circle, i2 = 1 on the wedge).
     assert float(full["mode_wn2"][0]) == 4.0, full["mode_wn2"]
     assert float(wedge["mode_wn2"][0]) == 4.0, wedge["mode_wn2"]
     assert int(full["mode_i2"][0]) == 4 and int(wedge["mode_i2"][0]) == 1

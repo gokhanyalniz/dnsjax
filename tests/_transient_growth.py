@@ -19,16 +19,17 @@ from _live import run_live
 REPO = Path(__file__).resolve().parent.parent
 MODULE = "dnsjax.analysis.transient_growth"
 
-#: Appended to every published-value run by ``--legacy-imm``, which
-#: selects the primitive `$(v, p)$` scheme (``res.consistent_imm =
-#: False``) in *every* wall-bounded geometry.  By default those runs
-#: use the default reconstruction scheme and check it against the
-#: published digits -- the strongest available statement that the
-#: reconstruction leaves the linear physics unchanged (the eigenvalue
-#: content of the operator these runs measure is exactly what an
-#: Orr-Sommerfeld/Squire check would test).  Measured agreement between
-#: the two propagators: 4-6 significant figures on every case, so
-#: ``--legacy-imm`` must hit the same published digits too.
+#: Appended by ``--legacy-imm`` to every CLI run of :func:`run_tg`, the
+#: published values among them: the primitive `$(v, p)$` scheme
+#: (``res.consistent_imm = False``) in *every* wall-bounded geometry.
+#: By default the published-value runs use the default reconstruction
+#: scheme and check it against the published digits -- the strongest
+#: available statement that the reconstruction leaves the linear physics
+#: unchanged (the eigenvalue content of the operator these runs measure
+#: is exactly what an Orr-Sommerfeld/Squire check would test).  Measured
+#: agreement between the two propagators: 4-6 significant figures on
+#: every case, so ``--legacy-imm`` must hit the same published digits
+#: too.
 EXTRA_ARGS: list[str] = []
 
 
@@ -69,7 +70,7 @@ def run_tg(profile: Path, out_dir: Path, args: list[str]) -> str:
 
     Runs in the profile's directory (always a temp dir here), not the
     repo root: the CLI loads a ``./parameters.toml`` when present, and
-    the repo's flow-specific one must not leak into these runs.
+    a stray one must not leak into these runs.
     """
     cmd = [
         sys.executable,

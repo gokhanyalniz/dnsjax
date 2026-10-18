@@ -17,9 +17,9 @@ capture ``params`` at import time); each asserts its rounding
 diagnostic is printed exactly once, or that none appears where the
 natural padded size must pass through unrounded.  Cases 4 and 5
 also pin :func:`dnsjax.fft.chunked_transform` bit-exactly against the
-fused batch (``k = 2`` and ``k = 7`` over a 6-field stack),
-single-device and on the (2, 2) mesh (per-chunk reshards + the
-component-axis concatenate of sharded outputs).
+fused batch (``_chunked_parity``), single-device and on the (2, 2)
+mesh (per-chunk reshards + the component-axis concatenate of sharded
+outputs).
 
 1. Unit: ``round_up_padded`` -- divisibility, no-op, and the
    ``divisor <= 1`` passthrough.
@@ -43,12 +43,10 @@ component-axis concatenate of sharded outputs).
    even-length bump of ``nx_padded`` 9 -> 10), with the exactness
    checks sharded via ``device_put``.
 6. ``odd_real``: single device, nx = 22 -- the natural real-FFT pad
-   ``33`` is odd, and an inverse real FFT returns an even length
-   unless told otherwise, so an odd ``nx_padded`` would give a
-   physical grid one point shorter than every consumer reads it as
-   (and smooth-round the wrong length: 35 reported, 34 = 2 * 17
-   transformed).  It is bumped to the even 7-smooth 36, and every
-   case checks that the physical ``x`` length *is* ``nx_padded``.
+   ``33`` is odd and is bumped to the even 7-smooth 36
+   (``PaddedResolution.apply_rounding`` says why, on this example),
+   and every case checks that the physical ``x`` length *is*
+   ``nx_padded``.
 7. ``smooth``: single device, nz = 94 -- the natural pad
    ``141 = 3 * 47`` (a slow generic-radix FFT length) is bumped to
    the 7-smooth 144 with the FFT-friendly note, and the exactness
@@ -357,10 +355,9 @@ def case_spec_pad() -> None:
     """(2, 2) mesh, nx = 6 / nz = 4: both fused spec pads engaged.
 
     ``nz - 1 = 3`` and ``nx // 2 = 3`` are odd, so both spectral axes
-    carry one divisibility-padding mode -- the ``pad``/``strip``
-    arguments fused into ``truncate_*`` / ``zeropad_*`` are exercised
-    end to end, with the exactness checks confirming the padded slots
-    stay out of the physical field.
+    carry one divisibility-padding mode (case 5), exercised end to end;
+    the exactness checks confirm the padded slots stay out of the
+    physical field.
     """
     os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
     from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
@@ -398,11 +395,9 @@ def case_spec_pad() -> None:
 def case_smooth() -> None:
     """Single device, nz = 94: the non-smooth natural pad is bumped.
 
-    ``3 * 94 // 2 = 141 = 3 * 47`` would hit the slow generic-radix
-    FFT path; ``apply_rounding`` bumps it to the next 7-smooth length
-    (144, no divisibility involved on a single device), records the
-    FFT-friendly note, and the exactness checks confirm the extra
-    slots stay out of the physical field.
+    ``3 * 94 // 2 = 141``; ``apply_rounding`` bumps it to the next
+    7-smooth length, with no divisibility involved on a single device
+    (case 7).
     """
     from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.parameters import (
@@ -468,9 +463,8 @@ CASES = {
     "odd_real": case_odd_real,
     "smooth": case_smooth,
 }
-# The rounding diagnostic each case must print exactly once; ``None``
-# marks cases whose natural padded size must pass through unrounded
-# (no rounding note at all).
+# The rounding diagnostic each case must print exactly once; ``None``:
+# no rounding note at all (module docstring).
 EXPECT: dict[str, str | None] = {
     "primary": "nz_padded rounded from 9 to 10 (np1 divisibility).",
     "fallback": "nz_padded rounded from 9 to 12 (np1 divisibility).",

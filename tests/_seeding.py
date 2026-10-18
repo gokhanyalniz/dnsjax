@@ -59,13 +59,13 @@ def no_entropy():
 
 
 def run(cmd, cwd, timeout):
-    """An entry-point child with the startup dump *kept*.
+    """An entry-point child under ``run_live``'s quiet startup.
 
-    ``run_live`` sets ``DNSJAX_QUIET_STARTUP=1`` by default, which
-    suppresses the resolved-parameter dump -- but not the seed line,
-    which is deliberately outside that gate.  Pinning it to ``0`` here
-    would hide a regression that moved the line inside it, so leave the
-    default and parse what a quiet run prints.
+    ``DNSJAX_QUIET_STARTUP=1`` suppresses the resolved-parameter dump
+    but not the seed line, which is deliberately outside that gate.
+    Pinning it to ``0`` here would hide a regression that moved the
+    line inside it, so leave the default and parse what a quiet run
+    prints.
     """
     env = {k: v for k, v in os.environ.items() if k != "XLA_FLAGS"}
     env["NO_COLOR"] = "1"

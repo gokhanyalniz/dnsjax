@@ -18,22 +18,19 @@ too.
 
 Those decisions are the only automatable part of the MPI path: the
 collectives themselves need an MPIwrapper build and >= 2 ranks, and
-they fail *loudly* (MPItrampoline aborts on a bad
-``MPITRAMPOLINE_LIB``), whereas a discovery that wrongly returns
-``None`` degrades silently to gloo -- which is exactly what these
-cases pin down.  ``jax.distributed.initialize`` is stubbed, since
-what is under test is which detection method dnsjax hands it, not
-JAX's detection itself (the mpirun rows of the suite cover the CPU
-path for real).  The wrapper library is stubbed as an empty file for
-the same reason: discovery is a pure path test by construction, and
-nothing here dlopens it.
+fail *loudly* (MPItrampoline aborts on a bad ``MPITRAMPOLINE_LIB``),
+whereas a discovery that wrongly returns ``None`` degrades silently
+to gloo, which these cases pin down.  ``jax.distributed.initialize``
+is stubbed: what is under test is which detection method dnsjax hands
+it, not JAX's detection (the suite's mpirun rows cover the CPU path
+for real).  The wrapper library is an empty stub file, since
+discovery is a pure path test and nothing here dlopens it.
 
 Cases mutate ``os.environ`` and restore it (``_env``), so ordering is
-free -- except that the last case leaves JAX's collectives config
-back on its default explicitly.  That reset and the visible-devices
-and dispatch ones call ``jax.config.update`` directly rather than
-through :mod:`dnsjax.bootstrap`: they undo what the bootstrap
-functions under test set.
+free; where a case sets JAX's config back (visible devices, dispatch,
+the collectives), it calls ``jax.config.update`` directly rather than
+through :mod:`dnsjax.bootstrap`, since it undoes what the functions
+under test set.
 
 Run as a script::
 
@@ -74,10 +71,9 @@ _VARS = (
     "PMI_SIZE",
     "MPI_LOCALRANKID",
     "MPI_LOCALNRANKS",
-    # Rank markers with no layout behind them (``_rank_marker``); they
-    # belong here for the same reason as the rest -- a case that sets
-    # one and does not get it cleared makes every later case look like
-    # a multi-rank launch.
+    # Rank markers with no layout behind them (``_rank_marker``): one
+    # left set would make every later case look like a multi-rank
+    # launch.
     "PMIX_RANK",
     "PMI_ID",
     "SLURM_PROCID",
@@ -139,10 +135,7 @@ def _env(**overrides: str | None):
 
 @contextlib.contextmanager
 def _wrapper_dirs():
-    """Yield ``(with_lib, without_lib)`` directories, the first stocked.
-
-    Only the *path* of the stub matters: discovery never opens it.
-    """
+    """Yield ``(with_lib, without_lib)`` directories, the first stocked."""
     with tempfile.TemporaryDirectory() as tmp:
         with_lib = Path(tmp) / "have"
         without = Path(tmp) / "empty"
@@ -186,8 +179,6 @@ def case_wrapper_discovery() -> None:
                 "LD_LIBRARY_PATH scan finds libmpiwrapper.so",
                 found,
             )
-            # MPItrampoline reads the variable as jaxlib loads, so the
-            # scan has to write its hit back into the environment.
             check(
                 os.environ.get("MPITRAMPOLINE_LIB") == lib,
                 "a scanned hit is exported for MPItrampoline",
@@ -226,9 +217,8 @@ def case_launcher_params() -> None:
         nodefile = Path(tmp) / "nodes"
         nodefile.write_text("head-01\nhead-01\nnode-02\n")
         pbs = {"PBS_NODEFILE": str(nodefile), "PBS_JOBID": "987654.pbs"}
-        # The port rule, restated: the seed's checksum mapped into the
-        # ephemeral range (see ``_coordinator_port`` for why it is a
-        # checksum and not the seed itself).
+        # The port rule restated: the seed's checksum mapped into the
+        # ephemeral range (why a checksum: ``_coordinator_port``).
         port = zlib.crc32(b"987654.pbs") % 2**12 + (65535 - 2**12 + 1)
 
         with _env(**_OMPI, **pbs):
@@ -245,8 +235,8 @@ def case_launcher_params() -> None:
                 got,
             )
 
-        # All four is the point: with any of them missing JAX runs its
-        # own detection instead, which is the fallback, not this path.
+        # Any of the four missing leaves the launch to JAX's own
+        # detection (``_launcher_params``).
         for drop in ("OMPI_COMM_WORLD_RANK", "PBS_NODEFILE"):
             env = {**_OMPI, **pbs}
             env.pop(drop)
@@ -299,8 +289,8 @@ def case_launcher_params() -> None:
                 got,
             )
 
-    # A malformed value must fall through to JAX's detection rather
-    # than place the process wrongly.
+    # A malformed value falls through to JAX's detection
+    # (``_launcher_ranks``).
     with _env(
         OMPI_COMM_WORLD_RANK="not-a-rank",
         OMPI_COMM_WORLD_SIZE="8",
@@ -318,10 +308,8 @@ def case_launcher_params() -> None:
 
 
 def case_coordinator_port() -> None:
-    # Launch-scoped before job-scoped: two mpirun launches inside one
-    # scheduler job must not land on the same port, or the second
-    # run's rank 0 joins the first run's coordination service and is
-    # killed by it.
+    # Launch-scoped before job-scoped (the ``bootstrap`` Design notes,
+    # "The coordinator port").
     with _env(PMIX_NAMESPACE="1240793089", PBS_JOBID="12345.pbs01"):
         first = bootstrap._coordinator_port()
     with _env(PMIX_NAMESPACE="1240662017", PBS_JOBID="12345.pbs01"):
@@ -334,10 +322,9 @@ def case_coordinator_port() -> None:
         (first, second, job_only),
     )
 
-    # These are real Open MPI namespaces, and they are why the
-    # seed is checksummed: an Open MPI namespace is an ORTE job id plus
-    # one and job ids are multiples of 2^12, so reducing the seed
-    # modulo the port range directly hands *every* launch port 61441.
+    # Real Open MPI namespaces: reduced modulo the range, every one
+    # would give port 61441 (why the seed is checksummed: the same
+    # notes).
     ports = set()
     for namespace in ("1380188161", "1240793089", "1240662017", "1240006657"):
         with _env(PMIX_NAMESPACE=namespace):
@@ -365,9 +352,8 @@ def case_coordinator_port() -> None:
     )
 
     # Open MPI 5 spells the namespace "prterun-<host>-<pid>@<n>" (as
-    # Open MPI 5.0.10 writes it), so the
-    # rule may not assume a number at all -- and two launches on one
-    # node differ only in the pid.
+    # 5.0.10 writes it), so the rule may not assume a number, and two
+    # launches on one node differ only in the pid.
     prterun = {}
     for pid in ("1528569", "1528570"):
         with _env(PMIX_NAMESPACE=f"prterun-node01-{pid}@1"):
@@ -430,10 +416,7 @@ def _ranks(size: int, local_size: int | None) -> object:
 
 
 def case_coordinator_host() -> None:
-    # A job whose ranks all sit on one node needs no site variable at
-    # all: this is what makes a laptop, a Mac (Homebrew ships Open MPI
-    # 5, which JAX's own plugin cannot detect) and a single-node batch
-    # job work with nothing exported.
+    # All ranks on this node: loopback (``_coordinator_host``, source 1).
     with _env():
         check(
             bootstrap._coordinator_host(_ranks(4, 4)) == "127.0.0.1",
@@ -451,9 +434,9 @@ def case_coordinator_host() -> None:
             bootstrap._coordinator_host(_ranks(4, None)),
         )
 
-    # The daemon URI, under ORTE's name (Open MPI 4, which is what
-    # JAX's own plugin reads) and PRRTE's (Open MPI 5, which is why
-    # that plugin stopped firing).
+    # The daemon URI under ORTE's name (Open MPI 4, the one JAX's own
+    # plugin reads) and the PRRTE spelling, a catch for a 5.x build that
+    # exports one (5.0.10 exports none: ``_HNP_URI_VARS``).
     uris = {
         "OMPI_MCA_orte_hnp_uri": (  # noqa: SIM112
             "1531576320.0;tcp://192.0.2.1,198.51.100.1:34911"
@@ -507,9 +490,7 @@ def case_coordinator_host() -> None:
                 got = bootstrap._coordinator_host(_ranks(8, 4))
                 check(got == host, f"{label} names the first node", got)
 
-    # The bracket forms of a SLURM node list, parsed as JAX parses
-    # them.  An sbatch script running mpirun has only the job-level
-    # list, which is the case JAX's own SLURM plugin does not cover.
+    # The bracket forms of a SLURM job node list (``_slurm_host``).
     for node_list in (
         "node001",
         "node001,host2",
@@ -535,11 +516,8 @@ def case_coordinator_host() -> None:
 
 
 def case_solo_launch() -> None:
-    # The permissive direction is the dangerous one: a multi-rank
-    # launch mistaken for a lone process would have every rank run the
-    # whole problem and overwrite the others' output.  So every "which
-    # rank am I" variable has to veto solitude, including the ones no
-    # rank *layout* can be built from.
+    # Every "which rank am I" variable vetoes solitude, layout or not
+    # (why the net is wide: ``_rank_marker``).
     for marker in (
         "OMPI_COMM_WORLD_RANK",
         "MV2_COMM_WORLD_RANK",
@@ -567,9 +545,8 @@ def case_solo_launch() -> None:
             bootstrap._rank_marker(),
         )
 
-    # A launcher that publishes a *complete* layout is believed over
-    # the marker veto -- that is how `mpirun -np 1` reaches the solo
-    # path at all.
+    # A *complete* layout is believed over the marker veto: how
+    # ``mpirun -np 1`` reaches the solo path at all.
     one = {
         "OMPI_COMM_WORLD_RANK": "0",
         "OMPI_COMM_WORLD_SIZE": "1",
@@ -596,8 +573,7 @@ def case_local_device_ids() -> None:
     saved = jax.config.read("jax_cuda_visible_devices")
     try:
         for label, env, expect in (
-            # A bare launch narrows nothing: one process takes every
-            # visible device, which is the multi-GPU-without-MPI case.
+            # The multi-GPU-without-MPI case (``_apply_local_device_ids``).
             ("a bare launch keeps every device", {}, saved),
             (
                 "the launcher's local rank still narrows",
@@ -683,8 +659,8 @@ def case_bootstrap() -> None:
                 calls,
             )
 
-        # A rank marker with no usable layout is still a multi-process
-        # launch, so JAX's own detection has to get its turn.
+        # A marker with no usable layout is still several processes, so
+        # JAX's own detection gets its turn.
         with _env(SLURM_PROCID="2"), _stub_initialize() as calls:
             bootstrap._bootstrap_distributed()
             check(
@@ -693,11 +669,9 @@ def case_bootstrap() -> None:
                 calls,
             )
 
-        # One process has nothing to coordinate, so it must not stand a
-        # service up -- whether the launcher said "one" or nothing said
-        # anything.  That is what lets a run start on a machine with no
-        # MPI at all, and stops concurrent single-rank ensemble members
-        # from colliding on one port.
+        # One process starts no runtime, whether the launcher said "one"
+        # or nothing said anything (the ``bootstrap`` Design notes, "No
+        # distributed runtime for one process").
         single = {**described, "OMPI_COMM_WORLD_SIZE": "1"}
         single["OMPI_COMM_WORLD_RANK"] = "0"
         single["OMPI_COMM_WORLD_LOCAL_RANK"] = "0"
@@ -720,11 +694,9 @@ def case_bootstrap() -> None:
                     calls,
                 )
 
-    # An unrecognized launcher must name the way out, not surface
-    # JAX's bare ``coordinator_address should be defined``.  Which way
-    # out depends on what was missing: advising the address export to
-    # a process with no layout to complete only moves it on to
-    # ``Number of processes must be defined``.
+    # An unrecognized launcher names the way out, not JAX's bare
+    # ``coordinator_address should be defined``, and which way depends
+    # on what was missing (``_undetectable_launcher``).
     with _env(**_OMPI), _stub_initialize(explicit_ok=False):
         msg = _exits(bootstrap._bootstrap_distributed) or ""
         check(
@@ -766,9 +738,8 @@ def case_cpu_collectives() -> None:
                 "an explicit JAX choice is left to JAX to apply",
                 jax.config.jax_cpu_collectives_implementation,
             )
-            # The dispatch pin is *not* JAX's to apply: JAX reads the
-            # variable itself, so this branch reaches the MPI backend
-            # too and needs the pin exactly as much as discovery does.
+            # JAX applies the variable but not the dispatch pin
+            # (``_select_cpu_collectives``).
             check(
                 jax.config.read("jax_cpu_enable_async_dispatch") is False,
                 "an explicit mpi choice still pins dispatch inline",
@@ -785,9 +756,6 @@ def case_cpu_collectives() -> None:
                 jax.config.read("jax_cpu_enable_async_dispatch"),
             )
 
-        # A set-but-missing path is the case where the standing advice
-        # ("point MPITRAMPOLINE_LIB at libmpiwrapper.so") is exactly
-        # what the user already did.
         with _env(MPITRAMPOLINE_LIB=str(without / "libmpiwrapper.so")):
             note = bootstrap._select_cpu_collectives(None)
             check(
@@ -824,8 +792,6 @@ def case_cpu_collectives() -> None:
                 "a found wrapper switches JAX to MPI",
                 jax.config.jax_cpu_collectives_implementation,
             )
-            # Not optional: XLA's MPI backend refuses a communicator
-            # request from PjRt's dispatch pool, load-dependently.
             check(
                 jax.config.read("jax_cpu_enable_async_dispatch") is False,
                 "choosing MPI also pins dispatch inline",

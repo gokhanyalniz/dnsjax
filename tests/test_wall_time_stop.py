@@ -1,11 +1,10 @@
 r"""The wall-clock stop, on processes whose clocks disagree.
 
-Rank 1 starts ``--skew`` seconds after rank 0, so each process's
-``stop.max_wall_time`` budget runs out at a different moment: the
-solver must still stop on the budget, inside the stepping loop, and
-shut down on both ranks, leaving a ``FINISHED`` that names the budget
-(the mechanism: ``tests/_wall_time_stop.py``).  The case is
-``mpirun -np 2 dnsjax`` on plane Couette from a seeded random field.
+``mpirun -np 2 dnsjax`` on plane Couette from a seeded random field,
+with rank 1 started ``--skew`` seconds after rank 0, must stop on its
+``stop.max_wall_time`` budget inside the stepping loop and shut down on
+both ranks, leaving a ``FINISHED`` that names the budget (the
+mechanism, and why the skew: ``tests/_wall_time_stop.py``).
 
 Run as a script (``--budget`` must leave the loop a few seconds after
 the setup; ``--skew`` must exceed a step)::

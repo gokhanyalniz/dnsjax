@@ -1,29 +1,27 @@
 r"""The device grid across nodes (:func:`dnsjax.sharding.device_grid`).
 
-Under the distributed runtime every device carries a ``slice_index``,
-which XLA assigns one per host, telling hosts apart by their boot id
-(``/proc/sys/kernel/random/boot_id``).  ``jax.make_mesh`` refuses a
-device set spanning several slices, so a multi-node launch building
-its mesh that way would die -- a failure no single-host run can show.
+``jax.make_mesh`` refuses a device set spanning several slices (one
+per host: the ``device_grid`` docstring), so a multi-node launch
+building its mesh that way would die -- a failure no single-host run
+can show.
 
 1. Unit (``--unit-only``): the grid on stub devices -- one node in id
    order; two nodes with block-numbered and with interleaved ranks,
    each node one block of rows either way; one row across both nodes;
    two rows per node; unequal nodes; and :func:`node_spans` on each.
-2. A simulated second host, under ``mpirun``: the ranks of the second
-   host run with another boot id bound over the real one, so XLA counts
-   two hosts (``_fake_host.py``).  The ``(2, 2)`` random-IC smoke runs
-   on one host, on two with ranks 2 and 3 on the second, and on two
-   with the odd ranks there (the order the node sort has to undo).
-   Each two-host run must report its grid -- every ``np1`` group on one
-   node -- and reproduce the one-host ``stats.dat`` and final snapshot.
-   The snapshot is the check on the I/O path: its writer places each
-   slab by the device's position on the mesh, which the interleaved
-   layout sets apart from the device ids.  The collectives are gloo,
-   which needs nothing from the launcher but the rank variables (the
-   MPI collectives on two hosts: ``test_mpi_communicators.py``).
-   Where the namespaces cannot be made (no ``unshare``, unprivileged
-   user namespaces disabled) the half is skipped with a notice.
+2. A simulated second host (``_fake_host.py``), under ``mpirun``: the
+   ``(2, 2)`` random-IC smoke runs on one host, on two with ranks 2 and
+   3 on the second, and on two with the odd ranks there (the order the
+   node sort has to undo).  Each two-host run must report its grid --
+   every ``np1`` group on one node -- and reproduce the one-host
+   ``stats.dat`` and final snapshot (``rtol = 1e-12``).  The snapshot
+   is the check on the I/O path: its writer places each slab by the
+   device's position on the mesh, which the interleaved layout sets
+   apart from the device ids.  The collectives are gloo, which needs
+   nothing from the launcher but the rank variables (the MPI
+   collectives on two hosts: ``test_mpi_communicators.py``).  Where the
+   namespaces cannot be made (no ``unshare``, unprivileged user
+   namespaces disabled) the half is skipped with a notice.
 
 Usage::
 

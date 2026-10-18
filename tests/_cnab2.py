@@ -18,9 +18,8 @@ import sys
 
 from _live import run_live
 
-# Small but nontrivial resolutions (nz = 8: the complex-FFT axis
-# rejects nz = 6 in the 3/2-rule padding).  Wall-bounded ny is the FD
-# axis (odd is fine); triply-periodic ny is a Fourier axis (even).
+# Small but nontrivial resolutions.  Wall-bounded ny is the FD axis
+# (odd is fine); triply-periodic ny is a Fourier axis (even).
 NX, NY, NZ = 8, 17, 8
 NY_PERIODIC = 16
 LX, LZ = 5.0, 5.0
@@ -211,7 +210,7 @@ def worker(system: str, case: dict) -> None:
         # Manual L_mf reference in the coupling basis -- Cartesian
         # (u, v, w) or cylindrical/annular (u_z, u_r, u_theta) -- with
         # the mean profiles read directly off the single device's
-        # (0, 0) mode entry.
+        # ``[:, :, 0, 0]`` (mean-mode) entry.
         if cartesian:
             basis = state
         else:
@@ -248,8 +247,6 @@ def worker(system: str, case: dict) -> None:
         print(f"{system}: L_mf matches reference to {diff_mf / scale:.2e}")
 
         if cartesian:
-            # Curl is mode-diagonal: the mean of the spectral curl is
-            # the D1 derivative of the mean profile,
             # curl(u, v, w)|_mean = (D1 w, 0, -D1 u).
             D1 = np.asarray(flow_.D1.dense)
             prof, om_prof = u_m[:, :, 0, 0], om_m[:, :, 0, 0]
@@ -266,10 +263,14 @@ def worker(system: str, case: dict) -> None:
             )
             print(f"{system}: l_bf == 0 exactly (total-field, L_mf off)")
         else:
-            # Zero-base-flow reference: also zero the moving-frame speed
-            # (pipe / plane-Poiseuille default to the bulk frame), so
-            # the reference is the pure self-advection u' x omega' and
-            # the check covers the frame term's rhs/l_bf cancellation.
+            # Zero-base-flow reference: the same ``_get_rhs`` on a
+            # shallow flow copy with zeroed ``base_flow_padded`` /
+            # ``curl_base_flow_padded`` (identical transforms, so the
+            # difference isolates exactly the coupling terms), and the
+            # moving-frame speed zeroed too (pipe / plane-Poiseuille
+            # default to the bulk frame), so the reference is the pure
+            # self-advection u' x omega' and the check covers the frame
+            # term's rhs/l_bf cancellation.
             flow0 = copy.copy(flow_)
             flow0.base_flow_padded = jnp.zeros_like(flow_.base_flow_padded)
             flow0.curl_base_flow_padded = jnp.zeros_like(
@@ -344,12 +345,9 @@ def worker(system: str, case: dict) -> None:
         )
         print(f"{system}: plain 1-eval AB2 step ({rhs_ffts} FFT ops)")
 
-    # iterative-cn: 2 evaluations + one per corrector iteration (the
-    # 2 + c FFT-eval model).  ``step.split_corrector`` defaults off, so
-    # the module-level stepper is the *unsplit* corrector for every
-    # system: no inside FFTs, no fallback ``cond`` -- one RHS
-    # evaluation per corrector ``while_loop`` iteration (the forced-on
-    # split shape is checked below, on a rebuild).
+    # iterative-cn, the 2 + c FFT-eval model: the module-level stepper
+    # is the unsplit corrector (the forced-on split shape is checked
+    # below, on a rebuild).
     pfc_jaxpr = jax.make_jaxpr(fmod.predict_and_fully_correct)(state).jaxpr
     p_outside, p_inside, p_whiles = count_ffts(pfc_jaxpr)
     p_nonzero = [w for w in p_whiles if w]
@@ -374,9 +372,8 @@ def worker(system: str, case: dict) -> None:
         # shared CN fixed point.  It is read at trace time, so build
         # *fresh* steppers for both gate values (the module-level
         # stepper was already traced above with the default tolerance
-        # baked in; no operator rebuild is involved either way).
-        # Force the split path explicitly (it is opt-in, default off
-        # for every system).  A direct assignment before ``build`` is
+        # baked in; no operator rebuild is involved either way).  A
+        # direct assignment of ``split_corrector`` before ``build`` is
         # safe here: unlike ``solver.backend`` / ``geo.grid_type``, no
         # intervening ``update_parameters`` re-resolves it (see that
         # function's docstring).
@@ -423,11 +420,7 @@ def worker(system: str, case: dict) -> None:
             f"{int(c_plain)})"
         )
 
-        # Forced-on rebuild has the split-corrector shape: the outer
-        # refresh contributes FFTs, the coupling tail / solver loops
-        # are 0-FFT bodies, and the unsplit fallback sits under a
-        # ``cond`` (the only split-shape coverage, as no system
-        # defaults to the split corrector).
+        # The split shape, on the forced-on rebuild.
         on_jaxpr = jax.make_jaxpr(split_pfc)(state).jaxpr
         n_outside, n_inside, n_whiles = count_ffts(on_jaxpr)
         assert (
@@ -441,8 +434,7 @@ def worker(system: str, case: dict) -> None:
         )
         print(f"{system}: split_corrector=True has the split shape")
 
-        # Gate-off rebuild has the default unsplit corrector shape:
-        # no fallback cond, one RHS evaluation per loop iteration.
+        # The unsplit shape, on the gate-off rebuild.
         off_jaxpr = jax.make_jaxpr(unsplit_pfc)(state).jaxpr
         o_outside, o_inside, o_whiles = count_ffts(off_jaxpr)
         assert (

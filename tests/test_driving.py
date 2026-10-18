@@ -9,15 +9,15 @@ correction represents -- `$-\Pi = -\partial p/\partial s$`, the
 **applied forcing**, positive when it accelerates the flow, with
 `$\Pi$` the mean pressure gradient (:mod:`dnsjax.ic.mean_mode`) -- is
 recorded as the last ``stats.dat`` column (``-dPds'`` / ``-dPdn'`` /
-``-dPdz'``).  It is a *step* quantity threaded out of the jitted
-corrector, because it is the bulk of the **pre**-correction solve and
-so is not recoverable from the accepted state, whose bulk is zero by
-construction.
+``-dPdz'``): a *step* quantity threaded out of the jitted corrector
+(the ``__main__`` module docstring), the bulk of the
+**pre**-correction solve.
 
 Four checks, in increasing strength:
 
 - **laminar**: from `$u' = 0$` the applied forcing is *exactly* zero,
-  for every flow that can apply one;
+  as is ``get_driving``'s wall-shear inference at ``t0``, for every
+  flow that can apply one;
 - **constraint**: the quantity being held (perturbation bulk velocity)
   is zero to machine precision, so the recorded number is the
   price of an enforced constraint rather than of a drifting one;
@@ -184,8 +184,7 @@ def _worker_laminar(system: str, knob: str, column: str) -> int:
         f"exactly zero (got {val!r})"
     )
 
-    # The wall-shear inference must agree there too, and exactly: a
-    # zero state has zero wall shear.
+    # Exact: a zero state has zero wall shear.
     inferred = mod.get_driving(state)
     same = list(inferred) == [column] and float(inferred[column]) == 0.0
     print(
@@ -242,8 +241,6 @@ def _worker_identity(system: str) -> int:
 
     rhs_n = geo._get_rhs(u0, geo.fourier, flow)
     rhs_c = geo._get_rhs(u1, geo.fourier, flow)
-    # Switch the driving off and re-trace: the corrector then returns
-    # the *uncorrected* solve the recorded value was formed from.
     params.phys.driving = "constant_pressure_gradient"
     u_unc, _corr, empty = geo._correct(u0, u1, rhs_n, rhs_c, geo.fourier, flow)
     params.phys.driving = "constant_bulk_velocity"

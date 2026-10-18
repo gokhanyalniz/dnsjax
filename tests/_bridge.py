@@ -2,25 +2,23 @@
 
 The ``test_*.py`` files of both suites are standalone scripts and remain
 the source of truth, each runnable directly as
-``uv run python <dir>/test_X.py``.  They rely on module-level singleton
-/ JAX setup performed by their own ``__main__`` runners, so pytest must
+``uv run python <dir>/test_X.py``.  They configure the module-level
+singletons and JAX in their own ``__main__`` runners, so pytest must
 never **import** them -- collection would execute the module top level
 with the singletons unconfigured.  Each suite's ``pytest_suite.py`` is
 the only file pytest collects there (``[tool.pytest.ini_options]
 python_files`` in ``pyproject.toml``): it lists its scripts, one row per
 invocation, and :func:`script_test` turns the rows into one test that
-shells each script out as a subprocess, asserts a zero exit code, and
-surfaces the output tail on failure.  Adding a test script means adding
-one row to its suite's ``_SCRIPTS``.
+shells each script out as a subprocess from the repository root,
+asserts a zero exit code, and ends a failure with the compact output
+tail in the pytest summary.  Adding a test script means adding one row
+to its suite's ``_SCRIPTS``.
 
-Output streams live: each case prints a banner, then tees the
-script's stdout/stderr through as it arrives (``tests/_live.py``,
-which also sets ``PYTHONUNBUFFERED=1`` in the child), and pytest runs
-with ``-s`` by default (``addopts`` in ``pyproject.toml``) so the
-stream reaches the terminal immediately -- a tailed run shows
-progress and can be aborted early.  Failures still end with the
-compact output tail in the pytest summary.  Every script runs from the
-repository root.
+Output streams live: each case prints a banner, then tees the script's
+stdout/stderr through as it arrives (``tests/_live.py``), and pytest
+runs with ``-s`` by default (``addopts`` in ``pyproject.toml``), so the
+stream reaches the terminal at once and a tailed run can be aborted
+early.
 
 Markers:
 
@@ -60,9 +58,8 @@ MPI = (
     ),
 )
 SLOW = (pytest.mark.slow,)
-# ``--unit-only`` fallback rows: they exist so the unit halves still
-# run where mpirun is absent; with mpirun present the full (mpi) rows
-# re-run those same units, so the fallback would be pure duplication.
+# ``--unit-only`` fallback rows run the unit halves where mpirun is
+# absent; with mpirun present the full (mpi) rows re-run those units.
 NO_MPI_ONLY = (
     pytest.mark.skipif(
         shutil.which("mpirun") is not None,

@@ -31,12 +31,12 @@ On CPU the solve takes the pure-JAX local sweep (the reference path);
 kernel numerics are pinned single-device by the interpret tests.  The
 ``mpirun``-based guards for the same class are the ``*-mpi-pad``
 entries of ``test_random_smoke.py`` and ``test_laminar_smoke.py``
-``--np`` variants.  A cuda-lowering guard of the *sharded kernel*
-path cannot be built on a CPU-only machine: the body's backend dispatch
-(``jax.default_backend()``) correctly traces the CPU sweep here even
-when lowering for ``cuda`` (verified -- the AOT lowering itself
-succeeds on the mesh), so real multi-GPU kernel execution is not
-covered by this offline suite.
+``--np`` variants.  The body's dispatch (``solvers._kernel_path``)
+follows ``dist.platform`` unless overridden, so here it traces the CPU
+sweep even when lowering for ``cuda`` (verified: the AOT lowering
+itself succeeds on the mesh): no test here lowers the *sharded kernel* path,
+and real multi-GPU kernel execution is not covered by this offline
+suite.
 
 Run as a script via
 ``uv run python tests/test_banded_solver_sharded.py``.
@@ -129,14 +129,11 @@ def _tiled_rhs(vec: np.ndarray) -> jnp.ndarray:
 def test_per_shard_padded_factor_plane() -> None:
     """The stored factor plane: per-shard tile roundups, or the true one.
 
-    On the kernel path it is the sum of per-shard tile roundups; on the
-    CPU one it is the true plane.
-
     The roundup is per *shard*, not global -- each device's kernel grid
-    covers its own local block.  A CPU run never launches that grid, so
-    it stores the true plane instead (``_kernel_path``); this asserts
-    both, since only the sharded mesh can tell a sum-of-local roundup
-    from a global one.
+    covers its own local block.  Both storages of the module
+    docstring's item 1 (``_kernel_path`` picks one) are asserted here,
+    since only the sharded mesh can tell a sum-of-local roundup from a
+    global one.
     """
     import dnsjax.solvers as solvers_mod
 

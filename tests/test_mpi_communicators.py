@@ -1,20 +1,17 @@
 r"""Every MPI communicator the mesh uses is open before the solver runs.
 
-XLA's MPI collectives open a device group's communicator at the first
-collective over it, and only on the thread that initialized MPI; a
-program running anywhere else then dies (``MPI: Communicator requested
-from a thread that is not the one MPI was initialized from``) and the
-run hangs.  Inline dispatch does not keep every collective on that
-thread, so ``sharding._warm_communicators`` opens the mesh's
-communicators as the mesh is built.  Its docstring has the why.
+``sharding._warm_communicators`` opens the mesh's MPI communicators as
+the mesh is built, since XLA opens one only on the thread that
+initialized MPI: a collective first over its group anywhere else dies
+(``MPI: Communicator requested from a thread that is not the one MPI
+was initialized from``) and the run hangs (the why: its docstring).
 
 One four-rank launch (``mpirun -np 4``, a ``(2, 2)`` mesh, the MPI
 collectives) runs the two patterns that put a collective off that
 thread, first on the solver mesh, where each must work:
 
 - **in-program maxima**: ``solvers._factor_checked`` with the
-  cross-device maxima of its measures taken in the same program, the
-  pattern that puts a collective off the MPI thread;
+  cross-device maxima of its measures taken in the same program;
 - **pending input**: a program compiled ahead and dispatched while its
   input is still being copied, for each kind of collective the solver
   issues -- an ``all_to_all`` and a ``ppermute`` along each axis, a
@@ -25,18 +22,20 @@ pairs, a device group the solver never uses and so nothing opened:
 each must be refused, or the cases above prove nothing.
 
 A second launch puts the odd ranks on a simulated second host
-(``_fake_host.py``).  The mesh then groups each node's devices, an
-order of its own, while ``jax.experimental.multihost_utils`` -- the
-wall-clock stop's ``any_process``, the snapshot barrier, the closing
-memory line -- gathers over the devices in id order: a group of the
-same devices in another order, which is another communicator.  There
-a pending ``psum`` over that group must work, and ``any_process`` agree
-on every rank; a pending ``psum`` over the reversed order, which
-nothing opens, is the control.  Each reduces one row of its copied
-block, the copy alone keeping the input pending: a 32 MiB message
-stalls between the simulated hosts, whose ranks Open MPI's shared memory
-cannot reach by single copy across user namespaces.  Where the
-namespaces cannot be made the launch is skipped with a notice.
+(``_fake_host.py``).  The mesh then groups each node's devices, so the
+id-ordered group ``jax.experimental.multihost_utils`` gathers over --
+the wall-clock stop's ``any_process``, the snapshot barrier, the
+closing memory line -- is another communicator (the
+:mod:`dnsjax.sharding` Design notes, "Warming the MPI communicators").
+There a pending ``psum`` over that group must work, and
+``any_process`` agree on every rank; a pending ``psum`` over the
+reversed order, which nothing opens, is the control (each on one row
+of the block: ``psum_w``).  Where the namespaces cannot be made the
+launch is skipped with a notice.
+
+Each launch must also exit 0, the guard of the communicators kept
+alive at exit (the same Design notes, "Keeping the communicators alive
+at exit").
 
 Needs ``mpirun``, coreutils ``timeout`` and the MPIwrapper library the
 MPI collectives load (``docs/cpu-collectives.md``); without the

@@ -21,8 +21,7 @@ Tests cover:
     band splice).  The geometry-independent vw algebra (sources,
     reconstruction) is checked once, in ``test_annular.py``.
 6c. ``dnsjax.analysis`` rebuilds the same parity-reduced radial ``D1``
-    the solver uses -- the ingredient behind every exported operator,
-    where a mismatch fails silently.
+    the solver uses.
 6d. The pipe's wall-normal FD storage: ``D1_pos`` / ``A_base_pos`` are
     ``YMatrix`` (GEMM or stencil, ``solver.wall_normal_matvec``), the
     stored ghosts are the full ghosts' nonzero corner with exact zeros
@@ -30,18 +29,16 @@ Tests cover:
     matrices on both paths, in all three layouts.
 7. ``get_norm2_cyl`` correctness, and the metric identity linking it
    to the solver basis' 1/2-weighted norm.
-8. ``to_solver_basis``/``from_solver_basis`` round-trip: the
-   physical/solver component-basis boundary crossed once per state
-   (``__main__``), where an inversion error would be silent.
+8. ``to_solver_basis``/``from_solver_basis`` round-trip across the
+   physical/solver component-basis boundary (``__main__``).
 8b. ``column_differences`` of single mode columns -- a kick's
     contribution to the carried spin-quad differences -- equals the
     field map's at the same modes.
-9. Composite integration weights on the radial CGL grid.
+9. Composite and full-disc integration weights on the radial CGL grid.
 10. ``interpolate_to_axis``: polynomial exactness, parity paths,
     multi-dimensional/complex inputs.
-11. Centreline mean axial velocity under time stepping (a small
-    random perturbation keeps the interpolated ``r = 0`` mean
-    axial velocity near the laminar centreline value 1).
+11. Centreline mean axial velocity stays near the laminar value 1
+    while a small random perturbation is stepped.
 
 Run as a script via ``uv run python tests/test_cylindrical.py``.
 """
@@ -305,10 +302,9 @@ def test_abase_matvec_matches_dense() -> None:
     A_odd = np.asarray(_build_A_base(D1_odd, D2_odd, inv_r))
 
     # The matvec applies the *precomputed* parity-reduced pair, so the
-    # stub carries it exactly as ``CylindricalFlow.__post_init__``
-    # builds it -- note the ghost rows take ``inv_r[:g_rows]``, which
-    # is what the reference below (the independent full even/odd
-    # matrices) would catch getting wrong.
+    # stub carries it exactly as ``CylindricalFlow.__post_init__`` builds it:
+    # the ghost rows take ``inv_r[:g_rows]``, which the reference below
+    # (the independent full even/odd matrices) would catch getting wrong.
     flow_ = SimpleNamespace(
         A_base_pos=YMatrix.from_dense(_build_A_base(D1_pos, D2_pos, inv_r)),
         A_base_ghost=_build_A_base(D1_ghost, D2_ghost, inv_r[:g_rows]),
@@ -383,12 +379,11 @@ def test_pallas_vs_dense_on_cylindrical_operators() -> None:
     r"""The banded Pallas operator matches the dense solver (cylindrical).
 
     ``PerModeBandedPallasOperator`` against ``DenseJAXSolver`` on
-    Lk/Hk_plus/Hk_minus/Hk_z.
-
-    Guards the parity-reduced Pallas band assembly
-    (``_build_{Lk,Hk}_band_gpu``, built on the shared
+    Lk/Hk_plus/Hk_minus/Hk_z and the ``res.consistent_imm`` operators,
+    guarding the parity-reduced band assembly
+    (``_build_{Lk,Hk}_band_gpu``, on the shared
     ``solvers._assemble_banded_operator``): the banded operator equals
-    ``banded(dense)`` exactly and the no-pivot banded sweep reproduces
+    ``banded(dense)`` exactly, and the no-pivot banded sweep reproduces
     the dense solve on a complex RHS.
     """
     Nr = params.res.ny
@@ -552,16 +547,13 @@ def test_pallas_vs_dense_on_cylindrical_operators() -> None:
 def test_vw_spin_pair_diagonalises_the_vector_laplacian() -> None:
     r"""The spin identity `$(\Delta\mathbf{u})_\pm = L_{s\pm} u_\pm$`.
 
-    On the *existing* `$H_{k,\pm}$` base operators.
-
-    The load-bearing identity of the pipe's ``res.consistent_imm``
-    scheme (``_cylindrical_stepping._imm_iteration_vw``): the `$-2im/r^2$` spin
-    coupling that ties `$(\Delta\mathbf{u})_r$` to `$u_\theta$` is
-    diagonalized by the same `$u_\pm$` combination the primitive
-    scheme already uses, with eigenvalues `$(m \pm 1)^2/r^2$` -- which
-    is why the quad needs no new operator family.  Checked against the
-    physical-component vector Laplacian on random radial profiles, per
-    parity-reduced operator.
+    On the *existing* `$H_{k,\pm}$` base operators: the load-bearing
+    identity of the pipe's ``res.consistent_imm`` scheme, which
+    diagonalizes the `$-2im/r^2$` spin coupling
+    (``_cylindrical_stepping._imm_iteration_vw``, "Why the pipe evolves
+    four scalars, not two").  Checked against the physical-component
+    vector Laplacian on random radial profiles, per parity-reduced
+    operator.
     """
     Nr = params.res.ny
     inv_r = np.asarray(pipe_flow.inv_r)
@@ -592,22 +584,15 @@ def test_vw_spin_pair_diagonalises_the_vector_laplacian() -> None:
 def test_vw_parity_classes() -> None:
     r"""Every vw quantity lands in the parity class its operator assumes.
 
-    The pipe's parity reduction is not a convenience: the wrong class
-    silently uses the wrong ghost sign near the axis.  Reconstructing
-    the mirrored field explicitly, this checks that
-
-    - `$\Phi_\pm = L_{s\pm} u_\pm$` and
-      `$\omega_\pm = \omega_r \pm i\omega_\theta$` carry the velocity
-      parity `$(-1)^{m+1}$`;
-    - the source chain's `$C_z$` -- and the `$r N_\theta$` and `$N_z$`
-      it differentiates -- carry `$(-1)^m$`, so both inner `$D_1$`
-      applications are `$z$`-parity;
-    - the recovery correction `$(2m^2/(r^3\Delta))(D_1 + 1/r)$` maps
-      `$(-1)^{m+1}$` back to itself (odd coefficient x parity flip).
-
-    Checked as a symmetry of the *continuum* fields on a mirrored
-    grid, which is what the reduction encodes, so it is independent of
-    any particular ``D1``.
+    The classes of ``_cylindrical_stepping._imm_iteration_vw``
+    ("Parity"): `$\Phi_\pm$` and `$\omega_\pm$` carry the velocity
+    parity `$(-1)^{m+1}$`; the source chain's `$C_z$`, `$r N_\theta$`
+    and `$N_z$` carry `$(-1)^m$`; the recovery correction
+    `$(2m^2/(r^3\Delta))(D_1 + 1/r)$` maps `$(-1)^{m+1}$` back to
+    itself.  The wrong class would silently use the wrong ghost sign
+    near the axis.  Checked as a symmetry of the *continuum* fields on
+    an explicitly mirrored grid, which is what the reduction encodes,
+    so it is independent of any particular ``D1``.
     """
     rs = np.asarray(build_radial_cgl_grid(24))
     aux = np.concatenate([-rs[::-1], rs])
@@ -639,16 +624,11 @@ def test_vw_mean_plane_packing_reuses_the_primitive_operators() -> None:
     r"""The packed `$k^2 = 0$` plane holds the primitive mean-mode operators.
 
     The primitive scheme's own mean-mode Helmholtz operators,
-    **bit-exactly**.
-
-    Flag-on, the four evolved slots are structurally zero at the mean
-    mode, so two of them carry `$u_{z,00}$` and `$u_{\theta,00}$`
-    instead (``_cylindrical_stepping._imm_iteration_vw``).  The
-    `$\omega_+$` slot rides `$H_{k,+}$`, which at `$m = 0$` already
-    *is* the mean `$u_\theta$` operator; the `$\Phi_-$` slot needs the
-    mean `$H_{k,z}$` (`$m_{\mathrm{eff}}^2 = 0$`, **even** parity) and
-    gets it from the band splice.  Asserted as equality on the mean column
-    and *inequality* off it, so a builder that dropped the splice fails
+    **bit-exactly**: the `$\omega_+$` slot holds the mean `$H_{k,+}$`
+    and the `$\Phi_-$` slot, through the band splice, the mean
+    `$H_{k,z}$` (``_cylindrical_stepping._imm_iteration_vw``,
+    "Mean mode").  Asserted as equality on the mean column and
+    *inequality* off it, so a builder that dropped the splice fails
     rather than passing vacuously.
     """
     p = params.res.fd_order
@@ -699,15 +679,13 @@ def test_analysis_radial_d1_matches_the_solver() -> None:
 
     The analysis package reconstructs the pipe's parity-reduced radial
     derivative from a snapshot's recorded parameters
-    (``_core.parity_radial_d1``), and every exported operator --
-    divergence, curl, gradient, enstrophy -- is built on it.  A
-    reconstruction that disagrees with the solver is a *silent*
-    failure: an exactly-solenoidal stepped state reads back as O(1)
-    divergent and nothing raises.  There is one radial construction on
-    each side, which is exactly what this pins.
-
-    (``tests/test_snapshot_export.py`` pins the assembled divergence
-    node-for-node against the solver's own; this pins the ingredient.)
+    (``_core.parity_radial_d1``) and builds every exported operator --
+    divergence, curl, gradient, enstrophy -- on it.  A disagreement
+    with the solver fails *silently*: an exactly-solenoidal stepped
+    state reads back as O(1) divergent and nothing raises.  This pins
+    that ingredient, the one radial construction on each side;
+    ``tests/test_snapshot_export.py`` pins the assembled divergence
+    node-for-node against the solver's own.
     """
     from dnsjax.analysis._core import parity_radial_d1
 
@@ -817,11 +795,10 @@ def test_pipe_fd_storage_and_parity_matvec_paths() -> None:
 def test_get_norm2_cyl() -> None:
     r"""``get_norm2_cyl`` is the plain norm of `$(u_z, u_r, u_\theta)$`.
 
-    The native state carries physical components, so the geometry norm
-    is the unweighted component sum -- and equals the 1/2-weighted norm
-    of the solver-basis image `$(u_z, u_+, u_-)$` (the metric identity
-    `$|u_r|^2 + |u_\theta|^2 = (|u_+|^2 + |u_-|^2)/2$` behind the
-    corrector ``_norm``).
+    The unweighted component sum of the physical state, equal to the
+    1/2-weighted norm of its solver-basis image `$(u_z, u_+, u_-)$`
+    (the metric identity of the corrector's
+    ``_cylindrical_stepping._norm``).
     """
     Nm = params.res.nz - 1
     Nkz = params.res.nx // 2
@@ -856,11 +833,11 @@ def test_pm_basis_round_trip() -> None:
     r"""``to_solver_basis`` / ``from_solver_basis`` invert exactly.
 
     The pair is crossed once per state at the physical/solver boundary
-    (``__main__``), so a silent inversion error would corrupt every
-    snapshot, diagnostic and initial condition without failing loudly.
-    ``to_solver_basis`` also appends the pass's carried slots (derived
-    from the velocity), which ``from_solver_basis`` drops: the
-    velocity round-trips exactly both ways.
+    (``__main__``), so an inversion error would silently corrupt every
+    snapshot, diagnostic and initial condition.  ``to_solver_basis``
+    also appends the pass's carried slots (derived from the velocity),
+    which ``from_solver_basis`` drops: the velocity round-trips exactly
+    both ways.
     """
     from dnsjax.flows.wall_bounded.pipe import to_solver_basis
 
@@ -956,7 +933,7 @@ def test_column_differences_match_the_field_map() -> None:
 
 
 def test_cylindrical_integration_weights() -> None:
-    """Composite weights on the radial CGL grid: sum + exactness."""
+    """Radial CGL grid weights: composite sum + exactness, full disc."""
     p = params.res.fd_order
     for Nr in [8, 16, 32]:
         rs = build_radial_cgl_grid(Nr)
@@ -983,14 +960,11 @@ def test_cylindrical_integration_weights() -> None:
                 err_msg=f"Nr={Nr}, degree={d}",
             )
 
-    # Full-disc radial quadrature: the parity-specific spectral
-    # Clenshaw-Curtis weights (rigged / half-CGL).  y_weights (even)
-    # and y_weights_odd (odd) are BOTH strictly positive (definite
-    # energy norm), and each is *spectral* for its parity -- exact for
-    # the polynomial moments int r^d * r dr = 1/(d+2): even d via
-    # y_weights, odd d via y_weights_odd (odd integrands, e.g. the
-    # mean u_theta, need the odd exactness), and machine
-    # precision on a smooth integrand.
+    # Full-disc radial quadrature, half- and rigged-CGL: y_weights
+    # (even) and y_weights_odd (odd), the parity-specific spectral pair
+    # of fd.cgl_radial_quadrature_weights, are BOTH strictly positive
+    # and exact for the moments int r^d * r dr = 1/(d+2): even d via
+    # y_weights, odd d via y_weights_odd.
     from dnsjax.geometries.wall_bounded.cylindrical import (
         build_cylindrical_grid,
     )
@@ -1177,12 +1151,11 @@ def test_parity_dispatch_interpolation() -> None:
 def test_centerline_mean_axial_velocity() -> None:
     """Centreline mean axial velocity stays laminar while stepping.
 
-    Steps a small random perturbation (iterative-cn) and
-    interpolates the axially+azimuthally averaged axial velocity
-    (base flow + mean-mode ``u_z`` perturbation, an even profile)
-    to the missing ``r = 0`` point: it must stay near the laminar
-    centreline value ``U_z(0) = 1`` while the perturbation is
-    small.
+    Steps a small random perturbation (iterative-cn) and interpolates
+    the axially+azimuthally averaged axial velocity (base flow +
+    mean-mode ``u_z`` perturbation, an even profile) to the missing
+    ``r = 0`` point: it must stay near the laminar centreline value
+    ``U_z(0) = 1`` while the perturbation is small.
     """
     from dnsjax.flows.wall_bounded.pipe import (
         predict_and_fully_correct,

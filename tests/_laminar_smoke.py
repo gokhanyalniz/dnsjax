@@ -14,7 +14,8 @@ meets:
 
 - its ``check`` of the run's output (default :func:`check_perturbation`:
   a stepping error of `$O(10^{-18})$` or less and a perturbation energy
-  of `$O(10^{-32})$` or less);
+  of `$O(10^{-32})$` or less, bounded by ``ERR_THRESHOLD`` and
+  ``EP_THRESHOLD``);
 - :func:`check_steps_file` (``steps.dat``, written every step): the CFL
   of the laminar base flow in the default moving frame;
 - :func:`check_corrector_file` (``corrector.dat``, written every step):
@@ -132,7 +133,6 @@ def build_command(
         "1",
         "--outs.it_error_check",
         "1",
-        # Laminarization check off: laminar runs sit at E' ~ 1e-32.
         "--stop.check_laminarization",
         "False",
     ]
@@ -241,7 +241,6 @@ def check_steps_file(workdir: Path, system: dict) -> None:
             )
 
     if expected_active is None:
-        # Near-steady: the active CFL positive and constant across steps.
         a_min, a_max = min(active_vals), max(active_vals)
         if a_min <= 0.0:
             raise AssertionError(f"{name}: non-positive active CFL {a_min}")
