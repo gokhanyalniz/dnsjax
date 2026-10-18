@@ -62,8 +62,8 @@ oversampled sizes are then rounded up, with a startup note, to
 the fast FFT radix kernels whatever the base resolution) that also
 divide evenly across the device grid; the streamwise real-FFT axis,
 never sharded in physical space, is rounded to an *even* 7-smooth length
-instead, the length an inverse real FFT returns. The extra slots carry only zero
-modes, so the rounding is physically neutral.
+instead, the length an inverse real FFT returns. The extra slots carry
+only zero modes, so the rounding is physically neutral.
 
 ## Temporal discretization
 
@@ -92,40 +92,37 @@ point. $c = 0.5$ is the trapezoidal rule, which barely damps the stiffest
 viscous modes: those on the first grid points off a wall flip sign every
 step and shrink by only $4/(\nu \Delta t \Lambda_{\max})$, less on every
 refinement of the wall grid. The default $c = 0.5001$ keeps that damping
-above about $4(c - \tfrac12)$ per step at any resolution. Its first-order
-error term stays below the second-order one at any practical step, and the
-temporal-order test holds it to the trapezoidal rule's accuracy. The
-Design notes of `src/dnsjax/parameters.py` have the measurements. An
-**opt-in split corrector** (`split_corrector`, off by default) iterates the
-wall-stiff linear coupling FFT-free between full right-hand-side refreshes;
-it only helps when the step is pushed near the corrector iteration cap and is
-otherwise slower, hence the default. A related `implicit_mean_coupling` (on
-by default) folds the instantaneous mean-flow coupling into the implicit
-term of the two FFT-free correctors, the wall-bounded `cnab2` one and the
-split `iterative-cn` one; the default unsplit corrector has no such term.
+above about $4(c - \tfrac12)$ per step at any resolution, with a
+first-order error term below the second-order one at any practical step
+(the temporal-order test holds it to the trapezoidal rule's accuracy).
+An **opt-in split corrector** (`split_corrector`, off by default)
+iterates the wall-stiff linear coupling FFT-free between full
+right-hand-side refreshes; it helps only when the step is pushed near the
+corrector iteration cap and is otherwise slower. A related
+`implicit_mean_coupling` (on by default) folds the instantaneous
+mean-flow coupling into the implicit term of the two FFT-free
+correctors, the wall-bounded `cnab2` one and the split `iterative-cn`
+one; the default unsplit corrector has no such term. The knobs: the
+`TimeStepping` docstring in `src/dnsjax/parameters.py`; the
+measurements: that module's Design notes.
 
 A second opt-in, `corrector_iterations` (0 by default), runs a **fixed**
-number of corrections instead of iterating to tolerance. Its purpose is
-differentiability: a dynamic trip count is the one construct in a step
-that reverse-mode automatic differentiation cannot traverse, and a
-static one lowers to a scan that it can. It is a different integrator
-unless the count covers what the dynamic corrector used, which
-`corrector.dat` records; the `TimeStepping` docstring in
-`src/dnsjax/parameters.py` carries the full trade-off.
+number of corrections instead of iterating to tolerance, which makes a
+step reverse-differentiable — and a different integrator unless the
+count covers what the dynamic corrector used
+([`differentiability.md`](differentiability.md)).
 
-Both schemes can run at a fixed `step.dt` or under **adaptive CFL time
+Both schemes run at a fixed `step.dt` or under **adaptive CFL time
 stepping** (`step.adaptive`, which needs `step.dt_max`): the main loop
 re-reads the measured total CFL every `cfl_cadence` steps and rescales
 the step toward the `cfl_target` setpoint, bounded by `dt_min`/`dt_max`,
 per-change growth and shrink limiters, and a relative deadband that
-suppresses churn from CFL noise. An accepted change rebuilds the
-$\Delta t$-dependent
-implicit operators on the device — a few implicit solves, no
-recompilation — and under `cnab2` the following Adams–Bashforth step
-is ratio-weighted (variable-step AB2), so both schemes remain
-second-order accurate.
-Snapshots embed the live `dt`, so a resume continues at the adapted
-step.
+suppresses churn from CFL noise (the `TimeStepping` docstring). An
+accepted change rebuilds the $\Delta t$-dependent implicit operators on
+the device — a few implicit solves, no recompilation — and under `cnab2`
+the following Adams–Bashforth step is ratio-weighted (variable-step
+AB2), so both schemes remain second-order accurate. Snapshots embed the
+live `dt`, so a resume continues at the adapted step.
 
 A moving frame of reference (`u_grid`) translates the domain along the
 streamwise / axial direction and is integrated implicitly by both schemes —
@@ -133,7 +130,7 @@ convenient for following travelling structures. By default the frame moves
 at the laminar bulk velocity: $1/2$ for the pipe, $2/3$ for
 plane-Poiseuille, and zero for the others. The pipe and plane-Poiseuille
 therefore integrate, and store snapshots, in the moving frame unless
-`u_grid` is set to `0` (see also [Moving frame](running.md#moving-frame)).
+`u_grid` is set to `0`.
 
 ## Grids
 
@@ -171,7 +168,8 @@ corrected by linearity. It enforces the wall conditions exactly — but a
 stepped state's discrete divergence keeps a truncation-level residual,
 amplified at the walls and converging under refinement (a few per cent of
 the divergence sum's terms at 25 wall-normal points, $10^{-5}$ to $10^{-3}$
-at 97), rather than zero.
+at 97), rather than zero. The measurements behind this section: the
+`dnsjax.parameters` Design notes, "Consistent influence matrix".
 
 The solver therefore ships a reformulation that removes it by construction,
 and it is **the default** (`res.consistent_imm`): advance the wall-normal
@@ -208,7 +206,7 @@ held down by its projection splitting.
 
 ## Conventions
 
-A few conventions worth knowing across the flow surfaces:
+Conventions across the flow surfaces:
 
 - **Reynolds number.** `re` sets the viscosity $\nu = 1/Re$. For the pipe it
   is simultaneously the centreline–radius and the bulk-velocity–diameter

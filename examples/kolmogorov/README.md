@@ -18,33 +18,29 @@ cp /path/to/dnsjax/examples/kolmogorov/parameters.toml .
 /path/to/dnsjax/.venv/bin/dnsjax
 ```
 
-A run reads `parameters.toml` from its own working directory, so copy it
-into a scratch directory and launch there. Any value can be overridden on
-the command line — `--phys.re 60`, `--res.nx 48 --res.ny 48 --res.nz 48`.
+Any value can be overridden on the command line (`--phys.re 60`); what
+the four examples share, from the scratch directory to the
+laminarization stop and their sizes, is in
+[`examples/README.md`](../README.md).
 
-**What to watch — and here it is `E'`.** `stats.dat` gets one
-row per 100 steps, with a `#`-commented header, so `numpy.loadtxt` reads
-it directly. The perturbation energy `E'` climbs by orders of magnitude,
+**What to watch — and here it is `E'`.** `stats.dat` gets one row per
+100 steps. The perturbation energy `E'` climbs by orders of magnitude,
 overshoots, and then fluctuates about a plateau. That fluctuation is the
 point: a chaotic state keeps moving, where a steady secondary flow would
 settle.
 
 The wall-bounded examples say to watch the dissipation instead, because
 `E'` there carries the mean profile's drift. This flow is the opposite
-case, and instructively so: the laminar state is a **sinusoidal** shear
-profile, sheared everywhere and therefore strongly dissipative, so
-breaking it up *lowers* the dissipation rather than raising it. `D`
-falls across the transition here, and the total energy `E` with it.
-Watch which way a quantity moves before trusting its direction.
+case: the laminar state is a **sinusoidal** shear profile, sheared
+everywhere and therefore strongly dissipative, so breaking it up
+*lowers* the dissipation rather than raising it. `D` falls across the
+transition here, and the total energy `E` with it. Watch which way a
+quantity moves before trusting its direction.
 
 **Resolution.** $32^3$ keeps the example on a laptop core. To check it
 for your purpose, rerun with `--res.nx 48 --res.ny 48 --res.nz 48` and
 compare the saturated statistics.
 
-**It may stop early.** `stop.check_laminarization` is on by default, so
-a run whose perturbation energy collapses ends cleanly and says so rather
-than integrating a laminar flow to the horizon. A low enough `re` will
-do that.
-
-All four examples' sizes are collected in
-[`examples/README.md`](../README.md).
+**It may stop early.** `stop.check_laminarization`, on by default, ends
+a run whose perturbation energy collapses, as it does at a low enough
+`re`.

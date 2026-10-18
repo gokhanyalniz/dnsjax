@@ -153,13 +153,8 @@ axial, the channel's spanwise). For the various conventions involved,
 see
 [Conventions](docs/numerics.md#conventions).
 
-The repository's lab adds five flows on the same geometries — a curved
-(toroidal) pipe with a metric of its own, quasi-Keplerian Taylor–Couette
-flow, Dean flow (a pressure-driven curved channel), and viscoelastic
-pipe and Dean flows carrying the polymer conformation tensor — installed
-by the same `uv sync` and run the same way:
-[`lab/README.md`](lab/README.md#flows), with their equations in
-[`lab/docs/numerics.md`](lab/docs/numerics.md).
+The repository's lab adds five flows on the same geometries, installed
+by the same `uv sync` and run the same way ([The lab](#the-lab)).
 
 ## Parallelization
 
@@ -212,10 +207,9 @@ socket and three xGMI links between the two, and HPE Slingshot between
 nodes, as the site documented them on 7 October 2026.
 </em></p>
 
-Every run reproduces the same trajectory to round-off. The efficiency
-falls to 0.75 by 16 nodes and rises again, to 0.92 at 32 and 0.94 at 64.
-That rise is a per-rank speed-up, not the network's: one node shows it
-too when each of its ranks holds the same share of the problem.
+Every run reproduces the same trajectory to round-off. The efficiency's
+rise after 16 nodes is a per-rank speed-up, not the network's: one node
+shows it too when each of its ranks holds the same share of the problem.
 [`docs/scaling.md`](docs/scaling.md#strong-scaling-on-archer2) has the
 machine, the method, the tables and that breakdown.
 
@@ -224,10 +218,10 @@ machine, the method, the tables and that breakdown.
 The optimal-growth module reproduces published values for all four of
 its flows to about 2 % or better, and the rest of the suite pins the
 discrete divergence, the energy budget, the temporal order, the banded
-kernel against a dense reference, and the analysis API against the
-solver's own operators. Every claim is mapped to the test that backs it
-in [`docs/validation.md`](docs/validation.md). The lab's flows and
-tools have a page of their own,
+kernel against the pure-JAX sweep and a dense reference, and the
+analysis API against the solver's own operators. Every claim is mapped
+to the test that backs it in [`docs/validation.md`](docs/validation.md).
+The lab's flows and tools have a page of their own,
 [`lab/docs/validation.md`](lab/docs/validation.md).
 
 ## Design decisions
@@ -294,7 +288,7 @@ tools have a page of their own,
 | [`docs/numerics.md`](docs/numerics.md) | equations, discretization, wall-normal grids, the influence-matrix method, per-flow conventions |
 | [`docs/scaling.md`](docs/scaling.md) | array layout, the memory model, choosing the device grid, measured strong scaling |
 | [`docs/running.md`](docs/running.md) | a worked run, start modes, seeds, the moving frame, every output stream |
-| [`docs/configuration.md`](docs/configuration.md) | how the parameter layers combine; extension sections |
+| [`docs/configuration.md`](docs/configuration.md) | how the parameter layers combine; extension sections; where each field is documented |
 | [`docs/snapshots.md`](docs/snapshots.md) | the snapshot format, resume and re-gridding, the JAX-free API, the importer |
 | [`docs/validation.md`](docs/validation.md) | what is checked against what, and which test pins each claim |
 | [`docs/differentiability.md`](docs/differentiability.md) | what differentiates through a step, the two opt-in knobs, the banded solve's adjoint |
@@ -306,9 +300,6 @@ tools have a page of their own,
 | [`lab/README.md`](lab/README.md) | the lab: its flows, scripts and tests |
 | [`lab/docs/numerics.md`](lab/docs/numerics.md) | the lab flows' equations and conventions |
 | [`lab/docs/validation.md`](lab/docs/validation.md) | what the lab's flows and tools are checked against |
-
-Field-by-field parameter documentation lives in the code, rendered per
-flow by `dnsjax --help <system>` and `dnsjax --sample-toml <system>`.
 
 ## Testing
 
@@ -330,13 +321,11 @@ its own, collected by the same `pytest`
 Adding a flow system on an existing geometry is a two-file operation: a
 **`FlowSpec`** and the flow module it names — in this package, under
 `src/dnsjax/flows/<family>/specs/`, or in a package of your own that
-registers its specs through the `dnsjax.flows` entry point. Nothing
-else is edited — the `phys.system` literal, the `--help` and
-`parameters.toml` surfaces, `--sample-toml`, the snapshot metadata
-surface, the stepping dispatch and the analysis package's geometry sets
-all derive from the registry and extend themselves. A flow with a
-metric of its own adds a geometry module as well, and parameter fields
-and run-loop sections plug in the same way. See
+registers its specs through the `dnsjax.flows` entry point — and
+nothing else is edited: the surfaces, the dispatch and the analysis
+geometry sets all derive from the registry. A flow with a metric of its
+own adds a geometry module as well, and parameter fields and run-loop
+sections plug in the same way:
 [`docs/extending.md`](docs/extending.md). The lab's five flows are the
 worked example: one has a metric of its own, and they bring parameter
 fields of their own ([`lab/README.md`](lab/README.md#flows)).

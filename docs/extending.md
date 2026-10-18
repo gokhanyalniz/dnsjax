@@ -7,16 +7,13 @@ and adding parameter fields and sections. Start at the
 
 ## A flow system
 
-A flow system is two pieces. The first is a **`FlowSpec`**, plain data
-plus pure-Python hooks. The second is the flow module it names
-(`flow_module`), which exports the surface the `FlowSpec` docstring
-lists: the steppers, the diagnostics, the two initial-condition
-builders `init_random_state` and `init_localized_rolls`, which the
-random and localized-rolls start modes call, and what its geometry and
-the transient-growth driver need besides (the basis pair of the
-cylindrical and annular geometries, the frozen-profile flow). A flow
-composes its geometry's generators there with whatever it adds itself,
-such as a total-field flow's laminar state.
+A flow system is two pieces: a **`FlowSpec`**, plain data plus
+pure-Python hooks, and the flow module it names (`flow_module`), which
+exports the surface the `FlowSpec` docstring lists — the steppers, the
+diagnostics, the initial-condition builders `init_random_state` and
+`init_localized_rolls` (where a flow composes its geometry's generators
+with what it adds, such as a total-field flow's laminar state), and
+what its geometry and the transient-growth driver need.
 Nothing else is edited: the `phys.system` literal, the `--help` and
 `parameters.toml` surfaces, `--sample-toml`, the snapshot metadata
 surface, the stepping dispatch and the analysis package's geometry sets
@@ -35,39 +32,31 @@ myflows = "myflows.specs:SPECS"
 The registry lists such flows after the core's within each geometry,
 and refuses a system name registered twice.
 
-That is the count for a flow that reuses an existing geometry, and
-every flow runs on one of the four geometries. A flow that brings its
-own *metric* adds a geometry module as well: on the cylindrical
+A flow with a *metric* of its own adds a geometry module as well: on
+the cylindrical
 geometry it overrides `CylindricalFlow`'s metric hooks (no-ops on the
 straight pipe), and its spec names the metric's analysis counterpart
 (`analysis_metric`) and, where they differ, its component and axis
 names (`components`, `axis_names`). The `FlowSpec` docstring states
 the cylindrical contract.
 
-A spec declares which shared parameter fields apply to the flow, the
-public names of any aliased ones (`nr` for the internal `res.ny`, and
-so on), per-flow default overrides, narrowed choice sets, *deferred*
-fields — declared but not implemented for the flow, so they fail with their own
-message rather than looking nonsensical — and the flow's derivation and
-validation hooks. A state that is not three velocity components
-declares its count and labels its components (`components`; on the
-cylindrical geometry their axis parity too, `component_parity`); the
-initial-condition builders and the FFT and sharding layers are
-component-count-agnostic, while the pipe's stepping is written for the
-three velocity components first, so a flow evolving more brings its own
-stepping (the `FlowSpec` docstring states the contract). A
-flow that integrates the total field, driven by a mean-mode body force,
-rather than a perturbation about a laminar profile declares that too
-(`total_field`); what a snapshot holds, the transient-growth scope and
-the figure labels all follow from it.
+A spec declares the flow's parameter surface — the shared fields that
+apply, public aliases (`nr` for the internal `res.ny`), default
+overrides, narrowed choices, *deferred* fields that fail with their own
+message — and its derivation and validation hooks (the
+`dnsjax.flow_spec` module docstring). The `FlowSpec` docstring holds
+the contracts for a state of more than the three velocity components
+(`n_components`, `components`, `component_parity`; the pipe's stepping
+is written for three, so such a flow brings its own) and for a flow
+that integrates the total field (`total_field`), from which what a
+snapshot holds, the transient-growth scope and the figure labels
+follow.
 
-Specs import nothing heavier than the standard library: no pydantic,
-no JAX, and never the parameter module itself, whose live objects the
-hooks receive as arguments. That is what lets `--help` render and a
-TOML validate without configuring JAX, and what keeps the import graph
-acyclic. A flow module, by contrast, builds on the geometry modules'
-internals, as the core flows do, and before 1.0 those may change
-between releases.
+Specs import nothing heavier than the standard library, so `--help`
+and TOML validation never configure JAX (the `dnsjax.flow_spec` module
+docstring says why). A flow module, by contrast, builds on the
+geometry modules' internals, as the core flows do, and before 1.0
+those may change between releases.
 
 ## Parameter fields
 
@@ -94,7 +83,5 @@ can take part in the solver's run: its `runtime` names a factory of
 solver builds once the section is configured and calls at fixed points
 of every step, and its `seed_fields` are drawn, agreed across processes
 and recorded like the solver's own seed (unless the section resolves
-them itself, `seeds_at_start`). A configured section is
-recorded in snapshot metadata, and a snapshot recording a section that
-no installed package registers refuses to resume unless
-`init.force_resume` is set.
+them itself, `seeds_at_start`). How a configured section is recorded
+in snapshots and resumed: [Parameter layering](configuration.md).

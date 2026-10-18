@@ -96,9 +96,8 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 # The sdist holds what the release archive does (.gitattributes): the
 # package, its tests, docs, examples and scripts, the README and the
-# citation.  No agent notes and no contributor guide in
-# either artefact: the CLAUDE.md files beside the code stay out, and so
-# does CONTRIBUTING.md.
+# citation.  Neither it nor the wheel holds an agent note (a CLAUDE.md
+# beside the code) or the contributor guide (CONTRIBUTING.md).
 source-include = [
     "tests/**",
     "docs/**",
@@ -127,7 +126,6 @@ markers = [
 ]
 
 [tool.ruff]
-# Set the maximum line length to 79.
 line-length = 79
 
 [tool.ruff.lint]

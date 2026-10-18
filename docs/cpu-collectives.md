@@ -73,11 +73,10 @@ as is every `gloo` run. Three ways round it:
 
 All of this works because nothing in a `dnsjax` run touches MPI before
 XLA does — XLA calls `MPI_Init` itself, so an earlier initialization
-aborts the run. Worth knowing only if
-you add something that might. The rank bootstrap, the single-process
-skip and the collectives auto-selection live in
-`configure_jax_runtime` (`src/dnsjax/bootstrap.py`); the four
-environment variables that steer it (`JAX_COORDINATOR_ADDRESS`,
-`JAX_COORDINATOR_PORT`, `MPITRAMPOLINE_LIB`,
-`JAX_CPU_COLLECTIVES_IMPLEMENTATION`) are none of them dnsjax
-parameters.
+aborts the run. Worth knowing only if you add something that might. The
+rank bootstrap, the single-process skip and the collectives
+auto-selection live in `configure_jax_runtime`
+(`src/dnsjax/bootstrap.py`); the four environment variables that steer
+it (`JAX_COORDINATOR_ADDRESS`, `JAX_COORDINATOR_PORT`,
+`MPITRAMPOLINE_LIB`, `JAX_CPU_COLLECTIVES_IMPLEMENTATION`) are none of
+them dnsjax parameters.

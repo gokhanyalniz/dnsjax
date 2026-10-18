@@ -18,21 +18,17 @@ cp /path/to/dnsjax/examples/pipe-re2500/parameters.toml .
 /path/to/dnsjax/.venv/bin/dnsjax
 ```
 
-A run reads `parameters.toml` from its own working directory, so copy it
-into a scratch directory and launch there. Any value can be overridden on
-the command line — `--phys.re 3000`, `--geo.lz 12 --res.nz 36`.
+Any value can be overridden on the command line (`--phys.re 3000`,
+`--geo.lz 12 --res.nz 36`); what the four examples share — the scratch
+directory, why `D` and not `E'`, the laminarization stop, their sizes —
+is in [`examples/README.md`](../README.md).
 
 **The forcing moves, not the flow rate.** `phys.driving` is set to
-`constant_bulk_velocity`, so the flow rate is held fixed and the axial
-pressure gradient is whatever it takes to maintain it. That keeps the
-Reynolds number meaning what it says once the flow is turbulent, and it
-puts the applied forcing in a **last column of `stats.dat`** (`-dPdz'`,
-positive when accelerating), which rises above its laminar value exactly
-when the flow does. Under the default `constant_pressure_gradient` the
-roles swap and it is the flow rate that drops instead.
+`constant_bulk_velocity`, so the axial pressure gradient responds and
+the applied forcing is a **last column of `stats.dat`** (`-dPdz'`);
+[`examples/README.md`](../README.md) says why.
 
-**What to watch.** `stats.dat` gets one row per 50 steps, with a
-`#`-commented header that `numpy.loadtxt` reads directly. Follow the
+**What to watch.** `stats.dat` gets one row per 50 steps. Follow the
 **dissipation `D`** against its laminar value, $2/Re$, and the applied
 forcing beside it: as the spot breaks down the dissipation climbs to
 several times laminar, and it falls back as the flow relaminarizes.
@@ -42,12 +38,9 @@ wall.
 **Expect it to relaminarize.** A cell four diameters long gives
 turbulence no room to spread or split, so here it is transient: it has a
 finite, memoryless lifetime and eventually decays. A longer pipe or a
-higher `re` tends to lengthen the episode; `stop.check_laminarization`,
-on by default, ends a run once the perturbation energy finally falls
-below its threshold.
+higher `re` tends to lengthen the episode.
 
 It is the most expensive of the three wall-bounded examples, on two
 counts: it carries two to three times the grid points of the plane
 channels, and a cylindrical geometry needs three banded operators per
-Fourier mode where a plane channel needs two. All four examples' sizes
-are collected in [`examples/README.md`](../README.md).
+Fourier mode where a plane channel needs two.

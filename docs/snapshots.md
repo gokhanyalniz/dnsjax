@@ -9,31 +9,26 @@ snapshot. Start at the [README](../README.md) for the solver itself.
 A snapshot is a **single uncompressed tar archive** (format version 6)
 wrapping a **zarr3** store, a JSON metadata member (parameters, grid,
 lineage, and the writing code's git revision), and one contiguous chunk
-per state component (the three velocity components, or every
-component a flow carrying more stores). Each chunk is stored **in the
-solver's native
-spectral layout** at true (unpadded) mode counts — saving, loading, and
-reading never transpose — and in **physical components** for every
-geometry: the cylindrical and annular families convert from the
-solver's decoupled $u_\pm$/spin working basis at the write/read
-boundary. The embedded parameters are the flow-relevant,
-resolved values under their public names — the same representation the
-startup printout and `--sample-toml` use; snapshots written before
-format version 6 embed a different layout, basis, or representation and
-are rejected rather than translated. A write first reshards the state,
-inside `jit`, onto the file's own layout — a contiguous wall-normal
-slab per device, at the true mode counts, so the padding never reaches
-the file — and each device then writes its disjoint byte ranges, one
-per component, into the one file in parallel: directly between GPU
-memory and disk when GPUDirect Storage is available (a path not yet
-exercised on a system with the GDS driver), through the host otherwise,
-with a concurrent mode for POSIX/parallel filesystems and a rank-ordered
-serial mode for filesystems where concurrent writes are unsafe. The
-bytes land in `<name>.tar.partial` and are renamed into place only once
-complete, so a killed job leaves the previous snapshot intact and never
-a truncated archive that could pass for a valid one; on read, the chunk
-layout is checked against the metadata, and a damaged archive raises an
-error naming the file and the cause.
+per state component, stored **in the solver's native spectral layout**
+at true (unpadded) mode counts — saving, loading, and reading never
+transpose — and in **physical components** for every geometry, the
+cylindrical and annular ones included. The embedded parameters are the
+flow-relevant, resolved values under their public names, the same
+representation the startup printout and `--sample-toml` use; a snapshot
+of an older format version is rejected, not translated. Each device
+writes its disjoint byte ranges into the one file in parallel, either
+concurrently (the default, for POSIX and parallel filesystems) or rank
+by rank (`outs.snapshot_write_mode = "serial"`, for filesystems where
+concurrent writes are unsafe). The bytes land in `<name>.tar.partial`
+and are renamed into place only once complete, so a killed job leaves
+the previous snapshot intact and never a truncated archive that could
+pass for a valid one; on read, the chunk layout is checked against the
+metadata, and a damaged archive raises an error naming the file and the
+cause. The layout, the write path (the reshard onto the file's layout,
+GPUDirect Storage) and the metadata: the
+[`dnsjax.snapshot`](../src/dnsjax/snapshot.py) module docstring; the
+read checks: [`dnsjax.snapshot_meta`](../src/dnsjax/snapshot_meta.py)
+(Design notes, "Truncated archives").
 
 The archive is readable with ordinary tools — `tar xf` yields a valid
 zarr3 store, and in the worst case each chunk is raw little-endian
@@ -48,13 +43,13 @@ field for a force-driven one. Each flow declares which
 `dnsjax.flows.registry.total_field_systems`.
 
 The pipe (and any flow built on its stepping) can store one more array
-beside the state, `carry/`: two fields its default time stepper evolves
-from step to step rather than deriving them from the velocity (the
-`_cylindrical_stepping` module documents them). They are
-solver-internal, and nothing that reads the state sees them. With them,
-a resume continues the trajectory to round-off. Without them, the solver
-re-derives both fields from the velocity, a one-off change of truncation
-size. That happens for a snapshot written with
+beside the state, `carry/`: two solver-internal fields its default time
+stepper evolves from step to step rather than deriving them from the
+velocity (the `_cylindrical_stepping` module documents them), which
+nothing that reads the state sees. With them, a resume continues the
+trajectory to round-off; without them, the solver re-derives both from
+the velocity, a one-off change of truncation size. That happens for a
+snapshot written with
 `outs.snapshot_embed_carry = false` (two fields fewer per snapshot, a
 pipe snapshot's size lower by two fifths), for one a script wrote, and
 for any resume that starts a new trajectory, a re-grid included.
@@ -62,21 +57,18 @@ for any resume that starts a new trajectory, a re-grid included.
 ### Other files in the same container
 
 The **reduced-resolution snapshots** of the `[lowres]` section
-(`lowres/lowres_<it>.tar`; see
+(`lowres/lowres_<it>.tar`;
 [Running](running.md#reduced-resolution-snapshots)) use this format and
-its writer. Each is a state at the reduced resolution, with its
-metadata describing the reduced field and a `lowres` entry naming the
-run's own resolution. On plane Couette and plane Poiseuille it can also
-hold a `pressure/` array beside the state, one component: the static
-pressure. These files are output, not checkpoints: `init.snapshot`
+its writer; what a file holds: the [`lowres`](../src/dnsjax/lowres.py)
+module docstring. They are output, not checkpoints: `init.snapshot`
 refuses one.
 
 Another entry point may write arrays of its own in the same container
-(3-D spectra, say, or budget cubes). Such an array,
-y-major like a state, carries a metadata `kind` naming what it is, and
-every field reader and `init.snapshot` refuses it by that name. A state
-snapshot carries no `kind`, so every file written before the field
-existed still reads as one.
+(3-D spectra, say, or budget cubes). Such an array, y-major like a
+state, carries a metadata `kind` naming what it is, and every field
+reader and `init.snapshot` refuses it by that name. A state snapshot
+carries no `kind`, so every file written before the field existed still
+reads as one.
 
 ## Resume and re-gridding
 
@@ -89,11 +81,8 @@ the route), by a local order-`fd_order` stencil for tanh or custom
 grids — and each Fourier axis by inserting or dropping modes at its
 high-wavenumber end, so a state can be picked up at a different
 resolution (which, being a `res` change, starts a new trajectory rather
-than continuing one). The embedded parameters include an extension
-section only while it was configured, so a snapshot recording one that
-nothing installed here registers was written with that section in
-use: the resume refuses it unless `init.force_resume` is set
-([Parameter layering](configuration.md)).
+than continuing one). How a recorded extension section bears on a
+resume: [Parameter layering](configuration.md).
 
 `stop.max_sim_time` is a horizon measured from the run's own initial
 condition rather than an absolute clock reading, so a resume asks for
@@ -162,14 +151,14 @@ a flow with a metric of its own they carry it (`GeometryInfo.metric`);
 how `integrate` splits one between the cross-section and the streamwise
 direction is in its docstring.
 
-Five more names round out the JAX-free API for the cases where the
-field data is not what you are after. `read_meta` returns a snapshot's
-parsed metadata — resolution, grid, clock, lineage, the writing code's
-git revision — and `read_stats` the physical diagnostics of the state
-itself, which every state snapshot carries as its own archive member
-unless `outs.snapshot_embed_stats` is turned off (a reduced-resolution
-file carries none). `read_dat` reads a `.dat` diagnostic stream
-(`stats.dat`, `steps.dat`, `corrector.dat`) into its named columns.
+Five more names round out the JAX-free API. `read_meta` returns a
+snapshot's parsed metadata — resolution, grid, clock, lineage, the
+writing code's git revision — and `read_stats` the physical diagnostics
+of the state itself, which every state snapshot carries as its own
+archive member unless `outs.snapshot_embed_stats` is turned off (a
+reduced-resolution file carries none). `read_dat` reads a `.dat`
+diagnostic stream (`stats.dat`, `steps.dat`, `corrector.dat`) into its
+named columns.
 `geometry_info` turns those parameters into the per-geometry axis and
 component schema, and `Namespace` is the read-only view they are
 returned through: it gives attribute access (`params.phys.re`) and item
@@ -185,14 +174,14 @@ valid snapshot — for a flow whose state is the velocity alone.
 The importer is a library (not a CLI) and **assumes the field is already
 in dnsjax's native layout**: components leading, axes $(y, z, x)$ for the
 Cartesian and triply-periodic systems and $(r, \theta, z)$ for the
-cylindrical and annular flows (pipe, Taylor–Couette) — whose
-components are $(u_z, u_r, u_\theta)$ — so
-any axis permutation and component reordering from the source code's
-conventions is the caller's first step. The field is what a snapshot of
-that flow stores ([What is stored](#what-is-stored)): the perturbation
-for a base-flow system, the total field for a force-driven one.
+cylindrical and annular flows (pipe, Taylor–Couette) — whose components
+are $(u_z, u_r, u_\theta)$ — so any axis permutation and component
+reordering from the source code's conventions is the caller's first
+step. The field is what a snapshot of that flow stores
+([What is stored](#what-is-stored)): the perturbation for a base-flow
+system, the total field for a force-driven one.
 
-Two conventions to keep in mind. The resolutions are the solver's
+Two conventions. The resolutions are the solver's
 nominal (physical) mode counts *without* the 3/2 dealiasing expansion —
 never include dealiasing zero-padding in the field or the resolution
 parameters — and every Fourier count must be **even**, so resample an
@@ -245,9 +234,9 @@ convert_field_to_snapshot(
 order, with one restriction on where the half spectrum may sit: only the
 **last** axis (the streamwise `nx` / axial `nz` slot) is the real-FFT
 axis, holding its `n//2` non-negative modes (`nx//2`, or `nz//2` on the
-pipe and the annulus; Nyquist optional, dropped);
-the other Fourier axes must carry full two-sided spectra, and
-`input_norm` names the source's FFT normalization. A source that
+pipe and the annulus; Nyquist optional, dropped); the other Fourier axes
+must carry full two-sided spectra, and `input_norm` names the source's
+FFT normalization. A source that
 `rfft`-ed a different axis must be permuted so its half axis lands last.
 The result is an ordinary snapshot: start a run from it with
 `--init.snapshot ic_plane_couette.tar` (a wall-normal grid differing from

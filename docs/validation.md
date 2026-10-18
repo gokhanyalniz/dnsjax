@@ -73,7 +73,8 @@ map to them as follows.
 | $dE/dt = I - D$ closes to truncation order, pressure-gradient work included | `tests/test_energy_budget.py` |
 | Laminar states step at machine precision, every wall-bounded flow | `tests/test_laminar_smoke.py` |
 | Random initial conditions integrate through the full nonlinear path, every distinct stepping machinery | `tests/test_random_smoke.py` |
-| The Pallas banded kernel agrees with the dense reference solver | `tests/test_banded_solver.py`, `tests/test_banded_solver_sharded.py` |
+| The Pallas banded kernel agrees, in interpret mode, with the pure-JAX banded sweep, and for stacked operators with the dense reference solver | `tests/test_banded_solver.py` |
+| The pure-JAX banded sweep agrees with the dense reference solver, on one device and sharded across a `(2, 2)` mesh | `tests/test_banded_solver.py`, `tests/test_banded_solver_sharded.py` |
 | Reverse-mode gradients of a step match a central difference, and the default corrector still refuses | `tests/test_autodiff.py` |
 | The banded kernel's adjoint matches the portable sweep's own autodiff, and composes through the solve's `shard_map` on one device | `tests/test_banded_solver.py` |
 | Triton lowering does not regress on GPU-less machines | `tests/test_banded_solver.py` (CUDA-lowering rows) |

@@ -77,9 +77,8 @@ uv run pytest -m "not slow"               # + the quick mpirun rows
 uv run pytest                             # everything available
 ```
 
-Run **one** heavy suite at a time: each invocation is already serial
-internally and leaves JAX's CPU thread pool unpinned, so concurrent runs
-oversubscribe the machine and produce spurious failures.
+Run **one** heavy suite at a time; why, and how to read a verdict:
+[Running them well](tests/README.md#running-them-well).
 
 Pick the check that fits what a change can reach. A docs or type-hint
 pass cannot change behaviour, and a test run that cannot tell "the

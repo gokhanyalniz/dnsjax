@@ -1,12 +1,9 @@
 # Pipe flow in a short periodic cell, at a transitional Reynolds
-# number.  Laptop-sized -- a few minutes on one core.
-#
-# A run reads `parameters.toml` from its own working directory, so copy
-# this file into a scratch directory and launch there.  Command-line
-# flags override any value set here.  Only parameters of the selected
-# flow are accepted: `dnsjax --help pipe` lists them, and
-# `dnsjax --sample-toml pipe` prints an annotated template with every
-# parameter and its default.
+# number.  Laptop-sized -- a few minutes on one core.  Running it, and
+# overriding a value from the command line: examples/README.md.  Only
+# this flow's parameters are accepted: `dnsjax --help pipe` lists them,
+# and `dnsjax --sample-toml pipe` prints them, with their defaults, as
+# an annotated template.
 
 [phys]
 system = "pipe"
@@ -16,10 +13,8 @@ system = "pipe"
 # transition here is entirely down to the finite-amplitude spot below.
 re = 2500.0
 # Hold the bulk velocity fixed and let the axial pressure gradient
-# respond, rather than the default the other way round.  That keeps Re
-# above meaning what it says once the flow is turbulent, and it puts the
-# applied forcing -dPdz' in a last stats.dat column, where it rises
-# above its laminar value exactly when the flow does.
+# respond, rather than the default the other way round; the applied
+# forcing -dPdz' is the last stats.dat column.  Why: examples/README.md.
 driving = "constant_bulk_velocity"
 
 [geo]
@@ -37,9 +32,8 @@ nz = 24       # axial Fourier modes
 nr = 32       # radial finite-difference points
 ntheta = 32   # azimuthal Fourier modes
 fd_order = 8  # radial finite-difference accuracy order
-# Double precision, the model default, stated here because it is a
-# real choice: single precision would halve the memory, at reduced
-# accuracy.
+# The default, stated because it is a real choice: single precision
+# would halve the memory, at reduced accuracy.
 double_precision = true
 
 [init]

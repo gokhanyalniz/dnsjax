@@ -15,9 +15,7 @@ name: Release
 # pyproject.toml and uv.lock, so that the sdist and the zipball, which
 # carry no lock, both install with uv.  A rehearsal builds from main,
 # stripped the same way.  The GitHub release alone also carries the
-# repository but for the files written for coding agents (the lab, the
-# contributor guide, uv's files and the development configuration in),
-# as an asset built from the tag's parent commit.
+# repository with the lab, as an asset (the `draft` job).
 
 on:
   push:
@@ -83,11 +81,9 @@ jobs:
             files dist/dnsjax-*.tar.gz "$RUNNER_TEMP/archive.tar"
 
       # What Zenodo will archive: GitHub's zipball of the tag, which
-      # honours the .gitattributes export-ignore of lab/, the agent
-      # notes, the contributor guide and the development configuration,
-      # uv.lock included: the sdist's files.  It must install with uv
-      # without a lock.  The tarball, the release page's other source
-      # archive, is made the same way.
+      # honours .gitattributes, so it holds the sdist's files.  The
+      # tarball, the release page's other source archive, is made the
+      # same way.
       - name: The tag's zipball and tarball hold no lab or agent files
         if: github.event_name == 'push'
         env:

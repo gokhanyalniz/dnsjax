@@ -1,13 +1,10 @@
 # Kolmogorov flow: a sinusoidal body force in a triply-periodic box,
 # seeded with a localized roll perturbation that transitions to
-# chaos.  Laptop-sized -- a few minutes on one core.
-#
-# A run reads `parameters.toml` from its own working directory, so copy
-# this file into a scratch directory and launch there.  Command-line
-# flags override any value set here.  Only parameters of the selected
-# flow are accepted: `dnsjax --help kolmogorov` lists them, and
-# `dnsjax --sample-toml kolmogorov` prints an annotated template with
-# every parameter and its default.
+# chaos.  Laptop-sized -- a few minutes on one core.  Running it, and
+# overriding a value from the command line: examples/README.md.  Only
+# this flow's parameters are accepted: `dnsjax --help kolmogorov` lists
+# them, and `dnsjax --sample-toml kolmogorov` prints them, with their
+# defaults, as an annotated template.
 
 [phys]
 system = "kolmogorov"
@@ -19,9 +16,8 @@ system = "kolmogorov"
 re = 100.0
 
 [geo]
-# Streamwise and spanwise periods.  The shear direction is not a free
-# length -- it is the reference length, fixed at 4, and the base flow
-# U = sin(2*pi*y/4) has its shear maximum at the box mid-point.
+# Streamwise and spanwise periods.  The shear-direction length is the
+# reference length, fixed at 4; U's shear maximum is at the box mid-point.
 lx = 5.0
 lz = 5.0
 
@@ -32,9 +28,8 @@ lz = 5.0
 nx = 32
 ny = 32
 nz = 32
-# Double precision, the model default, stated here because it is a
-# real choice: single precision would halve the memory, at reduced
-# accuracy.
+# The default, stated because it is a real choice: single precision
+# would halve the memory, at reduced accuracy.
 double_precision = true
 
 [init]

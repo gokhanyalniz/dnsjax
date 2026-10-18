@@ -17,8 +17,8 @@ copy.)
 | [`plane-poiseuille-re5000/`](plane-poiseuille-re5000/) | Cartesian | a small channel box: subcritical transition below the linear-stability limit, under constant-bulk driving |
 | [`pipe-re2500/`](pipe-re2500/) | cylindrical | a short periodic pipe at a transitional Reynolds number, where turbulence in a cell this short is transient |
 
-Run one by copying its configuration into a scratch directory — output
-files land in the working directory, so it wants one of its own:
+A run reads `parameters.toml` from its working directory and writes its
+output files there, so give each run a scratch directory of its own:
 
 ```bash
 mkdir -p /tmp/run && cd /tmp/run
@@ -31,26 +31,39 @@ Any value in the file can be overridden on the command line
 flow accepts.
 
 **Reading the result.** Each example writes `stats.dat`, one row per
-diagnostic interval with a `#`-commented header, so `numpy.loadtxt`
-reads it directly. For the three wall-bounded examples the column that
-says whether the flow is turbulent is the **dissipation `D`**, measured
-against its laminar value — not the perturbation energy `E'`, which also
-carries the mean profile's deviation from laminar and can move for
-reasons that have nothing to do with fluctuations. Kolmogorov flow is
-the exception, and its README explains why: its laminar state is a
-sinusoidal shear profile that is *more* dissipative than the turbulence
-that replaces it, so there `E'` is the reliable indicator and `D` runs
-the other way. Each README says what to expect.
+diagnostic interval (its format and columns:
+[`docs/running.md`](../docs/running.md#the-diagnostic-streams)). For the
+three wall-bounded examples the column that says whether the flow is
+turbulent is the **dissipation `D`**, measured against its laminar value —
+not the perturbation energy `E'` on its own, which also carries the mean
+profile's deviation from laminar and can move for reasons that have
+nothing to do with fluctuations: it can fall smoothly while the flow is
+still fully turbulent. Kolmogorov flow is the exception, where `E'` is
+the reliable indicator and `D` runs the other way; its README explains
+why. Each README says what to expect.
+
+**Two of them hold the flow rate.** The pipe and plane-Poiseuille
+examples set `phys.driving` to `constant_bulk_velocity`: the flow rate
+is held fixed and the pressure gradient is whatever it takes to maintain
+it. That is the right way round for an example: the Reynolds number
+keeps meaning what it says once the flow is turbulent, and the applied
+forcing, the last column of `stats.dat` (positive when accelerating),
+rises above its laminar value exactly when the flow does — a second,
+independent reading of the same event as `D`. Under the default
+`constant_pressure_gradient` the roles swap: the forcing is fixed and
+the flow rate drops instead.
 
 **They may stop early.** In wall-bounded boxes this small, turbulence
 can be transient: it has a finite, stochastic lifetime and eventually
 decays back to the laminar state, sometimes before the horizon.
 `stop.check_laminarization` is on by default, so a run whose
 perturbation energy collapses ends cleanly and says so instead of
-integrating a laminar flow to the horizon.
+integrating a laminar flow to the horizon. The check reads `E'`, which
+falls below its threshold later than `D` returns to laminar, since the
+mean profile relaxes on the viscous timescale: a run can reach its
+horizon with the flow already laminar but `E'` still decaying.
 
-**How big they are.** Each runs in double precision (the default) on one
-laptop core, in minutes:
+**How big they are.** Each runs in double precision (the default):
 
 | example | resolution | horizon |
 |---|---|---|
@@ -59,10 +72,10 @@ laptop core, in minutes:
 | `plane-poiseuille-re5000` | $16 \times 49 \times 16$ ($n_x, n_y, n_z$) | 250 |
 | `pipe-re2500` | $24 \times 32 \times 32$ ($n_z, n_r, n_\theta$) | 200 |
 
-These are not GPU-sized problems. Cases this small do not come close to
+These are not GPU-sized problems: cases this small do not come close to
 filling one, so there is no reason to expect a GPU to help here and some
-reason to expect it to hurt; they are sized for a laptop on purpose. How
-a production-sized run scales, from 1 to 64 CPU nodes, is measured in
+reason to expect it to hurt. How a production-sized run scales, from 1
+to 64 CPU nodes, is measured in
 [`docs/scaling.md`](../docs/scaling.md#strong-scaling-on-archer2).
 
 The production-scale run these are the small counterpart to — a

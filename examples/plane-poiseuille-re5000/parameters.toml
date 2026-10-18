@@ -1,12 +1,9 @@
 # Plane-Poiseuille flow in a small channel box.  Laptop-sized -- a
-# couple of minutes on one core.
-#
-# A run reads `parameters.toml` from its own working directory, so copy
-# this file into a scratch directory and launch there.  Command-line
-# flags override any value set here.  Only parameters of the selected
-# flow are accepted: `dnsjax --help plane-poiseuille` lists them, and
-# `dnsjax --sample-toml plane-poiseuille` prints an annotated template
-# with every parameter and its default.
+# couple of minutes on one core.  Running it, and overriding a value
+# from the command line: examples/README.md.  Only this flow's
+# parameters are accepted: `dnsjax --help plane-poiseuille` lists them,
+# and `dnsjax --sample-toml plane-poiseuille` prints them, with their
+# defaults, as an annotated template.
 
 [phys]
 system = "plane-poiseuille"
@@ -15,10 +12,8 @@ system = "plane-poiseuille"
 # transition is subcritical, driven by the seeded spot.
 re = 5000.0
 # Hold the bulk velocity fixed and let the streamwise pressure gradient
-# respond, rather than the default the other way round.  That keeps the
-# Reynolds number above meaning what it says once the flow is turbulent,
-# and it puts the applied forcing -dPds' in a last stats.dat column,
-# where it rises above its laminar value exactly when the flow does.
+# respond, rather than the default the other way round; the applied
+# forcing -dPds' is the last stats.dat column.  Why: examples/README.md.
 driving = "constant_bulk_velocity"
 
 [geo]
@@ -32,9 +27,8 @@ nx = 16       # streamwise Fourier modes
 ny = 49       # wall-normal finite-difference points (Chebyshev grid)
 nz = 16       # spanwise Fourier modes
 fd_order = 8  # wall-normal finite-difference accuracy order
-# Double precision, the model default, stated here because it is a
-# real choice: single precision would halve the memory, at reduced
-# accuracy.
+# The default, stated because it is a real choice: single precision
+# would halve the memory, at reduced accuracy.
 double_precision = true
 
 [init]

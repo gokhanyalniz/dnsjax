@@ -41,9 +41,9 @@ platform, precision and device layout before importing anything from
 `pytest_suite.py` is the only file pytest collects here, and
 `lab/tests/pytest_suite.py` the lab's counterpart; one `pytest` run
 collects both. Each shells its scripts out as subprocesses, asserts a
-zero exit code, and surfaces the output tail on failure — the scripts
-stay authoritative, and `pytest` becomes a way to run them all with
-markers and a summary.
+zero exit code and surfaces the output tail on failure (the machinery:
+`_bridge.py`), so `pytest` becomes a way to run them all with markers
+and a summary.
 
 ```bash
 uv run pytest -m "not slow and not mpi"   # offline: no mpirun launch
@@ -52,8 +52,7 @@ uv run pytest                             # everything available
 uv run pytest -k padding                  # one script
 ```
 
-Output streams live as each script runs (`_live.py` tees it, and
-`addopts = -s` is set in `pyproject.toml`), so a long run shows progress
+Output streams live as each script runs, so a long run shows progress
 and can be aborted early.
 
 Two markers:

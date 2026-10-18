@@ -10,7 +10,7 @@ comes out at the end.
 
 A run that fits in one process is launched directly, with no MPI involved;
 only a multi-process run goes through `mpirun -np N`, invoking the
-environment's `dnsjax` console script directly — `uv run` does not compose
+environment's `dnsjax` console script itself — `uv run` does not compose
 with `mpirun`, and `python -m dnsjax` is the equivalent module form. Output
 files (`stats.dat`, snapshots, …) are written to the current directory, so
 launch from a scratch directory:
@@ -30,12 +30,10 @@ launch from a scratch directory:
   --dist.platform cpu
 ```
 
-Every flow exposes only the parameters that apply to it, under the names
-natural to its geometry — `dnsjax --help` lists the global parameters and
-the implemented flows, `dnsjax --help pipe` the pipe's own surface, and
-`dnsjax --sample-toml pipe` prints an annotated configuration template. A
-parameter that does not belong to the selected flow is an error (on the
-command line and in `parameters.toml` alike), not a silently ignored knob.
+`dnsjax --help pipe` lists the pipe's own parameters and
+`dnsjax --sample-toml pipe` prints them as an annotated template; a
+parameter the selected flow does not take is an error, not a silently
+ignored knob ([`configuration.md`](configuration.md)).
 
 ## Reading the example
 
@@ -79,9 +77,8 @@ names too, since each flow takes only its own:
 `--phys.system taylor-couette` takes `--phys.re1`, `--phys.re2` and
 `--geo.eta` in place of `--phys.re`, on a `cgl` or `tanh` radial grid,
 and `--phys.system kolmogorov` takes `--geo.lx`, `--geo.lz` and
-`--res.nx/ny/nz`, with no wall-normal grid or `fd_order`.
-`dnsjax --help <system>` lists each flow's parameters, and the
-[flow table](../README.md#flows-and-geometries) the flows.
+`--res.nx/ny/nz`, with no wall-normal grid or `fd_order`. The
+[flow table](../README.md#flows-and-geometries) lists the flows.
 
 ## The TOML form
 
@@ -134,18 +131,14 @@ pair `_wall_smoothness` / `_wall_confinement`; the roll builder adds
 `--init.localized_rolls_wavelength` to the amplitude and width shown
 above (accepted but ignored by the pipe, whose cross-section is the
 lowest azimuthal mode). On the two plane channels the random field can
-also perturb the
-$(k_x, k_z) = (0, 0)$ mean profile (`--init.random_mean_flow`, off by
-default), conditioned on that mode's conservation laws — an unchanged
-mean pressure gradient, which under no-slip is compatibility at both
-walls, and an unchanged bulk velocity in each direction whose mean the
-driving holds — so the perturbation reaches the mean flow without
-contradicting what the run is holding fixed.
-Every other flow declares the field and refuses it,
-rather than appearing to offer something it does not implement. A path
-given to `--init.snapshot` that is not a dnsjax snapshot **aborts**
-rather than falling through to the random default, so a typo cannot
-quietly start a different calculation.
+also perturb the $(k_x, k_z) = (0, 0)$ mean profile
+(`--init.random_mean_flow`, off by default), conditioned on that mode's
+conservation laws (`dnsjax.ic.mean_mode`); every other flow declares the
+field and refuses it, rather than appearing to offer something it does
+not implement. A path given to `--init.snapshot` that is not a dnsjax
+snapshot **aborts** rather than falling through to the random default,
+so a typo cannot quietly start a different calculation. The precedence
+and the knobs: the `parameters.Initiation` docstring.
 
 ## Seeds
 
@@ -154,35 +147,34 @@ system entropy pool**, prints it with its source, and records it in the
 snapshot — so a batch of runs launched the same way explores different
 realizations, and any one of them replays exactly by passing its
 printed seed back. The same holds for any seed an extension section
-declares.
-A run that draws nothing (laminar, rolls, or a resume) never asks for
-entropy; one that would draw and cannot reach a source stops rather
-than falling back to a fixed value.
+declares. A run that draws nothing (laminar, rolls, or a resume) never
+asks for entropy; one that would draw and cannot reach a source stops
+rather than falling back to a fixed value (the contract: the
+`dnsjax.seeding` module docstring).
 
 ## Moving frame
 
-One default worth knowing: the pipe integrates in a frame translating at
-its laminar bulk velocity $1/2$, and plane-Poiseuille in one at $2/3$,
-and their snapshots are stored in that frame; pass `--phys.u_grid 0` for
-the laboratory frame (see
-[Temporal discretization](numerics.md#temporal-discretization)).
+The pipe and plane-Poiseuille integrate, and store snapshots, in a frame
+moving, by default, at their laminar bulk velocity; `--phys.u_grid 0`
+gives the laboratory frame
+([Temporal discretization](numerics.md#temporal-discretization)).
 
 ## What a run writes
 
-The code's git revision, the final working
-parameters, and the physical-space resolution are printed at startup; the
-first step takes noticeably longer than the rest (JIT compilation); and a
-timing summary is printed at the end. Statistics stream to `stats.dat`
-(with `steps.dat` and `corrector.dat` for the CFL and corrector
-diagnostics), each at its `outs.it_*` cadence and off until that is set,
-and snapshots appear as `state00000.tar` (the initial condition),
-`state00001.tar`, and so on. Runs end gracefully — at
-`max_sim_time`, at an ISO 8601 `stop.max_wall_time` budget, on
-relaminarization, or on request (below), each writing a final snapshot
-first; on SIGTERM/SIGINT they flush the diagnostic buffers and exit at
-once — so interrupted runs stay consistent with their outputs; a NaN or
-inf in any diagnostic instead aborts the run at once with a line naming
-the quantity, rather than spending the budget on a broken state.
+The code's git revision, the final working parameters and the
+physical-space resolution are printed at startup; the first step takes
+noticeably longer than the rest (JIT compilation); and a timing summary
+is printed at the end. Statistics stream to `stats.dat` (with
+`steps.dat` and `corrector.dat` for the CFL and corrector diagnostics),
+each at its `outs.it_*` cadence and off until that is set, and
+snapshots appear as `state00000.tar` (the initial condition),
+`state00001.tar`, and so on. A run ends gracefully, writing a final
+snapshot, at `max_sim_time`, at an ISO 8601 `stop.max_wall_time`
+budget, on relaminarization or on request (below); on SIGTERM or SIGINT
+it flushes the diagnostic buffers and exits at once, so an interrupted
+run stays consistent with its outputs; and a NaN or inf in any
+diagnostic aborts it at once with a line naming the quantity, rather
+than spending the budget on a broken state.
 
 ### Stopping a run
 
@@ -195,14 +187,14 @@ rm RUNNING
 ```
 
 Within `outs.it_error_check` steps (10 by default) every process
-leaves the stepping loop together. The run writes its final snapshot
-and flushes every stream, exactly as at the end of a `max_sim_time`
-horizon. `kill -USR1` sent to any of its processes, or to `mpirun`
-(which forwards it to every rank), does the same. A SLURM job
-launched with `srun` can have the scheduler send that signal to every
-task ahead of its time limit: `#SBATCH --signal=USR1@300` sends it five
-minutes before. Setting `stop.max_wall_time` below the limit does the
-same without a signal. The example job script
+leaves the stepping loop together, and the run writes its final
+snapshot and flushes every stream, exactly as at the end of a
+`max_sim_time` horizon. `kill -USR1` sent to any of its processes, or
+to `mpirun` (which forwards it to every rank), does the same. A SLURM
+job launched with `srun` can have the scheduler send that signal to
+every task ahead of its time limit (`#SBATCH --signal=USR1@300` sends
+it five minutes before); a `stop.max_wall_time` below the limit does
+the same without a signal. The example job script
 [`examples/slurm/cpu.slurm`](../examples/slurm/cpu.slurm) sets both,
 with the signal as the backstop.
 
@@ -216,12 +208,11 @@ When the run ends, `RUNNING` is replaced by one file saying how:
 
 Each file gives the start and end times, the reason and the newest
 snapshot the run wrote, which a resume continues from. A `RUNNING`
-left with no live process belongs to a run that was killed outright
-(SIGKILL, out of memory, a lost node). The next launch in that
-directory reports it and replaces it. A launch refuses to start next
-to a `RUNNING` whose process is still alive on the same machine. The
-details are in the
-[`run_status`](../src/dnsjax/run_status.py) module docstring.
+left with no live process belongs to a run killed outright (SIGKILL,
+out of memory, a lost node): the next launch in that directory reports
+and replaces it, but a launch refuses to start next to a `RUNNING`
+whose process is still alive on the same machine. The details are in
+the [`run_status`](../src/dnsjax/run_status.py) module docstring.
 
 ### The diagnostic streams
 
@@ -265,19 +256,20 @@ defaults to the run's own count, and a set one may not exceed it. Like
 `[outs]`, the section is inherited on resume; `--lowres.it_lowres 0`
 switches it off ([`configuration.md`](configuration.md)).
 
-Each field is computed at the run's resolution and only then reduced.
-The Fourier axes drop their highest modes. The wall-normal axis is
+Each field is computed at the run's resolution and only then reduced:
+the Fourier axes drop their highest modes, and the wall-normal axis is
 interpolated onto the same grid type at the reduced count, exactly as a
-resume onto a new grid does it: spectrally between Chebyshev grids. A
+resume onto a new grid does it (spectrally between Chebyshev grids); a
 custom `geo.wall_grid` has no grid at another count, so it keeps its
-own.
+own. The details: the [`lowres`](../src/dnsjax/lowres.py) module
+docstring.
 
 On plane Couette and plane Poiseuille, `lowres.pressure` (off by
-default) adds the static pressure perturbation $p'$, computed
-from the full-resolution field. It is the pressure consistent with the
-discrete dynamics, in the gauge where its mean profile is zero at the
-upper wall, re-pinned there after the reduction. The mean pressure
-gradient is the driving, which `stats.dat` records.
+default) adds the static pressure perturbation $p'$, computed from the
+full-resolution field consistently with the discrete dynamics, in the
+gauge where its mean profile is zero at the upper wall (re-pinned there
+after the reduction); the mean pressure gradient is the driving, which
+`stats.dat` records.
 
 The files are ordinary snapshots for reading —
 `dnsjax.analysis.read_state` opens one, and `read_pressure` its

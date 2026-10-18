@@ -1,13 +1,10 @@
 # Plane-Couette flow in the minimal flow unit: the smallest box that
 # holds turbulence between two shearing walls.  Laptop-sized -- a
-# couple of minutes on one core.
-#
-# A run reads `parameters.toml` from its own working directory, so copy
-# this file into a scratch directory and launch there.  Command-line
-# flags override any value set here.  Only parameters of the selected
-# flow are accepted: `dnsjax --help plane-couette` lists them, and
-# `dnsjax --sample-toml plane-couette` prints an annotated template
-# with every parameter and its default.
+# couple of minutes on one core.  Running it, and overriding a value
+# from the command line: examples/README.md.  Only this flow's
+# parameters are accepted: `dnsjax --help plane-couette` lists them,
+# and `dnsjax --sample-toml plane-couette` prints them, with their
+# defaults, as an annotated template.
 
 [phys]
 system = "plane-couette"
@@ -28,9 +25,8 @@ nx = 16       # streamwise Fourier modes
 ny = 33       # wall-normal finite-difference points (Chebyshev grid)
 nz = 16       # spanwise Fourier modes
 fd_order = 8  # wall-normal finite-difference accuracy order
-# Double precision, the model default, stated here because it is a
-# real choice: single precision would halve the memory, at reduced
-# accuracy.
+# The default, stated because it is a real choice: single precision
+# would halve the memory, at reduced accuracy.
 double_precision = true
 
 [init]

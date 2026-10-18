@@ -4,9 +4,8 @@ How `dnsjax` lays its data out, what a configuration costs in memory,
 and how the work is split across devices. All of it is independent of
 the flow — the geometry sets the meaning of each axis, and the device
 grid is chosen the same way for every system, a plugin's included. The
-last section
-measures how one plane-channel run scales on a CPU cluster, from 1 to
-64 nodes.
+last section measures how one plane-channel run scales on a CPU
+cluster, from 1 to 64 nodes.
 
 Start at the [README](../README.md) for the solver itself.
 
@@ -35,16 +34,16 @@ the default backends:
 - **Nonlinear term, every step** — the rotational form inverse-transforms a
   6-field batch (velocity + vorticity) to the oversampled grid, multiplies
   pointwise, and forward-transforms the 3 product fields. Counting the
-  held
-  fields, the products, and the one to two batch-sized intermediates inside
-  the transforms, the working set is $W \approx 15\text{–}21$ oversampled
-  fields; each oversampled field is $(3/2)^2 = 2.25$ fields for
-  wall-bounded systems (the wall-normal direction is never oversampled) and
-  $(3/2)^3 = 3.375$ fields for triply-periodic ones. How much of this
-  coexists is decided by XLA's buffer reuse, so treat the upper end as the
-  sizing estimate. `solver.rhs_transform_chunks = k` cuts the batch's
-  transform-stage share $k$-fold at identical results; it bites where a
-  flow's batch is several times the velocity's.
+  held fields, the products, and the one to two batch-sized intermediates
+  inside the transforms, the working set is
+  $W \approx 15\text{–}21$ oversampled fields; each oversampled field is
+  $(3/2)^2 = 2.25$ fields for wall-bounded systems (the wall-normal
+  direction is never oversampled) and $(3/2)^3 = 3.375$ fields for
+  triply-periodic ones. How much of this coexists is decided by XLA's
+  buffer reuse, so treat the upper end as the sizing estimate.
+  `solver.rhs_transform_chunks = k` cuts the batch's transform-stage share
+  $k$-fold at identical results; it bites where a flow's batch is several
+  times the velocity's.
 - **Wall-normal operators** — the Pallas backend stores no-pivot banded LU
   factors: $(2p + 1) \cdot n_y$ reals per matrix per Fourier mode, with the
   half-bandwidth $p$ equal to `fd_order`, over the $(n_z - 1)(n_x/2)$ mode
@@ -52,8 +51,8 @@ the default backends:
   term that grows with `fd_order`. Here $m = 2$ for
   plane-Couette/Poiseuille and $3$ for the pipe and Taylor–Couette, plus
   $v$ field-sized boundary-response vectors ($v/2$ fields): $v = 2$, or
-  $3$ for the pipe. The legacy primitive
-  scheme (`res.consistent_imm = false`) stores one more matrix in the
+  $3$ for the pipe. The legacy primitive scheme
+  (`res.consistent_imm = false`) stores one more matrix in the
   curvilinear geometries and up to six response vectors. Switching to
   `solver.backend = "dense"` replaces $(2p + 1)$ by $n_y$ per matrix — the
   one super-linear option, and the reason Pallas is the wall-bounded
@@ -82,14 +81,13 @@ Summing these, the leading-order total per device is
 with $W \approx 15\text{–}21$ as above and $(n_c, m, v) = (3, 2, 2)$
 for the plane flows, $(5, 3, 3)$ for the pipe and $(3, 3, 2)$ for
 Taylor–Couette (a flow another package adds states its own). The sum
-is an upper estimate —
-XLA's buffer reuse typically realizes less — and halves at single
-precision. Off the stepping path, a snapshot write reshards the state
-onto an I/O layout before moving each device's bytes directly to disk
-(staging through host memory only when GPUDirect Storage is
-unavailable) — a transient second state-sized copy on multi-device
-runs, nothing extra on a single device — and the on-device diagnostic
-buffers are resolution-independent.
+is an upper estimate — XLA's buffer reuse typically realizes less — and
+halves at single precision. Off the stepping path, a snapshot write
+reshards the state onto an I/O layout before moving each device's bytes
+directly to disk (staging through host memory only when GPUDirect
+Storage is unavailable) — a transient second state-sized copy on
+multi-device runs, nothing extra on a single device — and the on-device
+diagnostic buffers are resolution-independent.
 
 ## Array layout by geometry
 
@@ -97,8 +95,8 @@ The solver keeps one internal axis order for every flow — physical
 `[axis0, axis1, axis2]` and spectral `[axis0, axis1, axis2]` — and the
 physical meaning of each axis is set by the geometry (a row per
 geometry, not per flow). The leading axis is device-local; the two
-sharded axes are split by `np0` and `np1` (elaborated under
-[Parallelization](#parallelization)). Role abbreviations: **sw**
+sharded axes are split by `np0` and `np1`
+([Parallelization](#parallelization)). Role abbreviations: **sw**
 streamwise, **wn** wall-normal, **sh** shearwise, **sp** spanwise.
 
 | Geometry | Velocity components `(0, 1, 2)` | Physical `[0, 1, 2]` | Spectral `[0, 1, 2]` | `np0` splits | `np1` splits |
@@ -137,8 +135,8 @@ differently:
   $n_x/2$ or $n_z/2$); on the physical side the oversampled size
   ($3/2 \times$ the base resolution of that axis at the default
   oversampling) is rounded up to the next FFT-friendly multiple of
-  `np1` when needed (see
-  [Spatial discretization](numerics.md#spatial-discretization)), which
+  `np1` when needed
+  ([Spatial discretization](numerics.md#spatial-discretization)), which
   amounts to a sliver of extra oversampling.
 - Independently of the device grid, the **Pallas banded solver** tiles each
   device's $(k_z, k_x)$ mode plane in blocks of
@@ -161,16 +159,16 @@ reshard remains. `jax.device_count()` must equal $n_{p0} \cdot n_{p1}$.
 
 ### Choosing the device grid
 
-The two exchanges are not equivalent, which is what makes the choice
-matter. The `np1` exchange ($z \leftrightarrow k_x$) runs while the array
-still carries the **oversampled** spanwise extent, whereas the `np0`
-exchange ($y \leftrightarrow k_z$) runs after the truncation to stored
-modes — so at the default oversampling `np1` moves $3/2$ as many bytes.
-And a second grid axis does not divide the first exchange more finely, it
-**adds** a second one: a one-dimensional grid performs one exchange per
-transform, a two-dimensional grid two, each a synchronization point. Both
-the exchange count and its byte volume are visible in the compiled
-program.
+The two exchanges are not equivalent. The `np1` exchange
+($z \leftrightarrow k_x$) runs while the array still carries the
+**oversampled** spanwise extent, whereas the `np0` exchange
+($y \leftrightarrow k_z$) runs after the truncation to stored modes — so
+at the default oversampling `np1` moves $3/2$ as many bytes. And a
+second grid axis does not divide the first exchange more finely, it
+**adds** a second one: one exchange per transform on a one-dimensional
+grid, two on a two-dimensional one, each a synchronization point. The
+rules below and their reasons: the `Distribution` docstring in
+`src/dnsjax/parameters.py`.
 
 **Independently of the device type:**
 
@@ -184,10 +182,8 @@ program.
    order the launcher numbers the ranks in; a multi-node run prints how
    many nodes each group spans. Aligning the grid with the nodes
    (`np1` = devices per node, `np0` = number of nodes) would confine the
-   heavier exchange to the node and leave the network $n_{p0} - 1$
-   large messages per device in place of the many small ones a
-   grid-wide exchange sends, at equal network volume. On CPU that
-   argument loses to the first rule's. On
+   heavier exchange to the node, but on CPU that argument loses to the
+   first rule's. On
    [ARCHER2](#strong-scaling-on-archer2) (two 64-core AMD EPYC 7742
    and 16 DDR4-3200 channels per node, Slingshot between nodes; 128
    ranks per node, Cray MPICH) at `1280 x 383 x 384` the fastest grid
@@ -215,10 +211,9 @@ volume: a two-dimensional grid is slower than the best one-dimensional
 one, while the $3/2$ volume difference between the two one-dimensional
 grids matters for the transform itself but little for the step around
 it (the measurements: the `dnsjax.parameters` Design notes). Routing
-the collectives through MPI rather than `gloo` (see
-[CPU collectives](cpu-collectives.md)) speeds up
-every exchange, shifting weight from the per-exchange cost back toward
-volume.
+the collectives through MPI rather than `gloo`
+([CPU collectives](cpu-collectives.md)) speeds up every exchange,
+shifting weight from the per-exchange cost back toward volume.
 
 **On GPU** the mode plane is tiled, which makes `np1` the granular axis:
 keep $(n_x/2)/n_{p1}$ a multiple of `solver.pallas_block_m1` $= 32$,
@@ -226,10 +221,10 @@ where $(n_z-1)/n_{p0}$ need only clear `pallas_block_m0` $= 2$. A
 minimal-box `nx = 32` split four ways leaves four streamwise modes per
 device, padded to 32 — lower the block size, or move the split to `np0`.
 With a fast intra-node interconnect and production-sized arrays the
-exchange is likelier to be limited by volume than by its per-exchange
-cost, and that is the regime where `np0` moving $2/3$ of the bytes should
-tell; comparing the two one-dimensional grids on the target machine is
-then worth one pair of runs.
+exchange is likelier limited by volume than by its per-exchange cost,
+the regime where `np0` moving $2/3$ of the bytes should tell; comparing
+the two one-dimensional grids on the target machine is then worth one
+pair of runs.
 
 The production pipe run of [`running.md`](running.md#launching) on four
 devices of one node, one-dimensionally:
@@ -258,29 +253,25 @@ mpirun -np 4 .venv/bin/dnsjax \
 Because `np0 * np1` counts *devices* rather than processes, a single-node
 multi-GPU run is most reliably launched as one process that addresses every
 visible GPU; multi-node runs use one process per node spanning that node's
-GPUs. The `Distribution` docstring in `parameters.py` covers the SLURM
-launch details. The ranks discover each other from the launcher environment
-where it says enough — the MPI implementation's rank variables plus a
-coordinator address, taken from `JAX_COORDINATOR_ADDRESS`, else from
-loopback when the whole job is on one node, the launcher's own daemon URI,
-or the queueing system's node list (PBS, SLURM, LSF, Grid Engine) — and
-otherwise from JAX's own cluster detection. That covers Open MPI 5, whose
-PRRTE launcher drops the variable JAX's own Open MPI plugin looks for, and
-the schedulers JAX has no plugin for; a site matching nothing is one
+GPUs. A single-process launch coordinates nothing, so it starts no
+distributed runtime and needs no launcher; on CPU, though, one process
+means one device: several CPU devices in one process is
+oversubscription, and asking for it is refused with the `mpirun -np N`
+that works. The ranks of a multi-process run discover each other from
+the launcher environment where it says enough (Open MPI 5's included,
+and the PBS, SLURM, LSF and Grid Engine node lists), and otherwise from
+JAX's own cluster detection; a site matching nothing is one
 `JAX_COORDINATOR_ADDRESS` export away, and says so rather than failing
-obscurely. A single-process launch coordinates nothing, so it starts no
-distributed runtime and needs none of this — not even a launcher to be
-detected in. On CPU, though, one process means one device: several CPU
-devices in one process is oversubscription, and asking for it is refused
-with the `mpirun -np N` that works.
+obscurely. How, and the SLURM launch details: the `Distribution`
+docstring in `parameters.py`.
 
 A **CPU** run is pinned to one XLA thread per rank — a lone process
 exactly like a rank of sixteen: the pool follows `NPROC`, which the run
 sets only if unset, so `export NPROC=<n>` raises it. It also routes its
 cross-process collectives through MPI when it finds the MPItrampoline
-wrapper library (see [CPU collectives](cpu-collectives.md)), falling
-back to `gloo` otherwise. The same docstring covers when raising
-`NPROC` is worth doing.
+wrapper library ([CPU collectives](cpu-collectives.md)), falling back
+to `gloo` otherwise. The same docstring covers when raising `NPROC` is
+worth doing.
 
 ### Target nodes
 
@@ -288,21 +279,20 @@ The rules above fix a run's shape. What they leave open — the rank
 count on a CPU node, the grid axis and the Pallas tile on a GPU node,
 the precision, how far the step scales across nodes — is measured on
 the machine itself by a layout sweep, a driver the repository's lab
-holds ([the lab](../README.md#the-lab)). It launches
-the ordinary solver on one fixed problem (the production configuration
-with a short horizon) across every candidate layout, on one node or
-several, and tabulates the seconds per time unit, the parallel
-efficiency, the cost in node hours per time unit, the start-up time and
-the peak memory, which the closing summary of every run reports: the
-device's on GPU, the operating system's on CPU (`Peak host memory`, per
-rank and for the fullest node). It also compares each row's `stats.dat`
-with a reference — the first row, or a file kept from an earlier sweep
-(`--stats-reference`) — so a sweep doubles as a check that every layout
-computes the same run to round-off: `--stats-tolerance` fails a row that
-does not, given a stats stream (`--outs.it_stats`) printed at
-`--outs.stats_precision 17` from a deterministic start (a snapshot, or
-a fixed `--init.random_seed`). The starting points below are
-configuration, not measurements.
+holds ([the lab](../README.md#the-lab)). It launches the ordinary solver
+on one fixed problem (the production configuration with a short
+horizon) across every candidate layout, on one node or several, and
+tabulates the seconds per time unit, the parallel efficiency, the cost
+in node hours per time unit, the start-up time and the peak memory the
+closing summary of every run reports (the device's on GPU; on CPU the
+operating system's `Peak host memory`, per rank and for the fullest
+node). Comparing each row's `stats.dat` with a reference — the first
+row, or a file kept from an earlier sweep (`--stats-reference`) — a
+sweep doubles as a check that every layout computes the same run to
+round-off: `--stats-tolerance` fails a row that does not, given a stats
+stream (`--outs.it_stats`) printed at `--outs.stats_precision 17` from
+a deterministic start (a snapshot, or a fixed `--init.random_seed`).
+The starting points below are configuration, not measurements.
 
 **A two-socket CPU node** (for example 2 × 64-core AMD EPYC 7742): one
 rank per physical core, bound to it and running one XLA thread (the
@@ -367,15 +357,14 @@ process on the first node held some 70 KiB more per rank of the job on
 top (0.57 GiB more at 8192 ranks). Three things separate the two: a
 memory budget (the lab's) predicts the problem's share per rank for
 any layout from XLA's own buffer assignment, without the machine; the
-`Peak host memory` line of a run
-reports what the operating system saw at the high-water mark, start-up
-included, and the `Resident host memory` line under it what the run
-still holds at the end; and a per-node sampler (the lab's, which the
-SLURM example runs as `MEMWATCH`) samples each
-node's total during a job, so an out-of-memory kill is placed against
-its layout and start-up phase. A layout that does not fit is helped, in
-order, by less padding, by `solver.rhs_transform_chunks`, and by fewer
-ranks per node.
+`Peak host memory` line of a run reports what the operating system saw
+at the high-water mark, start-up included, and the
+`Resident host memory` line under it what the run still holds at the
+end; and a per-node sampler (the lab's, which the SLURM example runs as
+`MEMWATCH`) samples each node's total during a job, so an out-of-memory
+kill is placed against its layout and start-up phase. A layout that
+does not fit is helped, in order, by less padding, by
+`solver.rhs_transform_chunks`, and by fewer ranks per node.
 
 **Wall-normal derivatives** run as stencils on CPU rather than as dense
 $n_y \times n_y$ matrix products (`solver.wall_normal_matvec = "auto"`):
@@ -383,32 +372,30 @@ at the per-rank size of a `1280 x 385 x 320` run on 128 ranks that
 removes three quarters of the step's floating-point work and about 15 %
 of its time on one core of a laptop processor, at unchanged memory (the
 measured table: the Design notes of
-`src/dnsjax/geometries/wall_bounded/_base.py`).
-The sweep driver measures the same trade on the target node, as one
-of its variants, in one sweep.
+`src/dnsjax/geometries/wall_bounded/_base.py`). The sweep driver
+measures the same trade on the target node, as one of its variants, in
+one sweep.
 
 **Across nodes**, start from the largest padding-free `np0` (rule 2 of
-*Choosing the device grid*) and measure.
-The sweep driver, run inside the allocation over a list of node
-counts, measures the strong scaling of the production problem directly
-— keeping the `(128, n)` and `(64, 2n)` families at every node count —
-and compares two checkouts in one sweep. On one CPU node it runs every
-factorization at each rank count, so the table also shows the rank
-count at which the step stops scaling. Measure at the node counts you will run:
-on ARCHER2 the cost of a step moved by a quarter between 16 and 32
-nodes, for a reason no smaller run shows
+*Choosing the device grid*) and measure. The sweep driver, run inside
+the allocation over a list of node counts, measures the strong scaling
+of the production problem directly — keeping the `(128, n)` and
+`(64, 2n)` families at every node count — and compares two checkouts in
+one sweep. On one CPU node it runs every factorization at each rank
+count, so the table also shows the rank count at which the step stops
+scaling. Measure at the node counts you will run: on ARCHER2 the
+per-rank cost of a step moved by a quarter between 16 and 32 nodes, for
+a reason no smaller run shows
 ([Strong scaling on ARCHER2](#strong-scaling-on-archer2), which also
-gives a one-node test that tells a per-rank effect from the
-network's).
+gives a one-node test that tells a per-rank effect from the network's).
 
 **Start-up on many nodes.** Every rank imports some 800 Python modules
 from the shared filesystem — close to a thousand file opens and
-directory listings per rank, more with the metadata lookups behind them —
-so on tens of full nodes the start-up is a burst of metadata requests
-that a parallel filesystem serves slowly.
-Where the site offers a tool that has one process per node fetch the
-files for its ranks (Spindle, for one),
-the sweep driver runs under it. On ARCHER2,
+directory listings per rank, more with the metadata lookups behind
+them — so on tens of full nodes the start-up is a burst of metadata
+requests that a parallel filesystem serves slowly. Where the site
+offers a tool that has one process per node fetch the files for its
+ranks (Spindle, for one), the sweep driver runs under it. On ARCHER2,
 Spindle cut the time from launch to a running distributed runtime from
 59 to 25 s on two nodes, at no cost per step; under it that phase
 stayed under a minute on up to 64 nodes (a job's first launch the
@@ -443,8 +430,8 @@ all four GPUs, no launcher:
   starts rather than a result for the H200. The lab's profile of the
   banded solve breaks one down against the device's own peak bandwidth.
 - **Precision.** Single precision halves every figure under
-  [Memory footprint](#memory-footprint);
-  the sweep driver puts the two side by side.
+  [Memory footprint](#memory-footprint); the sweep driver puts the two
+  side by side.
 
 ## Strong scaling on ARCHER2
 
@@ -524,8 +511,6 @@ than both of `(64, 2n)`'s; the fourth, at 116.1, is an
 outlier, with nothing in its logs to account for it. It is kept in
 the mean, which it puts 6 % behind `(64, 2n)`'s. (`(64, 128)`, the
 next grid of that family, pads the spanwise axis and was not run.)
-The efficiency of `(128, n)` falls to 0.75 by 16 nodes, rises to 0.92
-at 32, and is 0.94 at 64.
 
 **Why the efficiency rises again at 32 nodes.** From 16 to 32 nodes the
 time per unit falls 2.4-fold, for half the work per rank. The fall
@@ -548,13 +533,13 @@ above):
 | 32 | 64.48 | 0.76 | 91.95 | 1.43 |
 | 64 | 26.30 | 0.62 | 45.01 | 1.71 |
 
-The per-rank cost holds within 3 % up to the block of 16 nodes, falls by
-a quarter at 32 and further at 64; the off-node factor grows with the
-node count, from 1.17 on 4 nodes to 1.43 on 32 and 1.71 on 64. At 32
-nodes the two partly cancel, $0.76 \times 1.43 = 1.09$: the run costs
-9 % more node hours than one node does, against 33 % more on 16. The
-off-node factor holds more than the network: the `np1` exchange, absent
-from `(128, 1)` on one node, and the full-length streamwise transform.
+The per-rank cost holds within 3 % up to the block of 16 nodes and falls
+by a quarter at 32 and further at 64, while the off-node factor grows
+with the node count. At 32 nodes the two partly cancel,
+$0.76 \times 1.43 = 1.09$: the run costs 9 % more node hours than one
+node does, against 33 % more on 16. The off-node factor holds more than
+the network: the `np1` exchange, absent from `(128, 1)` on one node,
+and the full-length streamwise transform.
 
 The compiled step is the same program at both sizes: its optimized
 HLO differs only in how the `np1` exchange is packed (one piece per
@@ -565,14 +550,12 @@ rank's working set starting to fit in cache — one spectral field per
 rank is 720 KiB at 16 nodes and 360 KiB at 32, against 512 KiB of L2
 per core — though no hardware counters were read to show it.
 
-**What it means for a run.** Measure at the node counts you will run:
-the per-rank cost of a step moved by a quarter between 16 and 32 nodes,
-which no smaller run would have shown. The one-node test above tells a
-per-rank effect from the network's on any machine. With a
-`parameters.toml` that names no `[init] snapshot` (a smaller `nx` starts
-a new trajectory anyway), inside a one-node allocation, run the sweep
-driver on one node at 128 ranks, `(128, 1)`, with two variants,
-`--res.nx 80` and `--res.nx 40` (each rank's share of an `N = 16`- and
-an `N = 32`-node run), each from a fixed seed for a few minutes of wall
-time. Compare each row's seconds per time unit, times its `N`, with the
-full problem's on one node.
+**What it means for a run.** The one-node test above tells a per-rank
+effect from the network's on any machine. With a `parameters.toml` that
+names no `[init] snapshot` (a smaller `nx` starts a new trajectory
+anyway), inside a one-node allocation, run the sweep driver on one node
+at 128 ranks, `(128, 1)`, with two variants, `--res.nx 80` and
+`--res.nx 40` (each rank's share of an `N = 16`- and an `N = 32`-node
+run), each from a fixed seed for a few minutes of wall time. Compare
+each row's seconds per time unit, times its `N`, with the full
+problem's on one node.

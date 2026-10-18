@@ -49,16 +49,14 @@ adjoint is checked against.
 
 A Pallas kernel is opaque to reverse mode, so the wall-normal solve
 carries an explicit `jax.custom_vjp`. Its backward pass is the *same
-sweep mirrored*: the factorization $A = LU$ has no pivoting, so
-$A^{\mathsf{T}} = U^{\mathsf{T}} L^{\mathsf{T}}$, and the transposed
-solve reads the stored factors in place — forward-substituting with
-$U^{\mathsf{T}}$, whose diagonal is the same reciprocated slot the
-forward sweep multiplies by, then back-substituting with unit-diagonal
-$L^{\mathsf{T}}$. No un-inversion, no second factorization, no extra
-storage. The rule is complete: it returns cotangents for the factors as
-well as the right-hand side, all $O(N_y p)$. The derivation, including
-why the reciprocated diagonal slot carries an extra factor that is easy
-to lose, is in `_pallas_banded_solve_t` in `src/dnsjax/solvers.py`.
+sweep mirrored* on the stored factors — the factorization $A = LU$ has
+no pivoting, so $A^{\mathsf{T}} = U^{\mathsf{T}} L^{\mathsf{T}}$ — with
+no un-inversion, no second factorization and no extra storage. The rule
+is complete: it returns cotangents for the factors as well as the
+right-hand side, all $O(N_y p)$. The transposed sweep and the
+derivation, including why the reciprocated diagonal slot carries an
+extra factor that is easy to lose, are in `_pallas_banded_solve_t` in
+`src/dnsjax/solvers.py`.
 
 ## Running the probe
 
@@ -93,8 +91,3 @@ which cannot be checked without a GPU: `shard_map`'s transpose
 compares cotangent shardings, and against the abstract GPU mesh the
 other lowering guards use they do not compare equal. The forward region
 and the transposed kernel are each lowered for cuda separately.
-
-If you would rather not depend on any of that, `solver.pallas_kernel =
-false` takes the portable sweep on a GPU as well, and that path
-differentiates through its own `lax.scan` with no custom rule at
-all.

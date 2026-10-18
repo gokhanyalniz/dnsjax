@@ -20,10 +20,10 @@ plane channel has `--geo.lx`/`--res.nx`/`--res.ny`/`--res.nz`, and the
 defaults (the pipe's moving frame `u_grid = 0.5`, its scheme-dependent
 `grid_type`) are materialized before printing or recording. The
 parameters that must be known before JAX initializes — `dist.np0`,
-`dist.np1`, `dist.platform`, and `res.double_precision` — are never
+`dist.np1`, `dist.platform` and `res.double_precision` — are never
 inherited from a snapshot, nor are the resume-decision fields
-`init.snapshot` and `init.force_resume` (recorded for lineage only),
-and the entire `solver` section is execution-only. A snapshot that
+`init.snapshot` and `init.force_resume` (recorded for lineage only) or
+the execution-only `solver` section. A snapshot that
 records a parameter section nothing installed here registers (a
 plugin's, in use when the snapshot was written) refuses to resume
 unless `init.force_resume` is set, since that section may define the
@@ -31,7 +31,7 @@ trajectory; the startup banner then names what is left out.
 
 A layer can set a field but never unset it: a `None` (`--outs.it_stats
 None`) is indistinguishable from not setting the field at all. So every
-optional output cadence is off at `0` as well as unset. That is how a
+optional output cadence is off at `0` as well as unset: that is how a
 resume switches off a cadence it inherited from its snapshot, and how a
 command line overrides one set in `parameters.toml`. The cadences are:
 
@@ -51,7 +51,7 @@ does not apply to is an error like any other irrelevant key),
 recorded into snapshot metadata while it is configured, and optionally
 trajectory-defining. A plugin package registers its sections through
 the `dnsjax.extensions` entry point, as the repository's lab does
-(see [`extending.md`](extending.md)); the analysis and preprocessing
+([`extending.md`](extending.md)); the analysis and preprocessing
 entry points register their own on the same shared surface (`[tg]`
 for the transient-growth CLI, `[perturb]` for
 `scripts/snapshot_perturb.py`). A section name colliding with a core
@@ -62,7 +62,6 @@ into each other.
 `--help <system>` one flow's full surface with per-field descriptions, and
 `--sample-toml <system>` an annotated `parameters.toml` template with every
 default commented out (all exit at the parser, before any device is
-touched). The
-authoritative field-by-field documentation lives in
-[`src/dnsjax/parameters.py`](../src/dnsjax/parameters.py) and the per-flow
-specs under `src/dnsjax/flows/*/specs/`.
+touched). The authoritative field-by-field documentation lives in
+[`src/dnsjax/parameters.py`](../src/dnsjax/parameters.py) and the
+per-flow specs under `src/dnsjax/flows/*/specs/`.

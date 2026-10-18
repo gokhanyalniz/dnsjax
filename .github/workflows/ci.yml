@@ -21,8 +21,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The suite is CPU-only; nothing here needs (or should try to find) a
-  # GPU. dnsjax pins one XLA thread per rank, so runs are single-threaded.
+  # The suite is CPU-only: nothing here needs, or should look for, a GPU.
+  # dnsjax pins a solver run to one XLA thread per rank.
   JAX_PLATFORMS: cpu
 
 jobs:
@@ -32,8 +32,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      # setup-uv stopped publishing a floating major tag after v7, so
-      # this is pinned exactly rather than to a major.
+      # Pinned exactly: setup-uv publishes no floating major tag after v7.
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
@@ -97,8 +96,7 @@ jobs:
       # The fast half of the offline suite: the core/lab layering,
       # plugin discovery, the parameter surfaces, bootstrap decisions,
       # FFT padding, the mean-mode mask, quadrature, the run-loop hooks,
-      # the JAX-free analysis API against solver ground truth (the
-      # surfaces and the API in a core and a lab half each), and the
+      # the JAX-free analysis API against solver ground truth, and the
       # four response readers/identifiers.  ~2.5 min locally; the rest
       # of the offline suite runs weekly in full-cpu below.
       - name: Fast test scripts
