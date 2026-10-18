@@ -1,21 +1,21 @@
 name: Release
 
-# Inert until a maintainer acts: pushing a v* tag publishes to PyPI and
-# drafts the GitHub release; running the workflow by hand rehearses on
-# TestPyPI.  Three jobs: `build` makes and checks the artefacts, with no
-# approval and no publishing rights; `publish` uploads exactly those
-# files through trusted publishing, behind its environment's required
-# reviewer, which gates that job alone, so a tag's checks have passed
-# before its reviewer is asked; `draft` (a tag only) drafts the GitHub
-# release.  The Zenodo deposit of the tag's source archive is the
-# maintainer's, by hand, between the checks and the approval.
+# Inert until a maintainer acts: pushing a v* tag publishes to PyPI;
+# running the workflow by hand rehearses on TestPyPI.  Two jobs: `build`
+# makes and checks the artefacts, with no approval and no publishing
+# rights; `publish` uploads exactly those files through trusted
+# publishing, behind its environment's required reviewer, which gates
+# that job alone, so a tag's checks have passed before its reviewer is
+# asked.  The GitHub release is the maintainer's, created with their
+# own account (GitHub shows the account whose token created a release
+# as its author), with the wheel this run published attached; so is a
+# Zenodo deposit of the tag's source archive, by hand.
 #
 # A tag must point at a release commit cut by
 # lab/scripts/release/prepare_release.py: the solver alone in
 # pyproject.toml and uv.lock, so that the sdist and the zipball, which
 # carry no lock, both install with uv.  A rehearsal builds from main,
-# stripped the same way.  The GitHub release alone also carries the
-# repository with the lab, as an asset (the `draft` job).
+# stripped the same way.
 
 on:
   push:
@@ -154,49 +154,3 @@ jobs:
       - name: Publish to PyPI
         if: github.event_name == 'push'
         uses: pypa/gh-action-pypi-publish@release/v1
-
-  draft:
-    name: draft the GitHub release
-    if: github.event_name == 'push'
-    needs: publish
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write # the draft release
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 2 # the tag's parent too, for the with-lab asset
-      - uses: astral-sh/setup-uv@v10.0.1
-      - uses: actions/download-artifact@v8
-        with:
-          name: dist
-          path: dist
-
-      # The tag's parent is the commit the release was cut from.  The
-      # asset holds its every file but those written for coding agents
-      # (prepare_release.py asset), so everything the zipball leaves out
-      # is back in: the lab, the contributor guide, uv's files and the
-      # development configuration (the hooks, git and CI settings a
-      # reader of the contributor guide needs).  GitHub readers get it
-      # as an asset; deleting the release deletes it.
-      - name: Draft the GitHub release, the repository with the lab attached
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -eu
-          version="${GITHUB_REF_NAME#v}"
-          asset="$RUNNER_TEMP/dnsjax-${version}-with-lab.tar.gz"
-          uv run --no-project python lab/scripts/release/prepare_release.py \
-            asset HEAD^ "$asset" --prefix "dnsjax-${version}-with-lab/"
-          if tar -tzf "$asset" | grep -E 'CLAUDE\.md|/\.claude/'; then
-            echo "the with-lab asset carries agent files"
-            exit 1
-          fi
-          for f in lab/pyproject.toml CONTRIBUTING.md uv.lock prek.toml \
-            .gitignore .gitattributes .github/workflows/release.yml; do
-            tar -tzf "$asset" | grep -q "/${f}\$"
-          done
-          gh release create "${GITHUB_REF_NAME}" dist/* "$asset" --draft \
-            --verify-tag --generate-notes \
-            --title "dnsjax ${GITHUB_REF_NAME}"

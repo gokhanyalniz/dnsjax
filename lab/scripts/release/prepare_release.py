@@ -1,50 +1,53 @@
 #!/usr/bin/env python3
-r"""Cut a release commit and its tag, strip a tree, build or check artefacts.
+r"""Cut a release commit and its tag, strip a tree, check artefacts.
 
 Usage::
 
-    prepare_release.py cut VERSION [--date YYYY-MM-DD] [--doi DOI]
-                       [--dry-run]
+    prepare_release.py cut VERSION [--date YYYY-MM-DD] [--dry-run]
     prepare_release.py strip [--tree DIR]
     prepare_release.py files SDIST ARCHIVE
-    prepare_release.py asset REF OUT [--prefix PREFIX]
 
 A release holds the solver alone, in two forms with the same files: the
-PyPI sdist, and the GitHub zipball of the tag, the file deposited on
-Zenodo (the sdist's ``source-include`` and ``.gitattributes`` keep the
-lab, the agent notes, the contributor guide, the development
+PyPI sdist, and the GitHub zipball of the tag, the file a Zenodo
+deposit takes (the sdist's ``source-include`` and ``.gitattributes``
+keep the lab, the agent notes, the contributor guide, the development
 configuration and ``uv.lock`` out of both).  The lab, flows and
-features in development, is not shipped with release archives outside
-GitHub: of a release's archives, only the with-lab asset (``asset``)
-carries it.  Both forms must install with ``uv``.  ``main``'s
+features in development, is in neither form: the repository holds it.
+Both forms must install with ``uv``.  ``main``'s
 ``pyproject.toml`` cannot serve as is: its default ``lab`` dependency
 group names ``dnsjax-lab``, a workspace member neither form contains,
 so ``uv sync`` there would fail -- while in a full clone that group is
 what installs the lab with the solver, which must keep working.  So a
 release is cut from its own commit:
 
-``cut`` checks *VERSION* against ``pyproject.toml`` and
-``CITATION.cff`` (bump both on ``main`` first), then, in a throwaway
-worktree of ``HEAD``: strips the lab from ``pyproject.toml`` (the
-``lab`` group and its default, the workspace and its source, the lab's
-test path), sets ``date-released`` in ``CITATION.cff`` (*--date*,
-default the current date), gives ``README.md`` its published form
-(``pypi_readme.published_readme``: the sections a release leaves out
-dropped, the pointer to the lab after the opening paragraph), pins the
-PyPI README's links to the tag (``pypi_readme.py``), points every link
-the archive's Markdown makes to a file the archive leaves out (the
-lab's, the contributor guide) at GitHub at the tag
-(:func:`archive_links`), relocks (``uv lock``), commits "Release
-vVERSION" and tags it ``vVERSION`` (annotated).  With *--doi*, the DOI
-Zenodo reserved for the release's deposit, it also records that DOI
-(:func:`with_doi`) before the README's published form is made, so the
-sdist, the wheel's description and the archive all carry it.  The
+``cut`` checks *VERSION* against ``pyproject.toml``, ``CITATION.cff``
+and ``lab/pyproject.toml`` (the lab keeps the core's version; bump all
+three on ``main`` first), then, in a throwaway worktree of ``HEAD``:
+strips the lab from ``pyproject.toml`` (the ``lab`` group and its
+default, the workspace and its source, the lab's test path), sets
+``date-released`` in ``CITATION.cff`` (*--date*, default the current
+date), makes ``README.md`` the PyPI copy at the tag
+(``pypi_readme.pypi_readme``: the sections a release leaves out
+dropped, the pointer to the lab after the opening paragraph, links
+absolute, math in plain symbols), removes ``docs/pypi/`` (that copy,
+its one file) and points ``pyproject.toml``'s ``readme`` at
+``README.md`` (:data:`README`), so the archive holds one README, the
+one PyPI shows, and the sdist, which holds the archive's files, takes
+its description from it; then points every link the archive's Markdown
+makes to a file the archive leaves out (the lab's, the contributor
+guide) at GitHub at the tag (:func:`archive_links`), relocks (``uv
+lock``), commits "Release vVERSION" and tags it ``vVERSION``
+(annotated).  Every release carries ``main``'s DOI unchanged: Zenodo's
+concept DOI, which resolves to the latest version deposited, in
+``CITATION.cff``'s ``doi:`` and the README's DOI badge
+(:data:`_DOI_BADGE`); ``cut`` refuses a tree where the two differ.  The
 repository's commit hooks run on that commit as on any other; the
 message check's ``uv run`` syncs an environment of the release's lock
 inside the worktree, removed with it.  The commit is reachable from the
 tag alone: ``main`` is untouched, and pushing the tag (``git push
-origin vVERSION``, the author's step) starts ``.github/workflows/release.yml``.
-``--dry-run`` prints the changes and leaves no commit or tag.
+origin vVERSION``, the author's step) starts
+``.github/workflows/release.yml``.  ``--dry-run`` prints the changes
+and leaves no commit or tag.
 
 ``strip`` applies the ``pyproject.toml`` part in place, for a CI job or
 a release rehearsal that builds from ``main``.
@@ -52,23 +55,12 @@ a release rehearsal that builds from ``main``.
 ``files`` checks an sdist against an archive (a ``git archive`` tar or
 the GitHub zipball): the same files, but for the build backend's own
 (:data:`SDIST_ONLY`); exit 1, listing them, on any other difference.
-
-``asset`` writes the archive a GitHub release attaches beside the sdist
-and the wheel: a gzipped tar of the commit *REF* (the release's parent,
-``vVERSION^``, which the release was cut from) under *PREFIX*, holding
-every tracked file but the ones written for coding agents
-(:func:`agent_file`), so the lab, the contributor guide, ``uv.lock`` and
-the development configuration are in it, with ``README.md`` without the
-sections a published copy leaves out (``pypi_readme.drop_sections``),
-as the release's own README is.  ``.github/workflows/release.yml``
-builds it from the tag; the same command rehearses it locally.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime
-import gzip
 import io
 import posixpath
 import re
@@ -85,13 +77,7 @@ HERE = Path(__file__).resolve().parent
 #: The repository holding this script (``lab/scripts/release/``).
 REPO = HERE.parents[2]
 sys.path.insert(0, str(HERE))
-from pypi_readme import (  # noqa: E402
-    DROPPED_SECTIONS,
-    drop_sections,
-    published_readme,
-    pypi_readme,
-    repository_url,
-)
+from pypi_readme import pypi_readme, repository_url  # noqa: E402
 
 #: The ``pyproject.toml`` edits of a release, as ``(what, pattern,
 #: replacement)``; each pattern must match exactly once.
@@ -122,6 +108,18 @@ STRIP: list[tuple[str, str, str]] = [
         'testpaths = ["tests"]',
     ),
 ]
+
+
+#: The ``pyproject.toml`` edit of a release commit alone, as ``(pattern,
+#: replacement)``: the ``readme`` is ``README.md``, the PyPI copy there.
+#: Not in :data:`STRIP`, which a rehearsal applies to ``main``, whose
+#: ``README.md`` is GitHub's.
+README: tuple[str, str] = (
+    r'(?:#[^\n]*\n)*readme = "docs/pypi/README\.md"\n',
+    "# The README rewritten for PyPI (absolute links, plain math): a\n"
+    "# release's README.md is that copy (lab/scripts/release/).\n"
+    'readme = "README.md"\n',
+)
 
 
 def strip_pyproject(text: str) -> str:
@@ -273,162 +271,12 @@ def archive_links(tree: Path, url: str, ref: str) -> list[str]:
     return done
 
 
-#: A DOI Zenodo mints (``cut --doi``): its badge service draws the badge.
-_ZENODO_DOI = re.compile(r"10\.5281/zenodo\.[0-9]+")
-#: The README's sentence naming the release's DOI (:func:`with_doi`).
-_RELEASE_DOI = (
-    r"\nThis release is archived on Zenodo as \[[^]\n]*\]\([^)\n]*\)\.\n"
-)
-#: The README's DOI badge line, as :func:`with_doi` writes it.
+#: The README's DOI badge line; group 1 is the DOI it names and links.
 _DOI_BADGE = re.compile(
-    r"^\[!\[DOI\]\(https://zenodo\.org/badge/DOI/[^)\s]+\.svg\)\]"
-    r"\(https://doi\.org/[^)\s]+\)\n",
+    r"^\[!\[DOI\]\(https://zenodo\.org/badge/DOI/(\S+?)\.svg\)\]"
+    r"\(https://doi\.org/\1\)$",
     re.M,
 )
-
-
-def with_doi(readme: str, cff: str, doi: str) -> tuple[str, str]:
-    """*readme* and *cff* (``README.md``, ``CITATION.cff``) recording *doi*.
-
-    The citation's ``doi:`` becomes *doi* (put after ``version:`` and
-    any ``date-released:``); in the README, the DOI badge becomes
-    *doi*'s (a badge already there is replaced, or one is put after the
-    licence badge), and a sentence after the first paragraph of
-    "License and citation" says this release is archived under *doi*
-    (replacing one already there).
-    *doi* is the one Zenodo reserved for the release's deposit, so it
-    resolves once that deposit is published.  Raises unless *doi* is a
-    Zenodo DOI and each place it goes is found exactly once.
-    """
-    if not _ZENODO_DOI.fullmatch(doi):
-        raise SystemExit(f"--doi {doi}: not a Zenodo DOI (10.5281/zenodo.N)")
-    url = f"https://doi.org/{doi}"
-    badge = f"[![DOI](https://zenodo.org/badge/DOI/{doi}.svg)]({url})\n"
-    if _DOI_BADGE.search(readme):
-        readme, n = _DOI_BADGE.subn(lambda _: badge, readme)
-    else:
-        readme, n = re.subn(
-            r"^!\[License[^\n]*\n",
-            lambda m: m.group(0) + badge,
-            readme,
-            flags=re.M,
-        )
-    if n != 1:
-        raise SystemExit(f"README.md: the DOI badge's place found {n}x")
-    readme = re.sub(_RELEASE_DOI, "", readme)
-    readme, n = re.subn(
-        r"(\n## License and citation\n\n(?:[^\n]+\n)+)",
-        lambda m: (
-            m.group(1)
-            + f"\nThis release is archived on Zenodo as [{doi}]({url}).\n"
-        ),
-        readme,
-    )
-    if n != 1:
-        raise SystemExit(f"README.md: 'License and citation' found {n}x")
-    cff = re.sub(r"\ndoi:[^\n]*", "", cff)
-    cff, n = re.subn(
-        r"^((?:version|date-released): *\S+\n)(?!date-released:)",
-        lambda m: m.group(1) + f"doi: {doi}\n",
-        cff,
-        flags=re.M,
-    )
-    if n != 1:
-        raise SystemExit(f"CITATION.cff: the doi's place found {n}x")
-    return readme, cff
-
-
-def agent_file(path: str) -> bool:
-    """Whether *path* (a repository path) is written for coding agents.
-
-    The ``CLAUDE.md`` notes anywhere and everything under ``.claude/``:
-    of the files ``.gitattributes`` keeps out of every release archive,
-    the ones the with-lab asset leaves out too.
-    """
-    return (
-        PurePosixPath(path).name == "CLAUDE.md"
-        or path.split("/", 1)[0] == ".claude"
-    )
-
-
-def _asset(ref: str, out: Path, prefix: str) -> int:
-    if prefix and not prefix.endswith("/"):
-        prefix += "/"
-    commit = _git("rev-parse", "--verify", f"{ref}^{{commit}}")
-    mtime = int(_git("show", "-s", "--format=%ct", commit))
-    entries = []
-    tree = _git("ls-tree", "-r", "-z", "--full-tree", commit)
-    for line in tree.strip("\0").split("\0"):
-        meta, path = line.split("\t", 1)
-        mode, kind, sha = meta.split()
-        if kind != "blob":
-            raise SystemExit(f"{path}: a {kind}, not a file")
-        if not agent_file(path):
-            entries.append((mode, sha, path))
-    batch = subprocess.run(
-        ["git", "cat-file", "--batch"],
-        cwd=REPO,
-        input="".join(f"{sha}\n" for _, sha, _ in entries).encode(),
-        capture_output=True,
-        check=True,
-    ).stdout
-    blobs, at = [], 0
-    for _ in entries:
-        end = batch.index(b"\n", at)
-        size = int(batch[at:end].split()[2])
-        blobs.append(batch[end + 1 : end + 1 + size])
-        at = end + 2 + size
-    dirs = sorted(
-        {
-            str(parent)
-            for _, _, path in entries
-            for parent in PurePosixPath(path).parents
-            if str(parent) != "."
-        }
-    )
-
-    def info(name: str, mode: int) -> tarfile.TarInfo:
-        member = tarfile.TarInfo(prefix + name)
-        member.mode, member.mtime = mode, mtime
-        member.uname = member.gname = "root"
-        return member
-
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with (
-        gzip.GzipFile(out, "wb", mtime=mtime) as gz,
-        tarfile.open(
-            fileobj=gz,
-            mode="w",
-            format=tarfile.PAX_FORMAT,
-            pax_headers={"comment": commit},
-        ) as tar,
-    ):
-        if prefix:
-            member = info("", 0o755)
-            member.type = tarfile.DIRTYPE
-            tar.addfile(member)
-        for d in dirs:
-            member = info(d + "/", 0o755)
-            member.type = tarfile.DIRTYPE
-            tar.addfile(member)
-        for (mode, _, path), blob in zip(entries, blobs, strict=True):
-            if path == "README.md":
-                text = drop_sections(blob.decode())
-                if any(f"\n## {t}\n" in text for t in DROPPED_SECTIONS):
-                    raise SystemExit("README.md: a dropped section is left")
-                blob = text.encode()
-            member = info(path, 0o755 if mode == "100755" else 0o644)
-            if mode == "120000":
-                member.type, member.linkname = tarfile.SYMTYPE, blob.decode()
-                tar.addfile(member)
-                continue
-            member.size = len(blob)
-            tar.addfile(member, io.BytesIO(blob))
-    print(
-        f"wrote {out}: {len(entries)} files of {ref} ({commit[:12]}), "
-        "the agent files left out"
-    )
-    return 0
 
 
 def _git(*args: str, cwd: Path = REPO) -> str:
@@ -440,7 +288,7 @@ def _git(*args: str, cwd: Path = REPO) -> str:
     return out.stdout.strip()
 
 
-def _cut(version: str, date: str, doi: str | None, dry_run: bool) -> int:
+def _cut(version: str, date: str, dry_run: bool) -> int:
     tag = f"v{version}"
     if _git("status", "--porcelain"):
         raise SystemExit("the working tree is not clean")
@@ -448,13 +296,23 @@ def _cut(version: str, date: str, doi: str | None, dry_run: bool) -> int:
         raise SystemExit(f"tag {tag} exists")
     with open(REPO / "pyproject.toml", "rb") as f:
         project = tomllib.load(f)["project"]["version"]
-    cff = re.search(
-        r"^version: *(\S+)", (REPO / "CITATION.cff").read_text(), re.M
-    )
-    if project != version or cff is None or cff.group(1) != version:
+    with open(REPO / "lab" / "pyproject.toml", "rb") as f:
+        lab = tomllib.load(f)["project"]["version"]
+    citation = (REPO / "CITATION.cff").read_text()
+    cff = re.search(r"^version: *(\S+)", citation, re.M)
+    cff_version = cff.group(1) if cff else "none"
+    if version != project or version != cff_version or version != lab:
         raise SystemExit(
             f"version {version}: pyproject.toml has {project}, CITATION.cff "
-            f"{cff.group(1) if cff else 'none'}; bump both on main first"
+            f"{cff_version}, lab/pyproject.toml {lab}; bump all three on "
+            "main first"
+        )
+    doi = re.search(r"^doi: *(\S+)$", citation, re.M)
+    badge = _DOI_BADGE.search((REPO / "README.md").read_text())
+    if doi is None or badge is None or badge.group(1) != doi.group(1):
+        raise SystemExit(
+            "CITATION.cff's doi and README.md's DOI badge do not name one "
+            "DOI, the concept DOI each release carries"
         )
     with tempfile.TemporaryDirectory(prefix="dnsjax-release-") as tmp:
         tree = Path(tmp) / "tree"
@@ -473,16 +331,23 @@ def _cut(version: str, date: str, doi: str | None, dry_run: bool) -> int:
                 )
             )
             path = tree / "README.md"
-            original = path.read_text()
-            if doi is not None:
-                cff = tree / "CITATION.cff"
-                original, text = with_doi(original, cff.read_text(), doi)
-                cff.write_text(text)
-            path.write_text(published_readme(original, repository_url()))
-            readme = pypi_readme(original, repository_url(), tag)
-            (tree / "docs" / "pypi" / "README.md").write_text(readme)
+            path.write_text(
+                pypi_readme(path.read_text(), repository_url(), tag)
+            )
             for line in archive_links(tree, repository_url(), tag):
                 print(line)
+            # After archive_links, which reads every Markdown file of
+            # HEAD's archive: the README is now the only PyPI copy.
+            pypi = tree / "docs" / "pypi"
+            (pypi / "README.md").unlink()
+            if any(pypi.iterdir()):
+                raise SystemExit("docs/pypi/ holds more than the README")
+            pypi.rmdir()
+            path = tree / "pyproject.toml"
+            text, n = re.subn(*README, path.read_text())
+            if n != 1:
+                raise SystemExit(f"pyproject.toml: the readme found {n}x")
+            path.write_text(text)
             subprocess.run(["uv", "lock", "-q"], cwd=tree, check=True)
             print(_git("diff", "--stat", cwd=tree))
             if dry_run:
@@ -491,12 +356,11 @@ def _cut(version: str, date: str, doi: str | None, dry_run: bool) -> int:
                 return 0
             _git("add", "-A", cwd=tree)
             # The commit-msg hook refuses a body line over 72 columns.
-            doi_part = ", the release's DOI recorded" if doi else ""
             body = textwrap.fill(
                 "The release's own commit (prepare_release.py): the lab "
                 "taken out of pyproject.toml, uv.lock relocked without "
-                f"it, the citation dated{doi_part} and the PyPI README "
-                "pinned to the tag.",
+                "it, the citation dated and the PyPI README pinned to "
+                "the tag.",
                 width=72,
             )
             _git("commit", "-q", "-m", f"Release {tag}", "-m", body, cwd=tree)
@@ -517,24 +381,17 @@ def main() -> int:
     cut = sub.add_parser("cut")
     cut.add_argument("version")
     cut.add_argument("--date", default=datetime.date.today().isoformat())
-    cut.add_argument("--doi", default=None)
     cut.add_argument("--dry-run", action="store_true")
     strip = sub.add_parser("strip")
     strip.add_argument("--tree", type=Path, default=REPO)
     files = sub.add_parser("files")
     files.add_argument("sdist", type=Path)
     files.add_argument("archive", type=Path)
-    asset = sub.add_parser("asset")
-    asset.add_argument("ref")
-    asset.add_argument("out", type=Path)
-    asset.add_argument("--prefix", default="")
     a = ap.parse_args()
     if a.cmd == "cut":
-        return _cut(a.version, a.date, a.doi, a.dry_run)
+        return _cut(a.version, a.date, a.dry_run)
     if a.cmd == "files":
         return _files(a.sdist, a.archive)
-    if a.cmd == "asset":
-        return _asset(a.ref, a.out, a.prefix)
     path = a.tree / "pyproject.toml"
     path.write_text(strip_pyproject(path.read_text()))
     print(f"stripped the lab from {path}")

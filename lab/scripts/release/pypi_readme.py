@@ -17,9 +17,9 @@ with relative links (Markdown and HTML) made absolute GitHub URLs at
 README, inline math a code span in plain symbols, the
 GitHub-only "Contents" line left out, and the sections
 :data:`DROPPED_SECTIONS` names left out and :data:`LAB_LEAD` put after
-the opening paragraph, as a release's ``README.md`` has them
-(:func:`published_readme`, which ``prepare_release.py`` applies too).
-The repository URL is ``pyproject.toml``'s ``[project.urls] Repository``.
+the opening paragraph (:func:`published_readme`).  A release's
+``README.md`` is this copy at its tag (``prepare_release.py``).  The
+repository URL is ``pyproject.toml``'s ``[project.urls] Repository``.
 
 A LaTeX command the conversion table (:data:`LATEX`) does not know is
 an error, so new README math is converted on purpose, not silently.
@@ -39,23 +39,17 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 #: Where the PyPI copy lives.
 OUT = REPO / "docs" / "pypi" / "README.md"
-#: Sections of ``README.md`` a published copy (PyPI's, a release's)
+#: Sections of ``README.md`` the published copy (PyPI's, a release's)
 #: leaves out, by their ``## `` title.
 DROPPED_SECTIONS: tuple[str, ...] = ("Acknowledgements",)
-#: What a published copy says after the README's opening paragraph:
+#: What the published copy says after the README's opening paragraph:
 #: the package is the solver core, and the repository holds more.
 #: ``{url}`` is the repository; the links are made absolute like the
-#: README's own (the PyPI copy's into GitHub, the archive's by
-#: ``prepare_release.archive_links``).
+#: README's own.
 LAB_LEAD = """\
-**The released package is the solver core.** The
-[GitHub repository]({url}) also holds its lab, flows and features in
-development that are not shipped with release archives outside GitHub,
-installed with the solver by the same `uv sync` of a clone: five
-further flows (a curved pipe, quasi-Keplerian Taylor–Couette flow, Dean
-flow, and viscoelastic pipe and Dean flows carrying the polymer
-conformation tensor), and the benchmark, profiling and diagnostic
-tools — [The lab](#the-lab).
+**The released package is the solver core along with the core geometries
+and flows.** The [GitHub repository]({url}) holds far more,
+developed alongside the core: [The lab](#the-lab).
 """
 
 #: LaTeX in the README's inline math -> plain symbols (in order).

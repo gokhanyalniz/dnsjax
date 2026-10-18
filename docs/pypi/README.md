@@ -5,9 +5,11 @@ of the 3D incompressible Navier–Stokes equations, written in
 [JAX](https://github.com/jax-ml/jax).**
 
 [![CI](https://github.com/gokhanyalniz/dnsjax/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gokhanyalniz/dnsjax/actions/workflows/ci.yml?query=branch%3Amain)
+[![PyPI](https://img.shields.io/pypi/v/dnsjax)](https://pypi.org/project/dnsjax/)
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue)
 ![JAX](https://img.shields.io/badge/backend-JAX-orange)
 ![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23453019.svg)](https://doi.org/10.5281/zenodo.23453019)
 
 Periodic directions are **pseudo-spectral** (Fourier); up to one
 wall-bounded direction uses **banded finite differences**, where an
@@ -16,14 +18,9 @@ boundary conditions. Five flow systems across four geometries share one
 stepping core, and further flows plug in without editing it. The same
 code works on **CPUs and GPUs**, and distributes across many.
 
-**The released package is the solver core.** The
-[GitHub repository](https://github.com/gokhanyalniz/dnsjax) also holds its lab, flows and features in
-development that are not shipped with release archives outside GitHub,
-installed with the solver by the same `uv sync` of a clone: five
-further flows (a curved pipe, quasi-Keplerian Taylor–Couette flow, Dean
-flow, and viscoelastic pipe and Dean flows carrying the polymer
-conformation tensor), and the benchmark, profiling and diagnostic
-tools — [The lab](https://github.com/gokhanyalniz/dnsjax/blob/main/README.md#the-lab).
+**The released package is the solver core along with the core geometries
+and flows.** The [GitHub repository](https://github.com/gokhanyalniz/dnsjax) holds far more,
+developed alongside the core: [The lab](https://github.com/gokhanyalniz/dnsjax/blob/main/README.md#the-lab).
 
 <a id="fig-planes"></a>
 <p align="center">

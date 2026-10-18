@@ -1,6 +1,6 @@
 [project]
 name = "dnsjax"
-version = "0.1.0"
+version = "0.1.0.1"
 description = "A GPU-accelerated pseudo-spectral solver for direct numerical simulation of the 3D incompressible Navier–Stokes equations, written in JAX."
 # The README rewritten for PyPI (absolute links, plain math), generated
 # from README.md by lab/scripts/release/pypi_readme.py.

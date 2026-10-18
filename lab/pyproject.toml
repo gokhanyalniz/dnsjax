@@ -1,14 +1,16 @@
 [project]
 name = "dnsjax-lab"
-version = "0.1.0"
-description = "Flows and features of dnsjax in development, not shipped with its release archives outside GitHub."
+# The core's version, which lab/scripts/release/prepare_release.py's
+# cut checks it against.
+version = "0.1.0.1"
+description = "Flows and features of dnsjax in development."
 authors = [
     { name = "Gökhan Yalnız" }
 ]
 requires-python = ">=3.12"
 license = "Apache-2.0"
-# PyPI refuses any upload carrying a "Private ::" classifier: this
-# package is not shipped with release archives outside GitHub.
+# PyPI refuses any upload carrying a "Private ::" classifier, so this
+# package cannot reach PyPI by mistake.
 classifiers = [
     "Private :: Do Not Upload",
 ]

@@ -4,9 +4,8 @@
 the 3D incompressible Navier-Stokes equations, in JAX. Two independent
 geometry families: triply-periodic (Kolmogorov) and wall-bounded
 (plane Couette and Poiseuille, pipe, Taylor-Couette; in development
-in the lab, `lab/`, not shipped with release archives outside GitHub:
-curved pipe, quasi-Keplerian, Dean, and the sPTT viscoelastic pipe and
-Dean).
+in the lab, `lab/`: curved pipe, quasi-Keplerian, Dean, and the sPTT
+viscoelastic pipe and Dean).
 Human docs: `README.md`, `docs/`, `CONTRIBUTING.md`.
 
 ## Commands
@@ -202,9 +201,8 @@ analysis/         snapshot API, transient_growth, snapshot_import
 ## Core and lab
 
 - One uv workspace, two packages: `dnsjax` (the root, released) and
-  `dnsjax-lab` (`lab/`, in development, not shipped with release
-  archives outside GitHub; its index: `lab/CLAUDE.md`). `uv sync`
-  installs both.
+  `dnsjax-lab` (`lab/`, in development; its index: `lab/CLAUDE.md`).
+  `uv sync` installs both.
 - One way only: the core never imports or names the lab
   (`tests/test_layering.py`). The lab plugs in through the
   `dnsjax.flows` / `dnsjax.parameters` / `dnsjax.extensions` entry
@@ -213,12 +211,12 @@ analysis/         snapshot API, transient_growth, snapshot_import
 - A lab feature that needs the core adds or widens a seam the core's
   own flows use too, in the same commit.
 - A release (PyPI's sdist and wheel; the tag's GitHub archive, which
-  Zenodo keeps) leaves out what `.gitattributes` lists, the lab and
-  every agent file (`CLAUDE.md`, `.claude/`) among them: a new kind of
-  agent file gets a pattern there, in `pyproject.toml`'s
-  `[tool.uv.build-backend]` and in `prepare_release.agent_file` (the
-  with-lab asset). `lab/scripts/release/prepare_release.py` cuts it;
-  only the author pushes the tag or publishes.
+  a Zenodo deposit takes) leaves out what `.gitattributes` lists, the
+  lab and every agent file (`CLAUDE.md`, `.claude/`) among them: a new
+  kind of agent file gets a pattern there and in `pyproject.toml`'s
+  `[tool.uv.build-backend]`. `lab/scripts/release/prepare_release.py`
+  cuts it; only the author pushes the tag, publishes or creates the
+  GitHub release.
 
 ## Other notes
 

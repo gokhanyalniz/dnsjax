@@ -16,8 +16,10 @@ clone and ``RUNNER_TEMP`` to ``WORK/runner-temp``.  A ``uses:`` step is
 skipped (the clone stands in for ``actions/checkout``, the local ``uv``
 for ``setup-uv``), and so is a step whose ``if:`` names an event
 (``github.event_name``), reported as skipped.  Any other GitHub
-expression (``${{ ... }}``) is refused: the jobs this runs are the ones
-a release depends on, ``lint`` and ``core-only``, which need none.
+expression (``${{ ... }}``) is refused, and so, before anything is
+cloned, is a job with an ``if:`` or a ``strategy`` (a matrix) of its
+own: the jobs this runs are the ones a release depends on, ``lint`` and
+``core-only``, which need none.
 Each step's output goes to the terminal; the run stops at the first
 failing step, and the exit status is that step's.  The clone and the
 runner directory are removed afterwards (with *WORK*, if this run made
