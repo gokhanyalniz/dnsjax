@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 r"""Curved (toroidal) pipe guards (offline, subprocess per config).
 
-Nine checks, cheapest first.  Each runs in its own subprocess because
-the geometry singletons are captured at import, and `$\kappa$` is one
-of the things they capture.
+Nine checks, cheapest first.  Each runs in its own subprocess: the
+geometry singletons, `$\kappa$` among them, are captured at import.
 
 ``reference``
     The toroidal equation set, against Webster & Humphrey,
@@ -21,9 +20,9 @@ of the things they capture.
 ``metric``
     The `$m \pm 1$` structure (the defining property of the `$\chi$`
     product): multiplying a single azimuthal mode by `$h$` produces
-    exactly `$m$` and `$m \pm 1$` with neighbour amplitude
-    `$\kappa/2$` at `$r = 1$`; the shift **truncates** rather than
-    wraps at `$|m| = M$`; and the `$1/h$` harmonics the flux read
+    exactly `$m$` and `$m \pm 1$`, the neighbours with weight
+    `$\kappa r/2$` (`$\kappa/2$` at `$r = 1$`); the shift **truncates**
+    rather than wraps at `$|m| = M$`; and the `$1/h$` harmonics the flux read
     contracts with, and the `$1/h^2$` ones
     ``dnsjax.analysis.divergence`` divides by, match their closed
     forms (:func:`dnsjax_lab.harmonics.inverse_metric_harmonics`) to
@@ -287,12 +286,7 @@ def _configure(kappa: float, **over) -> None:
 
 
 def _check_metric(kappa: float) -> str:
-    r"""The metric products `$h$` and `$1/h$` act on modes exactly.
-
-    `$h\,e^{im\theta}$` is exactly `$m, m\pm1$` with weight
-    `$\kappa r/2$`, truncating at the top mode; and the `$1/h$` and
-    `$1/h^2$` harmonics match their closed forms.
-    """
+    r"""The metric products `$h$` and `$1/h$` act on modes exactly."""
     _configure(kappa)
     import dnsjax_lab.flows.wall_bounded.curved_pipe as cp
     import numpy as np
@@ -365,10 +359,7 @@ def _check_metric(kappa: float) -> str:
 
 
 def _check_defect(kappa: float) -> str:
-    r"""The closed form of `$\nabla_0\cdot w$` against the toroidal one.
-
-    On the code's grid and operators.
-    """
+    r"""The closed form of `$\nabla_0\cdot w$` against the toroidal one."""
     _configure(kappa)
     import dnsjax_lab.flows.wall_bounded.curved_pipe as cp
     from jax import numpy as jnp
@@ -498,13 +489,8 @@ def _toroidal_residual(state, kappa: float) -> float:
 def _check_initial(kappa: float) -> str:
     r"""The random initial condition meets toroidal continuity.
 
-    ``generate_random_state`` maps the pipe's straight-solenoidal draw
-    onto the toroidal constraint
-    (``curved_pipe.toroidal_perturbation``), so the solver's discrete
-    continuity row vanishes to roundoff before the first step, and the
-    perturbation keeps its amplitude in the flow's own norm.  The
-    straight draw it starts from misses the row by `$O(\kappa)$`
-    (reported, for scale).
+    The straight draw it starts from misses the solver's discrete
+    continuity row by `$O(\kappa)$` (reported, for scale).
     """
     _configure(kappa)
     import dnsjax_lab.flows.wall_bounded.curved_pipe as cp
@@ -550,11 +536,10 @@ def _check_continuity(kappa: float, tol: float = 1e-9) -> str:
         4,
     )
     rel = _toroidal_residual(s, kappa)
-    # The defect is read on the corrector iterate, so continuity holds
-    # at the fixed point and the residual is bounded by how far the
-    # accepted iterate is from it -- not by machine epsilon, as it is
-    # on the straight pipe.  Measured: 0.7, 2.8 and 88 times the
-    # tolerance at 1e-6, 1e-9 and 1e-12 (kappa = 0.037, nr = 24).
+    # The defect is read on the corrector iterate, so the residual is
+    # bounded by the accepted iterate's distance from the fixed point.
+    # Measured: 0.7, 2.8 and 0.9 times the tolerance at 1e-6, 1e-9 and
+    # 1e-12 (kappa = 0.037, nr = 24).
     assert rel < 1e4 * tol + 1e-15, (
         f"continuity residual {rel:.2e} at tolerance {tol:.0e}"
     )
@@ -648,8 +633,7 @@ def _check_dean(kappa: float) -> str:
 
 
 #: Relative applied-vs-inferred driving bound on the relaxed state
-#: (module docstring: ~1e-7 when right, ~4e-4 at the default kappa for
-#: the physical-shear inference).
+#: (the measured values: the module docstring's ``driving``).
 DRIVING_TOL = 1e-5
 
 

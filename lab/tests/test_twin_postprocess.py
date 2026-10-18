@@ -1,25 +1,28 @@
 r"""Offline reconstruction of the twin streams (``twin_postprocess``).
 
-``lab/scripts/twin_postprocess.py`` rebuilds ``twin.dat``,
-``twin_yspectra.bin`` and ``twin_ybudget.bin`` from a member
-directory's ``state{isnap}.tar`` / ``state{isnap}_twin.tar`` pairs.
-Its whole claim is that it reproduces what the live driver wrote, so
-every case here runs a real ``dnsjax-twin`` member with the streams
-*on* and the snapshot cadence set to the stream cadence, then rebuilds
-it and compares:
+``lab/scripts/twin_postprocess.py`` rebuilds a member directory's
+streams (its module docstring lists them) from its
+``state{isnap}.tar`` / ``state{isnap}_twin.tar`` pairs.  Its whole
+claim is that it reproduces what the live driver wrote, so every case
+here runs a real ``dnsjax-twin`` member with the streams *on* and the
+snapshot cadence set to the stream cadence, then rebuilds it and
+compares:
 
-1. Default driving: every stored value of both binary streams and
+1. Default driving: every stored value of every binary stream and
    every ``twin.dat`` column is **bit-identical** to the live one on a
    shared time grid.  Exact equality, not a tolerance: the same jitted
    diagnostics run on states that round-trip through the snapshot
-   bit-exactly.
-2. Under a driving constraint the rebuild is bit-identical too, with
-   **no exempt column**: the constraint reaches the stepper and the
-   `$(0,0)$` pressure-work term, but nothing a snapshot cannot give
-   back.  The same case pins where the driving *is* still recorded --
-   ``stats.dat``'s ``-dPds'`` / ``-dPdn'``, the reference member's own
-   applied force -- against ``twin.dat``, which carries no driving
-   column at all.
+   bit-exactly.  ``stats.dat`` / ``stats_twin.dat`` come back on the
+   same grid although the member recorded none, and the output is a
+   member directory with the member's own perturbation provenance.
+2. Under a driving constraint ``twin.dat`` (which carries no driving
+   column at all) and the binary streams rebuild bit-identically too,
+   with **no exempt column**: the constraint reaches the stepper and
+   the `$(0,0)$` pressure-work term, but nothing a snapshot cannot give
+   back.  So do ``stats.dat`` / ``stats_twin.dat`` but for each state's
+   applied force (``-dPds'`` / ``-dPdn'``), which a rebuild infers (the
+   script's "What a reconstruction cannot give back"): equal at the
+   stepless ``t0`` row, differing at some stepped one.
 3. ``twin.e0 = 0``: the partner is an exact copy, so every rebuilt
    value is **exactly** zero -- the determinism guard, and the one
    configuration that also exercises the null-seed sidecar and the
@@ -34,12 +37,15 @@ it and compares:
    override (``--phys.re``), and an odd ``res.nz``.
 7. A single-precision member rebuilds bit-identically as well, its
    built-in identity check passing at a tolerance its own precision
-   can meet (a double-precision one failed every record there).
+   can meet (the double-precision one would fail every record there).
 8. ``mpirun -np 2 --dist.np0 2`` reproduces the single-process streams
-   to machine epsilon -- the ``psum`` in ``_marginals_replicated``
-   (whose `$\pm k_z$` fold spans the ``np0`` axis) and the
-   ``DifferencePressure`` pytree argument, neither of which a
-   single-process run can exercise.
+   to machine epsilon (1e-12 relative) -- the ``psum`` in
+   ``_marginals_replicated`` (whose `$\pm k_z$` fold spans the ``np0``
+   axis) and the ``DifferencePressure`` pytree argument, neither of
+   which a single-process run can exercise.  Skipped under
+   ``--unit-only`` or without ``mpirun``.
+9. A member without ``twin.json`` rebuilds with its provenance (seed,
+   ``e0``, the perturbation shape) recorded ``null``.
 
 Usage::
 
@@ -118,8 +124,8 @@ PARENT_DRIVEN = _SESSION / "parent_driven.tar"
 #: under one name.  ``it_stats`` is on so the driven member also shows
 #: where the applied driving *is* recorded (``stats.dat``);
 #: ``x0_planes`` so the plane's reconstruction is exercised too, and
-#: because it is the one stream-shaping flag whose ``[recon]`` twin
-#: has to be passed to match (``_assert_streams_identical`` is what
+#: because, of this member's flags, it is the one whose ``[recon]``
+#: twin has to be passed to match (``_assert_streams_identical``
 #: catches a pair of defaults that disagree).
 _DRIVEN_ARGS = [
     "--twin.e0",
@@ -268,9 +274,8 @@ def test_matches_live_streams() -> None:
         assert np.array_equal(live[key], rebuilt[key]), key
     # 5 pairs: the IC pair plus one per step.
     assert len(rebuilt["t"]) == 5, rebuilt["t"]
-    # The per-state streams are rebuilt on the same pair grid.  This
-    # member records no live ``stats.dat`` (no ``--outs.it_stats``),
-    # which is the case the script exists for.
+    # The per-state streams, which this member never recorded (no
+    # ``--outs.it_stats``): the case the script exists for.
     assert not (member / "stats.dat").exists()
     for name in ("stats.dat", "stats_twin.dat"):
         cols = read_dat(out / name)
@@ -296,9 +301,8 @@ def test_matches_live_streams() -> None:
 def test_member_without_record() -> None:
     """No ``twin.json``: the provenance is unknown, and says so.
 
-    Seed, ``e0`` and the perturbation shape are all written ``null``
-    rather than back-filled from the current defaults, which a member
-    recorded under other ones did not run with.
+    Not back-filled from the current defaults, which a member recorded
+    under other ones did not run with.
     """
     member = _member("plain", PARENT, 4, ["--twin.e0", str(E0)])
     bare = _SESSION / "no_record"
@@ -351,12 +355,10 @@ def test_driven_member_rebuilds_identically() -> None:
             "-dPds'",
         ], (name, list(cols))
 
-    # The rebuild is bit-for-bit on every column the pair grid shares
-    # with the live cadence, with one documented exception: a
-    # reconstruction has no corrector step behind any row, so its
-    # driving columns are the ``get_driving`` wall-shear inference.
-    # The live stream uses that same convention for its own stepless
-    # ``t = t0`` row, so exactly the first row agrees.
+    # Bit-for-bit on every column the pair grid shares with the live
+    # cadence but the driving ones, which the rebuild infers at every
+    # row and the live stream only at its stepless ``t = t0`` row, so
+    # exactly the first row agrees (module docstring, item 2).
     driving = ["-dPdn'", "-dPds'"]
     for name in ("stats.dat", "stats_twin.dat"):
         a = read_dat(member / name)

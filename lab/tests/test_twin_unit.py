@@ -12,8 +12,8 @@ shows at ``np0 > 1`` *and* ``np1 > 1``):
    deterministic full-spectrum state pair.
 2. Every ``twin_energies`` output equals an independent host-NumPy
    Parseval + quadrature reference built from the harmonic index
-   layout alone (true-mode counts, real-FFT weight, quadrature
-   weights) -- no ``fourier`` fields reused.
+   layout alone, no ``fourier`` field reused (:func:`_host_energies`),
+   to rtol 1e-12.
 3. The ``e0`` energy convention: a random perturbation generated at
    amplitude `$\sqrt{2 e_0}$` has solver-measure `$E' = e_0$`, and
    the driver's ``state1 + delta`` construction reproduces
@@ -22,12 +22,9 @@ shows at ``np0 > 1`` *and* ``np1 > 1``):
 4. Every ``twin_budget`` output -- the 24 advective terms across all
    four evaluation classes, the 3 dissipations, and the consistency
    sums -- equals an independent host-NumPy reference that evaluates
-   every term one way (no class split): fine-grid (4x zero-padded)
-   ``np.fft`` physical fields, pointwise products (exact for the
-   cubic integrand below the fine-grid Nyquist), grid-mean over
-   `$xz$`, and the code's own quadrature weights / ``D1``.  The
-   states are Hermitian-consistent (real physical fields), as any
-   real pair of solver states is.
+   every term one way, with no class split (:func:`_ref_budget`), to
+   rtol 1e-10.  The states are Hermitian-consistent (real physical
+   fields), as any real pair of solver states is.
 5. Budget frame invariance: adding one constant to the streamwise
    mean column of *both* states (the ``phys.u_grid`` Galilean shift)
    leaves every budget column unchanged.
@@ -57,6 +54,32 @@ shows at ``np0 > 1`` *and* ``np1 > 1``):
    and its single-pass source equals the budget's six convective
    pieces summed, to round-off, and is exactly zero at a zero
    difference.
+10. The per-mode ``(k_z, k_x)`` spectra partition exactly into the
+    energies (rtol 1e-12): the difference spectrum sums to ``E_d``,
+    its ``(0, 0)`` entry is ``E_dU`` and the rest of its ``k_x = 0``
+    column ``E_du1``, and the reference spectrum sums to ``E_ref``.
+11. The wall-normal-resolved marginals: each matches a host
+    index-layout reference (rtol 1e-13); the folded marginal over
+    `$k_x$`, like the one over `$k_z$`, is the true two-sided spectrum
+    of a Hermitian-consistent state (rtol 1e-12) and the unfolded one
+    is over 10 % off; ``*_xz00`` is ``*_x0[..., 0]`` bit for bit, in the
+    spectra and the budget, and with ``x0`` off no `$k_x = 0$` field
+    appears (the spectra otherwise unchanged); both marginals integrate
+    to ``E_d`` and give back the three-bin energies, per component too,
+    with and without the plane (rtol 1e-13); and
+    ``marginal_bin_counts`` refuses an odd ``res.nz``.
+12. The wall-normal-resolved budget of a solenoidal, no-slip pair, in
+    both forms: its `$\sum_k\int$` and `$k$`-set bins reproduce
+    ``twin_budget``'s production (``P_U + P_r`` convectively,
+    ``P_lift`` against the ``P_*(*,rU)`` columns rotationally) and
+    ``eps_*`` (rtol 1e-12, bins 1e-11); the rotational transfer terms
+    sum to zero over `$k$` at every `$y$` (``TRANSFER_TOL``) on two
+    different pairs, one neither solenoidal nor no-slip, the convective
+    ones to a flux above 1e-3 of their magnitude; the rotational
+    ``n_hat`` is the solver's own RHS difference (1e-12); and the
+    difference pressure meets its interior Poisson equation and, off
+    the mean mode, its imposed wall closure (1e-11 of their scales),
+    while the analytic Neumann condition stays unmet (above 1e-8).
 
 Run as a script via ``uv run python lab/tests/test_twin_unit.py``.
 """
@@ -259,11 +282,7 @@ def test_energies_vs_numpy() -> None:
 
 
 def test_e0_convention() -> None:
-    r"""``amplitude = sqrt(2 e0)`` gives the solver-measure `$E' = e_0$`.
-
-    The driver's additive construction reproduces it through
-    ``twin_energies`` to the float cancellation floor.
-    """
+    r"""``amplitude = sqrt(2 e0)`` gives the solver-measure `$E' = e_0$`."""
     from dnsjax.ic.random_field import generate_random_state
 
     e0 = 1e-6
@@ -300,10 +319,8 @@ def _hermitian_spec(seed: int, amp: float = 0.1) -> np.ndarray:
     :func:`_solenoidal_pair`): the point of these states is to drive
     every index-layout path with generic data.  The one structural
     property they do carry is the one the diagnostics are entitled to
-    assume -- `$\hat v_{00} \equiv 0$`, forced by continuity at
-    `$k^2 = 0$` plus no-slip and exact at every point a state can
-    enter the driver (:mod:`dnsjax_lab.twin.diagnostics`, "State
-    preconditions").  Without it these states would exercise
+    assume, `$\hat v_{00} \equiv 0$` (:mod:`dnsjax_lab.twin.diagnostics`,
+    "State preconditions").  Without it these states would exercise
     ``term_b_mean``'s `$b_y\,\partial_y$` branch, which no state the
     solver produces ever reaches, and pin a term that is identically
     zero in production.  The reference in :func:`_ref_budget` is
@@ -358,9 +375,11 @@ def _ref_budget(spec1: np.ndarray, spec2: np.ndarray) -> dict[str, float]:
     """Independent reference of every ``twin_budget`` output.
 
     Every advective term is evaluated the same single way -- physical
-    fields on the fine grid, pointwise products, xz grid mean, the
-    code's quadrature -- with no FFT-free/mean-slot specialization,
-    so it genuinely cross-checks all four evaluation classes.
+    fields on the fine grid (4x zero-padded ``np.fft``), pointwise
+    products (exact for the cubic integrand below the fine-grid
+    Nyquist), the `$xz$` grid mean, and the code's own quadrature
+    weights and ``D1`` -- with no FFT-free/mean-slot specialization, so
+    it cross-checks all four evaluation classes.
     """
     kx_mult = np.zeros(N3_SPEC, dtype=complex)
     kx_mult[:N3_TRUE] = 1j * (2 * np.pi / params.geo.lx) * np.arange(N3_TRUE)
@@ -493,11 +512,9 @@ def test_budget_frame_invariance() -> None:
 def test_spectra_sum_identity() -> None:
     """The per-mode spectrum partitions exactly into the energies.
 
-    Total sum == ``E_d``, the ``(0,0)`` entry == ``E_dU``, the rest
-    of the ``kx = 0`` column == ``E_du1`` (hence the remainder is
-    ``E_du2``), and the reference spectrum sums to ``E_ref`` -- all
-    on the (2, 2) mesh, so the scatter-psum gather is exercised on
-    both axes.
+    Item 10 of the module docstring (the remainder past ``E_du1`` is
+    then ``E_du2``), on the (2, 2) mesh, so the scatter-psum gather is
+    exercised on both axes.
     """
     spec1 = _hermitian_spec(41)
     spec2 = spec1 + _hermitian_spec(42, amp=0.05)
@@ -565,12 +582,11 @@ def test_validate_hook() -> None:
     twin_params.rotational_ybudget = False
     twin_params.it_budget3d = None
 
-    # ``0`` switches a cadence off on a layer: an off cadence becomes
-    # unset (a member's TOML value overridden from the command line), a
-    # reference cadence keeps its 0, which is "off" for that output
-    # alone while its difference stream runs, and twin.json records
-    # both as unset.  A 0 reference cadence is consistent with the
-    # reference switched off altogether.
+    # ``0`` switches a cadence off on a layer, each kind its own way
+    # (item 6 of the module docstring; the driver's
+    # ``_TWIN_OFF_CADENCES`` and ``_TWIN_REF_CADENCES`` say why).  A 0
+    # reference cadence is consistent with the reference switched off
+    # altogether.
     from dnsjax_lab.twin.driver import _twin_sidecar_stub, ref_cadence
 
     from dnsjax.extensions import apply_extension_layer
@@ -617,13 +633,8 @@ def _fold(a: np.ndarray) -> np.ndarray:
 def test_marginal_bins_need_even_nz() -> None:
     r"""``marginal_bin_counts`` refuses an odd ``res.nz``.
 
-    :func:`~dnsjax_lab.twin.diagnostics._fold_kz` pairs stored `$k_z$`
-    entry `$j$` with `$-j$`, and at odd `$n_z$` the outermost negative
-    mode has no positive partner to fold onto.  Both CLIs reject that
-    earlier with a fuller message, so this guard is unreachable
-    through either and has to be called directly -- which is the point
-    of keeping it with the function whose contract states it.
-
+    Both CLIs reject an odd count earlier with a fuller message, so
+    the guard (its docstring says why it stays) is called directly.
     ``res.nz`` is read at call time, so poking it rebuilds nothing;
     restored in ``finally`` because the singleton is shared with every
     other test in this module.
@@ -675,14 +686,13 @@ def test_yspectra_vs_numpy() -> None:
 def test_xz00_is_the_plane_column_exactly() -> None:
     r"""``_xz00`` *is* ``_x0[..., 0]``, and ``x0`` costs nothing else.
 
-    Two claims in one, both of which the gate depends on.  The
-    `$(0, 0)$` column is scattered by one device and summed with exact
-    zeros from the rest, and the fold leaves index 0 alone, so the two
-    routes to that mode are **bit-identical** -- not merely close.
-    And with ``x0`` off the dicts carry no `$k_x = 0$` field at all,
-    which is what "never traced" looks like from outside
-    (:func:`diagnostics._marginals_replicated` builds the block only
-    under the flag).
+    The ``x0`` gate depends on both.  The `$(0, 0)$` column is
+    scattered by one device and summed with exact zeros from the rest,
+    and the fold leaves index 0 alone, so the two routes to that mode
+    are **bit-identical**, not merely close.  With ``x0`` off the dicts
+    carry no `$k_x = 0$` field at all, which is what "never traced"
+    looks like from outside (:func:`diagnostics._marginals_replicated`
+    builds the block only under the flag).
     """
     state1, state2 = _make_state(salt=0.0), _make_state(salt=1.0)
     full = {
@@ -718,16 +728,15 @@ def test_xz00_is_the_plane_column_exactly() -> None:
 
 
 def test_yspectra_fold_is_two_sided() -> None:
-    r"""The folded `$k_x$` marginal is the true two-sided spectrum.
+    r"""The folded marginal over `$k_x$` is the true two-sided spectrum.
 
-    The load-bearing check on :func:`diagnostics._fold_kz`: the stored
-    half-plane's ``k_metric`` weight makes an entry the energy of the
-    conjugate *pair*, whose partner sits at `$-k_z$`, so the `$k_x$`
-    marginal is right only after the `$\pm k_z$` fold.  Built on a
-    Hermitian-consistent state (a real physical field), where the full
-    two-sided plane can be reconstructed by reflection.  The test also
-    asserts the *unfolded* marginal is visibly wrong, so it cannot
-    pass by both sides being the same thing.
+    The load-bearing check on :func:`diagnostics._fold_kz`, whose
+    docstring says why the sum over `$k_x$` is right only after the
+    `$\pm k_z$` fold.  Built on a Hermitian-consistent state (a real
+    physical field), where the full two-sided plane can be
+    reconstructed by reflection.  The test also asserts the *unfolded*
+    marginal is visibly wrong, so it cannot pass by both sides being
+    the same thing.
     """
     kz_h = complex_harmonics(params.res.nz)
     rng = np.random.default_rng(7)
@@ -804,9 +813,10 @@ def test_yspectra_partition() -> None:
     for name, value in got.items():
         assert_allclose(value, tvals[name], rtol=1e-13)
     # The route that needs no plane (``analysis.twin.bin_energies``):
-    # the k_x marginal's first column is the whole k_x = 0 plane, so the
-    # streak bin is that column less the (0, 0) mode -- per component
-    # too -- and the rest of the marginal is the streamwise-varying bin.
+    # the k_x marginal's first column (summed over k_z) is the whole
+    # k_x = 0 plane, so the streak bin is that column less the (0, 0)
+    # mode -- per component too -- and the rest of the marginal is the
+    # streamwise-varying bin.
     z = np.einsum("j,cjk->ck", w, out["e_z"])  # (3, n_kx)
     mean = np.einsum("j,cj->c", w, out["e_xz00"])
     for c, comp in enumerate("xyz"):
@@ -842,20 +852,11 @@ TRANSFER_TOL = 1e-11
 def test_ybudget_sums() -> None:
     r"""`$\sum_k \int$` of the budget densities against ``twin_budget``.
 
-    In the **default convective form** production and the viscous
-    term are *algebraic* identities -- the same Parseval sum,
-    regrouped -- so they hold to rounding at any resolution; the
-    transport terms agree only up to the discrete
-    integration-by-parts residual that makes ``T_tot`` nonzero in the
-    first place, and are checked on the wall-normal ladder of
-    ``lab/tests/test_twin_budget.py`` instead.
-
-    Under ``twin.rotational_ybudget`` the production identity moves:
-    `$\sum_k\int(P_U + P_r)$` is ``P_tot + T_tot`` plus the work of a
-    gradient, both truncation-limited, while the *classical* lift-up
-    density is carried unchanged as ``P_lift`` and still reproduces
-    the three ``P_*(*,rU)`` columns exactly.  The viscous identity is
-    form-independent, ``V`` being the same array either way.
+    The identities of item 12 of the module docstring, in both forms.
+    Which are algebraic, and why the transport terms are checked on
+    the wall-normal ladder of ``lab/tests/test_twin_budget.py``
+    instead: :mod:`dnsjax_lab.twin.diagnostics`, "Spectral budget" and
+    "Two budget forms".
     """
     from dnsjax_lab.twin.pressure import DifferencePressure
 
@@ -932,37 +933,23 @@ def test_ybudget_sums() -> None:
 def test_ybudget_transfer_split() -> None:
     r"""What each form's transfer terms do to `$\sum_k T(y)$`.
 
-    The two forms differ here **physically**, not by an error, and
+    The two forms differ here **physically**, not by an error
+    (:mod:`dnsjax_lab.twin.diagnostics`, "Spectral budget" and "Two
+    budget forms", where the turbulent transport goes in each), and
     the test pins both sides of that so neither can drift:
 
-    - **rotational**: `$\sum_k T(y) = 0$` at every `$y$`, exactly.
-      Both terms are `$\Delta\hat{\mathbf{u}}^*\cdot(\Delta\mathbf{u}
-      \times\mathbf{b})$` and `$\mathbf{a}\cdot(\mathbf{a}\times
-      \mathbf{b}) = 0$` pointwise, so the `$k$`-sum is the `$xz$`-mean
-      of a pointwise-zero field (Parseval, exact because the 3/2 rule
-      represents the quadratic product).  It needs no structural
-      property of the states -- not `$\nabla\cdot\Delta\mathbf{u} =
-      0$`, not no-slip, not `$\Delta\boldsymbol{\omega} = \nabla\times
-      \Delta\mathbf{u}$` -- so the discriminating axis is the state,
-      not `$N_y$`, and two widely different pairs are used.
-    - **convective**: `$\sum_k T(y) = -\partial_y\langle v^{(2)}
-      |\Delta\mathbf{u}|^2/2\rangle_{xz}$` -- the turbulent transport
-      of difference energy, carried by the **perturbed** member: the
-      two terms advect `$\Delta\mathbf{u}$` by `$\mathbf{u}'^{(1)}$`
-      and by `$\Delta\mathbf{u}'$`, and the mean advectors they drop
-      contribute exactly zero, so the flux sums to
-      `$\mathbf{u}^{(1)} + \Delta\mathbf{u}$`.  A genuine wall-normal
-      flux, zero only after integrating in `$y$`.  Asserted
-      **nonzero** here: a convective build that produced zero would
-      have lost that transport.
-
-    The two forms do not differ by one block.  ``Wp`` rotationally
-    absorbs `$-\partial_y\langle\phi\,\Delta v\rangle$` with
-    `$\phi = \mathbf{u}^{(1)}\!\cdot\Delta\mathbf{u}
-    + |\Delta\mathbf{u}|^2/2$`, whose `$|\Delta\mathbf{u}|^2/2$` half
-    is exactly the `$\Delta v$`-mediated half of the convective flux;
-    the `$\mathbf{u}^{(1)}$`-mediated half goes into the rotational
-    production instead.
+    - **rotational**: `$\sum_k T(y) = 0$` at every `$y$`, exactly: the
+      `$xz$`-mean of a pointwise-zero field (Parseval, exact because
+      the 3/2 rule represents the quadratic product).  It needs no
+      structural property of the states -- not
+      `$\nabla\cdot\Delta\mathbf{u} = 0$`, not no-slip, not
+      `$\Delta\boldsymbol{\omega} = \nabla\times\Delta\mathbf{u}$` --
+      so the discriminating axis is the state, not `$N_y$`, and two
+      widely different pairs are used.
+    - **convective**: `$\sum_k T(y)$` is the turbulent transport of
+      difference energy, a genuine wall-normal flux, zero only after
+      integrating in `$y$`.  Asserted **nonzero** here: a convective
+      build that produced zero would have lost that transport.
     """
     from dnsjax_lab.twin.pressure import DifferencePressure
 
@@ -1020,22 +1007,15 @@ def test_ybudget_transfer_split() -> None:
 def test_nonlinear_matches_solver() -> None:
     r"""The rotational ``n_hat`` **is** the solver's own term.
 
-    `$\mathbf{u}^{(1)}\times\Delta\boldsymbol{\omega} +
-    \Delta\mathbf{u}\times\boldsymbol{\omega}^{(1)} +
-    \Delta\mathbf{u}\times\Delta\boldsymbol{\omega}$` is exactly what
-    ``cartesian._get_rhs`` forms on each state, so under
-    ``twin.rotational_ybudget`` the diagnostic's Poisson source can be
-    pinned against the solver rather than argued.  It pins the sign,
-    all five terms of the mean/fluctuation split, and the
-    moving-frame contribution at once.  The convective form has no
-    such counterpart -- the solver never assembles that operator --
-    which is one of the two things it trades away.
-
-    The two mean-profile halves are evaluated spectrally here and in
-    padded physical space there; they agree *exactly* because a
-    `$k = 0$` profile times a fluctuation cannot alias.  The partner
-    is deliberately large, so the difference of the two RHS
-    evaluations is not cancellation-dominated.
+    Under ``twin.rotational_ybudget`` the diagnostic's Poisson source
+    is the difference of what ``cartesian._get_rhs`` forms on each
+    state (:func:`diagnostics._rotational_sources`, which says why the
+    two agree exactly), so it is pinned against the solver rather than
+    argued: the sign and all five terms of the mean/fluctuation split
+    at once.  Not the moving-frame term: plane-Couette's ``u_grid`` is
+    0, so neither side adds one here.  The partner is deliberately
+    large, so the difference of the two RHS evaluations is not
+    cancellation-dominated.
     """
     from dnsjax_lab.twin.pressure import DifferencePressure
 
@@ -1060,13 +1040,10 @@ def test_nonlinear_matches_solver() -> None:
 def test_pressure_solve() -> None:
     r"""The difference pressure solves what it claims to solve.
 
-    Three independent identities, none a restatement of the solve:
-    the interior Poisson equation; the wall closure that was
-    imposed (`$D_1(\partial_t\Delta\hat v)|_w = 0$`, machine-exact
-    at every mode but `$(0,0)$`, where the influence matrix is
-    structurally singular and `$\Delta\hat v \equiv 0$` makes the
-    condition vacuous); and the fact that the analytic Neumann
-    condition is *not* zero -- the IMM closure declines it, and a
+    Three independent identities, none a restatement of the solve (the
+    residuals and why the mean mode is excluded:
+    ``diagnostics._twin_pressure_check_jit``).  The analytic Neumann
+    condition is asserted *unmet*: the IMM closure declines it, so a
     test that found it satisfied would mean the wrong closure ran.
     """
     from dnsjax_lab.twin.pressure import DifferencePressure
@@ -1245,16 +1222,14 @@ def test_difference_pressure() -> None:
 
 
 def test_difference_source() -> None:
-    r"""The reduced difference snapshots' source is the budget's, summed.
+    """The reduced difference snapshots' source is the budget's, summed.
 
-    ``convective_nonlinear`` with a reference forms
-    `$-\mathcal{N}_\Delta = (\mathbf{u}^{(2)}\cdot\nabla)
-    \Delta\mathbf{u} + (\Delta\mathbf{u}\cdot\nabla)\mathbf{u}^{(1)}$`
-    in one pass, where ``_convective_sources`` builds the same sum from
-    the budget's six pieces: exact algebra both ways, so the two agree
-    to round-off.  At a zero difference the single pass is exactly
-    zero, which the ``e0 = 0`` guard of the reduced difference
-    snapshots relies on.
+    ``convective_nonlinear`` with a reference forms the difference
+    source in one pass (its docstring has the formula), where
+    ``_convective_sources`` builds the same sum from the budget's six
+    pieces: exact algebra both ways, so the two agree to round-off.
+    At a zero difference the single pass is exactly zero, which the
+    ``e0 = 0`` guard of the reduced difference snapshots relies on.
     """
     import jax
 

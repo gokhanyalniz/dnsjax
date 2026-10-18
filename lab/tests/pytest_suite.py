@@ -31,11 +31,9 @@ from _bridge import MPI, NO_MPI_ONLY, SLOW, Row, script_test  # noqa: E402
 
 # One row per invocation.  Scripts appearing twice:
 # ``test_forcing``/``test_probes``/``test_twin_postprocess`` (the
-# no-mpirun unit fallback + the full run), ``test_run_status`` (the
-# ``--no-mpi`` tier + the ``--mpi-only`` one, disjoint) and
-# ``test_laminar_smoke`` (single-device + the ``--np 2`` mesh row) and
-# ``test_transient_growth`` (offline ``--fast`` structure checks + the
-# slow run with the published value).
+# no-mpirun unit fallback + the full run), and ``test_run_status``,
+# ``test_laminar_smoke`` and ``test_transient_growth``, each paired as
+# in ``tests/pytest_suite.py``.
 _SCRIPTS: list[Row] = [
     ("test_adaptive.py", (), (), 1800),
     ("test_cnab2.py", (), (), 1800),
@@ -44,15 +42,15 @@ _SCRIPTS: list[Row] = [
     ("test_curved_pipe.py", (), (), 1800),
     ("test_cylindrical.py", (), (), 1800),
     ("test_forcing.py", ("--unit-only",), NO_MPI_ONLY, 1800),
-    # In-process (forced CPU device) workers, one per case; no mpirun.
     ("test_localized_rolls.py", (), (), 1800),
+    # In-process (forced CPU device) workers, one per case; no mpirun.
     ("test_lowres.py", (), (), 1800),
     ("test_param_surface.py", (), (), 1800),
     ("test_probes.py", ("--unit-only",), NO_MPI_ONLY, 1800),
     ("test_quasi_keplerian.py", (), (), 1800),
+    ("test_resume.py", (), (), 1800),
     # ~1 min: the natural run (the twin's parent) and one one-process
     # twin launch; the mpirun tier is its own row below.
-    ("test_resume.py", (), (), 1800),
     ("test_run_status.py", ("--no-mpi",), (), 1800),
     # The offline gating check plus three single-process launches (a
     # parent run, a fresh twin start and its paired resume); no mpirun.
@@ -89,9 +87,8 @@ _SCRIPTS: list[Row] = [
     ("test_random_smoke.py", (), MPI + SLOW, 3600),
     ("test_rolls_smoke.py", (), MPI + SLOW, 3600),
     ("test_transient_growth.py", (), SLOW, 3600),
-    # No MPI: single-process throughout (a lone process needs no
-    # launcher).  ~20 min at the default single seed -- the
-    # per-rung 50-advective-unit parent spin-ups dominate.
+    # No MPI: single-process throughout.  ~20 min at the default single
+    # seed -- the per-rung 50-advective-unit parent spin-ups dominate.
     ("test_twin_budget.py", (), SLOW, 3600),
     ("test_twin_driver.py", (), MPI + SLOW, 3600),
     # ~2.5 min: three short twin members plus the reconstructions of

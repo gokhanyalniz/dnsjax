@@ -8,14 +8,14 @@ annular geometry (see
    inverses (both directions), as are the 9-component
    ``to_spin_basis``/``from_spin_basis`` maps built on them -- the
    component-basis boundary crossed once per state (``__main__``),
-   where an inversion error would be silent.  The runtime probe
-   stream crosses the same boundary per *column*: its gather and the
-   component labels it advertises (checked against the analysis
-   package's stored-component schema) are covered here too.
+   where an inversion error would silently corrupt every snapshot and
+   diagnostic.  The runtime probe stream crosses the same boundary per
+   *column*: its gather and the component labels it advertises
+   (checked against the analysis package's stored-component schema)
+   are covered here too.
 2. The spin-diagonal tensor Laplacian equals an independently coded
-   coupled cylindrical tensor Laplacian (radial/axial scalar part plus
-   the `$\tfrac1{r^2}(\mathcal R + im)^2$` angular part built from the
-   6x6 basis-rotation generator `$\mathcal R$`) on random spectral data.
+   coupled reference (:func:`_tensor_laplacian_physical_reference`)
+   on random spectral data.
 3. Laminar fixed point at `$\epsilon = 0, \kappa = 0$`: the conformation
    slice of the nonlinear RHS vanishes at the analytical laminar pair
    (advection Christoffels + stretching + relaxation cancel), and a full
@@ -36,6 +36,8 @@ annular geometry (see
 7. Fused-RHS transform-count guard: the 9-component nonlinear RHS
    keeps a bounded, batched FFT count (fused evaluation, not one
    transform per field).
+8. ``solver.rhs_transform_chunks`` leaves the 9-component RHS
+   unchanged (chunked against fused, to 1e-14 relative).
 
 Run as a script via ``uv run python lab/tests/test_viscoelastic.py``.
 """
@@ -234,9 +236,7 @@ def test_spin_physical_round_trip() -> None:
             err_msg=f"phys->spin->phys c_{name}",
         )
 
-    # The 9-component boundary maps built on them: the pair crossed
-    # once per state by ``__main__``, so a silent inversion error here
-    # would corrupt every snapshot and diagnostic.
+    # The 9-component boundary maps built on them (item 1).
     state = jnp.asarray(_random_tensor(rng, (9, Nr, Nm, Nkz)))
     assert_allclose(
         np.asarray(from_spin_basis(to_spin_basis(state))),
@@ -254,8 +254,6 @@ def test_spin_physical_round_trip() -> None:
 
 def test_probe_stream_component_basis() -> None:
     r"""The probe gather crosses the 9-component boundary, labels intact.
-
-    The labels it advertises name the components it returns.
 
     The probe stream is the only consumer that converts *columns*
     rather than whole states, and it is written once and read by
@@ -358,11 +356,8 @@ def test_laminar_velocity_balance_closes_only_at_zero_epsilon() -> None:
     `$\nu(A_{\mathrm{base}} - 1/r^2)U_\theta +
     \tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}(\nabla\cdot c)_\theta
     - \Pi_\theta = 0$` carries a real residual -- the approximation the
-    flow module records.  Pinned in both directions (the twin of
-    ``test_viscoelastic_pipe``'s check) so the `$\epsilon = 0$`
-    exactness cannot rot and a future exact profile turns the second
-    bound into a tight one.  NumPy only: `$\epsilon$` is an *argument*
-    of the profile builder, so the module needs no reconfiguration.
+    flow module records.  Pinned in both directions and NumPy only, as
+    ``test_viscoelastic_pipe``'s twin check (its docstring says why).
     """
     from dnsjax.parameters import derived_params
 
@@ -412,12 +407,10 @@ def test_laminar_velocity_balance_closes_only_at_zero_epsilon() -> None:
 def test_laminar_full_step_fixed_point() -> None:
     r"""A full predictor/corrector step reproduces the laminar state.
 
-    At `$\epsilon = 0, \kappa = 0$` the analytical laminar pair is the
-    exact discrete steady state of both the conformation transport and
-    the momentum balance (the polymer-stress divergence reconstructs the
-    missing `$(1-\beta)$` viscous stress), so one step returns the same
-    state to FD truncation: velocity deviation energy ~0 and the
-    conformation unchanged.
+    The polymer-stress divergence reconstructs the missing
+    `$(1-\beta)$` viscous stress, so one step returns the same state to
+    FD truncation: velocity deviation energy ~0 and the conformation
+    unchanged.
     """
     # Solver basis on both sides of the step (``init_state()`` is
     # physical; ``__main__`` performs this same single conversion).

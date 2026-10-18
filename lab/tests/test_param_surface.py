@@ -78,7 +78,7 @@ def case_surfaces() -> None:
     except ValidationError:
         check(True, "pipe rejects an sPTT field")
 
-    # viscoelastic-dean: m0 and block_mean are on the surface now.
+    # viscoelastic-dean: m0 and block_mean are on its surface.
     from dnsjax.extensions import relevant_extensions
 
     ve = spec_for("viscoelastic-dean")
@@ -122,7 +122,7 @@ def case_derive() -> None:
 
     # quasi-keplerian: re2 derived; a direct assignment is overwritten.
     reset()
-    P.params.phys.re2 = 123.0  # direct assignment, silently overwritten
+    P.params.phys.re2 = 123.0
     P.update_parameters(
         P.Parameters(
             phys={"system": "quasi-keplerian", "re1": 500.0, "r_omega": -1.2},
@@ -164,7 +164,7 @@ def case_derive() -> None:
         P.derived_params.r_inner == 11.0 and P.derived_params.r_outer == 13.0,
         "viscoelastic radii",
     )
-    P.validate_parameters()  # m0 = 2 is allowed for viscoelastic now
+    P.validate_parameters()  # m0 = 2 is allowed for viscoelastic
 
 
 def case_externalize() -> None:
@@ -261,9 +261,8 @@ def case_extensions() -> None:
             "apply_extension_layer mutates singleton",
         )
 
-        # The recorded params dump carries the extension sections and
-        # the flow-relevant public-named core surface.
-        reset()  # also resets the extension singletons
+        # The recorded params dump (what it carries: the core's case).
+        reset()
         apply_extension_layer(overlays)
         P.update_parameters(P.Parameters(phys={"system": "plane-poiseuille"}))
         dump = recorded_params_dump(P.params)
@@ -288,9 +287,7 @@ def case_extensions() -> None:
             "probes" not in dump and "force" not in dump,
             "recorded_params_dump filters irrelevant extensions",
         )
-        # ... but a *configured* section on an unsupported system is
-        # still rejected (direct assignment bypasses the strict
-        # surface; the validate hooks dispatch unconditionally).
+        # ... but a configured one is still rejected (why: the core's case).
         force_params.modes = "3,0"
         force_params.profiles = "prof.npz"
         force_params.amplitude = 1e-3

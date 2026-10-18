@@ -8,15 +8,18 @@ The lab's cases of ``tests/test_cnab2.py`` (the worker:
   the mean-flow coupling is the whole coupling; the regime where the
   split and unsplit correctors differ most.
 - **The viscoelastic split** (9-component total field, both
-  geometries): ``_l_bf`` is FFT-free (jaxpr); with the mean coupling
-  off it is exactly the polymer-stress divergence (velocity) + linear
-  relaxation (conformation) to machine precision; and a mean-only
-  state at `$\epsilon = 0$` has a vanishing explicit conformation
-  remainder (``get_rhs`` conf == ``_l_bf`` conf), validating the
-  conformation mean advection + stretching jointly (the identity
-  `$I$` in the relaxation is gated to the mean mode -- a spectral
-  subtlety ``_get_rhs_core`` gets for free in physical space).  See
-  ``_check_viscoelastic_split``.
+  geometries; ``_check_viscoelastic_split``): (a) ``_l_bf`` is
+  FFT-free (jaxpr); (b) with the mean coupling off it is exactly the
+  polymer-stress divergence (velocity) + linear relaxation
+  (conformation) + the moving-frame term, to machine precision
+  (``SPLIT_RTOL``); (c) a mean-only state at `$\epsilon = 0$` has a
+  vanishing explicit conformation remainder (``get_rhs`` conf ==
+  ``_l_bf`` conf, to 1e-10 relative), validating the conformation
+  mean advection + stretching jointly (the identity `$I$` in the
+  relaxation is gated to the mean mode -- a spectral subtlety
+  ``_get_rhs_core`` gets for free in physical space); (d) the
+  moving-frame term is `$i k_z U_{\mathrm{grid}} u$` on all 9 slots
+  in **both** ``get_rhs`` and ``_l_bf`` (``SPLIT_RTOL``).
 
 Run::
 
@@ -35,21 +38,13 @@ from _cnab2 import LX, SPLIT_RTOL, count_ffts, run_cases, worker
 def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
     r"""Viscoelastic CN/AB2 ``_l_bf`` split guards (both geometries).
 
-    The 9-component split differs from the perturbation flows: the
-    velocity slice adds the polymer-stress divergence, the conformation
-    slice is mean advection / stretching (gated by
-    ``implicit_mean_coupling``) plus the always-implicit linear
-    relaxation.  Checks: (a) ``_l_bf`` is FFT-free; (b) with the mean
-    coupling off, ``_l_bf`` is exactly the polymer divergence (velocity)
-    + linear relaxation (conformation), to machine precision
-    (``SPLIT_RTOL``); (c) a mean-only state
-    at `$\epsilon = 0$` has a vanishing explicit conformation remainder
-    (``get_rhs`` conf == ``_l_bf`` conf), validating the mean advection
-    and stretching jointly; (d) the moving-frame term is
-    `$i k_z U_{\mathrm{grid}} u$` on all 9 slots in **both**
-    ``get_rhs`` and ``_l_bf``.  The velocity mean-flow coupling reuses
-    the geometry's own ``_l_bf``, already pinned by that geometry's
-    Newtonian entry (``dean`` / ``pipe``).
+    Checks (a)-(d) of the module docstring.  The 9-component split
+    differs from the perturbation flows: the velocity slice adds the
+    polymer-stress divergence, the conformation slice is mean advection
+    / stretching (gated by ``implicit_mean_coupling``) plus the
+    always-implicit linear relaxation.  The velocity mean-flow coupling
+    reuses the geometry's own ``_l_bf``, already pinned by that
+    geometry's Newtonian entry (``dean`` / ``pipe``).
 
     Why (d) is here and not covered by the Newtonian branch's
     ``get_rhs - _l_bf - self_adv`` check: this function *replaces* that
@@ -82,8 +77,7 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
     assert lbf_ffts == 0, f"viscoelastic _l_bf not FFT-free ({lbf_ffts})"
     print(f"{params.phys.system}: _l_bf is FFT-free")
 
-    # l_bf with the instantaneous mean-flow coupling off (the velocity
-    # mean-flow coupling itself is pinned by the ``dean`` entry).
+    # l_bf with the instantaneous mean-flow coupling off.
     assert params.step.implicit_mean_coupling
     params.step.implicit_mean_coupling = False
     try:
@@ -91,13 +85,10 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
     finally:
         params.step.implicit_mean_coupling = True
 
-    # (b) Mean coupling off => l_bf == polymer divergence (velocity) +
-    # linear relaxation (conformation) + the moving-frame convective
-    # term, to machine precision.  The frame term is *always* implicit
-    # (both slices, mode-diagonal) and is nonzero whenever the flow's
-    # ``phys.u_grid`` is -- which is the case for the axially driven
-    # viscoelastic pipe (default 1/2) but not for the azimuthally
-    # driven Dean (default 0).
+    # (b) The frame term is *always* implicit (both slices,
+    # mode-diagonal) and nonzero whenever the flow's ``phys.u_grid`` is:
+    # the axially driven viscoelastic pipe's (default 1/2), not the
+    # azimuthally driven Dean's (default 0).
     frame = np.asarray(
         (1j * derived_params.u_grid) * fourier_.kz * state[:9]
         if derived_params.u_grid != 0
@@ -139,12 +130,11 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
         f"{params.phys.system}: l_bf(mean off) == polymer div + linear relax"
     )
 
-    # (c) Mean-only conformation invariant at eps = 0: the explicit
-    # conformation remainder get_rhs - l_bf vanishes for a mean-only
-    # state (no fluctuation advection/stretching, no nonlinear
-    # relaxation), so get_rhs conf == l_bf conf.  Velocity = laminar
-    # profile (u_r == 0 exactly, so the dropped u_r d_r c term is truly
-    # zero); conformation = 2x the laminar tensor -- a valid mean-mode
+    # (c) A mean-only state has no fluctuation advection / stretching
+    # and, at eps = 0, no nonlinear relaxation, so get_rhs - l_bf
+    # vanishes on the conformation.  Velocity = laminar profile (u_r ==
+    # 0 exactly, so the dropped u_r d_r c term is truly zero);
+    # conformation = 2x the laminar tensor -- a valid mean-mode
     # (Hermitian-partner) tensor that is *not* the equilibrium, so the
     # remainder scale is O(1/Wi) rather than machine zero.
     lam = gmod.to_spin_basis(fmod.init_state())
@@ -162,13 +152,12 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
         f"(rel {d_mo / cscale:.2e})"
     )
 
-    # (d) The frame term, in get_rhs *and* _l_bf.  Difference each
-    # against itself at u_grid = 0 (the term is a trace-time branch on
-    # ``derived_params.u_grid``, and neither function is jitted here),
-    # and compare against the analytic i k_z U_grid u on all 9 slots.
-    # Probe a nonzero speed even where the flow ships 0 -- the annular
-    # twin defaults to 0, but the code path is shared, so a flow that
-    # later turns it on inherits a checked one.
+    # (d) Difference get_rhs and _l_bf each against itself at u_grid =
+    # 0 (the term is a trace-time branch on ``derived_params.u_grid``,
+    # and neither function is jitted here).  Probe a nonzero speed even
+    # where the flow ships 0 -- the annular twin defaults to 0, but the
+    # code path is shared, so a flow that later turns it on inherits a
+    # checked one.
     u_probe = derived_params.u_grid or 0.5
     saved = derived_params.u_grid
     try:

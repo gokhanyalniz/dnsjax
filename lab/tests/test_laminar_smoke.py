@@ -9,9 +9,10 @@ of their own (each row's ``check``):
 Dean flow is force-driven and integrates the **total** field, so it is
 checked differently: started from the *analytical* laminar profile, its
 ``E'`` (the perturbation kinetic energy of the deviation from that
-profile) stays tiny, the corrector still converges (``err``
-`$O(10^{-14})$`), the energy balance `$I \approx D$` holds, and the
-total energy is near-steady.  Its azimuthal ``CFL_th`` is the active
+profile) stays tiny, the corrector still converges (``err`` below
+``ERR_THRESHOLD``), the energy balance `$I \approx D$` holds, and the
+total energy is near-steady, with the spanwise blocking off and on
+(``dean-block-spanwise``).  Its azimuthal ``CFL_th`` is the active
 column (radial / axial are roundoff), positive and constant.
 
 The two viscoelastic flows (total-field, 9-component) share a check,
@@ -20,11 +21,22 @@ axially driven pipe (the same tight analytic value the Newtonian pipe
 asserts), ``CFL_th`` for the azimuthally driven Dean.  At
 `$\epsilon = \kappa = 0$` the analytical laminar velocity + sPTT
 equilibrium conformation pair is the *exact* discrete fixed point, so
-``E'`` stays tiny, the corrector converges (its error floor sits at FD
-truncation, `$O(10^{-10})$`, not roundoff, because the conformation
-carries magnitude `$O(10)$` -- hence a relaxed error threshold), the
+``E'`` stays tiny, the corrector converges (under the relaxed
+``VE_ERR_THRESHOLD``: Dean's error floor sits at FD truncation, not
+roundoff, because the conformation carries magnitude `$O(10)$`), the
 polymer energy balance `$I \approx D_s - W_p$` holds, the energy is
 near-steady, and ``steps.dat`` carries the extra ``TrC_max`` column.
+
+A total-field laminar state is the mean-mode balance between the body
+force and viscosity (Dean's azimuthal ``force_theta``, the pipe's
+`$\Pi_z$`), which the default reconstruction scheme carries entirely
+in the two packed `$k^2 = 0$` slots of its mean plane (the annulus's
+`$(\Phi, \omega_r)$` pair, the pipe's spin quad): a packing error
+would show as a drifting mean velocity (Dean's ``Ub_th``) even though
+no perturbation exists, and on the viscoelastic rows the polymer stress
+rides the sources.  The ``*-legacy-imm`` rows run the legacy
+``res.consistent_imm = False`` path instead, as the core's rows of that
+name do (``tests/test_laminar_smoke.py`` says why).
 
 ``curved-pipe`` is deliberately **absent**: at its own curvature it has
 no laminar fixed point to sit at (its laminar state is the
@@ -84,12 +96,14 @@ DEAN_IB_TOL = 1e-3
 DEAN_E_DRIFT_TOL = 1e-4
 
 # Viscoelastic diagnostics (total-field, 9-component).  The
-# conformation carries magnitude O(10) (TrC ~ 70 at wi = 5), so the
-# corrector error and E' floor sit at FD truncation (~3e-13 / ~1e-27
-# at the default fd_order=8; ~1e-10 / ~1e-17 at fd_order=4),
-# well above the perturbation flows' roundoff but far below the
-# corrector tolerance.  The polymer energy balance is I = D_s - W_p
-# (solvent dissipation minus polymer work; W_p < 0 as polymers dissipate).
+# conformation carries magnitude O(10) (TrC ~ 70 at wi = 5), so
+# viscoelastic Dean's corrector error and E' floor sit at FD truncation
+# (~3e-13 / ~1e-27 at the default fd_order=8; ~1e-10 / ~1e-17 at
+# fd_order=4), well above the perturbation flows' roundoff but far
+# below the corrector tolerance; the viscoelastic pipe's sit at
+# roundoff (~8e-16 / ~1e-30 at fd_order=8).  The polymer energy balance
+# is I = D_s - W_p (solvent dissipation minus polymer work; W_p < 0 as
+# polymers dissipate).
 DS_PATTERN = re.compile(r"D_s\s*=\s*([\d.eE+\-]+)")
 WP_PATTERN = re.compile(r"W_p\s*=\s*([\d.eE+\-]+)")
 VE_ERR_THRESHOLD = 1e-7
@@ -101,11 +115,8 @@ VE_E_DRIFT_TOL = 1e-4
 def check_dean(stdout: str, name: str) -> tuple[float, float]:
     """Validate a Dean (analytical near-steady laminar) run.
 
-    Dean integrates the total field; the error metric is ``E'``, the
-    perturbation kinetic energy of the deviation from the analytical
-    laminar profile, alongside corrector convergence (``err``), the
-    energy balance ``I ~= D``, and a near-steady total energy ``E``.
-    Returns ``(last_err, last_ep)`` for the PASS summary.
+    The criteria: the module docstring.  Returns ``(last_err, last_ep)``
+    for the PASS summary.
     """
     last_err: float | None = None
     ep_vals: list[float] = []
@@ -162,11 +173,8 @@ def check_dean(stdout: str, name: str) -> tuple[float, float]:
 def check_viscoelastic(stdout: str, name: str) -> tuple[float, float]:
     r"""Validate a viscoelastic laminar run (`$\epsilon=\kappa=0$`).
 
-    The analytical laminar pair is the exact discrete steady state, so
-    ``E'`` (velocity deviation energy) is FD-truncation-tiny and the
-    corrector converges; additionally the polymer energy balance
-    ``I = D_s - W_p`` holds and the total energy is near-steady.  Returns
-    ``(last_err, last_ep)`` for the PASS summary.
+    The criteria: the module docstring.  Returns ``(last_err, last_ep)``
+    for the PASS summary.
     """
     last_err: float | None = None
     ep_vals: list[float] = []
@@ -255,9 +263,7 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Annular azimuthal wedge (geo.m0 = 2): the circular-Couette
-        # profile is a laminar fixed point on the half-annulus wedge,
-        # and the azimuthal CFL doubles (lz = pi).
+        # The half-annulus wedge, as the core's taylor-couette-wedge.
         "name": "quasi-keplerian-wedge",
         "cfl_active": CFL_TH_LAMINAR_QK_WEDGE,
         "args": [
@@ -338,15 +344,9 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Viscoelastic (sPTT) Dean flow: total-field 9-component state.
-        # At epsilon = kappa = 0 the analytical laminar pair (azimuthal
-        # velocity + pointwise sPTT-equilibrium conformation) is the
-        # *exact* discrete steady state, so E' (velocity deviation) stays
-        # ~1e-18 and the corrector converges in a single step.  A modest
-        # wi = el (=> Re = 1) keeps the conformation magnitude O(10) so
-        # the corrector error is FD-truncation-, not overflow-, limited.
-        # Checked differently from the perturbation flows (own branch):
-        # near-steady energy and the polymer energy balance I = D_s - W_p.
+        # A modest wi = el (=> Re = 1) keeps the conformation magnitude
+        # O(10), so the corrector error is FD-truncation-, not
+        # overflow-, limited.
         "name": "viscoelastic-dean",
         "cfl_active": None,
         "step_columns": ("TrC_max",),
@@ -378,17 +378,13 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Viscoelastic (sPTT) pipe flow: the axially driven twin of
-        # viscoelastic-dean, and the only 9-component flow whose axis
-        # regularity is carried by the parity-reduced FD matrices -- so
-        # this exercises the per-slot conformation parity signs, the
-        # single-wall H_c BC row, and the uniform axial body force
-        # Pi_z = 4/Re through a real run.  At epsilon = kappa = 0 the
-        # analytical laminar pair (Hagen-Poiseuille velocity +
-        # pointwise sPTT-equilibrium conformation) is the *exact*
-        # discrete steady state.  Checked on the viscoelastic branch
-        # (polymer balance I = D_s - W_p), but with the pipe's tight
-        # analytic axial CFL rather than Dean's azimuthal one.
+        # The only 9-component flow whose axis regularity is carried by
+        # the parity-reduced FD matrices.  Its m = 0 laminar state at
+        # kappa = 0 (no H_c solve) exercises one per-slot conformation
+        # sign, c_rz's odd-class ghost sign in the polymer divergence,
+        # and the uniform axial body force Pi_z = 4/Re through a real
+        # run; the other slots' signs need m != 0 or u_r != 0 (the
+        # random smoke's viscoelastic-pipe entry).
         "name": "viscoelastic-pipe",
         "cfl_active": CFL_GRID_LAMINAR_PIPE,
         "step_columns": ("TrC_max",),
@@ -420,11 +416,13 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Viscoelastic pipe on an azimuthal wedge (geo.m0 = 2): the
-        # tensor spin shifts m_eff = m + s ride the *physical*
-        # m = m0 * harmonic, and so does the axis parity that selects
-        # each slot's ghost sign -- the wedge is the only configuration
-        # that can tell a physical-m selector from a harmonic-index one.
+        # Viscoelastic pipe on an azimuthal wedge (geo.m0 = 2).  The
+        # tensor spin shifts m_eff = m + s and the axis parity that
+        # selects each slot's ghost sign ride the *physical*
+        # m = m0 * harmonic, which only a wedge tells apart from the
+        # harmonic index; this row's laminar state is m = 0 alone, where
+        # the two coincide, so it runs the wedge's setup to the fixed
+        # point without telling the selectors apart.
         "name": "viscoelastic-pipe-wedge",
         "cfl_active": CFL_GRID_LAMINAR_PIPE,
         "step_columns": ("TrC_max",),
@@ -459,10 +457,10 @@ SYSTEMS: list[dict] = [
     },
     {
         # Viscoelastic azimuthal wedge (geo.m0 = 2): the axisymmetric
-        # laminar state is a fixed point on the half-annulus wedge,
-        # exercising the m0-scaled azimuthal wavenumbers through both
-        # the velocity u_pm and the conformation tensor-spin operators
-        # (m_eff = m + s with m = m0 * harmonic).
+        # laminar state stays a fixed point on the half-annulus wedge.
+        # At m = 0 the m0-scaled wavenumbers (m_eff = m + s with
+        # m = m0 * harmonic) take their full-circle values, so the row
+        # checks the wedge's setup, not that scaling.
         "name": "viscoelastic-dean-wedge",
         "cfl_active": None,
         "step_columns": ("TrC_max",),
@@ -496,10 +494,6 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Viscoelastic pipe flag-on: the spin quad carrying a
-        # **total-field** 9-component state, so the mean-plane packing
-        # must reproduce the Pi_z-vs-viscosity balance (as Dean's does
-        # for force_theta) while the polymer stress rides the sources.
         "name": "viscoelastic-pipe-legacy-imm",
         "cfl_active": CFL_GRID_LAMINAR_PIPE,
         "step_columns": ("TrC_max",),
@@ -533,8 +527,8 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Quasi-Keplerian flag-on: the same annular machinery at a
-        # different (re1, r_omega, eta) corner.
+        # The annular legacy path at a different (re1, r_omega, eta)
+        # corner from the core's taylor-couette-legacy-imm.
         "name": "quasi-keplerian-legacy-imm",
         "cfl_active": CFL_TH_LAMINAR_QK,
         "args": [
@@ -563,12 +557,6 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Dean flag-on: a **total-field** flow, so the laminar state is
-        # the mean-mode balance between the azimuthal body force
-        # ``force_theta`` and viscosity.  That balance lives entirely in
-        # the two packed k^2 = 0 slots, which is exactly what the
-        # reformulation re-plumbs -- a packing error would show as a
-        # drifting Ub_th here even though no perturbation exists.
         "name": "dean-legacy-imm",
         "cfl_active": None,
         "check": check_dean,
@@ -596,9 +584,6 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Viscoelastic Dean flag-on: the same composition guard in the
-        # annular geometry, whose flag-on pass is the `(Phi, omega_r)`
-        # pair rather than the pipe's spin quad.
         "name": "viscoelastic-dean-legacy-imm",
         "cfl_active": None,
         "step_columns": ("TrC_max",),

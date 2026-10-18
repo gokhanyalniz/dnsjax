@@ -16,9 +16,7 @@ RHS kernel -- is guarded once, in ``test_viscoelastic.py``.
    physical-basis parity classes are shown to be the ones the mirrored
    continuum field obeys.
 2. **Spin-diagonal tensor Laplacian** equals an independently coded
-   coupled reference built from the same parity-reduced matrices, with
-   the `$\tfrac1{r^2}(\mathcal R + im)^2$` angular part carried by the
-   6x6 basis-rotation generator.
+   coupled reference, sharing no machinery with it beyond the grid.
 3. **Laminar fixed point**, and exactly how far it reaches.  The
    conformation slice of the RHS vanishes at every `$\epsilon$`; a full
    predictor/corrector step reproduces the pair at `$\epsilon = 0$`;
@@ -40,6 +38,10 @@ RHS kernel -- is guarded once, in ``test_viscoelastic.py``.
 6. The **probe stream**'s 9-component labels and column conversion for
    the pipe.
 7. **Fused-RHS transform-count** guard.
+8. The spin tables agree (``TENSOR_SPIN`` with ``PHYS_COMBO_SPIN`` and
+   the RHS batches'); `$\nabla\cdot c$` equals its component formulas;
+   and the flow accepts ``res.consistent_imm`` either way while keeping
+   the pipe's half-CGL / scheme check.
 
 Run as a script via ``uv run python lab/tests/test_viscoelastic_pipe.py``.
 """
@@ -60,11 +62,8 @@ from dnsjax.parameters import (
     update_parameters,
 )
 
-# Module config: viscoelastic-pipe with epsilon = kappa = 0 (the exact
-# discrete laminar fixed point, group 3) and a modest Weissenberg
-# number.  el = wi keeps the derived Re = wi / el = 1.  The H_c
-# operator tests build their own kappa > 0 operators, independent of
-# the flow's (kappa = 0, so ``flow.Hc_op is None``).
+# Module config: viscoelastic-pipe, set as test_viscoelastic.py's (its
+# comment says why); the exact laminar fixed point is group 3's.
 update_parameters(
     Parameters(
         phys={
@@ -128,10 +127,8 @@ from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
 from dnsjax.sharding import sharding  # noqa: E402
 from dnsjax.solvers import _banded_from_dense  # noqa: E402
 
-# 6x6 basis-rotation generator R in the physical tensor-component order
-# (c_rr, c_thth, c_rth, c_rz, c_thz, c_zz), i.e. the theta-derivative
-# action on the orthonormal tensor basis.  Its eigenvalues are the spin
-# weights i*s, s in {0, 0, +-1, +-2}.
+# The 6x6 basis-rotation generator R of test_viscoelastic.py (its
+# comment: the component order, the action, the eigenvalues).
 _R_GEN = np.array(
     [
         [0.0, 0.0, -2.0, 0.0, 0.0, 0.0],
@@ -244,10 +241,7 @@ def test_parity_signs_match_the_reduced_matrices() -> None:
 
 
 def test_spin_combos_carry_the_parity_their_operator_assumes() -> None:
-    r"""The spin combos of a mirrored tensor carry the claimed parity.
-
-    A correctly-mirrored physical tensor field's combos carry the
-    parity `$(-1)^{m+s}$` that :data:`TENSOR_SPIN` claims.
+    r"""The spin combos of a mirrored tensor carry ``TENSOR_SPIN``'s parity.
 
     A rank-2 component picks up one sign flip per index in
     `$\{r, \theta\}$` when the axis is crossed (`$\hat e_r,
@@ -524,11 +518,9 @@ def test_laminar_energy_balance() -> None:
 def test_Hc_band_vs_dense() -> None:
     r"""Banded `$H_c$` == banded-from-dense, per spin slot.
 
-    Covers the parity band selection and the single narrow Laplacian BC
-    wall row (the pipe carries one, against the annulus's two; the axis
-    is closed by the parity reduction, not a row).
-
-    The per-spin base operators come from the flow's own
+    The pipe carries one narrow Laplacian BC wall row, against the
+    annulus's two: the axis is closed by the parity reduction, not a
+    row.  The per-spin base operators come from the flow's own
     ``hc_spin_bases`` adapter -- the pipe half of the surface the
     shared stepper dispatches on -- so the parity selection under test
     is the shipped one; a separate assertion below pins it against
@@ -622,13 +614,9 @@ def test_Hc_band_vs_dense() -> None:
 def test_hc_wall_rows_single_wall() -> None:
     r"""The pipe zeroes exactly **one** `$H_c$` RHS row, at `$r = 1$`.
 
-    ``zero_hc_wall_rows`` is the adapter the shared ``_c_cn_update``
-    applies for the `$\nabla^2 c = 0$` BC, and the wall count is the
-    one thing the two geometries disagree on there (the annulus zeroes
-    two).  Zeroing the axis row as well would impose a boundary
-    condition the pipe does not have.  Every ``test_laminar_smoke``
-    viscoelastic entry runs at `$\kappa = 0$`, where that branch is not
-    reached at all, so pin it directly.
+    The twin of ``test_viscoelastic.py``'s two-wall check (why the
+    adapter is pinned directly: its docstring).  Zeroing the axis row
+    as well would impose a boundary condition the pipe does not have.
     """
     Nr = params.res.ny
     Nm = params.res.nz - 1
@@ -645,13 +633,8 @@ def test_hc_wall_rows_single_wall() -> None:
 def test_no_cross_geometry_import() -> None:
     """Importing the pipe sPTT geometry must not build the annulus.
 
-    Each geometry's ``Fourier`` singleton (and its radial grid / FD
-    matrices) is constructed at **import**, so a stray import across
-    the two families would build a grid the flow never uses on every
-    viscoelastic run.  The shared stepper
-    (``_viscoelastic_stepping``) is written to depend on neither
-    geometry, which is what keeps that true; this is the guard, in a
-    fresh subprocess since the check is about import-time side effects.
+    The other family's half of ``test_viscoelastic.py``'s guard of the
+    same name (its docstring says why).
     """
     src = (
         "import sys\n"
@@ -683,9 +666,8 @@ def test_no_cross_geometry_import() -> None:
 def test_probe_stream_component_basis() -> None:
     r"""The pipe's probe gather crosses the 9-component boundary, labelled.
 
-    It advertises the labels of the components it returns, checked
-    against the analysis package's stored-component schema so the two
-    9-component surfaces cannot drift apart.
+    The twin of ``test_viscoelastic.py``'s check (its docstring says
+    why).
     """
     from dnsjax_lab.extensions.probes import (
         _component_labels,
@@ -718,9 +700,8 @@ def test_probe_stream_component_basis() -> None:
 def test_fused_rhs_transform_count() -> None:
     r"""The 9-component RHS keeps a *bounded* (batched) FFT count.
 
-    The fused evaluation does one batched inverse transform of ~36
-    fields and one batched forward transform of the 9 outputs -- a
-    small constant, **independent** of the field count.
+    The twin of ``test_viscoelastic.py``'s guard (its docstring: the
+    batched pair the bound allows).
     """
     Nr = params.res.ny
     Nm = params.res.nz - 1
@@ -760,8 +741,6 @@ def test_tensor_spin_tables_agree() -> None:
 
 def test_consistent_imm_is_accepted() -> None:
     r"""The flow accepts ``res.consistent_imm`` and keeps its grid check.
-
-    The pipe's own grid/scheme check stays.
 
     The flow offers ``res.consistent_imm`` exactly as ``pipe`` does.
     This asserts the surface, not stability: no validate hook or

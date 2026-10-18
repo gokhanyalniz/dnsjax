@@ -3,26 +3,27 @@ r"""Operator-tools tests (``dnsjax_lab.analysis.response.operator_tools``).
 Two layers:
 
 1. **Analytic units** (NumPy/SciPy, no solver): Lyapunov/Gramian
-   closed forms (`$A = -aI \Rightarrow X = I/2a$`, on both the SciPy
-   and the eigendecomposition-fallback paths), controllability-mode
-   ordering on a normal operator, stability rejection, growth curves
-   against `$e^{2\lambda_{\max} t}$` (normal) and a dense
-   ``scipy.linalg.expm`` reference (non-normal), the
-   input-response curve of an eigenvector, full-rank ``restrict``
-   identity, and the non-orthonormal-restriction rejection.  The
-   module import itself must not pull JAX (asserted first); the
-   growth-curve calls then enable float64 JAX explicitly.
+   closed forms (`$A = -aI \Rightarrow X = I/(2a)$`, from the SciPy
+   solve and the tests' independent closed form, which also agree on
+   a random stable non-normal `$A$`), controllability-mode ordering
+   on a normal operator, stability rejection, growth curves against
+   `$e^{2\lambda_{\max} t}$` (normal) and a dense
+   ``scipy.linalg.expm`` reference (non-normal), the input-response
+   curve of an eigenvector, full-rank ``restrict`` identity, and the
+   non-orthonormal-restriction rejection.  The module import itself
+   must not pull JAX (asserted first); the growth-curve calls then
+   enable float64 JAX explicitly.
 
 2. **Export faithfulness** (subprocess): a laminar plane-Poiseuille
    transient-growth run with ``--tg.save_operator`` (the real writer);
    the loaded bundle must satisfy the coordinate contract
    (``T_proj @ T_lift = I``), reproduce the stored resolved
-   eigenvalues (assignment-free nearest matching), and
-   ``growth_curve(A, t_grid)`` must match the stored ``G`` curve
-   *exactly* (rtol 1e-9) -- the CLI reports growth on the same
-   resolved-eigenspace restriction it exports, so this doubles as the
-   guard on that restriction.  The controllability CLI then exports
-   lifted modes whose energy Gram matrix is the identity, and
+   eigenvalues, and ``growth_curve(A, t_grid)`` must match the stored
+   ``G`` curve *exactly* (rtol 1e-9), which also guards the CLI's
+   resolved-eigenspace restriction; the exported ``A``'s Gramian
+   solves its Lyapunov equation.  The controllability CLI then exports
+   lifted modes whose energy Gram matrix is the identity, the
+   restriction to them grows no faster than ``A``, and
    ``check_stream`` refuses a probe stream on other nodes, another
    harmonic or another box.
 
@@ -57,20 +58,20 @@ NX, NY, NZ = 8, 33, 8
 
 
 def test_gramian_closed_forms() -> None:
-    r"""`$A = -aI \Rightarrow X = I/(2a)$` on both solver paths.
+    r"""`$A = -aI \Rightarrow X = I/(2a)$`, by SciPy and the closed form.
 
     An unstable `$A$` is rejected.
     """
     r, a = 5, 0.7
     a_mat = -a * np.eye(r, dtype=complex)
     for x in (
-        ot.controllability_gramian(a_mat),  # scipy path (installed)
-        ot._gramian_eig_closed_form(a_mat),  # fallback path
+        ot.controllability_gramian(a_mat),  # the SciPy solve
+        ot._gramian_eig_closed_form(a_mat),  # the independent closed form
     ):
         assert_allclose(x, np.eye(r) / (2 * a), atol=1e-12)
 
-    # A random stable non-normal case: both paths agree and satisfy
-    # the Lyapunov equation.
+    # A random stable non-normal case: the SciPy solve and the closed
+    # form agree, and satisfy the Lyapunov equation.
     rng = np.random.default_rng(0)
     m = rng.standard_normal((r, r)) + 1j * rng.standard_normal((r, r))
     a_mat = m - (np.max(np.linalg.eigvals(m).real) + 1.0) * np.eye(r)
@@ -230,14 +231,14 @@ def test_export_faithfulness_and_cli() -> None:
             d = np.min(np.abs(eig_a - lam)) / (1.0 + np.abs(lam))
             assert d < 1e-8, (lam, d)
 
-        # growth_curve(A) reproduces the stored G(t).  The agreement is
-        # exact (not approximate): the CLI measures growth on the same
+        # growth_curve(A) reproduces the stored G(t) exactly, not
+        # approximately: the CLI measures growth on the same
         # resolved-eigenspace restriction it exports as ``A``, via its
-        # eigenform rather than ``expm``, so this pins both the export
-        # faithfulness and that restriction.  Admitting the unresolved
+        # eigenform rather than ``expm``.  Admitting the unresolved
         # modes into the reported G -- which turns the propagator into
-        # a spectral projector at t = 0+ (the ``_analyze_mode`` step-5
-        # note) -- breaks this at small t by orders of magnitude.
+        # a spectral projector at t = 0+ (step 5 of the
+        # ``dnsjax.analysis.transient_growth`` module docstring) --
+        # breaks this at small t by orders of magnitude.
         with np.load(tg_npz) as z:
             g_stored = z["G"][0]
             t_grid = z["t_grid"]

@@ -20,13 +20,14 @@ Cases:
 3. ``err_romega``: a missing ``r_omega`` and the Rayleigh-line /
    co-rotating rejections (R_Omega >= -1).
 4. ``err_re1``: the ``re1`` sign-convention rejections (None, 0, < 0).
-5. ``override_re2``: a conflicting externally-supplied ``phys.re2``
-   is silently overwritten by the (re1, r_omega, eta) derivation
-   (``re2`` is not a quasi-Keplerian parameter).
+5. ``override_re2``: a conflicting directly-assigned or layered
+   ``phys.re2`` is silently overwritten by the (re1, r_omega, eta)
+   derivation (``re2`` is not a quasi-Keplerian parameter; the CLI/TOML
+   surfaces reject it outright).
 
 Usage::
 
-    uv run python tests/test_quasi_keplerian.py
+    uv run python lab/tests/test_quasi_keplerian.py
 """
 
 from __future__ import annotations
@@ -180,12 +181,7 @@ def case_err_re1() -> None:
 
 
 def case_override_re2() -> None:
-    """A conflicting externally-supplied re2 is silently overwritten.
-
-    ``re2`` is not a quasi-Keplerian parameter (the CLI/TOML surfaces
-    reject it outright); a directly-assigned or layered value is
-    replaced by the (re1, r_omega, eta) derivation.
-    """
+    """A conflicting externally-supplied re2 is silently overwritten."""
     from dnsjax.parameters import (
         Parameters,
         params,

@@ -11,7 +11,7 @@ The lab's part of ``tests/test_seeding.py`` (the shared fixtures:
    then adopts it from ``twin.json`` instead of drawing -- without
    which every un-pinned twin run would fail its first resume on the
    ``_TWIN_MATCH_KEYS`` seed check.  The mismatch guard itself is
-   still exercised by ``lab/tests/test_twin_driver.py``.
+   exercised by ``lab/tests/test_twin_driver.py``.
 
 Run as a script::
 
@@ -132,10 +132,9 @@ def run_twin_adoption(timeout: float) -> str | None:
         if recorded != seed:
             return f"twin.json recorded {recorded}, the run drew {seed}"
 
-        # Paired resume, still unset: adopts rather than re-drawing --
-        # a fresh draw would fail the _TWIN_MATCH_KEYS seed check.  A
-        # resume points at the newest pair the member wrote, as the
-        # driver's own "no partner snapshot" diagnostic instructs.
+        # Paired resume, still unset (item 2).  A resume points at the
+        # newest pair the member wrote, as the driver's own "no partner
+        # snapshot" diagnostic instructs.
         pairs = sorted(
             q
             for q in member.glob("state*.tar")

@@ -14,12 +14,12 @@ docstring):
   component-count-agnostic path;
 - the curved pipe is measured on its solver's continuity row, the
   straight divergence of `$(u_s, h u_r, h u_\theta)$`
-  (:func:`_metric_weighted`), rolls and random field alike.  Its rolls
-  are held to roundoff on that row (``DIV_TOL_CURVED``): the straight
-  rolls miss it by `$O(\kappa)$`, well inside the truncation bound.
-  Its toroidal map gives `$u_\theta$` the `$O(\kappa)$` mean its
-  continuity needs, so the spot's mean mode is exactly zero on `$u_s$`
-  and zero to roundoff on `$(h u_r, h u_\theta)$` (``MEAN_TOL_CURVED``).
+  (:func:`_metric_weighted`), rolls and random field alike; its rolls
+  are held to roundoff on that row (``DIV_TOL_CURVED``).  Its toroidal
+  map (``generate_curved_pipe_rolls``) gives `$u_\theta$` the
+  `$O(\kappa)$` mean its `$m = \pm 1$` modes need for continuity, so
+  the spot's mean mode is exactly zero on `$u_s$` and zero to roundoff
+  on `$(h u_r, h u_\theta)$` (``MEAN_TOL_CURVED``).
 
 Run directly::
 
@@ -44,7 +44,7 @@ sys.stdout.reconfigure(line_buffering=True)
 # it relative to the transverse pair (measured 9.9e-15 here, flat in
 # kappa to 0.9, growing with the radial operator to 1.3e-13 at
 # nr = 41).  The truncation bound would pass the straight rolls, which
-# miss the row by 1.9e-2 of the pair.
+# miss the row by O(kappa), 1.9e-2 of the pair.
 DIV_TOL_CURVED = 1e-12
 # ... and the (0, 0) mode of its (h u_r, h u_theta), relative to the
 # same pair: measured <= 1.9e-16 up to kappa = 0.9 (4e-18 at the
@@ -92,10 +92,8 @@ def _curved_divergence(div: float, true: np.ndarray):
 def _curved_mean(state, zero_amp, true_of):
     """The spot's mean mode: exact on u_s, roundoff on (h u_r, h u_theta).
 
-    The map onto toroidal continuity gives u_theta the O(kappa) mean its
-    m = +-1 modes need (``generate_curved_pipe_rolls``).  u_s, which
-    alone carries the flux and the wall shear, is held bit-exactly; the
-    pair continuity is straight in, to roundoff.
+    u_s, which alone carries the flux and the wall shear, is held
+    bit-exactly; the pair continuity is straight in, to roundoff.
     """
     same_s = np.array_equal(state[0, :, 0, 0], zero_amp[0, :, 0, 0])
     spot = true_of(state - zero_amp)

@@ -7,21 +7,23 @@ All offline (no solver runs; the solver-side kick machinery is
    *only* intra-window responses (no cross-kick contamination) --
    the empirical-covariance regression recovers ``M(l)`` to
    roundoff, ``identify_generator`` recovers ``L``, and the
-   causality entry reports exactly the planted lag-0 level.
-2. **Discrete Lyapunov**: the SciPy-free eigendecomposition fallback
-   matches ``solve_discrete_lyapunov``, and
-   ``predicted_forced_variance`` matches a long kicked-linear-system
-   simulation (pre-kick sampling convention).
+   causality entry stays at the planted lag-0 level (within 10x of
+   it, scaled by ``1/eps``).
+2. **Discrete Lyapunov**: the eigendecomposition closed form (the
+   tests' independent check of SciPy) matches
+   ``solve_discrete_lyapunov``, and ``predicted_forced_variance``
+   matches a long kicked-linear-system simulation (pre-kick sampling
+   convention) to 5 %; an unstable ``A`` is rejected.
 3. **File pipeline (statistical)**: a kicked linear system with an
    independent stochastic background, simulated on a real
    transient-growth operator bundle and written as
-   ``probes.bin``/``forcing.bin`` streams -- ``identify_ssi``
-   recovers the restricted reference generator to ~10 %, with a
-   small causality level, and pools two runs.
+   ``probes.bin``/``forcing.bin`` streams -- ``identify_ssi``,
+   pooling two runs on the sidecar-default basis, recovers the
+   simulated law (the restricted reference generator, damped) to
+   ~10 % with a small causality level, and the CLI's ``G_id`` tracks
+   that law's growth to 30 %.
 4. **read_forcing error paths**: missing sidecar, truncated record,
-   and the ``MIN_FORMAT_VERSION`` reject (an older stream's
-   coefficients were injected in a different basis / partner rule,
-   at an identical record layout).
+   and the ``MIN_FORMAT_VERSION`` reject.
 
 Usage::
 
@@ -111,7 +113,7 @@ def _cn_noise(rng, *shape) -> np.ndarray:
 
 
 def test_estimator_exactness() -> None:
-    """Uncontaminated windows: M(l) and L exact; causality = planted."""
+    """Uncontaminated windows: exact M(l) and L, planted causality level."""
     from scipy.linalg import expm
 
     m, n_kicks, max_lag, eps = 3, 40, 5, 0.01
@@ -155,7 +157,7 @@ def test_estimator_exactness() -> None:
 
 
 def test_discrete_lyapunov() -> None:
-    """Eig fallback == Bartels-Stewart; prediction == simulation."""
+    """Eig closed form == Bartels-Stewart; prediction == simulation."""
     from scipy.linalg import expm, solve_discrete_lyapunov
 
     m = 4
@@ -247,7 +249,7 @@ def _simulate_forced_run(
     the identification's own model class -- the Galerkin gap of a
     real subspace is physics, measured by the residuals, not part of
     this plumbing test) on the probe grid with the runtime's pre-kick
-    sampling convention (kick every ``c = 5`` samples), an
+    sampling convention (kick every ``c = 10`` samples), an
     independent white background in the basis coordinates, and writes
     the matching ``probes.*``/``forcing.*`` pair.
     """
@@ -277,9 +279,7 @@ def _simulate_forced_run(
 
 
 def test_identify_ssi_files() -> None:
-    """Statistical recovery through the full file pipeline.
-
-    With pooling, causality, the sidecar-default basis and the CLI.
+    """Statistical recovery through the full file pipeline (item 3).
 
     The simulated law is the restricted reference operator with extra
     damping: the laminar test operator is nearly neutral (spectral
@@ -314,7 +314,8 @@ def test_identify_ssi_files() -> None:
 
         # Lags comparable to the decay time: at short lags M is
         # near-identity and logm/tau amplifies the estimator noise
-        # (the module docstring's short-lag warning, seen live).
+        # (the short-lag warning of the ``response.ssi`` docstring,
+        # seen live).
         result = identify_ssi(
             [tmp / "run_a", tmp / "run_b"],
             3,
@@ -353,9 +354,6 @@ def test_identify_ssi_files() -> None:
             ]
         )
         with np.load(out) as z:
-            # G_id must track the growth curve of the simulated law;
-            # G_ref (the undamped reference restriction) is checked
-            # structurally.
             g_sim = ot.growth_curve(l_sim, z["t_grid"])
             rel = np.max(np.abs(z["G_id"] - g_sim) / g_sim)
             assert rel < 0.3, rel
@@ -390,8 +388,8 @@ def test_read_forcing_errors() -> None:
         assert data.w.shape == (2, 1, 2)
 
         # A pre-MIN_FORMAT_VERSION sidecar is rejected rather than
-        # misread: the record layout never changed, so only the
-        # injection basis / partner rule behind the coefficients did.
+        # misread at its unchanged record layout (what changed: the
+        # ``MIN_FORMAT_VERSION`` comment of ``response.ssi``).
         path = tmp / "forcing.json"
         meta = json.loads(path.read_text())
         meta["format_version"] = MIN_FORMAT_VERSION - 1

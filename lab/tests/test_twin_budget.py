@@ -8,11 +8,10 @@ This script guards the *physics* of the difference-field budget
 plane-Poiseuille, and with the mean-mode driving constraints active.
 Three code paths reach a twin run only through these configurations --
 the moving frame ``phys.u_grid = 2/3`` (whose cancellation the
-"Frame invariance" note argues but never measured), a *curved* base
+"Frame invariance" note argues but does not measure), a *curved* base
 flow inside ``rU`` (plane-Couette's ``dU/dy`` is constant), and an
-active mean-mode driving constraint, which no run without a driving
-knob can reach.  Each of them would show up as an unclosed budget, so
-the closure measurement below is what tests them.
+active mean-mode driving constraint.  Each would show up as an
+unclosed budget, so the closure measurement below is what tests them.
 
 Two questions, both measured rather than argued.
 
@@ -23,17 +22,23 @@ Two questions, both measured rather than argued.
    definition).  Each configuration is measured on a wall-normal
    ladder, and the residuals must *shrink* along it: a missing or
    mis-signed term would not.
+2. **Does the wall-normal-resolved budget regroup to this one?**
+   :func:`_yresolved` relates ``twin_ybudget.bin`` to
+   ``twin_budget.dat`` on the same runs: its algebraic identities must
+   hold under :data:`YEXACT_TOL` at every rung and seed, and its
+   truncation-limited numbers must converge and stay under
+   :data:`_YRES_BOUNDS`, asserted on ``pp-cbv`` alone, the one
+   configuration swept for them (:data:`_CONVERGE`).
 
 Measured
 --------
 Closure residuals, **max over ``twin.seed`` 3/5/7** at each rung
 (20 budget samples each).  The ``pp-cbv`` block was measured with
-the current partner construction, whose `$(0,0)$` perturbation
-preserves `$\Pi$`; the other four were measured with a construction
-that did not, which draws a different partner for a given
-``twin.seed`` and so changes every residual.  The bounds below are
-set against all five blocks; re-measure a block before tightening
-its bound.
+the driver's partner construction, whose `$(0,0)$` perturbation
+preserves `$\Pi$`; the other four with one that did not, which
+draws a different partner for a given ``twin.seed`` and so changes
+every residual.  The bounds below are set against all five blocks;
+re-measure a block before tightening its bound.
 
 ===========  ====  =======  =======  =======  =======
 config       ny    dU       du1      du2      T_tot
@@ -58,8 +63,8 @@ pc-span       33   1.6e-5   3.2e-3   2.3e-3   1.2e-2
 ===========  ====  =======  =======  =======  =======
 
 All 15 (config, seed) ladders shrink on ``du1``, ``du2`` and
-``T_tot``; ``dU`` does not, and is bounded absolutely instead.  Note
-the two flows land in different regimes: plane-Couette closes an order
+``T_tot``; ``dU`` does not, and is bounded absolutely instead.  The
+two flows land in different regimes: plane-Couette closes an order
 *tighter* on ``du2``/``T_tot`` and an order *looser* on ``dU``.
 
 The `$(y, k)$` numbers of :func:`_yresolved` on the same ``pp-cbv``
@@ -83,33 +88,31 @@ sides.
 
 Under ``twin.rotational_ybudget`` the set changes (``T_zero`` and
 ``N_tot`` in place of ``T_bins``; ``P_exact`` measured against
-``P_lift``) -- see :func:`_yresolved`.  ``T_zero`` there is exact by
-pointwise algebra and so has no `$n_y$` dependence at all, which is
-what that form buys.
+``P_lift``): :func:`_yresolved`.
 
 Configurations are **minimal flow units started from random
 perturbations**: the plane-Poiseuille box is `$2.0 \times 2 \times
 0.8$` at `$Re = 3000$` (`$Re_b = 2000$`, `$Re_\tau \approx 135$`, so
 `$l_x^+ \approx 270$`, `$l_z^+ \approx 108$`), plane-Couette the
 Hamilton-Kim-Waleffe `$1.75\pi \times 2 \times 1.2\pi$` at `$Re = 400$`.
-Wall-normal ladders are sized with ``scripts/wall_normal_resolution.py
-match`` and sit **above** the literature Chebyshev counts (at
-``fd_order = 8`` on the CGL grid, ``ny = 49`` resolves what 33 Chebyshev
-polynomials do to 1 %): the closure residual is a discretization error,
-so the resolution that settles it is not the resolution that settles the
-physics.
+Wall-normal ladders are sized with
+``scripts/wall_normal_resolution.py match`` and sit **above** the
+literature Chebyshev counts (the ``ny = 49`` rung:
+``tests/test_energy_budget.py``'s ``_PP_NY``): the closure residual is
+a discretization error, so the resolution that settles it is not the
+resolution that settles the physics.
 
 Each rung spins its **own** parent up with the solver rather than
-re-gridding one fine parent down.  Both would work, but a truncated fine
-state carries more grid-scale content than the coarse scheme would ever
-produce, which is the adverse case for the FD adjointness defect
-being measured -- it would manufacture convergence.  A per-rung parent
-is a bona fide solution of its own discretization.  (It is also why
-these numbers are not comparable to ``test_twin_driver.py``'s, which
-uses ``fd_order = 4`` and an *unstepped* random field as its parent.)
+re-gridding one fine parent down: a truncated fine state carries more
+grid-scale content than the coarse scheme would ever produce, the
+adverse case for the FD adjointness defect being measured, and would
+manufacture convergence, while a per-rung parent is a bona fide
+solution of its own discretization.  (It is also why these numbers are
+not comparable to ``test_twin_driver.py``'s, which uses
+``fd_order = 4`` and an *unstepped* random field as its parent.)
 
 Single-process throughout, so unlike ``test_twin_driver.py`` this script
-needs no ``mpirun`` (a lone process needs no launcher).
+needs no ``mpirun``.
 
 Usage::
 
@@ -123,7 +126,10 @@ Usage::
 comma-separated list, so ``pp-cbv`` does not also select
 ``pp-cbv-span``.  ``--measure`` reports the numbers without asserting
 the bounds; ``--spin`` / ``--horizon`` override the parent spin-up and
-the twin horizon (advective units; ``--quick`` shortens both).
+the twin horizon (advective units).  ``--quick`` shortens both, keeps
+the coarsest rung alone and, like ``--measure``, asserts no bound: a
+smoke run, not a guard.  ``--ladder`` and ``--seeds`` override the
+rungs and the partner seeds (default: seed 3 alone).
 """
 
 from __future__ import annotations
@@ -167,46 +173,41 @@ _HKW_LZ = 1.2 * math.pi
 #: ``name`` selects with ``--only``.  ``spin`` is the parent spin-up
 #: horizon and ``horizon`` the twin's own, both in advective units.
 #: Absolute bounds at each flow's **finest** rung, ~10x above the worst
-#: of three ``twin.seed`` values there (the measured table is in this
-#: module's docstring).  Ten, not the two or three that would look
-#: tighter: a fixed rung's residual varies by 1.2x-31x across seeds, so
-#: a 2x margin would be fitted to one draw.  Two sets because the two
-#: flows sit in genuinely different places -- plane-Couette closes an
-#: order tighter on ``du2``/``T_tot`` and an order *looser* on ``dU``.
+#: of three ``twin.seed`` values there (the module docstring's table).
+#: Ten, not the two or three that would look tighter: a fixed rung's
+#: residual varies by 1.2x-31x across seeds, so a 2x margin would be
+#: fitted to one draw.  Two sets because the two flows land in
+#: different regimes (module docstring).
 _PP_BOUNDS = {"dU": 3e-4, "du1": 2e-3, "du2": 1.5e-2, "T_tot": 1e-1}
 _PC_BOUNDS = {"dU": 5e-3, "du1": 1e-3, "du2": 5e-4, "T_tot": 1e-3}
 
 #: ``dU`` is bounded absolutely but **not** asserted to converge: it
-#: grows under refinement (plane-Couette: 5.9e-5 -> 1.3e-4 -> 4.2e-4
-#: over its ladder), because the mean-mode difference budget it is
-#: normalized by shrinks faster than its own absolute residual does.
-#: The same exclusion, for the same reason, as in
-#: ``lab/tests/test_twin_driver.py``.
+#: grows under refinement (``pc`` in the module docstring's table),
+#: because the mean-mode difference budget it is normalized by shrinks
+#: faster than its own absolute residual does.
 #:
 #: The truncation-limited `$(y, k)$` numbers of :func:`_yresolved`
 #: (``T_bins`` / ``pi_flux`` in the default convective form,
 #: ``N_tot`` / ``pi_flux`` under ``twin.rotational_ybudget``) are
 #: **measured and printed for every configuration but asserted only
-#: where they have been swept** -- ``pp-cbv`` alone, which carries
-#: them in its own ``bounds`` / ``converge`` entries
-#: (:data:`_YRES_BOUNDS`).  This file's discipline is that a bound
-#: comes from a measured sweep over *that* configuration and its
-#: seeds, not from a plausible one elsewhere: run ``--measure`` on
-#: another config and extend it the same way.  The algebraic
+#: where they have been swept**: ``pp-cbv`` alone, which carries them
+#: in its own ``bounds`` / ``converge`` entries (:data:`_YRES_BOUNDS`).
+#: A bound here comes from a measured sweep over *that* configuration
+#: and its seeds, not from a plausible one elsewhere: run ``--measure``
+#: on another config and extend it the same way.  The algebraic
 #: identities need no sweep and are asserted everywhere under
 #: :data:`YEXACT_TOL`.
 _CONVERGE = ("du1", "du2", "T_tot")
 
 #: Absolute bounds on the truncation-limited `$(y, k)$` numbers at the
 #: **finest** rung of a ladder, from the ``--measure`` sweep in the
-#: module docstring.  Carried with the same ~10x margin as the closure
-#: bounds, and over the worst of three seeds, for the same reason: a
-#: fixed rung's residual is not reproducible to better than an order
-#: of magnitude across ``twin.seed``.  These sit at ``pp-cbv``'s
-#: default finest rung (``ny = 97``: 2.2e-2 and 5.3e-5), not at the
-#: 161 the docstring table reaches.  Convective-form values: the
-#: rotational ``pi_flux`` is a couple of decades larger, its ``Wp``
-#: being the work of the rougher Bernoulli pressure.
+#: module docstring, with the closure bounds' ~10x margin over the
+#: worst of three seeds, for the same reason (:data:`_PP_BOUNDS`).
+#: These sit at ``pp-cbv``'s default finest rung (``ny = 97``: 2.2e-2
+#: and 5.3e-5), not at the 161 the docstring table reaches.
+#: Convective-form values: the rotational ``pi_flux`` is a couple of
+#: decades larger, its ``Wp`` being the work of the rougher Bernoulli
+#: pressure.
 _YRES_BOUNDS: dict[str, float] = {"T_bins": 2e-1, "pi_flux": 5e-4}
 
 
@@ -346,9 +347,8 @@ def _spin_up(cfg: dict, ny: int, workdir: Path, spin: float) -> Path:
     """Run the solver from a random IC; return the final snapshot.
 
     Cached per ``(config, ny)``: ``twin.seed`` selects the *partner*,
-    so a seed sweep shares one reference trajectory -- which is also
-    the only way the sweep isolates the partner's effect.  The
-    reference's own ``init.random_seed`` is pinned for the same reason.
+    so a seed sweep shares one reference trajectory, the only way the
+    sweep isolates the partner's effect.
     """
     workdir.mkdir(parents=True, exist_ok=True)
     done = [
@@ -363,10 +363,10 @@ def _spin_up(cfg: dict, ny: int, workdir: Path, spin: float) -> Path:
         *_common(cfg, ny),
         "--init.random_amplitude",
         "0.2",
-        # Pinned: an unset seed is drawn from the OS entropy pool
-        # (:mod:`dnsjax.seeding`), so the reference trajectory -- and
-        # with it the measured bounds below and the directory cache
-        # above -- would differ every run.
+        # Pinned for the same reason, and because an unset seed is
+        # drawn from the OS entropy pool (:mod:`dnsjax.seeding`): the
+        # reference trajectory, and with it the measured bounds below
+        # and the directory cache above, would differ every run.
         "--init.random_seed",
         "1",
         "--stop.max_sim_time",
@@ -492,9 +492,8 @@ def _yresolved(member: Path) -> dict[str, float]:
       transfer terms, relative to `$\max_y\sum_k|T|$`.  Zero because
       `$\mathbf{a}\cdot(\mathbf{a}\times\mathbf{b}) = 0$` pointwise,
       hence resolution-independent.  It has **no convective
-      counterpart**: there `$\sum_k T(y)$` is the turbulent transport
-      of difference energy, a real flux that is zero only after
-      integrating in `$y$`.
+      counterpart** (:mod:`dnsjax_lab.twin.diagnostics`, "Spectral
+      budget": there `$\sum_k T(y)$` is a real flux).
 
     *Truncation*-limited, converging rather than holding:
 
@@ -508,17 +507,16 @@ def _yresolved(member: Path) -> dict[str, float]:
       ``T_tot`` non-zero, so ``T_bins`` and ``T_tot`` are one quantity
       seen twice.
     - ``N_tot`` (rotational only): `$\sum_k\int(P_U + P_r)$` against
-      ``P_tot + T_tot``.  The two nonlinear forms differ by the
-      gradient of `$\mathbf{u}^{(1)}\!\cdot\Delta\mathbf{u} +
-      |\Delta\mathbf{u}|^2/2$`, whose work is a wall-normal flux --
-      zero continuously, and discretely the same residual again.
+      ``P_tot + T_tot``, the two forms' volume totals, which agree up
+      to the same residual again (:mod:`dnsjax_lab.twin.diagnostics`,
+      "Two budget forms").
     - ``pi_flux``: `$\max_k|\int W_p\,\mathrm{d}y|$`, which the
       continuity identity forces to zero at every mode, normalized by
       the largest `$|\int\mathcal{V}\,\mathrm{d}y|$` over the same
       modes.  Form-*dependent* in magnitude though not in kind: the
-      rotational ``Wp`` is the work of the Bernoulli pressure, a
-      larger and rougher field than the static one, so its product-
-      rule residual is correspondingly larger.
+      rotational ``Wp`` is the work of the Bernoulli pressure, a larger
+      field than the static one, with a larger product-rule residual
+      (``DifferencePressure.work_density``).
     """
     from dnsjax_lab.analysis.twin import integrate_y, read_twin_ybudget
 
@@ -613,15 +611,12 @@ def _check_closure(
 ) -> list[str]:
     r"""Absolute bounds at the finest rung, plus ladder shrinkage.
 
-    *rows* holds, per rung, the **worst over the seeds run**.  That
-    matters: a single seed's residual is not reproducible to better
-    than an order of magnitude (measured spreads of 1.2x to 31x across
-    three ``twin.seed`` values at a fixed rung), so a one-seed ladder
-    comparison can flip on noise alone.  Taking the max over seeds is
-    what makes the shrinkage assertion a statement about the
-    discretization rather than about the draw -- and it is why the
-    absolute bounds below carry ~10x margin over the measured worst
-    case rather than the 2-3x that would look tighter.
+    *rows* holds, per rung, the **worst over the seeds run**: a single
+    seed's residual is not reproducible to better than an order of
+    magnitude (the spread: :data:`_PP_BOUNDS`), so a one-seed ladder
+    comparison can flip on noise alone, and the maximum over seeds
+    makes the shrinkage assertion a statement about the
+    discretization rather than about the draw.
     """
     bad: list[str] = []
     finest = rows[ladder[-1]]
@@ -745,8 +740,7 @@ def main() -> None:
     args = _parse_args()
     configs = CONFIGS
     if args.only:
-        # Exact names, not a substring filter: ``--only pp-cbv`` must
-        # not silently drag in ``pp-cbv-span`` and double the ladder.
+        # Exact names, not a substring filter (module docstring).
         want = [n.strip() for n in args.only.split(",") if n.strip()]
         known = [c["name"] for c in CONFIGS]
         unknown = [n for n in want if n not in known]

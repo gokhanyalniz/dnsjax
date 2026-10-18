@@ -1,9 +1,7 @@
 r"""Runtime stochastic-forcing tests (``dnsjax_lab.extensions.forcing``).
 
-Offline part (default; the ``test_probes.py`` pattern: ``params``
-mutated before importing ``sharding``), on 4 forced host CPU devices
-with a ``(np0, np1) = (2, 2)`` Explicit mesh so both mode axes are
-genuinely sharded:
+Offline part (default), on a 4-device ``(np0, np1) = (2, 2)`` mesh as
+in ``test_twin_unit.py``, so both mode axes are sharded:
 
 1. ``build_mode_injector`` scatter-adds exactly the given columns at
    the static global modes (owners on every mesh position; bit-exact
@@ -21,17 +19,23 @@ genuinely sharded:
    (read back through ``response.ssi.read_forcing``).
 4. Resume semantics: a second forcer against the same directory
    skips the recorded draws, so the coefficient stream continues the
-   uninterrupted sequence; a tampered sidecar / sidecar-less binary
-   is rejected.
+   uninterrupted sequence; its record count must match the kicks the
+   state has been through, so a fresh start finding a leftover stream
+   and a resume off an earlier snapshot are refused, a resume between
+   kicks accepted; a tampered sidecar / sidecar-less binary is
+   rejected.
 5. Profile-bundle validation (grid/system/mode/channel checks) and
-   the ``force`` extension's validate (all-or-none, range, mean
-   mode, kick/probe alignment, wall-bounded only), dispatched
-   through ``validate_parameters``.
+   the ``force`` extension's validate, dispatched through
+   ``validate_parameters``: the all-or-none quartet, mode range, the
+   mean mode, adaptive dt, kick/probe cadence alignment, the
+   unsupported systems (periodic, viscoelastic), and the stray-knob
+   rule for ``force.seed``, whose ``0`` exemption keeps snapshots
+   written before seeds became drawable resumable.
 
 MPI part (skipped with ``--unit-only`` or when ``mpirun`` is absent):
 solver-integration runs in temporary directories on a real
-transient-growth operator + controllability bundle for the same
-tiny laminar plane-Poiseuille configuration,
+transient-growth operator + controllability bundle exported at the
+runs' own tiny laminar plane-Poiseuille configuration,
 
 - **forced-laminar trajectory prediction**: with a laminar start the
   DNS response to the kicks is linear, so the probe stream must
@@ -41,11 +45,7 @@ tiny laminar plane-Poiseuille configuration,
   sample is exactly zero), the coefficient log, and the operator
   export, closed to ~1e-4 relative; ``identify_ssi`` runs on the
   same directory as a smoke check.
-- **parameter validation**: the all-or-none quartet, mode-range and
-  mean-mode rejections, the adaptive-dt and cadence guards, the
-  unsupported systems -- and the stray-knob rule for ``force.seed``,
-  whose ``0`` exemption keeps snapshots written before seeds became
-  drawable resumable.
+- **parameter validation**: run offline, item 5.
 - **resume continuation**: a run split in two by a snapshot resume
   reproduces the single-shot run's ``forcing.bin`` exactly (the PRNG
   skip) and, after dropping the duplicated seam sample, its
@@ -68,10 +68,9 @@ import sys
 
 os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
 
-# Set global ``params`` (and the ``force``/``probes`` extension
-# singletons), then configure JAX, before importing any dnsjax module
-# that captures values from them (``sharding.Sharding`` does so at
-# class definition time).
+# Set ``params`` and the ``force`` / ``probes`` extension singletons,
+# then configure JAX, before importing ``sharding`` (the
+# ``dnsjax.bootstrap`` order).
 from dnsjax_lab.extensions import force_params, probes_params  # noqa: E402
 
 from dnsjax.bootstrap import (  # noqa: E402
@@ -194,11 +193,7 @@ def _expected_kick_cols(
 
 
 def test_injector_scatter() -> None:
-    """The scatter-add places exactly the given columns, additively.
-
-    Owners sit on every mesh position, and the columns add on top of
-    existing content.
-    """
+    """The scatter-add places exactly the given columns, additively."""
     pairs = [(5, 0), (2, 0), (3, 1), (0, 2)]
     rng = np.random.default_rng(1)
     cols = rng.standard_normal((len(pairs), 3, NY)) + 1j * (
@@ -225,10 +220,6 @@ def test_injector_scatter() -> None:
 
 def test_kick_solver_basis() -> None:
     r"""Cylindrical/annular kicks enter the solver basis correctly.
-
-    The injected columns are converted into the solver's decoupled
-    `$u_\pm$` basis, and the real-FFT conjugate partner lands there as
-    the reality condition demands.
 
     Only ``params.phys.system`` selects the conversion (the state
     layout is geometry-independent), so scoping that field exercises
@@ -293,11 +284,7 @@ def test_kick_solver_basis() -> None:
 
 
 def test_kick_bit_exact_and_stream() -> None:
-    """One kick lands bit-exactly, and its record round-trips.
-
-    The conjugate partner included; the coefficient records round-trip
-    through ``read_forcing``.
-    """
+    """One kick lands bit-exactly, and its record round-trips."""
     with tempfile.TemporaryDirectory() as tmp:
         arrs = _write_profiles(Path(tmp) / "prof.npz")
         force_params.profiles = str(Path(tmp) / "prof.npz")
@@ -333,10 +320,7 @@ def test_kick_bit_exact_and_stream() -> None:
 
 
 def test_resume_skip_and_mismatch() -> None:
-    """An appending forcer continues the uninterrupted coefficient stream.
-
-    A tampered sidecar or a sidecar-less binary is rejected.
-    """
+    """An appending forcer continues the uninterrupted coefficient stream."""
     with tempfile.TemporaryDirectory() as tmp:
         _write_profiles(Path(tmp) / "prof.npz")
         force_params.profiles = str(Path(tmp) / "prof.npz")
@@ -496,10 +480,9 @@ def test_validate_force_params() -> None:
         _expect_value_error("mean mode")
         force_params.modes = "5,0"
 
-        # Adaptive dt: the kick statistics and their readers
-        # hard-code the uniform interval it_force * dt.  (dt_max set
-        # too, so the step-section validation passes and the
-        # rejection genuinely comes from the force hook.)
+        # Adaptive dt (why: ``dnsjax_lab.extensions._validate_force``);
+        # dt_max set too, so the step-section validation passes and
+        # the rejection comes from the force hook.
         params.step.adaptive = True
         params.step.dt_max = 0.02
         try:
@@ -523,13 +506,9 @@ def test_validate_force_params() -> None:
         _expect_value_error("wall-bounded")
         params.phys.system = saved[-1]  # back to the module's system
 
-        # Stray secondary knobs without the enabling quartet.  The
-        # ``seed == 0`` exemption is a backward-compatibility guard,
-        # not a nicety: it was this field's default before seeds became
-        # drawable, so *every* snapshot an older version wrote from an
-        # unforced run records it, and the snapshot layer feeds it
-        # straight back in.  Rejecting it would make those snapshots
-        # unresumable.
+        # Stray secondary knobs without the enabling quartet;
+        # ``seed == 0``, this field's default before seeds became
+        # drawable, is exempt (``dnsjax_lab.extensions._validate_force``).
         force_params.modes = None
         force_params.profiles = None
         force_params.amplitude = None
@@ -734,11 +713,7 @@ def _predict_trajectory(
 
 
 def test_mpi_forced_laminar_prediction() -> None:
-    """The forced-laminar DNS response equals the propagator prediction.
-
-    The exported propagator's superposition of the recorded kicks
-    (deterministic end-to-end).
-    """
+    """The forced-laminar DNS response equals the propagator prediction."""
     with tempfile.TemporaryDirectory() as tmpname:
         tmp = Path(tmpname)
         op_npz, cont_npz = _mpi_artifacts(tmp)
@@ -779,11 +754,7 @@ def test_mpi_forced_laminar_prediction() -> None:
 
 
 def test_mpi_resume_continuation() -> None:
-    """A snapshot-split forced run reproduces the single-shot streams.
-
-    The kick and probe streams match (PRNG skip; no lost or doubled
-    kick).
-    """
+    """A snapshot-split forced run reproduces the single-shot streams."""
     with tempfile.TemporaryDirectory() as tmpname:
         tmp = Path(tmpname)
         _, cont_npz = _mpi_artifacts(tmp)
@@ -821,11 +792,8 @@ def test_mpi_resume_continuation() -> None:
         assert_array_equal(p_split.t, p_full.t)
         assert_array_equal(p_split.u, p_full.u)
 
-        # Same split, with force.seed left unset: the fresh half draws
-        # one and records it, and the resumed half inherits it through
-        # the snapshot rather than drawing again -- which it must, or
-        # forcing.json's seed match key would reject the append.  The
-        # seam then joins as above.
+        # Same split, with force.seed left unset (the module docstring's
+        # drawn-seed path); the seam then joins as above.
         drawn = tmp / "drawn"
         drawn.mkdir()
         _run_solver(

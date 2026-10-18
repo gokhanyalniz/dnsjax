@@ -3,25 +3,26 @@ r"""Ensemble machinery tests (``ensemble_setup.py`` + ``response.ensemble``).
 Covers the orchestration + aggregation + identification chain without
 solver runs (the probe streams of the "members" are synthesized; the
 solver-side probe integration is ``lab/tests/test_probes.py``, and the
-full chain is a documented manual rehearsal):
+full chain with solver runs is the manual pipeline of
+``dnsjax_lab.analysis.response``):
 
-1. **harvest + build (real artefacts)**: two real mini snapshots ->
-   ``harvest`` manifest (spacing/t-min honoured) -> ``build``
+1. **harvest + build (real artefacts)**: three real mini snapshots ->
+   ``harvest`` manifest (spacing honoured: two picked) -> ``build``
    ``--dry-run`` (prints the plan, writes nothing) -> real ``build``
    with an ``--npy`` source and antithetic pairing: member dirs with
    ``seed.tar`` (via the real ``snapshot_perturb`` subprocesses, the
    antithetic pair seeds exactly mirrored about the parent),
-   generated ``parameters.toml``, ``run_commands.txt``, and
-   ``members.json``.
+   generated ``parameters.toml`` (``[probes]``, one relative horizon
+   for every member), ``run_commands.txt``, and ``members.json``.
 2. **Antithetic aggregation is exact**: synthetic member probe
    streams ``u_pm = base_k(t) +- eps resp(t)`` with a large random
    per-pair background -> ``aggregate_tree`` recovers ``eps resp``
-   to roundoff (the background and even orders cancel identically).
+   to roundoff (the background cancels identically).
 3. **Member alignment**: members whose parents sit late in a run (the
    accumulated clock's rounding) align; a sampling phase displaced by
    whole steps is refused.
 4. **identify_generator units**: exact multi-horizon recovery of a
-   known generator; branch-cut / singular / shape rejections.
+   known generator (to 1e-10); branch-cut / singular / shape rejections.
 5. **Direct identification end-to-end vs a known operator**: a real
    transient-growth ``--tg.save_operator`` bundle + controllability
    basis (real writers, subprocess); synthetic basis responses
@@ -170,7 +171,7 @@ def _build_tree(tmp: Path) -> Path:
         "--pairing",
         "antithetic",
         "--horizon",
-        str(NT * IT_PROBES * DT),  # note: NT intervals
+        str(NT * IT_PROBES * DT),  # NT intervals
         "--probe-modes",
         "3,0",
         "--it-probes",
@@ -221,8 +222,7 @@ def test_harvest_build_and_aggregate() -> None:
             # whatever time its parent was harvested at.
             assert f"max_sim_time = {NT * IT_PROBES * DT!r}" in toml
 
-        # Synthetic member probe streams: huge per-pair background,
-        # shared response -> antithetic aggregation is exact.
+        # Item 2 of the module docstring: synthetic member streams.
         rng = np.random.default_rng(5)
         resp = rng.standard_normal((NT, 1, 3, NY)) + 1j * rng.standard_normal(
             (NT, 1, 3, NY)

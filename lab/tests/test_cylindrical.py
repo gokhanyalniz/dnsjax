@@ -1,14 +1,12 @@
 r"""The forcing kick's carried slots, on the pipe geometry.
 
-The lab's part of ``tests/test_cylindrical.py`` (whose case 8b checks
-``column_differences`` on columns it builds itself): a ``[force]`` kick
-adds velocity columns to a pipe state, so it must add their share of
-the two carried spin-quad differences as well, which the forcer builds
-column by column (``StochasticForcer._carried_kick``:
-``column_differences`` over ``ModeColumns`` holding each column's `$m$`
-and `$k_z$`).  The map is linear, so per column it must equal
-``kinematic_differences`` of the whole field at that mode -- a check on
-the forcer's own wavenumber arithmetic.
+The lab's part of ``tests/test_cylindrical.py``, whose case 8b pins a
+kick's share of the two carried spin-quad differences on columns it
+builds itself.  Here a ``[force]`` kick's forcer builds them column by
+column (``StochasticForcer._carried_kick``: ``column_differences`` over
+``ModeColumns`` holding each column's `$m$` and `$k_z$`), and each must
+still equal ``kinematic_differences`` of the whole field at that mode
+-- a check on the forcer's own wavenumber arithmetic.
 
 Run as a script via ``uv run python lab/tests/test_cylindrical.py``.
 """
@@ -52,17 +50,7 @@ from dnsjax.geometries.wall_bounded.cylindrical import fourier  # noqa: E402
 
 
 def test_kick_carried_contribution_matches_the_field_map() -> None:
-    r"""A kick moves the carried differences as the field map does.
-
-    A ``[force]`` kick adds velocity columns to a pipe state, so it must
-    add their share of the two carried spin-quad differences as well,
-    which the forcer builds column by column
-    (``StochasticForcer._carried_kick``: ``column_differences`` over
-    ``ModeColumns`` holding each column's `$m$` and `$k_z$`).  The map
-    is linear, so per column it must equal
-    :func:`kinematic_differences` of the whole field at that mode --
-    a check on the forcer's own wavenumber arithmetic too.
-    """
+    """A kick moves the carried differences as the field map does."""
     from dnsjax_lab.extensions.forcing import StochasticForcer
 
     from dnsjax.geometries.wall_bounded._cylindrical_stepping import (

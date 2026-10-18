@@ -1,18 +1,16 @@
 r"""JAX-free probe-reader tests (``dnsjax_lab.analysis.response.probes``).
 
 Runs entirely on synthetic ``probes.bin``/``probes.json`` pairs
-written by hand with NumPy (no solver, no JAX -- the import guard is
-the first assertion), covering:
+written by hand with NumPy (no solver), covering:
 
-- the JAX-free import guarantee of the reader module;
+- the JAX-free import guarantee of the reader module (asserted
+  first, and again after the last test);
 - ``read_probes`` reconstruction (dtype from the sidecar, complex128
   upcast from ``<f4`` values, path forms: directory / ``.bin`` /
-  ``.json``), the truncated-trailing-record drop, and the
+  ``.json``), the truncated-trailing-record drop, the resume-seam
+  drop (exact-duplicate timestamps, the last kept), and the
   non-monotonic-timestamp warning path;
-- the ``MIN_FORMAT_VERSION`` reject: the record layout is version-
-  independent, so an old sidecar reads cleanly and only its
-  component basis is wrong -- the version check is the whole
-  defence against that silent misread;
+- the ``MIN_FORMAT_VERSION`` reject of an older sidecar;
 - ``mean_profile``: laminar-profile addition, tilt projection, and
   the ``t_min`` transient cut;
 - ``re_tau`` against a closed-form total profile (Fornberg stencils
@@ -160,8 +158,9 @@ def test_read_probes_rejects_old_format() -> None:
     """A pre-``MIN_FORMAT_VERSION`` sidecar is rejected, not misread.
 
     The record layout never changed, so an old stream reads without
-    error and only its component basis is wrong -- the version check
-    is the only thing standing between it and a silent misread.
+    error and the version check is the only guard against a silent
+    misread (what changed: the reader's ``MIN_FORMAT_VERSION``
+    comment).
     """
     with tempfile.TemporaryDirectory() as tmp:
         _write_stream(tmp, np.array([0.0, 0.01]))
@@ -210,7 +209,6 @@ def test_re_tau_closed_form() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         _write_stream(tmp, t)
         data = rp.read_probes(tmp)
-        # mean scale 1.5 -> U = (1 + 1.5/4)(1 - y^2); |dU/dy|_w = 2.75.
         assert_allclose(rp.re_tau(data), math.sqrt(RE * 2.75), rtol=1e-12)
 
 

@@ -1,30 +1,26 @@
 r"""Spectral-mode probe stream tests (``dnsjax_lab.extensions.probes``).
 
-Offline part (default; the ``test_snapshot.py`` pattern: ``params``
-mutated before importing ``sharding``), on 4 forced host CPU devices
-with a ``(np0, np1) = (2, 2)`` Explicit mesh so **both** mode axes are
-genuinely sharded:
+Offline part (default), on a 4-device ``(np0, np1) = (2, 2)`` mesh as
+in ``test_twin_unit.py``, so both mode axes are sharded:
 
 1. ``build_mode_extractor`` returns the exact stored columns for
    modes owned by every mesh position -- including the mean mode
    ``(0,0)`` and modes whose owner is a non-zero device on one or
    both axes (the sharded-gather class that single-device runs cannot
-   exercise).  The reference state is built per device via
-   ``snapshot.assemble_local_shards`` from a closed-form
-   ``(c, y, i2, i3)`` formula, so the comparison is bit-exact.
+   exercise) -- bit-exact against a closed-form ``(c, y, i2, i3)``
+   state built per device (``snapshot.assemble_local_shards``).
 2. The same gather on a **cylindrical/annular** system converts every
-   column out of the solver's decoupled `$u_\pm$` basis (the
-   conversion is selected by ``params.phys.system`` alone, so it runs
-   on the same mesh and state layout): the written stream is physical
-   whatever the solver carries.
+   column out of the solver's decoupled `$u_\pm$` basis: the written
+   stream is physical whatever the solver carries.
 3. ``ProbeStream`` writer semantics: record/auto-flush/final-flush
-   byte layout (read back both raw and through the
+   byte layout (read back through the
    ``dnsjax_lab.analysis.response.probes`` reader), append-on-matching-
    sidecar, hard rejection of a mismatched sidecar and of a
-   sidecar-less ``probes.bin``, and the non-finite scan message.
+   sidecar-less ``probes.bin``, the atomic sidecar write (a partial
+   write never makes the path exist), and the non-finite scan message.
 4. ``harmonics.parse_mode_pairs`` syntax errors and the ``probes``
-   extension's validate (pairing, range), dispatched through
-   ``validate_parameters``.
+   extension's validate (pairing, range, fixed time step), dispatched
+   through ``validate_parameters``.
 
 MPI part (skipped with ``--unit-only`` or when ``mpirun`` is absent):
 solver-integration runs in temporary directories,
@@ -35,9 +31,9 @@ solver-integration runs in temporary directories,
   roundoff floor, and the reader's ``mean_profile`` / ``re_tau``
   reproducing the laminar profile (`$Re_\tau = \sqrt{2 Re}$`);
 - a random-IC **pipe** run whose ``t = 0`` samples are compared
-  column-for-column against the IC snapshot's stored spectral data --
-  the only check that the state ``__main__`` hands the stream is the
-  solver-basis one the extractor assumes;
+  column-for-column, to roundoff, against the IC snapshot's stored
+  spectral data -- the only check that the state ``__main__`` hands
+  the stream is the solver-basis one the extractor assumes;
 - a random-IC run (``mpirun -np 2 --dist.np1 2``, real multi-process)
   probing a mode owned by the second ``np1`` shard: finite, nonzero
   probe values through the same reader.
@@ -54,10 +50,8 @@ import sys
 
 os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
 
-# Set global ``params`` (and the ``probes`` extension singleton),
-# then configure JAX, before importing any dnsjax module that
-# captures values from them (``sharding.Sharding`` does so at class
-# definition time).
+# Set ``params`` and the ``probes`` extension singleton, then configure
+# JAX, before importing ``sharding`` (the ``dnsjax.bootstrap`` order).
 from dnsjax_lab.extensions import probes_params  # noqa: E402
 
 from dnsjax.bootstrap import (  # noqa: E402
@@ -145,10 +139,7 @@ def _make_state(scale: float = 1.0, nan_mode: tuple | None = None):
 
 
 def test_extractor_multi_device() -> None:
-    """The gather returns the exact owned columns for every mesh position.
-
-    Bit-exact against the construction formula.
-    """
+    """The gather returns the exact owned columns for every mesh position."""
     state = _make_state()
     out = np.asarray(build_mode_extractor(MODES)(state))
     assert out.shape == (len(MODES), 3, NY)
@@ -161,16 +152,12 @@ def test_extractor_multi_device() -> None:
 def test_extractor_solver_basis() -> None:
     r"""On a cylindrical/annular system the gather leaves the solver basis.
 
-    Each column is converted out of the solver's decoupled `$u_\pm$`
-    basis.
-
-    The state layout is geometry-independent, so the conversion branch
-    is selected purely by ``params.phys.system`` (read at build time)
-    and can be exercised on this module's mesh by scoping that field
-    -- the only thing about it the extractor reads.  Checks the map,
-    its direction (an identity or an inverted map would fail), and
-    that it is applied *after* the owner mask and the ``psum``, on
-    every mesh position.
+    The state layout is geometry-independent and ``params.phys.system``
+    (read at build time) is the only geometry input the extractor
+    takes, so scoping that field exercises the conversion on this
+    module's mesh.  Checks the map, its direction (an identity or an
+    inverted map would fail), and that it is applied *after* the owner
+    mask and the ``psum``, on every mesh position.
     """
     from dnsjax_lab.extensions.probes import _component_labels
 
@@ -201,11 +188,7 @@ def test_extractor_solver_basis() -> None:
 
 
 def test_probe_stream_roundtrip() -> None:
-    """The probe stream's record layout, flushing, appending and reading.
-
-    Record/flush byte layout, auto-flush at ``nbuffer``, append on a
-    matching sidecar, and reader agreement.
-    """
+    """The probe stream's record layout, flushing, appending and reading."""
     state = _make_state()
     scaled = _make_state(scale=2.0)
     with tempfile.TemporaryDirectory() as tmp:
@@ -270,18 +253,14 @@ def test_probe_stream_rejects_mismatch() -> None:
 def test_sidecar_write_is_atomic() -> None:
     """The sidecar path never exists holding a partial write.
 
-    Every rank tests ``json_path.exists()`` to choose between
-    "create" and "validate and append", while only the main process
-    writes it (``_open_files``, shared by the probe, forcing and twin
-    streams).  A plain ``open(path, "w")`` makes the path exist
-    *before* its content does, and a rank landing in that window dies
-    in ``json.load`` -- measured at 138 of 300 attempts with a
-    concurrent reader, so it is a routine multi-process failure, not
-    a rare one.  ``write_sidecar_json`` commits by rename instead.
+    Every rank tests the path while only the main process writes it,
+    in the ``_open_files`` of the probe, forcing and twin streams (the
+    race, and how often a plain ``open(path, "w")`` loses it: "Atomic
+    sidecars" in the ``dnsjax.snapshot_meta`` Design notes).
 
     Deterministic here: interrupt the encode and require that the
-    target path did not appear.  Would fail on a revert to a direct
-    ``open(path, "w")``, which is the regression this guards.
+    target path did not appear, which a direct ``open(path, "w")``
+    would fail.
     """
     import json as _json
 
@@ -342,11 +321,7 @@ def test_parse_mode_pairs() -> None:
 
 
 def test_validate_probe_params() -> None:
-    """Pairing and range checks of the ``probes`` section.
-
-    The extension's validate hook, dispatched through
-    ``validate_parameters``.
-    """
+    """Pairing, range and fixed-dt checks of the ``probes`` section."""
     saved = (probes_params.modes, probes_params.it_probes)
     try:
         validate_parameters()  # the module configuration is valid
@@ -360,10 +335,9 @@ def test_validate_probe_params() -> None:
         probes_params.modes = "0,4"  # i3 == nx // 2 out of range
         _expect_value_error("out of range")
 
-        # Adaptive dt: the readers reconstruct the uniform sample
-        # interval as it_probes * dt, so the stream is fixed-dt only.
-        # (dt_max set too, so the step-section validation passes and
-        # the rejection genuinely comes from the probes hook.)
+        # Adaptive dt (why: ``dnsjax_lab.extensions._validate_probes``);
+        # dt_max set too, so the step-section validation passes and
+        # the rejection comes from the probes hook.
         probes_params.modes = "0,0"
         params.step.adaptive = True
         params.step.dt_max = 0.02
@@ -424,12 +398,7 @@ def _run_solver(workdir: Path, np_count: int, np1: int, args: list[str]):
 
 
 def test_mpi_laminar_probes() -> None:
-    """A laminar plane-Poiseuille probe stream, end to end.
-
-    Uniform sample times including the final cadence-aligned sample;
-    probe values at the round-off floor; the reader's total mean profile
-    and ``Re_tau`` are laminar.
-    """
+    """A laminar plane-Poiseuille probe stream, end to end."""
     with tempfile.TemporaryDirectory() as tmp:
         _run_solver(
             Path(tmp),
@@ -476,15 +445,12 @@ def test_mpi_laminar_probes() -> None:
 def test_mpi_pipe_probes_vs_snapshot() -> None:
     r"""The pipe's ``t = 0`` probe sample equals the IC snapshot's columns.
 
-    Component for component, against the stored spectral columns.
-
     The offline conversion tests pin the extractor in isolation; only
     a real run pins that ``__main__`` hands it a state in the solver's
-    `$u_\pm$` basis (an unconverted state would read as physical here
-    and this comparison is the only thing that would notice).  The
-    snapshot is an independent second implementation of the same
-    boundary crossing, written from the pre-solver physical state, so
-    agreement is a genuine cross-check rather than a tautology.
+    `$u_\pm$` basis (an unconverted state would read as physical
+    here).  The snapshot is an independent second implementation of
+    the same boundary crossing, written from the pre-solver physical
+    state, so agreement is a cross-check rather than a tautology.
 
     Agreement is to roundoff, not bit-exact: the snapshot holds the
     physical column as built, while the probe column has been through
@@ -541,11 +507,7 @@ def test_mpi_pipe_probes_vs_snapshot() -> None:
 
 
 def test_mpi_random_probes_np2() -> None:
-    """A random-IC run on 2 MPI processes probes the second shard's mode.
-
-    ``np1 = 2``, probing a mode owned by the second ``np1`` shard:
-    finite, nonzero values.
-    """
+    """A random-IC run on 2 MPI processes probes the second shard's mode."""
     with tempfile.TemporaryDirectory() as tmp:
         _run_solver(
             Path(tmp),

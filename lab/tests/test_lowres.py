@@ -4,8 +4,7 @@ The lab's cases of ``tests/test_lowres.py`` (the shared workers:
 ``tests/_lowres.py``), each in its own worker process:
 
 1. **reduce** -- the viscoelastic pipe, whose nine stored components
-   exercise the spec's parity table (``FlowSpec.component_parity``),
-   on one device and on a ``(2, 2)`` mesh.
+   exercise the spec's parity table (``FlowSpec.component_parity``).
 2. **pressure reference** -- plane Poiseuille and plane Couette:
    ``_cartesian_pressure.static_pressure`` equals the twin's tested
    difference path with a zero reference (``DifferencePressure.solve``
@@ -75,8 +74,7 @@ def _reference_worker(system: str) -> None:
     state, _ = solenoidal_state(params, flow)
     p = static_pressure(state, PoissonPressure(flow, fourier), fourier, flow)
 
-    # The reference: the twin's difference path with a zero reference --
-    # the same algebra in another arrangement (it transforms the zero
+    # The same algebra in another arrangement (it transforms the zero
     # reference, batches the gradients together), so round-off through
     # the Poisson solve: 1-2e-12 measured, a 50x margin below.
     dp = DifferencePressure(flow, fourier)

@@ -16,8 +16,8 @@ cases are:
   ``integrate`` checks pin where `$h$` enters the volume element.
 - the **viscoelastic** flows: the conformation read-back (components
   3..8) against the solver's stored physical tensor slice -- the pipe's
-  on the ``m0 = 2`` wedge, where the analysis package's tensor parity
-  classes must be right.
+  on the ``m0 = 2`` wedge (the only even-wedge tensor read-back), where
+  the analysis package's tensor parity classes must be right.
 
 Run directly::
 
@@ -39,11 +39,10 @@ KAPPA = 0.1
 
 
 def _curved(state, probe, outdir):
-    # The solver's metric-weighted quantities, with the weight divided
-    # out by its own dealiased collocation (as get_stats does): the
-    # curl of the carried (h u_s, u_r, u_th) is (om_s, h om_r, h om_th),
-    # and its continuity row -- the straight divergence of the carried
-    # state less divergence_defect -- is h^2 div u.
+    # The curl of the carried (h u_s, u_r, u_th) is (om_s, h om_r,
+    # h om_th), and its continuity row -- the straight divergence of
+    # the carried state less divergence_defect -- is h^2 div u; the
+    # weight comes out by the solver's own dealiased collocation.
     import jax.numpy as jnp
     from dnsjax_lab.flows.wall_bounded import curved_pipe as cp
     from dnsjax_lab.flows.wall_bounded.curved_pipe import flow, get_stats
@@ -86,11 +85,8 @@ def _curved_volume(system, st, info, ones) -> None:
 
 
 def _viscoelastic_pipe(state, probe, outdir):
-    # 9-component state in the *cylindrical* family: the velocity
-    # divergence takes the pipe's parity-reduced path (on the [:3]
-    # slice), and the ground truth for the tensor is the stored
-    # conformation slice itself -- which on the m0 = 2 wedge is what
-    # pins the analysis package's tensor parity classes.
+    # The velocity divergence takes the pipe's parity-reduced path (on
+    # the [:3] slice).
     from dnsjax_lab.flows.wall_bounded.viscoelastic_pipe import flow, get_stats
 
     from dnsjax.geometries.wall_bounded._base import to_pm_basis
@@ -104,18 +100,16 @@ def _viscoelastic_pipe(state, probe, outdir):
     # No omega dump: ``save_snapshot`` writes this system's **9**
     # components, and the velocity curl is already pinned node-for-node
     # by the core's 3-component ``pipe`` rows (same ``_curl_fn``, same
-    # parity-reduced ``D1``).  What only this row can pin is the
-    # *tensor* read-back on an even wedge.
+    # parity-reduced ``D1``).
     return get_stats, None, div_true
 
 
 def _viscoelastic_dean(state, probe, outdir):
-    # 9-component state; the velocity curl path is the annular one
-    # (pinned by the core's taylor-couette case).  The ground truth
-    # here is the stored conformation slice itself (format 6: the
-    # native components 3..8 are the physical tensor (c_zz, c_rz,
-    # c_thz, c_rr, c_thth, c_rth), read one-to-one; the solver state
-    # axes (r, m, k_ax) ARE the snapshot layout read_state returns).
+    # The velocity curl path is the annular one (pinned by the core's
+    # taylor-couette case).  Format 6: the native components 3..8 are
+    # the physical tensor (c_zz, c_rz, c_thz, c_rr, c_thth, c_rth), read
+    # one-to-one; the solver state axes (r, m, k_ax) ARE the snapshot
+    # layout read_state returns.
     from dnsjax_lab.flows.wall_bounded.viscoelastic_dean import get_stats
 
     np.save(os.path.join(outdir, "extra_true.npy"), np.asarray(state[3:]))
@@ -136,8 +130,7 @@ CASES: list[dict] = [
         "exp_re": 1.0,
     },
     {
-        # The one row with a metric (no wedge: curvature breaks the
-        # symmetry).
+        # No wedge: curvature breaks the symmetry.
         "system": "curved-pipe",
         "phys": {"re": 100.0},
         "geo": {"curvature": KAPPA},

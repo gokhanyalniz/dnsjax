@@ -7,10 +7,9 @@ The lab's part of ``tests/test_resume.py`` (the shared fixtures:
    core sections: turning kicks on over a kick-free snapshot is a
    trajectory change, a stored section matching the live one is not.
 2. An inherited ``[probes]`` / ``[force]`` configuration switched off
-   by its cadence's ``0`` returns to its defaults instead of failing
-   its "set together" check on what it inherited, and the recorded
-   dump then leaves both sections out (a section is recorded only
-   while it is configured).
+   by its cadence's ``0`` returns to its defaults (why: the core's
+   ``run_off_cadence_checks``), and the recorded dump then leaves both
+   sections out (a section is recorded only while it is configured).
 
 Run as a script::
 

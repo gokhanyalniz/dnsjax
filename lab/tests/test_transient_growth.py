@@ -9,7 +9,9 @@ pieces: ``tests/_transient_growth.py``), for quasi-Keplerian:
 * the CLI smoke run;
 * the published value: axially-periodic quasi-Keplerian optimal
   transient growth, Shi et al., Phys. Fluids 29, 044107 (2017),
-  Table III case I.
+  Table III case I, ``G_opt = 13.04`` (1 % relative) at
+  ``t_opt/tau_d = 27`` (2 %), in a linearly stable regime (negative
+  spectral abscissa).
 
 Run: ``uv run python lab/tests/test_transient_growth.py`` (``--fast``
 skips the published value; ``--worker`` runs the worker).
@@ -74,13 +76,11 @@ def _anchor_qk() -> None:
     print("  quasi-Keplerian (annular):")
     with tempfile.TemporaryDirectory() as d:
         p = Path(d)
-        # Axially-periodic quasi-Keplerian optimal transient growth,
-        # Shi et al., Phys. Fluids 29, 044107 (2017), Table III case I:
-        # eta = 0.71, R_Omega = -1.2, Re_i = 1e4, axial wavenumber
-        # k_z = 0, azimuthal m = 4 -> G_opt = 13.04 at t_opt/tau_d = 27.
-        # The regime is linearly stable (negative spectral abscissa); the
-        # growth is purely non-modal.  Code time == tau_d, so t_opt is in
-        # the paper's units.  m = 4 sits at index i2 = 4 for ntheta = 10.
+        # Table III case I (the module docstring): eta = 0.71, R_Omega =
+        # -1.2, Re_i = 1e4, axial wavenumber k_z = 0, azimuthal m = 4;
+        # the growth is purely non-modal.  Code time == tau_d, so t_opt
+        # is in the paper's units.  m = 4 sits at index i2 = 4 for
+        # ntheta = 10.
         _write_laminar(p / "k.txt", 1.0e4, -1.2, 0.71)
         run_tg(
             p / "k.txt",

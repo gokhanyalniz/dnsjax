@@ -1,48 +1,68 @@
 r"""Unit tests for the JAX-free twin analysis and the twin tree builder.
 
 The package is ``dnsjax_lab.analysis.twin``, the orchestration
-``ensemble_setup.py build-twin``.
+``ensemble_setup.py build-twin``.  Everything runs on synthetic files
+(no solver, no JAX -- asserted):
 
-Everything runs on synthetic files (no solver, no JAX --
-asserted): the ``.dat``/``twin.json`` readers with resume-seam
-duplicates, the per-component budget sums, member-tree aggregation
-(mean/std against direct NumPy; every alignment guard tripped on a
-real bad input, a phase-displaced member among them, with
-``align_atol`` stacking one as recorded; members whose ``t`` column
-carries the driver's own 9 significant digits, late in a long run,
-still stacking exactly), the growth-rate fits
-against planted laws, the
-``twin_spectra.bin`` reader (byte-exact round trip, truncated
-trailing record, duplicate-timestamp seams, version floor,
-decorrelation-ratio guards), the ``twin_yspectra.bin`` /
-``twin_ybudget.bin`` readers (round trip, seam drop, truncation,
-floor) across all three stored layouts -- the reader floor stays
-below the writer's version, so a member recorded before ``xz00``
-still opens -- the three-bin recovery agreeing across all three
-layouts, plane or not, ``fluctuation_energy`` agreeing between the two
-marginals, ``shape_alignment`` (normalized, symmetric,
-amplitude-blind), the reference spectra read alike from their own
-streams and from the pre-split combined layout (merged on the
-difference times, ``nan`` where the reference has no sample), the 3-D
-cube reader on a hand-built tar (whole, by wall-distance slab, a
-directory stacked and subset, mismatched points and a wrong ``kind``
-refused), the integral-length core against an independently
-evaluated two-mode reference, the log-coordinate moments (a planted
-Gaussian's centroid, covariance, correlation and ridge slope
-recovered; a constant factor cancels; raw-sum averaging is the moments
-of the mean) and their budget (the per-term rates add up to the
-finite-difference rate of a moving density, a pure growth term moves
-no centred moment, a translation moves the centroid at its speed), the
-growth-law diagnostics on planted laws (an exponential's flat
-`$\gamma$`-`$R$` diagram, an algebraic law's constant `$-1/\alpha$`
-and exponent, the logistic's `$-R/(1 - R)$` and equal early and late
-rates, exponential decorrelation's linear `$-\ln(1 - R)$`) and the
-window finder, and ``lab/scripts/ensemble_setup.py
-build-twin`` (dry run leaves no tree; an out-of-range shape knob is
-refused at build time; every member pins its seed and its whole
-perturbation shape, given or defaulted; the built tree's TOMLs /
-``members.json`` / ``run_commands.txt`` are consistent and feed
-``aggregate_members`` end to end via synthetic member streams).
+- the ``.dat``/``twin.json`` readers with resume-seam duplicates, and
+  the per-component budget sums;
+- the budget-closure residuals: machine zero on an exactly closing
+  stream, a planted imbalance read in its own component alone and
+  ``T_tot`` against its largest term, rows off the cadence grid
+  skipped rather than mis-paired, and each guard refusing;
+- member-tree aggregation: mean/std against direct NumPy; every
+  alignment guard tripped on a real bad input, a phase-displaced
+  member among them, with ``align_atol`` stacking one as recorded;
+  members whose ``t`` column carries the driver's own 9 significant
+  digits, late in a long run, still stacking exactly;
+- the growth-rate fits against planted laws;
+- the ``twin_spectra.bin`` reader: byte-exact round trip, truncated
+  trailing record, duplicate-timestamp seams, version floor,
+  decorrelation-ratio guards;
+- the ``twin_yspectra.bin`` / ``twin_ybudget.bin`` readers (round
+  trip, seam drop, truncation, floor) across all three stored layouts
+  -- the reader floor stays below the writer's version, so a member
+  recorded before ``xz00`` still opens -- and the three-bin recovery,
+  per component too, agreeing across all three layouts, plane or not;
+- ``fluctuation_energy`` agreeing between the two marginals, and
+  ``shape_alignment`` normalized, symmetric and amplitude-blind;
+- the budget regrouped as the difference-energy balance, to exact
+  arithmetic in the legacy and the current layout: each term is its
+  combination of stored densities, and those that
+  :data:`~dnsjax_lab.analysis.twin.yspectra.BALANCE_PARTS` leaves in
+  the sum add up to the stored sum ``P_U + P_r + T_ref + T_self + V + Wp``;
+  ``input`` is ``Wp``'s `$(0, 0)$` mode and nothing else (zero off
+  column 0 of every marginal, that mode in column 0, the whole of
+  ``xz00``, the same numbers whichever layout it is found in) and
+  ``tr_press`` the rest of ``Wp``, exactly, nothing at `$(0, 0)$`; a
+  rotational stream, and a name that is no balance term, are refused;
+- the reference spectra read alike from their own streams and from
+  the pre-split combined layout: merged on the difference times,
+  exactly where the reference has a sample and ``nan`` elsewhere, and
+  on their own times through the ``*_ref`` readers, the ``(y, k)`` one
+  refusing a run that has none;
+- the 3-D cube reader on a hand-built tar: whole, by wall-distance
+  slab, a directory stacked and subset, mismatched points and a wrong
+  ``kind`` refused;
+- the integral-length core against an independently evaluated
+  two-mode reference;
+- the log-coordinate moments (a planted Gaussian's centroid,
+  covariance, correlation and ridge slope recovered; a constant factor
+  cancels; raw-sum averaging is the moments of the mean) and their
+  budget (the per-term rates add up to the finite-difference rate of a
+  moving density, a pure growth term moves no centred moment, a
+  translation moves the centroid at its speed);
+- the growth-law diagnostics on planted laws (an exponential's flat
+  `$\gamma$`-`$R$` diagram, an algebraic law's constant `$-1/\alpha$`
+  and exponent, the logistic's `$-R/(1 - R)$` and equal early and late
+  rates, exponential decorrelation's linear `$-\ln(1 - R)$`) and the
+  window finder;
+- ``lab/scripts/ensemble_setup.py build-twin``: dry run leaves no
+  tree; an out-of-range shape knob is refused at build time; every
+  member pins its seed and its whole perturbation shape, given or
+  defaulted; the built tree's TOMLs / ``members.json`` /
+  ``run_commands.txt`` are consistent and feed ``aggregate_members``
+  end to end via synthetic member streams.
 
 Usage::
 
@@ -106,11 +126,10 @@ def _write_dat(
 ) -> None:
     """Write a ``.dat`` stream in the driver's layout.
 
-    Values carry 17 significant digits, which is more than the driver
-    writes (``outs.stats_precision``, 9 by default) and harmless for
-    them.  Not for ``t``, the one column whose precision is structural
-    -- it is what members are aligned on -- so *t_digits* writes it the
-    way the driver does.
+    Values carry 17 significant digits, more than the driver writes
+    (``outs.stats_precision``, 9 by default) and harmless for them,
+    but not for ``t``: members are aligned on it, so *t_digits* writes
+    it the way the driver does.
     """
     names = list(columns)
     width = max(24, max(len(n) for n in names))
@@ -297,7 +316,7 @@ def _closing_budget_columns(
         for b, c in pairs:
             cols[f"P_{x}({b},{c})"] = a * ones
         for j, (b, c) in enumerate(_TRANSPORTS[x]):
-            # +v, -v, +2v, -2v: sums to zero, terms are O(1).
+            # +v, -v, +2v, -2v.
             sign = 1.0 if j % 2 == 0 else -1.0
             cols[f"T_{x}({b},{c})"] = sign * (1.0 + j // 2) * ones
         cols[f"eps_{x}"] = ones.copy()
@@ -377,13 +396,10 @@ def test_closure_residuals() -> None:
         assert res.n_samples == 9, res.n_samples
         assert res["du1"] < 1e-12
 
-        # 5. An energy row off the cadence grid is skipped, not
-        #    allowed to shift the pairing.  The driver writes an
-        #    unconditional final ``twin.dat`` row whatever the cadence,
-        #    and a resume seam adds an interior one when
-        #    ``outs.it_snapshot`` is not a multiple of
-        #    ``twin.it_energy``; at ``it_energy > 1`` both are routine.
-        #    Neither may change a single residual.
+        # 5. An energy row off the cadence grid (the final row, a
+        #    resume seam's; ``dnsjax_lab.analysis.twin.series``,
+        #    "Off-grid rows") is skipped, not allowed to shift the
+        #    pairing: neither may change a single residual.
         for name, extra in (
             ("tail", [1.0 + 0.01 * 50 + 0.003]),  # trailing, off-lattice
             ("seam", [1.0 + 0.01 * 20 + 0.004]),  # interior, off-lattice
@@ -411,10 +427,9 @@ def test_closure_residuals() -> None:
 
         mdir = root / "jitter"
         _closing_member(mdir)
-        # Every gap different: no lattice fits more than two rows, so
-        # this is the case that must still refuse (a genuinely
-        # non-uniform stream, as opposed to a uniform one carrying a
-        # couple of off-grid rows).
+        # Every gap different, so no lattice fits more than two rows: a
+        # non-uniform stream, which must still refuse, unlike a uniform
+        # one carrying a couple of off-grid rows.
         t = 1.0 + np.cumsum(0.01 * (1.0 + 0.3 * np.arange(51)))
         _write_dat(mdir / "twin.dat", _energy_columns(t))
         _expect_value_error(
@@ -510,11 +525,11 @@ def test_aggregation() -> None:
         )
 
         # A grid the same length but displaced in phase (a parent off
-        # the cadence grid under an absolute-step anchor) is told
-        # apart from a different horizon, and ``align_atol``
-        # stacks it as recorded, reporting how far apart.  As the
-        # driver wrote them, which is a whole number of steps: here a
-        # 0.001 step sampled every 10, parent 4 steps off the others'.
+        # the cadence grid, the cadence counted in absolute steps) is
+        # told apart from a different horizon, and ``align_atol``
+        # stacks it as recorded, reporting how far apart.  Displaced by
+        # whole steps, as the driver writes them: here a 0.001 step
+        # sampled every 10, parent 4 steps off the others'.
         _write_member(tree / "m0001", parent_t=11.0, scale=2.0)
         record = json.loads((tree / "m0001" / "twin.json").read_text())
         record.update(parent_t=11.004, dt=0.001, it_energy=10)
@@ -535,12 +550,10 @@ def test_aggregation() -> None:
 def test_aggregation_at_driver_precision() -> None:
     """Members late in a long run stack on the driver's own ``t`` column.
 
-    The driver writes ``t`` at ``outs.stats_precision`` significant
-    digits and ``twin.json`` holds ``parent_t`` as a full double, so
-    ``t - parent_t`` carries a per-member offset of up to half a unit
-    in the last written digit -- several times ``1e-7`` at these
-    parents, against a stack that must tell a real displacement from
-    none.  The rows are read as whole steps instead.
+    At these parents ``t - parent_t`` carries a per-member offset of
+    several times ``1e-7`` (:mod:`dnsjax_lab.analysis.twin.series`,
+    "Relative time is a step count"), against a stack that must tell a
+    real displacement from none; the rows are read as whole steps.
     """
     digits = Outputs().stats_precision
     parents = (3200.000000123, 7700.000000456, 5100.00000078)
@@ -573,8 +586,8 @@ def test_aggregation_at_driver_precision() -> None:
                 }
             )
         )
-        # The plain difference is that far apart -- what the
-        # stack compared before, and refused -- so this case has teeth.
+        # The plain differences are that far apart, which a stack of
+        # them would refuse, so the case fails without the step count.
         raw = [
             read_dat(tree / f"m{k}" / "twin.dat")["t"] - p
             for k, p in enumerate(parents)
@@ -724,11 +737,9 @@ def test_spectra_reader() -> None:
 def test_reference_layouts() -> None:
     """The reference spectra read alike in both layouts.
 
-    Pre-split, ``e_ref`` / ``r_*`` ride the difference records
-    (``includes_ref``); split, they are streams of their own on their
-    own cadence.  The merged reads place them on the difference times
-    exactly where they have samples and ``nan`` elsewhere; the
-    ``*_ref`` readers return them on their own times either way.
+    A pre-split directory, ``e_ref`` / ``r_*`` inside the difference
+    records (``includes_ref``), against a split one whose reference
+    streams sample every other difference time.
     """
     from dnsjax_lab.analysis.twin import (
         read_twin_spectra_ref,
@@ -953,11 +964,7 @@ def test_build_twin() -> None:
 
     The parent snapshot is built by the ``test_twin_driver.py
     --build-parent`` worker in a subprocess (this process stays
-    JAX-free); ``harvest`` and ``build-twin`` run as real CLIs; the
-    built tree's TOMLs and index are checked, member streams are then
-    synthesized in place (as if the runs had completed), and
-    ``aggregate_members`` consumes the real ``members.json`` end to
-    end.
+    JAX-free); ``harvest`` and ``build-twin`` run as real CLIs.
     """
     import tomllib
 
@@ -1291,11 +1298,8 @@ def test_yspectra_reader() -> None:
 def test_stored_layouts() -> None:
     """All three on-disk layouts read, and name their own fields.
 
-    The reader floor is deliberately *not* raised with the writer's
-    ``format_version``, so a member recorded before ``xz00`` existed
-    still opens: its sidecar has no ``suffixes`` key and the legacy
-    triple is what that means.  What the newer layouts add is the
-    key itself, which is then the only thing consulted.
+    Why the legacy one, with no ``suffixes`` key, still opens:
+    :mod:`dnsjax_lab.analysis.twin.yspectra`.
     """
     from dnsjax_lab.analysis.twin import (
         LEGACY_SUFFIXES,
@@ -1349,11 +1353,9 @@ def test_stored_layouts() -> None:
 def test_bin_energies_without_the_plane() -> None:
     """The three bins come back from every layout, plane or not.
 
-    The ``k_x`` marginal's first column is the whole ``k_x = 0`` plane,
-    so ``E_du1`` (per component too) and ``E_du2`` need only it and
-    the ``(0, 0)`` mode.
-    One mode plane stored in all three layouts must give one answer --
-    the plane identity, evaluated on the plane itself.
+    One mode plane stored in all three layouts must give one answer:
+    the identity :func:`~dnsjax_lab.analysis.twin.yspectra.bin_energies`
+    reads, evaluated on the plane itself.
     """
     from dnsjax_lab.analysis.twin import (
         bin_energies,
@@ -1414,8 +1416,8 @@ def test_fluctuation_energy() -> None:
     rng = np.random.default_rng(11)
     w = np.asarray(_y_sidecar({})["y_weights"])
     # A consistent pair of marginals: one non-negative mode energy
-    # summed over the axis each of them contracts, and its k_x = 0
-    # plane.  This is the structure the writer produces, so the two
+    # summed over the axis each of them contracts, and its (0, 0)
+    # mode.  This is the structure the writer produces, so the two
     # marginals must report the same total.
     modes = rng.random((3, NY, N_KZ, N_KX))
     r_x = modes.sum(axis=-1)
@@ -1447,9 +1449,8 @@ def test_fluctuation_energy() -> None:
     assert one.shape == ()
     assert_allclose(one, want[0], rtol=1e-14)
 
-    # The same idea at its two coarser resolutions, each the next
-    # one's input: the spectrum without its (0, 0) mode, that
-    # spectrum's k-sum, and the profile's wall-normal average.
+    # The other two reductions of the same idea
+    # (:func:`~dnsjax_lab.analysis.twin.yspectra.mean_free_spectrum`).
     from dnsjax_lab.analysis.twin import (
         fluctuation_profile,
         mean_free_spectrum,
@@ -1472,8 +1473,7 @@ def test_fluctuation_energy() -> None:
 def test_shape_alignment() -> None:
     """The `(y, k)` shape overlap is normalized, symmetric and scale-blind.
 
-    Blind to amplitude -- the three properties a calibration reads off
-    it.
+    The three properties a calibration reads off it.
     """
     from dnsjax_lab.analysis.twin import shape_alignment
 
@@ -1483,9 +1483,8 @@ def test_shape_alignment() -> None:
     q = rng.random((NY, N_KZ))
 
     # A shape against itself is 1, and against a rescaling of itself
-    # still 1: the measure sees shape and not amplitude, which is why
-    # a candidate initial condition can be scored without matching the
-    # energy of the field it is compared with.
+    # still 1: a candidate initial condition is scored without
+    # matching the energy of the field it is compared with.
     assert_allclose(shape_alignment(p, p, w), 1.0, atol=1e-14)
     assert_allclose(shape_alignment(p, 1.0e-7 * p, w), 1.0, atol=1e-14)
     assert_allclose(shape_alignment(p, q, w), shape_alignment(q, p, w))
@@ -1501,9 +1500,8 @@ def test_shape_alignment() -> None:
     assert_allclose(
         shape_alignment(left, left + right, w), 2.0**-0.5, atol=1e-14
     )
-    # Two uniforms of equal support overlapping in half of it is 1/2,
-    # which is the case worth pinning: it is the scale on which an
-    # initial condition's A(0) is read.
+    # Two uniforms of equal support overlapping in half of it give 1/2,
+    # pinned as the scale on which an initial condition's A(0) is read.
     shifted = np.zeros((NY, N_KZ))
     shifted[:, N_KZ // 4 : 3 * (N_KZ // 4)] = 1.0
     assert_allclose(shape_alignment(left, shifted, w), 0.5, atol=1e-14)
@@ -1603,19 +1601,8 @@ def test_balance_terms() -> None:
     One mode plane per stored term, stored through
     :func:`_plane_blocks` in the legacy layout (``x0``, no ``xz00``)
     and in the current one, so the two describe the same field and the
-    regrouping can be held to exact arithmetic on both:
-
-    - each term is its combination of stored densities, and those that
-      :data:`~dnsjax_lab.analysis.twin.yspectra.BALANCE_PARTS` leaves in
-      the sum add up to the stored sum, ``P_U + P_r + T_ref + T_self +
-      V + Wp``;
-    - ``input`` is ``Wp``'s `$(0, 0)$` mode and nothing else: zero off
-      column 0 of every marginal, that mode in column 0, the whole of
-      ``xz00``, and the same numbers whichever layout it is found in;
-    - ``tr_press`` is the rest of ``Wp``, exactly, and nothing at
-      `$(0, 0)$`;
-    - a rotational stream, and a name that is no balance term, are
-      refused.
+    regrouping can be held to exact arithmetic on both (the identities:
+    module docstring).
     """
     from dnsjax_lab.analysis.twin import (
         BALANCE_PARTS,

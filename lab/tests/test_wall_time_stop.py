@@ -1,12 +1,10 @@
 r"""The wall-clock stop of ``dnsjax-twin``, on processes whose clocks disagree.
 
-The lab's case of ``tests/test_wall_time_stop.py`` (the mechanism:
-``tests/_wall_time_stop.py``): ``mpirun -np 2 dnsjax-twin``, with rank
-1 started ``--skew`` seconds after rank 0, must stop on its
-``stop.max_wall_time`` budget inside the stepping loop and shut down on
-both ranks, leaving a ``FINISHED`` that names the budget.  Its parent
-is the initial snapshot of the core's solver case, run here first and
-judged the same way.
+The lab's case of ``tests/test_wall_time_stop.py`` (the mechanism and
+what the stop must do: ``tests/_wall_time_stop.py``), on
+``mpirun -np 2 dnsjax-twin`` with rank 1 started ``--skew`` seconds
+after rank 0.  Its parent is the initial snapshot of the core's solver
+case, run here first and judged the same way.
 
 Run as a script (``--budget`` must leave the loop a few seconds after
 the setup; ``--skew`` must exceed a step)::

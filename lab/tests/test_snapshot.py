@@ -6,11 +6,9 @@ more than the velocity -- the 9-component viscoelastic states (3
 velocity + 6 conformation-tensor):
 
 - save -> load round trips of viscoelastic-dean (single-device,
-  ``np 1 -> 2`` and on a ``(2, 2)`` mesh -- the only 9-component *save*
-  on a multi-device mesh, where the I/O layout carries the component
-  axis whole and a component-count slip would land every component but
-  the first at the wrong file offset) and viscoelastic-pipe (whose
-  family routes through the pipe's regrid and basis paths);
+  ``np 1 -> 2`` and on a ``(2, 2)`` mesh, the only 9-component *save*
+  on a multi-device mesh) and viscoelastic-pipe (whose family routes
+  through the pipe's regrid and basis paths);
 - the Fourier-resolution regrid of a 9-component state;
 - an ``nr``-mismatch load assembles the 9-component state at the
   snapshot's radial count (``snapshot._n_components`` from the
@@ -63,8 +61,6 @@ CASES: list[tuple[str, str, str, str, int, int, int, int]] = [
         1,
     ),
     (
-        # The cylindrical 9-component state: same component count, but
-        # its family routes through the pipe's regrid/basis paths.
         "viscoelastic-pipe",
         "viscoelastic-pipe",
         "walled",
@@ -85,10 +81,9 @@ CASES: list[tuple[str, str, str, str, int, int, int, int]] = [
         1,
     ),
     (
-        # The only 9-component *save* on a multi-device mesh: the I/O
-        # layout carries the component axis whole and the engines loop
-        # over it, so a component-count slip would land every
-        # component but the first at the wrong file offset.
+        # The I/O layout carries the component axis whole and the
+        # engines loop over it, so a component-count slip would land
+        # every component but the first at the wrong file offset.
         "viscoelastic-dean 2D",
         "viscoelastic-dean",
         "walled",

@@ -4,7 +4,7 @@ r"""Premultiplied `$(\lambda, y)$` maps (``twin_spectral_maps.py``).
 into figures, and everything between the stored entry and the drawn
 contour is arithmetic this file pins.  The streams are built **in
 memory** -- ``_record_dtype`` on a synthetic sidecar, then a
-structured array -- so no case needs a solver run, and the three that
+structured array -- so no case needs a solver run, and the cases that
 exercise the reader write those same bytes into a temporary directory.
 
 matplotlib is not a solver dependency (the ``plots`` group), so the
@@ -21,16 +21,18 @@ What each case pins:
 2. **The ``ky`` convention.** Its second factor is the wall distance
    *in the plotted units*, so a ratio's wall/outer ratio is
    `$Re_\tau$` under ``ky`` against `$1$` under ``k`` -- the asymmetry
-   the module docstring documents ("Premultiplication"), asserted here
+   the script's docstring documents ("Premultiplication"), asserted here
    so it cannot change silently in either direction -- and an energy
    carries the unit conversion on top of it.
 3. **`$E^{\mathrm{ref}}$`.** The total-in-`$(y, k)$` reference energy
-   less its `$(0, 0)$` mode, averaged over the **distinct** absolute
-   instants of the member set: the dedup counts a pair straddling
-   :data:`~twin_spectral_maps._T_ATOL` once, and a doctored second
-   marginal is refused.  No map is drawn over it: a difference map and
-   its reference map are both in wall units, and a stream without its
-   reference half still draws both.
+   less its `$(0, 0)$` mode, contracted with the quadrature weights
+   and averaged over the **distinct** absolute instants of the member
+   set: the dedup counts a pair straddling
+   :data:`~twin_spectral_maps._T_ATOL` once, a doctored second
+   marginal is refused, and the three layouts give one number.  No
+   map is drawn over it: a difference map and its reference map are
+   both in wall units, and a stream without its reference half, which
+   has no `$E^{\mathrm{ref}}$`, still draws its difference maps.
 4. **The colour scale is a legend for the visible map.** A peak below
    the ordinate's floor must not set the levels -- under ``--clim
    frame`` and ``--quantile`` as much as under the frozen default --
@@ -51,21 +53,21 @@ What each case pins:
    So is a set whose grids are out of *phase* -- ``--align-atol``
    accepts one, up to half a cadence -- while a member merely
    covering another stretch of the clock is not confused with it.
-8. **The two decorrelations.** `$\mathcal{R}$` divides mode by mode
-   and `$\mathcal{R}^k$` by the same reference summed over `$k$`;
-   both take the `$(0, 0)$` mode off the reference and neither off
-   the perturbation, the summed panel is one ratio of sums, the
-   premultiplier reaches the second and not the first, and
-   ``volume_fac`` / the unit conversion reach neither.  A saturated
-   pair reads exactly 1, and an empty reference reads ``nan`` without
-   touching a colour scale.
+8. **The two decorrelations.** `$\mathcal{R}$` and `$\mathcal{R}^k$`
+   over :func:`~twin_spectral_maps.map_divisor`'s divisors: the
+   `$(0, 0)$` mode off the reference and not off the perturbation,
+   the summed panel one ratio of sums, the premultiplier reaching the
+   second and not the first, ``volume_fac`` / the unit conversion
+   reaching neither.  A saturated pair reads exactly 1, and an empty
+   reference reads ``nan`` without touching a colour scale.
 9. **The divisor is symmetrized before the fold.** On a deliberately
    asymmetric reference, ``--half mean`` gives the ratio of the
    folded halves rather than the mean of the two ratios, which is
    what makes the answer independent of the order.
 10. **The `$k$`-sum.** Marginal-free on all three stream layouts, and
     what each half of a decorrelation counts: every mode of the
-    perturbation, every mode but `$(0, 0)$` of the reference.
+    perturbation, every mode but `$(0, 0)$` of the reference.  Read in
+    chunks, it is the whole-field sum.
 11. **Spacetime.** The `$(y, t)$` map is that `$k$`-sum in the
     plotted units, folded and never premultiplied; its colour range
     sees only the columns the box shows; the logarithmic floor is the
@@ -80,15 +82,17 @@ What each case pins:
     switch adds exactly its own family -- ``--reference`` and
     ``--decorr-k`` each needing ``--spacetime`` as well before their
     spacetime map.  A budget figure, shape or not, is three columns of
-    the spectra's panels.
+    the spectra's panels.  The same set and switches hold on all three
+    layouts, an ``x0`` tag only where the stream has the plane and
+    never by default, and no tag for ``xz00``.
 13. **The budget is the balance.** The panels are the balance terms
     regrouped from the stored densities, each read the same way by
     all three readers, in the rows of the 3 x 3 grid; a map's pressure
     panel leaves out the driving input its `$m = 0$` column would
-    hold, a spacetime map's carries it in the same place, so those
-    panels add up to the ``sum``, which stays the stored one and is
-    titled `$\partial_t E_\Delta$`; a contribution's minus sign leads
-    its title; and a rotational stream is refused.
+    hold, a spacetime map's carries it in the same place (the stored
+    ``Wp``), so those panels add up to the ``sum``, which stays the
+    stored one and is titled `$\partial_t E_\Delta$`; a contribution's
+    minus sign leads its title; and a rotational stream is refused.
 14. **The budget grid.** Three columns whatever ``--ncols`` says, at
     the panel size ``--width`` fits to ``--ncols`` columns, so a
     budget figure is wider than ``--width`` rather than
@@ -102,12 +106,11 @@ What each case pins:
     `$t_\mathrm{rel} = 0$`, is drawn as under ``--clim frame`` and its
     extremes reach no later frame; a selection without it ramps from
     its own first frame.
-16. **Peak tracking.** The centroid of the frame's own top band --
-    the cells at or above `$(1 - 1/n)$` of its peak, weighted by value
-    and by trapezoidal widths in `$\ln\lambda$` and `$\ln y$`
-    (`$y$` on a linear ordinate), averaged in those coordinates -- sits
-    at the centre of a symmetric band, takes in the edge cell exactly
-    at the threshold, and is ``nan`` with nothing positive.  Exactly
+16. **Peak tracking.** The centroid of the frame's own top band
+    (:func:`~twin_spectral_maps.peak_centroid`) sits at the centre of
+    a symmetric band, takes in the edge cell exactly at the threshold,
+    sees only the rows the box shows, averages `$y$` itself on a
+    linear ordinate, and is ``nan`` with nothing positive.  Exactly
     the tracked panels carry it, it is the same under every
     ``--clim``, and its figure and ``.npz`` are written beside the
     frames.
@@ -115,9 +118,9 @@ What each case pins:
     inside the difference stream (the pre-split layout) or in their
     own ``twin_yspectra_ref.bin``, give the same normalization, maps,
     decorrelations and spacetime map, in a set of either or a mixed
-    set; a reference on half the difference cadence normalizes over
-    its own samples and refuses a reference map only at the frames it
-    lacks.
+    set; a reference on half the difference cadence
+    (``twin.it_yspectra_ref``) normalizes over its own samples and
+    refuses a reference map only at the frames it lacks.
 18. **Shape maps.** Each panel of each frame is the absolute panel
     premultiplied by `$k\,y^+$`, over the frame's peak of its figure's
     reference panel -- the summed spectrum, the production -- on the rows
@@ -131,24 +134,24 @@ What each case pins:
     the frames so far past the perturbation, whose frame it draws as
     ``--clim frame`` does; and ``--quantile`` reaches none of them.
 19. **History maps.** The `$(y, t)$` map is the `$k$`-summed map times
-    the plotted wall distance, the `$(\lambda, t)$` map the
-    wall-normal average over the doubled half-channel weights times
-    `$m$` with `$m = 0$` dropped, in wall units -- each premultiplied
-    after its sum, ``--no-volume-fac`` reaching neither average; the
-    two read one total; a shape history's rows reach 1 in any unit
-    system; the budget history's production is its two parts; and the
-    renderer
-    writes what the family promises, the logarithmic figure only for
-    an absolute non-negative history.
+    the plotted wall distance, the `$(\lambda, t)$` map, untouched by
+    ``--no-volume-fac``, the wall-normal average over the doubled
+    half-channel weights times `$m$` with `$m = 0$` dropped, ascending
+    in wavelength and in wall units -- each premultiplied after its
+    sum; the two read one total; a shape history's rows reach 1 in any
+    unit system; the budget history's production is its two parts; and
+    the renderer writes the figures and ``.npz`` the family promises,
+    the logarithmic one only for an absolute non-negative history.
 20. **Quantile lines** sit at their fractions of a uniform density in
     `$\ln x$` (in `$x$` on a linear axis), and an empty or negative
     row has none.
 21. **Size and tilt.** A Gaussian planted in `$(\ln\lambda, \ln y)$`
     comes back with its centroid and covariance; a constant factor
-    moves nothing; a signed map's moments are its positive part's,
-    the negative share reported; the ellipse is `$d^\top C^{-1} d =
-    1$`; every tracked frame carries its moments; and ``--no-frames``
-    writes the tracks and moments and no frame.
+    moves nothing (the moments are ratios over the mass); a signed
+    map's moments are its positive part's, the negative share
+    reported; the ellipse is `$d^\top C^{-1} d = 1$`; every tracked
+    frame carries its moments; and ``--no-frames`` writes the tracks
+    and moments and no frame.
 22. **The moment budget closes.** On a stream whose terms add up to
     `$\partial_t e$`, the per-term rates sum to the moments' own
     rates in physical space and on both marginals, and two streams on
@@ -157,13 +160,14 @@ What each case pins:
     interpolated, so a dip below it is not the crossing; a cell never
     above it is ``nan``, one never below it the first time -- which
     is every cell of a saturated pair.
-24. **Growth laws.** A curve built exponential-then-constant-rate is
-    marked with both rates; the global curve aligns the members'
-    ``twin.dat`` on whole steps, is their geometric mean, records its
-    source and falls back to the spectra totals without one; a
-    band's budget rates are its own terms over its own energy; and the
-    summary figure draws a window with no positive rate -- inside
-    saturation, its energy drifting down -- rather than failing on it.
+24. **Growth laws.** A curve built to grow exponentially, then
+    decorrelate at a constant rate, is marked with both rates; the
+    global curve aligns the members' ``twin.dat`` on whole steps, is
+    their geometric mean, records its source and falls back to the
+    spectra totals without one; a band's budget rates are its own
+    terms over its own energy; and the summary figure draws a window
+    with no positive rate -- inside saturation, its energy drifting
+    down -- rather than failing on it.
 
 Usage::
 
@@ -234,9 +238,9 @@ WITH_X0 = ("x", "z", "x0", "xz00")
 def _meta(stem: str, *, suffixes=DEFAULT, **over) -> dict:
     """A sidecar for *stem*; *over* replaces any key.
 
-    *suffixes* picks the layout.  :data:`LEGACY` writes the sidecar a
-    pre-``xz00`` run left -- no ``suffixes`` key, and the reader's
-    floor version -- which is what the back-compatibility cases need.
+    *suffixes* picks the layout: :data:`LEGACY` writes the sidecar a
+    pre-``xz00`` run left, at the reader's floor version, which is
+    what the back-compatibility cases need.
     """
     ny = over.pop("ny", NY)
     y = np.asarray(over.pop("y", _grid(ny)), dtype=float)
@@ -534,16 +538,7 @@ def test_premultiplication() -> None:
 
 
 def test_ky_is_the_plotted_y() -> None:
-    r"""``ky``'s second factor is `$y^+$`, so it carries a `$Re_\tau$`.
-
-    The `$k$` half is unit-invariant (`$k^+\Phi^+ = k\Phi$`) and the
-    `$y$` half is not, which is the whole difference between a
-    wall-unit ``ky`` map and an outer-unit one -- the module
-    docstring's "Premultiplication".  Pinned in both directions so
-    neither half can drift: on `$\mathcal{R}^k$`, a ratio with no unit
-    conversion to hide behind, and on an energy, which carries the
-    conversion on top.
-    """
+    r"""``ky``'s second factor is `$y^+$`, so it carries a `$Re_\tau$`."""
     meta = _meta("twin_yspectra")
     series = _series(
         "twin_yspectra", [_member(meta, _records(meta, "twin_yspectra", 2))]
@@ -592,9 +587,8 @@ def test_reference_scale() -> None:
     assert np.allclose(series.reference_scale(), want)
     assert np.all(want > 0.0)
 
-    # No map is drawn over it: a difference map and its reference map
-    # are both in wall units, which puts them on one scale already --
-    # a saturated pair's e_* at twice its r_*.
+    # No map is drawn over it: both maps are plain wall-unit energies
+    # (the script's "The reference average").
     units = tsm.Units(RE, RE_TAU)
     options = tsm.MapOptions(units)
     harmonics = np.arange(1, NKZ, dtype=float)
@@ -633,8 +627,9 @@ def test_distinct_instants() -> None:
     meta = _meta("twin_yspectra")
     first = _member(meta, _records(meta, "twin_yspectra", 3), path="a")
     second_rec = _records(meta, "twin_yspectra", 3, t0=101.0, seed=1)
-    # 101 reached by different arithmetic: the same instant, off by a
-    # few bits -- and a rounded key would split the pair.
+    # 101 reached by different arithmetic: the same instant, off by
+    # 2e-7 (far more than rounding, inside ``_T_ATOL``) -- and a
+    # rounded key would split the pair.
     second_rec["t"] = np.array([101.0 + 2e-7, 102.0, 103.0])
     second = _member(meta, second_rec, path="b")
     series = _series("twin_yspectra", [first, second])
@@ -900,11 +895,10 @@ def test_open_series() -> None:
             tsm.open_series([root / "seam"], "twin_yspectra").t_rel.size == 8
         )
 
-        # A member displaced by half a cadence (a parent off the
-        # cadence grid under an absolute-step anchor) is refused
-        # with the offset, not silently reduced to whatever frames
-        # coincide.  ``--align-atol`` accepts it, up to half a cadence
-        # and no further, and says how far apart it then pairs.
+        # A member half a cadence out of phase (the script's "Members
+        # out of phase") is refused with the offset, not silently
+        # reduced to the frames that coincide.  ``--align-atol`` accepts
+        # it up to half a cadence and no further, reporting the spread.
         _write_member(
             root / "off", "twin_yspectra", meta, second, parent_t=150.5
         )
@@ -944,9 +938,8 @@ def test_open_series() -> None:
         )
 
         # Members of different layouts are not one set: their records
-        # do not even hold the same fields.  A legacy member has no
-        # ``suffixes`` key, so the comparison is against the triple it
-        # stands for, not against a missing value.
+        # do not even hold the same fields.  A legacy member compares
+        # on the triple it stands for (the script's ``_STREAM_KEYS``).
         legacy_meta = _meta("twin_yspectra", suffixes=LEGACY)
         _write_member(
             root / "legacy",
@@ -968,12 +961,7 @@ def test_layouts_and_default_series() -> None:
 
     The three cases are the three streams that exist on disk: a
     pre-``xz00`` member, the current default, and the current default
-    under ``twin.x0_planes``.  All three must open; the `$(0, 0)$`
-    mode `$E^{\mathrm{ref}}$` subtracts is the same number in all
-    three, whichever field it is read from; and what is *drawn* is the
-    two difference-spectra marginals and their shape maps, and the
-    budget's and theirs where there is one, unless a switch asks for
-    more -- each adding its own family and nothing else.
+    under ``twin.x0_planes`` (what each pins: cases 3 and 12).
     """
     scales = {}
     registries = {}
@@ -1106,16 +1094,8 @@ def test_layouts_and_default_series() -> None:
 def test_reference_layouts() -> None:
     r"""The reference spectra read alike from both layouts.
 
-    The same records stored the pre-split way (``r_*`` inside
-    ``twin_yspectra.bin``, ``includes_ref``) and the split way (their
-    own ``twin_yspectra_ref.bin``) open through
-    :func:`~twin_spectral_maps.open_series` -- a set of either, and a
-    set mixing the two -- to the same `$E^{\mathrm{ref}}$`, reference
-    maps, decorrelations and reference spacetime map.  A split member
-    whose reference was sampled every other difference sample
-    (``twin.it_yspectra_ref``) averages its own samples and draws every
-    difference map and decorrelation, but a reference map only at the
-    frames the two cadences share.
+    Each set is written to disk and opened through
+    :func:`~twin_spectral_maps.open_series`.
     """
     options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
     meta = _meta("twin_yspectra")
@@ -1204,11 +1184,10 @@ def test_reference_layouts() -> None:
 def test_reference_scale_is_a_quadrature() -> None:
     r"""`$E^{\mathrm{ref}}$` averages over `$y$` with the *weights*.
 
-    The stored entries are densities already divided by
-    ``volume_fac`` and the weights sum to it, so the contraction is a
-    wall-normal **average**.  Every other fixture here uses a uniform
-    stand-in rule, which cannot tell that contraction from a plain
-    mean scaled by ``volume_fac``; a genuine non-uniform rule can.
+    A wall-normal **average** (the script's "The reference average").
+    Every other fixture here uses a uniform stand-in rule, which cannot
+    tell that contraction from a plain mean scaled by ``volume_fac``; a
+    genuine non-uniform rule can.
     """
     rng = np.random.default_rng(19)
     w = rng.random(NY) + 0.5
@@ -1307,9 +1286,7 @@ def test_decorrelation() -> None:
         moved = not np.allclose(base, plain, equal_nan=True)
         assert moved is premultiplied, name
 
-    # A pair that has decorrelated completely reads exactly 1 -- R at
-    # every plotted mode, R^k once its k-sum is taken -- and it does
-    # so by each half counting the modes it is documented to count.
+    # A completely decorrelated pair reads exactly 1 (:func:`_saturated`).
     saturated = _series("twin_yspectra", [_member(meta, _saturated(meta))])
     for component in (1, None):
         drawn = tsm.make_map(
@@ -1637,13 +1614,9 @@ def test_budget_is_the_balance() -> None:
     r"""The budget panels are the balance terms, however they are read.
 
     On both layouts the `$(0, 0)$` mode lives in -- ``xz00``, and a
-    legacy member's ``x0`` -- every balance term is its combination of
-    stored densities, as each of the three readers reads it: the
+    legacy member's ``x0`` -- through each of the three readers: the
     ensemble mean (``YSeries.field``), one member's frame
     (``_frame_mean``) and the chunked `$k$`-sum (``k_summed``).
-    ``input`` is that mode alone: a map's pressure panel leaves it
-    out, a spacetime map's carries it (the stored ``Wp``), and the
-    ``sum``, which counts it either way, is the stored one.
     """
     options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
     spec = tsm.SeriesSpec("twin_ybudget", "", "", tsm.SPACETIME)
@@ -1708,10 +1681,8 @@ def test_budget_is_the_balance() -> None:
         assert spacetime == [*tsm.SPACETIME_PANELS, "sum"]
         assert "press_input" in spacetime and "tr_press" not in spacetime
 
-    # The 3 x 3 grid, row by row: the production and its two parts; the
-    # dissipation and the viscous and pressure transports; the two
-    # advective transports and the sum budget_panels appends.  A
-    # spacetime map's pressure panel sits where the map's does.
+    # The 3 x 3 grid, row by row (the script's ``MAP_PANELS`` and
+    # ``SPACETIME_PANELS`` comments).
     assert tsm.MAP_PANELS == (
         "prod",
         "prod_mean",
@@ -1961,10 +1932,7 @@ def test_peak_track() -> None:
     got = tsm.peak_centroid(at(values, y_axis=linear, y_log=False), 10)
     assert np.allclose(got, (lam[3], linear[2])), got
 
-    # Exactly the panels with one continuous bulk are tracked: every
-    # panel of the difference spectra's two marginals, and the
-    # production and its mean-shear part on the budget's, each on its
-    # shape map too.
+    # Exactly the panels of the script's ``TRACKED`` are tracked.
     for prefix in ("e", tsm.SHAPE):
         for marginal in "xz":
             difference = tsm.spectra_panels(prefix, marginal)
@@ -1994,8 +1962,7 @@ def test_peak_track() -> None:
         ("s_prod_mean_x", None),
     ]
 
-    # The track is drawn on those panels alone: the history up to the
-    # frame, and the frame's point.
+    # The track is drawn on those panels alone.
     ylim = tsm.y_limits(budget, options)
     scales, _ = tsm.scan_panels(budget, panels, options, ylim=ylim)
     tracks = {
@@ -2067,10 +2034,7 @@ def test_shape_maps() -> None:
     One shape grown by four decades, on a grid fine enough to put rows
     under the ordinate's floor, with a spike planted there: the peak
     is read off the rows the box shows, so the spike sets nothing, and
-    every frame draws the same map.  The reference panel -- the summed
-    spectrum, and on the budget the production -- reaches 1 and is frozen
-    on the series; every other panel is over the same peak, on its own
-    range.
+    every frame draws the same map.
     """
     units = tsm.Units(RE, RE_TAU)
     options = tsm.MapOptions(units)
@@ -2284,14 +2248,12 @@ def test_shape_maps() -> None:
     prod = tsm.make_map(budget, "s_prod_z", 0, options=options).title
     assert r"\max\,\nu/u_\tau^4 = " in prod, prod
 
-    # Under --clim series and frame the production's levels are frozen
-    # on the series -- from its most negative value in any frame up to
-    # 1 -- and every other panel's are its own frame's.  Under --clim
-    # ramped every panel's are the frames so far past the perturbation,
-    # which at frame 2 are not the panel's own, and the perturbation's
-    # frame is drawn as under --clim frame, the production's frozen
-    # range not being its own there either: the case would pass without
-    # the ramp, or with the perturbation ramped, otherwise.
+    # The levels of case 18, the production frozen from its most
+    # negative value in any frame up to 1.  Under --clim ramped they are
+    # not the panel's own at frame 2, and at the perturbation's frame
+    # the production's frozen range is not its own either: the case
+    # would pass without the ramp, or with the perturbation ramped,
+    # otherwise.
     scales, _ = tsm.scan_panels(budget, panels, options, ylim=ylim)
     frozen = scales[("s_prod_z", None)]
     assert frozen.lo < 0.0 and frozen.hi == 1.0
@@ -2375,9 +2337,7 @@ def test_main_renders_the_selected_series() -> None:
             ]
         )
         assert code == 0
-        # The bare default set: the difference-spectra and budget
-        # marginals and their shape maps, each with the track of its
-        # tracked panels beside it, and nothing else.
+        # The bare default set (case 12).
         maps = [
             f"{kind}_{m}"
             for kind in (
@@ -2404,9 +2364,8 @@ def test_main_renders_the_selected_series() -> None:
                 f"{tag}_track.npz",
                 f"{tag}_track.png",
             ], tag
-        # A budget figure, shape or not, is three columns of the
-        # spectra's panels: the geometry is independent of the axis
-        # limits, so any serve.
+        # The budget figures' three columns (case 12): the geometry is
+        # independent of the axis limits, so any serve.
         style = tsm.PlotStyle(dpi=50)
         for tag, ncols, n_panels in (
             ("spectra_e_x", None, 4),
@@ -2484,9 +2443,8 @@ def test_main_renders_the_selected_series() -> None:
             parsed = parser.parse_args([*required, "--re-tau", "1", *extra])
             assert parsed.budget is drawn, extra
 
-        # Each switch adds exactly its own family, and the reference's
-        # and R^k's spacetime maps need both of their switches.  No
-        # reference map carries a track.
+        # Each switch adds exactly its own family (case 12); no reference
+        # map carries a track.
         for extra, gained in (
             (["--reference"], {"spectra_r_x", "spectra_r_z"}),
             (["--decorr"], {"spectra_decorr_x", "spectra_decorr_z"}),
@@ -2545,19 +2503,7 @@ def test_main_renders_the_selected_series() -> None:
 
 
 def test_history_maps() -> None:
-    r"""The premultiplied histories, each premultiplied after its sum.
-
-    The `$(y, t)$` map is the `$k$`-summed spacetime map times the wall
-    distance in the plotted units; the `$(\lambda, t)$` map is the
-    wall-normal average over the doubled half-channel weights, the
-    `$m = 0$` column dropped, times `$m$`, ascending in wavelength and
-    in wall units -- untouched by ``--no-volume-fac``.  The
-    two read one total; a shape history's rows each reach 1 and do not
-    see the unit system; a budget history's production is its two
-    parts; and the renderer writes the figures and ``.npz`` the family
-    promises, the logarithmic one only where every panel is a
-    non-negative absolute energy.
-    """
+    """The premultiplied histories, each premultiplied after its sum."""
     options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
     meta = _meta("twin_yspectra")
     rec = _records(meta, "twin_yspectra", 4, seed=41)
@@ -2730,16 +2676,7 @@ def _gaussian_map(values_scale: float = 1.0, shift: float = 0.0) -> tsm.Map:
 
 
 def test_size_and_tilt() -> None:
-    r"""The moments of a map as drawn: planted, scaled, signed, drawn.
-
-    A Gaussian blob planted in `$(\ln\lambda, \ln y)$` comes back with
-    its centroid and covariance; a constant factor moves nothing (the
-    moments are ratios over the mass); a signed field's moments are
-    its positive part's, with the negative share reported; the frame's
-    one-sigma ellipse is the curve `$d^\top C^{-1} d = 1$`; every
-    tracked frame carries its moments; and ``--no-frames`` writes the
-    tracks and moments without a single frame.
-    """
+    """The moments of a map as drawn: planted, scaled, signed, drawn."""
     from dnsjax_lab.analysis.twin.moments import log_moments
 
     sums, share = tsm.map_moment_sums(_gaussian_map())
@@ -2946,14 +2883,7 @@ def test_front_times() -> None:
 
 
 def test_growth_laws() -> None:
-    r"""The growth figures' phases, global curve and band rates.
-
-    A curve built to grow exponentially and then lose correlation at a
-    constant rate is marked with both rates; the global curve aligns
-    every member's ``twin.dat`` on whole steps, falls back to the
-    spectra totals without one, and is their geometric mean; and a
-    band's budget rates are the band's own terms over its energy.
-    """
+    """The growth figures' phases, global curve and band rates."""
     gamma0, nu, t1 = 0.4, 0.06, 30.0
     t = np.arange(0.0, 120.0, 0.1)
     f = (nu / gamma0) * np.log1p(np.exp(gamma0 * (t - t1)))

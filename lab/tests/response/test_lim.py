@@ -2,25 +2,24 @@ r"""LIM identification tests (``dnsjax_lab.analysis.response.lim``).
 
 All offline (no solver runs; the probe streams are synthesized, the
 operator bundle comes from a real transient-growth
-``--tg.save_operator`` subprocess as in ``test_ensemble.py``):
+``--tg.save_operator`` subprocess, ``_common.operator_artifacts``):
 
 1. **Estimator exactness**: for noiseless linear data
-   ``b_k = e^{k dt L} b_0`` the lag-consistent overlap estimator
-   returns ``M(tau) = e^{tau L}`` to roundoff (single segment and
-   pooled segments), and ``identify_generator`` recovers ``L``.
-   Ill-excited coordinates raise the conditioning error.
-2. **Statistical recovery**: a discrete Ornstein-Uhlenbeck process
-   with the exact per-step noise covariance ``Q = X - E X E^H``
-   (``X`` the continuous Lyapunov solution, so the process's
-   stationary covariance is ``X`` and ``C(l) = E^l X`` exactly in
-   expectation) -- LIM recovers ``L`` to a few %, and the sample
-   ``C(0)`` matches the controllability Gramian (the stationary
-   Lyapunov identity).
+   ``b_k = e^{k Delta L} b_0`` (``Delta`` the probe interval) the
+   lag-consistent overlap estimator returns ``M(tau) = e^{tau L}`` to
+   roundoff (single segment and pooled segments), and
+   ``identify_generator`` recovers ``L``.  Ill-excited coordinates
+   raise the conditioning error.
+2. **Statistical recovery**: on an exactly discretized
+   Ornstein-Uhlenbeck process (``_ou_series``) LIM recovers ``L`` to
+   5 %, and the sample ``C(0)`` matches the controllability Gramian
+   to 5 % (the stationary Lyapunov identity).
 3. **File pipeline + CLI**: synthetic ``probes.bin`` streams built by
    lifting basis coordinates through a real operator bundle;
-   ``identify_lim`` recovers the restricted reference generator
-   exactly (noiseless, ``demean=False``), and the CLI writes
-   ``G_id ~= G_ref``.
+   ``identify_lim`` recovers a synthetic generator from a noiseless
+   stream (to 1e-6, ``demean=False``), and the CLI, demeaning an OU
+   stream of the restricted reference generator, writes
+   ``G_id ~= G_ref`` (within 25 %).
 4. **projected_fluctuations units**: ``t_min`` cut, demeaning, and
    the non-uniform-sample rejection.
 
@@ -111,11 +110,13 @@ def _trajectory(l_mat: np.ndarray, b0: np.ndarray, nt: int) -> np.ndarray:
 
 
 def _ou_series(l_mat: np.ndarray, nt: int, seed: int) -> np.ndarray:
-    """Exactly-stationary discrete OU samples of ``db = L b + xi``.
+    """Exactly discretized OU samples of ``db = L b + xi``.
 
     Per-step noise covariance ``Q = X - E X E^H`` (``X`` the
     continuous unit-forcing Lyapunov solution), so the stationary
-    covariance is ``X`` and ``C(l) = E^l X`` in expectation."""
+    covariance is ``X`` and ``C(l) = E^l X`` in expectation; the
+    first sample has covariance ``Q``, so the series reaches that
+    state after a short transient."""
     from scipy.linalg import expm
 
     m = l_mat.shape[0]
@@ -184,10 +185,7 @@ def test_conditioning_rejection() -> None:
 
 
 def test_ou_recovery() -> None:
-    """LIM on an exactly-stationary OU process recovers L to a few %.
-
-    And the sample covariance matches the controllability Gramian.
-    """
+    """LIM on an exactly discretized OU process recovers L to 5 %."""
     m = 4
     l_true = _stable_generator(m, seed=4)
     b = _ou_series(l_true, nt=100_000, seed=5)
@@ -267,12 +265,7 @@ def _lifted_stream(
 
 
 def test_identify_lim_files_and_cli() -> None:
-    """``identify_lim`` recovers the restricted reference generator.
-
-    On lifted synthetic streams: exactly for noiseless data,
-    statistically through the demeaning CLI on OU data, with G_id
-    tracking G_ref.
-    """
+    """``identify_lim`` and its CLI on lifted synthetic streams (item 3)."""
     with tempfile.TemporaryDirectory() as tmpname:
         tmp = Path(tmpname)
         op_npz, cont_npz = _operator_artifacts(tmp)
@@ -285,8 +278,8 @@ def test_identify_lim_files_and_cli() -> None:
         # physical a_r: a single decaying trajectory of the real
         # operator loses its fast controllability directions within
         # one probe interval and trips the conditioning guard -- LIM
-        # genuinely needs persistent excitation (the OU stream below
-        # provides it for the physical dynamics).
+        # needs persistent excitation (the OU stream below provides it
+        # for the physical dynamics).
         rng = np.random.default_rng(7)
         l_syn = _stable_generator(4, seed=17)
         run_det = tmp / "run_det"
