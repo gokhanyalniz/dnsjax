@@ -6,7 +6,7 @@ Writes one text dump per file (docstrings + comments with line numbers)
 under OUT_DIR (default ``./dump``, in the current directory: run it from
 a scratch directory, not the repository), and prints the volumes per
 file and the missing docstrings (every module's; public functions' and
-classes' outside ``tests/``).
+classes' outside the tests, ``tests/`` and ``lab/tests/``).
 """
 
 import ast
@@ -51,7 +51,11 @@ for f in files:
                     parent_public = all(
                         not p.startswith("_") for p in prefix.split(".") if p
                     )
-                    if public and parent_public and not f.startswith("tests/"):
+                    if (
+                        public
+                        and parent_public
+                        and not f.startswith(("tests/", "lab/tests/"))
+                    ):
                         missing.append((f, child.lineno, name))
                 visit(child, name + ".")
             elif isinstance(child, (ast.If, ast.Try, ast.With)):
@@ -93,6 +97,10 @@ rows.sort()
 for r in rows:
     print(f"{r[0]:6d} doc={r[1]:5d} com={r[2]:5d} lines={r[3]:5d} {r[4]}")
 print("TOTAL doc lines", tot_doc, "comment lines", tot_com, "of", tot_lines)
-print("\nMISSING public docstrings (non-test):", len(missing))
+print(
+    "\nMISSING docstrings (modules; public functions and classes outside "
+    "the tests):",
+    len(missing),
+)
 for m in missing:
     print("  ", m)

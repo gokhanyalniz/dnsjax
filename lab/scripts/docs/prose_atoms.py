@@ -15,9 +15,11 @@ Two reports, for a review of a trim to account for line by line:
 - *Atoms whose count fell*: inline math, code spans, Sphinx roles,
   DOIs, URLs, Markdown link targets, quoted titles, author-year
   citations, and numbers (with the unit or word after them) and number
-  words.  Each is tagged ``in-file`` (still in the file, fewer times),
-  ``moved`` (gone from the file, present in another file's prose; the
-  first few are named) or ``GONE`` (in no prose of the NEW tree).
+  words.  A span or a title may wrap onto the next line, and a number's
+  word may stand on it, but none reaches across a paragraph break.
+  Each is tagged ``in-file`` (still in the file, fewer times), ``moved``
+  (gone from the file, present in another file's prose; the first few
+  are named) or ``GONE`` (in no prose of the NEW tree).
 - *Qualifiers lost*: words that carry a condition, a scope or a reason
   (only, never, unless, not, every, except, because, so that, ...),
   counted per paragraph after aligning the BASE and NEW paragraphs; a
@@ -44,24 +46,31 @@ import tokenize
 from collections import Counter
 from pathlib import Path
 
+#: A character of a span that may wrap: anything but a blank line.
+_WRAP = r"(?:[^\n]|\n(?![ \t]*\n))"
 #: Inline math: `` `$...$` `` in a docstring (possibly across a line
 #: break), ``$...$`` in Markdown.
 MATH_PY = re.compile(r"`\$[^$`]+\$`")
 MATH_MD = re.compile(r"\$[^$\n]+\$")
 ROLE = re.compile(r":[a-z]+:`[^`]+`")
-CODE2 = re.compile(r"``[^`\n]+``")
-CODE1 = re.compile(r"`[^`\n]+`")
+#: Code spans, each possibly across a line break; a run of three
+#: backticks (a Markdown fence) opens or closes none.
+CODE2 = re.compile(rf"(?<!`)``(?!`)(?:(?!`){_WRAP})+``(?!`)")
+CODE1 = re.compile(rf"(?<!`)`(?!`)(?:(?!`){_WRAP})+`(?!`)")
 DOI = re.compile(r"\b10\.\d{4,9}/[^\s,;)\]]+")
 URL = re.compile(r"https?://[^\s)>\]]+")
 LINK = re.compile(r"\]\(([^)\s]+)\)")
-QUOTED = re.compile(r"[\"“]([A-Z][^\"”\n]{3,80})[\"”]")
+#: A quoted title, possibly across a line break.
+QUOTED = re.compile(rf"[\"“]([A-Z](?:(?![\"”]){_WRAP}){{3,80}})[\"”]")
 CITE = re.compile(
     r"\b[A-Z][a-zà-ÿ]+(?:(?:\s*(?:&|and|–|--|-)\s*[A-Z][a-zà-ÿ]+)+"
     r"|\s+et al\.)?,?\s*\(?(?:19|20)\d{2}[a-z]?\)?"
 )
+#: A number, with the unit or word after it on its line or the next
+#: (never across a paragraph break).
 NUMBER = re.compile(
     r"(?<![\w.])[-+~]?\d+(?:[.,]\d+)*(?:e[-+]?\d+)?"
-    r"(?:\s*(?:%|x\b|×|[A-Za-zμ]+))?"
+    r"(?:[ \t]*(?:\n[ \t]*)?(?:%|x\b|×|[A-Za-zμ]+))?"
 )
 NUMBER_WORDS = re.compile(
     r"\b(?:two|three|four|five|six|seven|eight|nine|ten|eleven|"

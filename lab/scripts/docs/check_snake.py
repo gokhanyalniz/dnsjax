@@ -2,13 +2,14 @@
 
 A ``snake_case`` word in backticks reads as an identifier; one that
 names no function, class, variable, attribute or argument of the
-tree's Python (``check_refs.all_names``), no top-level name or import
-of its own file (``check_refs.top``) and no parameter field is a stale
-name or a misspelling.  Scans the prose :mod:`check_refs` scans,
-through the index it builds at import, and prints
-``file:line: token (xN)`` with each token's count.  Review by hand: a
-module, an external library's name or a shell/TOML key is a
-legitimate hit.
+tree's Python (``check_refs.all_names``), no module or package
+(``check_refs.module_names``, each one's last dotted part), no
+top-level name or import of its own file (``check_refs.top``) and no
+parameter field is a stale name or a misspelling.  Scans the prose
+:mod:`check_refs` scans, through the index it builds at import, and
+prints ``file:line: token (xN)`` with each token's count.  Review by
+hand: an external library's name or a shell/TOML key is a legitimate
+hit.
 
 Usage::
 
@@ -27,6 +28,7 @@ from check_refs import (
     docstrings_and_comments,
     fields,
     mdfiles,
+    module_names,
     pyfiles,
     top,
 )
@@ -45,6 +47,7 @@ def main() -> int:
                 SNAKE.match(tok)
                 and tok not in all_names
                 and tok not in known_fields
+                and tok not in module_names
                 and tok not in top.get(here, set())
             ):
                 found.append((here, lineno, tok))

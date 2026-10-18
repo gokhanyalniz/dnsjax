@@ -3,7 +3,11 @@
 A. docstrings with a backslash that are not raw (escape corruption);
 B. inline math in docstrings not in the `$...$`-in-backticks form, and
    `$$` display math;
-C. doubled words, TODO-like markers and dates, on every line;
+C. doubled words outside math (each `` `$...$` `` span, which may wrap,
+   and each ``.. math::`` block), TODO-like markers and dates, on every
+   line; spaced-hyphen dashes (`word - word`, where the tree writes
+   ` -- `) in docstrings and comments, outside math, code spans and
+   literal blocks, a comment stating an equation (with `=`) left out;
 D. tone words (`banned_words.TONE`) in docstrings and comments.
 """
 
@@ -45,11 +49,67 @@ def docstring_nodes(tree):
     return out
 
 
+#: Inline math, `` `$...$` ``, which may wrap but not across a blank line.
+INLINE_MATH = re.compile(r"`\$(?:[^`$\n]|\n(?![ \t]*\n))+\$`")
+#: A code span, ``...`` or `...`, on one line.
+CODE_SPAN = re.compile(r"``[^`\n]+``|`[^`\n]+`")
+#: A hyphen between two words with a space on each side, used as a dash
+#: (one-letter words left out, as the symbols of a formula).
+SPACED_HYPHEN = re.compile(
+    r"(?<![\w\\])[A-Za-z]\w+[,;:.)'\"]? - [A-Za-z]{2,}\b"
+)
+
+
+def _blank(m: re.Match) -> str:
+    """*m*'s text as ``~``, its line breaks kept.
+
+    Neither a word nor a space, so the words either side of a blanked
+    span do not meet.
+    """
+    return re.sub(r"[^\n]", "~", m.group(0))
+
+
+def _blank_blocks(text: str, opener: str) -> str:
+    """*text* with the body of each block a line matching *opener* opens.
+
+    The body is every following line indented deeper than the opener,
+    and the blank lines among them; the line count is kept.
+    """
+    lines = text.split("\n")
+    i = 0
+    while i < len(lines):
+        if not re.search(opener, lines[i]):
+            i += 1
+            continue
+        indent = len(lines[i]) - len(lines[i].lstrip())
+        i += 1
+        while i < len(lines) and (
+            not lines[i].strip()
+            or len(lines[i]) - len(lines[i].lstrip()) > indent
+        ):
+            lines[i] = ""
+            i += 1
+    return "\n".join(lines)
+
+
+def without_math(text: str) -> str:
+    """*text* with its math blanked: inline spans and ``.. math::`` blocks."""
+    text = INLINE_MATH.sub(_blank, text)
+    return _blank_blocks(text, r"^\s*\.\. math::")
+
+
+def prose(text: str) -> str:
+    """*text* (a docstring) without math, code spans and literal blocks."""
+    text = CODE_SPAN.sub(_blank, without_math(text))
+    return _blank_blocks(text, r"::\s*$")
+
+
 nonraw = []
 math_issues = []
 doubled = []
 markers = []
 dates = []
+dashes = []
 tone = Counter()
 tone_where = {}
 for f in files:
@@ -71,8 +131,12 @@ for f in files:
         # inline $...$ not wrapped in backticks
         for m in re.finditer(r"(?<!`)\$[^$\n`]+\$(?!`)", body):
             math_issues.append((f, d.lineno, "bare $..$: " + m.group(0)[:50]))
+        for j, line in enumerate(prose(body).split("\n")):
+            if SPACED_HYPHEN.search(line):
+                dashes.append((f, d.lineno + j, line.strip()[:100]))
+    masked = without_math(src).split("\n")
     for i, line in enumerate(lines, 1):
-        for m in re.finditer(r"\b(\w+)\s+\1\b", line):
+        for m in re.finditer(r"\b(\w+)\s+\1\b", masked[i - 1]):
             w = m.group(1)
             if w.lower() in {"that", "had"} or w.isdigit():
                 continue
@@ -89,6 +153,11 @@ for f in files:
             tone_where.setdefault(w, []).append((f, d.lineno))
     for tok in tokenize.generate_tokens(io.StringIO(src).readline):
         if tok.type == tokenize.COMMENT:
+            row, col = tok.start
+            text = CODE_SPAN.sub(_blank, masked[row - 1][col:])
+            # A comment stating an equation is a formula, not prose.
+            if "=" not in text and SPACED_HYPHEN.search(text):
+                dashes.append((f, row, tok.string.strip()[:100]))
             for m in TONE.finditer(tok.string):
                 w = m.group(1).lower()
                 tone[w] += 1
@@ -108,6 +177,9 @@ for x in markers:
     print("  ", x)
 print("\nC3. dated lines:", len(dates))
 for x in dates:
+    print("  ", x)
+print("\nC4. spaced-hyphen dashes:", len(dashes))
+for x in dashes:
     print("  ", x)
 print("\nD. tone words:")
 for w, n in tone.most_common():

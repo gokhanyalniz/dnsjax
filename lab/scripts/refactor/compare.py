@@ -21,7 +21,7 @@ What counts as equal:
 
 ``--allow REGEX`` names differences already reviewed (matched against
 the reported line): they are listed, but do not fail the comparison.
-``--reorder REGEX`` accepts a text whose lines are the same set in
+``--reorder REGEX`` accepts a text whose lines are the same lines in
 another order, for the texts it names (a flow list that changed order,
 say).  ``--only REGEX`` restricts the report to the runs and texts it
 names.  Exit status 1 on any unallowed difference.
@@ -171,7 +171,7 @@ def compare(ref: Path, new: Path) -> list[str]:
         a = (ref / "texts" / f"{name}.txt").read_bytes()
         b = (new / "texts" / f"{name}.txt").read_bytes()
         if a != b:
-            same_lines = sorted(a.split()) == sorted(b.split())
+            same_lines = sorted(a.splitlines()) == sorted(b.splitlines())
             if same_lines and any(p.search(name) for p in REORDER):
                 diffs.append(f"text {name}: lines reordered (allowed)")
             else:

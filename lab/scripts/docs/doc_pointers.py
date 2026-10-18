@@ -26,7 +26,10 @@ printed needs either its references updated or an approval.
 ``--inbound`` lists, for each FILE, the lines elsewhere that point into
 it: the lines naming its module, path or a top-level symbol together
 with a word such as "docstring", "Design notes" or "the why", and the
-lines quoting one of its titles.  A review of a change to FILE checks
+lines quoting one of its titles.  A file or module name that other
+files share names FILE only where it resolves to FILE, in the citing
+file's own package first (``spectra._read`` in a sibling of another
+``spectra.py`` names that one).  A review of a change to FILE checks
 that each still finds what it promises.
 
 The tree scanned for references is every tracked ``.py``, ``.md``,
@@ -42,6 +45,7 @@ from __future__ import annotations
 import argparse
 import ast
 import contextlib
+import posixpath
 import re
 import subprocess
 import sys
@@ -242,26 +246,36 @@ def compare(root, base, new, files, also) -> None:
                 print(f"      -> {r}")
 
 
-def pointer_patterns(path: str, src: str) -> re.Pattern:
-    """The pattern of the ways text elsewhere names *path*.
+def dotted_name(path: str) -> str:
+    """The dotted module name of *path*, a ``.py`` file of the tree."""
+    parts = list(Path(path).with_suffix("").parts)
+    for top in (("src",), ("lab", "src")):
+        if tuple(parts[: len(top)]) == top:
+            parts = parts[len(top) :]
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
 
-    Its path, file or module name, a backticked top-level symbol, or
-    ``module.symbol``.
+
+def pointer_patterns(path: str, src: str) -> tuple[re.Pattern, re.Pattern]:
+    """The patterns of the ways text elsewhere names *path*.
+
+    The first matches what names *path* alone: its path, its dotted
+    module name and a backticked top-level symbol.  The second matches
+    the names another file or module may share (:func:`names_here`
+    decides): a backticked module name, ``module.symbol`` and the file
+    name, each alternative capturing the name, the file name last.
     """
     p = Path(path)
-    alts = [re.escape(path), re.escape(p.name)]
+    exact = [re.escape(path)]
+    short = [f"({re.escape(p.name)})"]
     if p.suffix == ".py":
-        parts = list(p.with_suffix("").parts)
-        for top in (("src",), ("lab", "src")):
-            if tuple(parts[: len(top)]) == top:
-                parts = parts[len(top) :]
-        if parts[-1] == "__init__":
-            parts = parts[:-1]
-        dotted = ".".join(parts)
-        short = parts[-1] if parts else ""
-        alts += [re.escape(dotted), rf"`{re.escape(short)}[`.]"]
-        if len(short) >= 6:
-            alts.append(rf"\b{re.escape(short)}\.\w")
+        dotted = dotted_name(path)
+        name = dotted.rpartition(".")[2]
+        exact.append(re.escape(dotted))
+        short.insert(0, rf"`({re.escape(name)})[`.]")
+        if len(name) >= 6:
+            short.insert(1, rf"\b({re.escape(name)})\.\w")
         with contextlib.suppress(SyntaxError):
             for n in ast.parse(src).body:
                 if (
@@ -271,15 +285,52 @@ def pointer_patterns(path: str, src: str) -> re.Pattern:
                     )
                     and len(n.name) >= 4
                 ):
-                    alts.append(rf"`{re.escape(n.name)}[`.(]")
-    return re.compile("|".join(alts))
+                    exact.append(rf"`{re.escape(n.name)}[`.(]")
+    return re.compile("|".join(exact)), re.compile("|".join(short))
+
+
+def names_here(
+    m: re.Match, line: str, citing: str, path: str, tree: dict
+) -> bool:
+    """Whether *m*, a file or module name on *line* of *citing*, is *path*.
+
+    *m* is a match of :func:`pointer_patterns`' second pattern.  The
+    path or dotted name around it resolves as a relative link or an
+    import would, the citing file's own package first: a name with
+    candidates in the citing file's directory names one of those, else
+    any file or module of *tree* it fits.  A name that fits nothing is
+    kept, as possibly *path*'s.
+    """
+    group = next(i for i in range(1, m.re.groups + 1) if m.group(i))
+    name = m.group(group)
+    pre = re.search(r"[\w./-]*$", line[: m.start(group)]).group(0)
+    post = re.match(r"[\w./-]*", line[m.end(group) :]).group(0)
+    token = (pre + name + post).strip("./-")
+    here = posixpath.dirname(citing)
+    if group == m.re.groups or "/" in token or token.endswith(".py"):
+        rel = posixpath.normpath(posixpath.join(here, token))
+        if rel in tree:
+            return rel == path
+        cands = [f for f in tree if f == token or f.endswith("/" + token)]
+    else:  # a module name, the dotted path before it its package
+        ref = (pre + name).strip(".")
+        cands = [
+            f
+            for f in tree
+            if f.endswith(".py")
+            and ((d := dotted_name(f)) == ref or d.endswith("." + ref))
+        ]
+    if not cands:
+        return True
+    near = [f for f in cands if posixpath.dirname(f) == here]
+    return path in (near or cands)
 
 
 def inbound(root: Path, files: list[str], also: list[Path]) -> None:
     tree = scan_files(root, None, also)
     for path in files:
         src = read(root, None, path)
-        named_by = pointer_patterns(path, src)
+        exact, short = pointer_patterns(path, src)
         titles, _, _ = named_items(path, src)
         keys = [
             k
@@ -293,7 +344,13 @@ def inbound(root: Path, files: list[str], also: list[Path]) -> None:
             lines = text.splitlines()
             for n, line in enumerate(lines, 1):
                 ctx = " ".join(lines[max(0, n - 2) : n + 1])
-                named = named_by.search(line) and POINTER_WORDS.search(ctx)
+                named = POINTER_WORDS.search(ctx) and (
+                    exact.search(line)
+                    or any(
+                        names_here(m, line, name, path, tree)
+                        for m in short.finditer(line)
+                    )
+                )
                 quoted = any(k in norm(ctx) for k in keys)
                 if named or quoted:
                     print(f"   {name}:{n}: {line.strip()[:100]}")

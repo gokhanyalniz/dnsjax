@@ -127,10 +127,10 @@ benchmarks and diagnostics are fixed on purpose.
   parameter field, flag and path in the tree's docstrings, comments and
   docs resolves; its index serves `docs/check_snake.py`, the backticked
   snake_case tokens that name nothing.
-- `docs/check_docstrings.py`: raw-string, math-form, doubled-word and
-  tone-word checks over the tracked Python tree; `docs/lint_docs.py`:
-  banned words (`WORDS`), multi-line summaries and split roles in the
-  given files.
+- `docs/check_docstrings.py`: raw-string, math-form, doubled-word,
+  spaced-hyphen-dash and tone-word checks over the tracked Python tree;
+  `docs/lint_docs.py`: banned words (`WORDS`), multi-line summaries and
+  split roles in the given files.
 - `docs/banned_words.py`: `TONE` and `WORDS`, the banned-word patterns
   the prose checks share.
 - `docs/check_commit_message.py`: a commit message against the commit

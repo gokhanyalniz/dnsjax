@@ -3,11 +3,12 @@
 Flags references to modules, symbols, class members, parameter fields,
 CLI flags and repo paths that do not exist in the current tree: every
 tracked ``.py`` and ``.md`` file but the agent notes and this directory,
-from the repository root this file sits in.  Importing the module builds the
-index (``pyfiles``, ``mdfiles``, ``fields``, ``all_names``, ``top``,
-``TICK``), which ``check_snake.py`` reuses.  Known false positives: a
-plugin field the section models hold only with the lab installed, an
-external name, an attribute written like a module path.
+from the repository root this file sits in.  Importing the module builds
+the index (``pyfiles``, ``mdfiles``, ``fields``, ``all_names``, ``top``,
+``module_names``, ``TICK``), which ``check_snake.py`` reuses.  Known
+false positives: a plugin field the section models hold only with the
+lab installed, an external name, an attribute written like a module
+path.
 
 Usage::
 
@@ -50,6 +51,8 @@ for f in pyfiles:
     if parts[-1] == "__init__":
         parts = parts[:-1]
     modules[".".join(parts)] = f
+# Each module's and package's own name, the last part of its dotted path.
+module_names = {m.rsplit(".", 1)[-1] for m in modules}
 
 top = defaultdict(set)  # file -> top-level names
 members = defaultdict(set)  # (file, class) -> member names
