@@ -2,11 +2,11 @@ r"""Linear transient (optimal energy) growth around arbitrary profiles.
 
 Compute the three-dimensional linear transient-growth spectrum of a
 wall-bounded flow **linearized about an arbitrary wall-normal total
-profile** `$\mathbf{U}(y)$` -- not necessarily a laminar / stationary
-solution.  Supported systems: the wall-bounded base-flow flows
+profile** `$\mathbf{U}(y)$`, not necessarily a laminar / stationary
+solution.  Supported: the wall-bounded base-flow systems
 (:data:`WALL_BOUNDED_TG_SYSTEMS`) -- ``plane-couette`` /
-``plane-poiseuille`` (Cartesian), ``pipe`` (cylindrical) and
-``taylor-couette`` (annular), with any base-flow flow a plugin adds on
+``plane-poiseuille`` (Cartesian), ``pipe`` (cylindrical),
+``taylor-couette`` (annular) and any base-flow system a plugin adds on
 those geometries.  A total-field flow (``FlowSpec.total_field``) has
 no base flow to linearize about and is out of scope.
 
@@ -29,28 +29,23 @@ The profile file has two whitespace-separated columns: the wall-normal
 grid points **top wall first (descending)** -- the same convention as a
 ``geo.wall_grid`` file -- and the *total* profile value there (the
 streamwise `$u_x$` for the Cartesian flows, axial `$u_z$` for pipe,
-azimuthal `$u_\theta$` for Taylor-Couette).  A directory may be given
-instead of a file, in which case every file in it is processed.
+azimuthal `$u_\theta$` for Taylor-Couette).  Given a directory instead
+of a file, every file in it is processed.
 
 Why this reuses the solver exactly
 ----------------------------------
-The base profile enters the solver only through the pair of flow arrays
-``base_flow`` / ``curl_base_flow`` that the FFT-free linear coupling
-`$L_{bf} = \mathbf{u}'\times\nabla\times\mathbf{U} +
-\mathbf{U}\times\boldsymbol{\omega}'$` reads (each geometry's ``_l_bf``;
-:func:`dnsjax.geometries.wall_bounded._base.base_flow_coupling`).  This
-coupling is **exact for any wall-parallel `$y$`-only profile**: because
-`$\mathbf{U}\cdot\nabla\mathbf{U}\equiv 0$`, the base self-interaction is
-a pure gradient absorbed by the pressure (see the :mod:`dnsjax.rhs`
-module docstring), so linearizing about a *non-solution* profile
-introduces **no extra terms** in the Jacobian -- the base residual is a
-constant forcing that does not enter the linear operator.  Every other
-operator (the viscous Helmholtz solves and the influence-matrix data
-enforcing `$\nabla\cdot\mathbf{u}'=0$` and the wall BCs) is
-profile-independent, so a per-profile flow is a shallow
-copy with the two arrays swapped
-(:func:`dnsjax.geometries.wall_bounded._base.frozen_profile_flow`; each
-flow module's ``frozen_profile_flow(profile)`` builder).
+A per-profile flow is a shallow copy of the solver's flow with only its
+base-flow arrays swapped
+(:func:`dnsjax.geometries.wall_bounded._base.frozen_profile_flow`, which
+says why every other operator is shared; each flow module's
+``frozen_profile_flow(profile)`` builder).  The linear coupling
+`$L_{bf}$` that reads those arrays is **exact for any wall-parallel
+`$y$`-only profile**: because `$\mathbf{U}\cdot\nabla\mathbf{U}\equiv 0$`,
+the base self-interaction is a pure gradient absorbed by the pressure
+(the :mod:`dnsjax.rhs` module docstring), so linearizing about a
+*non-solution* profile introduces **no extra terms** in the Jacobian:
+the base residual is a constant forcing that does not enter the linear
+operator.
 
 Mathematical formulation
 ------------------------
@@ -91,22 +86,20 @@ With CN weight `$\theta = 1$` (backward Euler,
 .. math::
     \Phi = (I - \Delta t\,\mathcal{A})^{-1}\quad\text{on } S,
 
-realized exactly by the influence-matrix solve (see the
-``_imm_iteration`` docstring in
-:mod:`dnsjax.geometries.wall_bounded.cartesian` and
+realized exactly by the influence-matrix solve (the ``_imm_iteration``
+docstring in :mod:`dnsjax.geometries.wall_bounded.cartesian` and
 :func:`dnsjax.timestep.make_stepper`).  Backward Euler is an *exact
 rational function* of `$\mathcal{A}$`, so inverting the relation
-recovers `$\mathcal{A}$` to rounding -- `$\Delta t$` is a probe, **not**
+recovers `$\mathcal{A}$` to rounding: `$\Delta t$` is a probe, **not**
 an accuracy knob, and there is no time-discretization error.
 
-The propagator is the solver's, so it inherits ``res.consistent_imm``.  By
-default that is the reconstruction scheme, in every wall-bounded geometry, and
-its solenoidal subspace `$S$` is *exactly* the discrete one: a non-solenoidal
+The propagator is the solver's, so it inherits ``res.consistent_imm``: by
+default the reconstruction scheme, in every wall-bounded geometry, whose
+solenoidal subspace `$S$` is *exactly* the discrete one.  A non-solenoidal
 basis vector's tangential part maps to zero in a single step rather than
 decaying over several, so `$\Phi$` is singular on the complement by
-construction.  That is the intended behaviour on `$S$` and does not affect
-`$G(t)$`, which is computed there -- but it does mean the raw propagator is
-rank-deficient off it.
+construction (intended): the raw propagator is rank-deficient off `$S$`,
+which does not affect `$G(t)$`, computed on `$S$`.
 
 The pipeline per mode is:
 
@@ -168,9 +161,8 @@ The pipeline per mode is:
    widens.
 
 6. **Growth & optima.**  `$G(t) = \sigma_{\max}(B(t))^2$` with
-   `$B(t) = R\,\mathrm{diag}(e^{t\lambda_{\mathrm{res}}})\,R^{-1}$`;
-   the stiff factors underflow to zero for `$t > 0$` rather than
-   overflowing.  This needs a well-conditioned eigenbasis, so a
+   `$B(t) = R\,\mathrm{diag}(e^{t\lambda_{\mathrm{res}}})\,R^{-1}$`.
+   This needs a well-conditioned eigenbasis, so a
    (near-)defective `$\Phi_S$` is rejected at
    `$\mathrm{cond}(R) > 10^{12}$`.  `$t_{\mathrm{opt}}$` refines the
    grid maximum by golden section.  The leading singular triplet of
@@ -221,10 +213,9 @@ failure mode below is guarded per mode with an explicit error.
 
 - ``--tg.dt`` (0.01): the probe step sets *conditioning* and the
   *resolved spectral window*, not accuracy.  Only eigenvalues with
-  `$|\lambda| \lesssim 1/\Delta t$` are resolved (beyond, the probe
-  compresses `$\mu \to 0$`), and those are exactly the modes `$G$` is
-  measured on (step 5).  It therefore cuts **both** ways and the
-  default is a balance, not a floor:
+  `$|\lambda| \lesssim 1/\Delta t$` are resolved (step 7), and those are
+  exactly the modes `$G$` is measured on (step 5).  It therefore cuts
+  **both** ways and the default is a balance, not a floor:
 
   * *Reduce* it to resolve more of the spectrum (a slow mode you need
     must satisfy `$|\lambda| \lesssim 1/\Delta t$`) or to fix a
@@ -233,18 +224,18 @@ failure mode below is guarded per mode with an explicit error.
     fast, wall-clustered FD eigenmodes, which are **discretization
     artefacts** unless `$N_y$` resolves them: they are strongly
     non-normal, and their short-time growth is real for the *discrete*
-    operator while having no continuum counterpart.  It shows up as an
+    operator but has no continuum counterpart.  It shows up as an
     early, mesh-dependent `$G$` spike that decays long before the
-    physical optimum -- and, being a genuine property of `$\mathcal{A}
-    _{\mathrm{res}}$`, no post-processing can subtract it.  Measured
-    (a quasi-Keplerian Taylor-Couette flow, `$Re_i = 10^4$`, `$m = 4$`,
-    `$N_y = 128$`), the numerical abscissa falls
-    `$+162 \to +82 \to +57$` for `$\Delta t =
-    0.003 \to 0.01 \to 0.03$`, and the rank gap *widens* over the same
-    range (`$1.3\times10^{3} \to 1.4\times10^{3} \to 3.7\times10^{3}$`).
+    physical optimum; as a property of `$\mathcal{A}_{\mathrm{res}}$`
+    itself, no post-processing can subtract it.  Measured (a quasi-Keplerian
+    Taylor-Couette flow, `$Re_i = 10^4$`, `$m = 4$`, `$N_y = 128$`), the
+    numerical abscissa falls `$+162 \to +82 \to +57$` for
+    `$\Delta t = 0.003 \to 0.01 \to 0.03$`, and the rank gap *widens*
+    over the same range
+    (`$1.3\times10^{3} \to 1.4\times10^{3} \to 3.7\times10^{3}$`).
 
   The fix for a contaminated `$G_{\max}$` is therefore **`$N_y$`, not
-  `$\Delta t$`** (see the convergence recipe below).
+  `$\Delta t$`** (the convergence recipe below).
 - ``--tg.corrector_tolerance`` (1e-11) / ``--tg.max_corrector_iterations``
   (200): the tolerance bounds each propagator column's error and so
   floors every reported quantity (the achieved
@@ -255,17 +246,18 @@ failure mode below is guarded per mode with an explicit error.
   cutoff must land inside the singular-value cliff between the
   physical spectrum (whose floor is `$\sigma/\sigma_0 \sim
   1/(\Delta t\,|\lambda_{\mathrm{stiff}}|)$`) and the
-  constraint-violating null space, which sits at round-off
-  (`$\sigma/\sigma_0 \sim 10^{-15}$` under both ``res.consistent_imm``
-  formulations, measured on plane Poiseuille at `$N_y = 49$`); the gap
-  check verifies that the cutoff landed between them.  On a "no clean
-  rank gap" failure inspect the printed tail, then move
-  ``--tg.rank_tol`` into the observed gap; lower ``--tg.rank_gap_min``
-  only if the true cliff is genuinely that shallow.  ``--tg.dt`` also
-  moves the gap, and *raising* it widened the cliff in the case
-  measured under ``--tg.dt`` above, so the naive "reduce it to lift the
-  physical floor" is unreliable; read the printed tail rather than
-  assuming a direction.
+  constraint-violating null space, which sits at round-off.  Measured
+  on plane Poiseuille at `$N_y = 49$`, ``--tg.dt`` 0.01: the floor is
+  3e-3 under the default scheme and 3e-9 on the legacy path (whose rank
+  is larger), the null space `$\sigma/\sigma_0 \sim 10^{-15}$` under
+  both ``res.consistent_imm`` formulations.  The gap check verifies
+  that the cutoff landed between them.  On a "no clean rank gap"
+  failure inspect the printed tail, then move ``--tg.rank_tol`` into
+  the observed gap; lower ``--tg.rank_gap_min`` only if the true cliff
+  is that shallow.  ``--tg.dt`` also moves the gap, and *raising* it
+  widened the cliff in the case measured under ``--tg.dt`` above, so
+  "reduce it to lift the physical floor" is unreliable: read the
+  printed tail rather than assuming a direction.
 - ``--tg.t_max`` (default `$0.25\,Re$`): covers the classic optima,
   `$t_{\mathrm{opt}} \approx 0.05$`--`$0.15\,Re$`, of these flows
   (Taylor-Couette uses the derived reference ``re``: ``re1``, or
@@ -290,7 +282,7 @@ failure mode below is guarded per mode with an explicit error.
   (interpolation, output truncation).
 - ``--tg.grid_match_tol`` (1e-12): identical-grid fast-path detector;
   raise it (e.g. to 1e-8) when the profile file stores the code grid
-  with fewer printed digits, to skip a pointless interpolation.
+  with fewer printed digits, to skip an unneeded interpolation.
 - ``--tg.n_eig`` (20): how many leading eigenvalues are *stored*; no
   accuracy effect.  Trustworthy only inside the resolved window
   `$|\lambda| \lesssim 1/\Delta t$` (see ``--tg.dt``).
@@ -311,11 +303,11 @@ failure mode below is guarded per mode with an explicit error.
 
 Converging `$N_y$` (do this before trusting `$G_{\max}$`)
 ---------------------------------------------------------
-The physical `$G(t)$` converges *fast* in `$N_y$`; the artefact of step
-5 converges *slowly*, so **`$N_y$` is set by the artefact, not by the
-physics**.  Measured on a quasi-Keplerian Taylor-Couette flow,
-`$Re_i = 10^4$`, `$m = 4$`, `$\Delta t = 10^{-2}$` (`$G_{\max} = 13.04$` at
-`$t_{\mathrm{opt}} = 27$`):
+The physical `$G(t)$` converges *fast* in `$N_y$`; the near-wall
+artefact (``--tg.dt`` above) converges *slowly*, so **`$N_y$` is set by
+the artefact, not by the physics**.  Measured on a quasi-Keplerian
+Taylor-Couette flow, `$Re_i = 10^4$`, `$m = 4$`, `$\Delta t = 10^{-2}$`
+(`$G_{\max} = 13.04$` at `$t_{\mathrm{opt}} = 27$`):
 
 ===========  =====================  ===================  ==============
 `$N_y$`      `$G$` at `$t \ge 4$`   early spike          `$\omega_
@@ -325,7 +317,7 @@ physics**.  Measured on a quasi-Keplerian Taylor-Couette flow,
 128          5 digits correct       `$G \approx 8$`       `$+82$`
 ===========  =====================  ===================  ==============
 
-So `$N_y = 64$` already nails the physical curve, yet reports
+So `$N_y = 64$` already resolves the physical curve, yet reports
 `$G_{\max} \sim 10^{2}$` at `$t \approx 2$`: the optimum is the
 artefact.  `$N_y = 128$` pushes the spike under the physical peak and
 the reported optimum becomes the physical one.
@@ -341,12 +333,11 @@ early `$G$` is artefact-dominated -- regardless of how clean the
 ``--tg.t_max``, large ``--tg.nt``) exposes the spike directly; a coarse
 `$t$` grid can *step over* it and report a plausible-looking optimum.
 
-Cost & memory: a propagator build is `$3 N_y$` FFT-free linear steps
-(independent of the mode count) plus a host SVD + eigensolve per
-mode; the propagator set is held on the host at `$K (3 N_y)^2$`
-complex128 (the estimate is printed at startup).  For large mode
-sweeps split ``--tg.modes`` across separate processes (one device
-each) -- the pipeline is embarrassingly parallel over modes.
+Cost & memory: the propagator build of step 1 plus a host SVD +
+eigensolve per mode; the propagator set is held on the host at
+`$K (3 N_y)^2$` complex128 (the estimate is printed at startup).  For
+large mode sweeps split ``--tg.modes`` across separate processes (one
+device each): the pipeline is embarrassingly parallel over modes.
 
 Outputs
 -------
@@ -406,12 +397,11 @@ from ..snapshot_meta import git_hash
 if TYPE_CHECKING:
     from jax import Array
 
-# The TG scope: the wall-bounded *base-flow* (perturbation-form)
-# systems, whose flow modules export ``frozen_profile_flow``.  A
-# total-field flow (``FlowSpec.total_field``) integrates around
-# ``base_flow = 0`` and has no profile to linearize about, so it is
-# out of scope; the modules and geometry come from the registry
-# (``FlowSpec.flow_module`` / ``geometry``) in :func:`_dispatch`.
+# The TG scope (module docstring; ``FlowSpec.total_field``): the
+# wall-bounded *base-flow* (perturbation-form) systems, whose flow
+# modules export ``frozen_profile_flow``; :func:`_dispatch` takes
+# their modules and geometry from the registry
+# (``FlowSpec.flow_module`` / ``geometry``).
 WALL_BOUNDED_TG_SYSTEMS = tuple(
     s for s in walled_systems if s not in total_field_systems
 )
@@ -452,11 +442,10 @@ class TGParams(BaseModel):
     r"""Transient-growth driver knobs: the ``[tg]`` extension section.
 
     Parsed as ``--tg.<field>`` CLI flags / a ``[tg]`` TOML section on
-    the shared per-flow parameter surface
-    (:func:`dnsjax.bootstrap.resolve_parameters`), alongside the
-    flow's own parameters under their public names.  Knob guidance
-    (especially the ``dt`` conditioning trade-off and the rank/
-    resolvedness cuts): the module docstring.
+    the shared per-flow parameter surface (module docstring); knob
+    guidance, the ``dt`` conditioning trade-off and the rank and
+    resolvedness cuts among it: the module docstring's "Choosing the
+    knobs".
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -775,14 +764,13 @@ def _configure_parameters(argv: list[str]) -> None:
     on every flow's surface, so an unsupported flow meets the system
     check below rather than an unrecognized flag.  The flow-relevant
     *solver-run* extension sections are accepted too, so a
-    ``parameters.toml`` shared with a production run parses -- the
-    driver ignores them (a note is
-    printed when one is configured); bare ``--help`` shows only
-    ``[tg]``.  It then forces the TG-required settings (single device,
-    backward-Euler linear probe, no mean coupling, tight corrector, lab
-    frame, double precision) so the geometry / flow singletons --
-    imported *after* the platform is configured -- bake them into the
-    operators.
+    ``parameters.toml`` shared with a production run parses; the driver
+    ignores them (with a note when one is configured), and bare
+    ``--help`` shows only ``[tg]``.  It then forces the TG-required
+    settings (single device, backward-Euler linear probe, no mean
+    coupling, tight corrector, lab frame, double precision) so the
+    geometry / flow singletons, imported *after* the platform is
+    configured, bake them into the operators.
     """
     toml_flag = _scan_flag(argv, "--tg.parameters")
     toml_path = Path(toml_flag) if toml_flag is not None else None
@@ -1043,15 +1031,10 @@ def _analyze_mode(
 
     ny = phi_k.shape[0] // 3
     n = phi_k.shape[0]
-    # Subspace reduction.  The physical subspace S = range(Phi) is
-    # separated from the constraint-violating null space by a wide
-    # singular-value gap: the physical spectrum falls to
-    # sigma/s0 ~ 1/(dt*|lambda_stiff|) (plane Poiseuille, ny = 49,
-    # dt = 0.01: 3e-3 under the default scheme, 3e-9 on the legacy path,
-    # whose rank is larger), then drops to the round-off null floor
-    # (sigma/s0 ~ 1e-15 on both).  ``rank_tol`` (relative, default
-    # 1e-11) sits in that gap; the gap and reduced-conditioning checks
-    # catch a threshold that lands mid-spectrum.
+    # Subspace reduction (module docstring, step 2; the measured gap:
+    # ``--tg.rank_tol``).  ``rank_tol`` sits in the singular-value gap;
+    # the gap and reduced-conditioning checks catch a threshold that
+    # lands mid-spectrum.
     u, s, _ = np.linalg.svd(phi_k)
     rank = int(np.sum(s > cfg.rank_tol * s[0]))
     rank = min(max(rank, 1), n)
@@ -1071,26 +1054,19 @@ def _analyze_mode(
     v = u[:, :rank]  # (n, r) range basis
     phi_s = v.conj().T @ phi_k @ v  # (r, r)
 
-    # Generator via the eigendecomposition of Phi_S (not by inverting
-    # I - dt*A, which would amplify the stiff-mode errors).  Phi_S =
-    # (I - dt A_S)^{-1} shares eigenvectors with A_S, so
-    # eig(Phi_S) = (mu, Y) gives the generator eigenvalues lambda =
-    # (1 - 1/mu)/dt directly.  The stiff FD wall-clustering modes get
-    # huge negative lambda; exp(t*lambda) then *underflows* to 0 for
-    # t > 0 (they decay instantly) rather than overflowing a dense
-    # matrix exponential.
+    # Generator from eig(Phi_S) = (mu, Y), lambda = (1 - 1/mu)/dt, never
+    # by inverting I - dt*A (module docstring, step 3).
     mu, y_vec = np.linalg.eig(phi_s)
     lam = (1.0 - 1.0 / mu) / dt
     eig_res = float(
         np.linalg.norm(phi_s @ y_vec - y_vec * mu) / np.linalg.norm(phi_s)
     )
-    # For the ultra-stiff modes mu ~ 0, and lambda = (1 - 1/mu)/dt
-    # amplifies the eig round-off: a tiny spurious phase in mu can flip
-    # Re(lambda) to a huge *positive* value (unphysical growth that
-    # overflows exp).  A mode the probe cannot resolve (|mu| <= 1/2)
-    # cannot physically grow faster than the resolved spectral abscissa;
-    # clamp any such mode to instant decay so it cannot pollute the
-    # reported spectrum.
+    # Clamp (module docstring, step 3): for mu ~ 0, lambda amplifies the
+    # eig round-off, and a tiny spurious phase in mu can flip Re(lambda)
+    # to a huge *positive* value (unphysical growth that overflows exp).
+    # A mode the probe cannot resolve (|mu| <= 1/2) cannot physically
+    # grow faster than the resolved spectral abscissa, so one above it
+    # is set to instant decay and cannot pollute the reported spectrum.
     resolved = np.abs(mu) > 0.5
     if not resolved.any():
         raise SystemExit(
@@ -1109,19 +1085,9 @@ def _analyze_mode(
     e_mat = f_mat @ y_vec  # eigenvectors in energy coords
 
     # Restrict to the probe-resolved eigenspace *before* measuring
-    # growth.  Q is orthonormal in the energy coordinates -- so the
-    # 2-norm there is the energy norm -- and the reduced generator
-    # follows from invariance (E_res = Q R, so A_res = Q^H A Q =
-    # R diag(lam_res) R^{-1}, already in eigenform: no expm needed).
-    # Carrying the *unresolved* modes into G instead would make the
-    # propagator a non-orthogonal spectral projector the instant their
-    # exp(t*lambda) dies: G would jump from 1 to the projector norm at
-    # t = 0+ (a discontinuity of many orders, mesh-dependent and
-    # physically meaningless) and mask the true optimum.  On the
-    # restriction G(0) = 1 holds continuously, and G is a rigorous
-    # *lower bound* on the full-space growth that converges from below
-    # as the resolved window widens (larger wall-normal resolution
-    # res.ny/nr at fixed --tg.dt).
+    # growth (module docstring, step 5): E_res = Q R, so A_res =
+    # Q^H A Q = R diag(lam_res) R^{-1}.  G converges from below as the
+    # resolved window widens (smaller --tg.dt at fixed res.ny/nr).
     q_mat, r_mat = np.linalg.qr(e_mat[:, resolved])
     lam_res = lam[resolved]
     cond_e = np.linalg.cond(r_mat)
@@ -1190,13 +1156,10 @@ def _analyze_mode(
             re_t[it] = _lift(np.asarray(u1t), st0)
         opt_input_t, opt_response_t, sigma_t = in_t, re_t, sig_t
 
-    # Spectrum and abscissae.  The spectral abscissa uses all modes; the
-    # numerical abscissa (max instantaneous energy growth) is taken on
-    # the *probe-resolved* subspace |dt*lambda| < 1 (|mu| > 1/2): faster
-    # modes are heavily compressed by the backward-Euler probe (mu -> 0),
-    # so their extracted lambda -- and the near-wall FD modes' spurious
-    # non-normal instantaneous growth -- are unresolved and would swamp
-    # the diagnostic with a mesh-dependent value.
+    # Spectrum and abscissae (module docstring, step 7): the spectral
+    # abscissa over every post-clamp mode, the numerical abscissa (max
+    # instantaneous energy growth) on the probe-resolved eigenspace
+    # |mu| > 1/2, through a_res.
     order = np.argsort(-lam.real)
     lam_sorted = lam[order]
     spectral_abscissa = float(lam_sorted[0].real)
@@ -1205,7 +1168,7 @@ def _analyze_mode(
     op_v = op_f = op_q = op_a = op_lam = None
     if cfg.save_operator:
         # ``A_res`` is exactly the generator whose growth is reported,
-        # so ``operator_tools.growth_curve`` on the exported bundle
+        # so a growth curve computed from the exported bundle
         # reproduces the stored ``G`` (not merely approximates it).
         op_v, op_f, op_q, op_a = v, f_mat, q_mat, a_res
         op_lam = lam_res
@@ -1594,8 +1557,8 @@ def _seed_metadata_params():
     trajectory-defining ``phys``/``geo``/``res`` identity, so for the
     metadata dump the ``step`` section, the moving-frame speed, and
     the solver-run extension sections (possibly configured by a shared
-    production TOML this driver ignores) are
-    swapped to their production defaults, then restored.
+    production TOML this driver ignores) are swapped to their
+    production defaults, then restored.
     """
     from ..extensions import EXTENSIONS
     from ..flow_spec import UNSET
@@ -1700,8 +1663,8 @@ def _run(cfg: TGParams) -> int:
     t_grid = np.linspace(0.0, t_max, cfg.nt)
 
     def _propagator(e_mat: Array, lam: Array, w_mat: Array, t: Array):
-        # B(t) = E diag(exp(t*lambda)) W in energy coordinates; stiff
-        # modes (huge negative Re lambda) underflow to zero for t > 0.
+        # B(t) = E diag(exp(t*lambda)) W in energy coordinates, over the
+        # resolved modes only.
         return e_mat @ (jnp.exp(t * lam)[:, None] * w_mat)
 
     @jax.jit

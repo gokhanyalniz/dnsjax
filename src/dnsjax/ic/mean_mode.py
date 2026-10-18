@@ -176,20 +176,11 @@ ensemble's own metric, and it buys four things at once:
 
 Functions
 ---------
-constraint_rows:
-    The `$(m, N_y)$` homogeneous constraint rows of one direction.
-smoothing_kernel:
-    The ensemble covariance `$K$` the projection is taken in.
-project_profile:
-    Condition one profile on ``constraint_rows``.
-constraint_residuals:
-    Per-relation *relative* residuals, for reporting and for guards.
-build_cartesian_projector:
-    The `$(\delta_x, \delta_z) \to (\delta_x, \delta_z)$` map for the
-    live flow: tilt rotation plus each direction's own case.
-check_cartesian_mean_profile:
-    Human-readable violations of a candidate `$(0,0)$` column
-    (``scripts/snapshot_perturb.py``'s guard); empty when compatible.
+The rows and their residuals (:func:`constraint_rows`,
+:func:`constraint_residuals`); the conditioning (:func:`smoothing_kernel`,
+:func:`project_profile`); the live Cartesian flow's projector
+(:func:`build_cartesian_projector`) and the guard of
+``scripts/snapshot_perturb.py`` (:func:`check_cartesian_mean_profile`).
 
 Design notes
 ------------
@@ -262,9 +253,9 @@ maximized over ``fd_order`` in ``{4, 6, 8}``::
 
 The floor at large ``ny`` is roundoff, not truncation: the CGL
 near-wall ``D_2`` entries grow like ``ny^4``.  A profile that genuinely
-violates a relation scores `$O(1)$`: ``1 - y^2`` scores ``1.0`` on
-every row of both cases except case B's bulk row, at ``0.67``.  So
-``5e-3`` sits about a decade above the worst compatible case and two
+violates a relation scores `$O(1)$` (``1 - y^2``: "The four rows are
+independent, measured").
+So ``5e-3`` sits about a decade above the worst compatible case and two
 below the violating one.  An *unresolved* profile (~2 points per
 wavelength) scores ``1.0`` and is rejected, correctly: the grid cannot
 carry it compatibly.
@@ -309,16 +300,14 @@ def constraint_rows(
 ) -> ndarray:
     r"""Homogeneous constraint rows for one tangential direction.
 
-    Returns the `$(m, N_y)$` matrix `$C$` whose rows are the relations
-    derived in the module docstring, in the order of :data:`_LABELS_A`
-    / :data:`_LABELS_B`: `$m = 2$` in case A (*fixed_bulk* false) and
-    `$m = 4$` in case B.  The first two rows -- relation 1, the
-    vanishing wall curvature -- are the **same in both cases**; case B
-    adds the two rows that make them so under a responding `$\Pi$`.
-    The no-slip rows are **not** included (see the module
-    docstring).  Rows are unscaled -- the projection is
-    invariant under row scaling, and :func:`constraint_residuals`
-    applies each relation's own physical scale.
+    Returns the `$(m, N_y)$` matrix `$C$` of the relations derived in
+    the module docstring, in the order of :data:`_LABELS_A` /
+    :data:`_LABELS_B`: `$m = 2$` in case A (*fixed_bulk* false),
+    `$m = 4$` in case B, the first two rows shared.  The no-slip rows
+    are **not** included (module docstring).  Rows are unscaled: the
+    projection is invariant under row scaling, and
+    :func:`constraint_residuals` applies each relation's own physical
+    scale.
 
     Parameters
     ----------

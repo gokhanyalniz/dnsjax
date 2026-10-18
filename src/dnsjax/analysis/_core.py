@@ -1,25 +1,24 @@
 r"""Shared engine for the JAX-free snapshot analysis API.
 
-This module backs :mod:`dnsjax.analysis.snapshot_export` and
+Backs :mod:`dnsjax.analysis.snapshot_export` and
 :mod:`dnsjax.analysis.snapshot_ops`.  It depends only on NumPy, the
 standard library, dnsjax's JAX-free leaf modules
-(:mod:`dnsjax.snapshot_meta`, :mod:`dnsjax.harmonics`,
-:mod:`dnsjax.fd`), and the JAX-free flow-spec registry
-(:mod:`dnsjax.flows.registry`, which pulls
-:mod:`dnsjax.flow_spec` and every ``flows/*/specs/*`` module) --
-importing it never pulls in JAX, and every module on that list must
-stay JAX-free to keep the guarantee.  That the guarantee can hold at
-all rests on ``src/dnsjax/__init__.py`` being empty: importing any
-``dnsjax.*`` submodule runs the package ``__init__`` first.
+(:mod:`dnsjax.snapshot_meta`, :mod:`dnsjax.harmonics`, :mod:`dnsjax.fd`)
+and the JAX-free flow-spec registry (:mod:`dnsjax.flows.registry`, which
+pulls :mod:`dnsjax.flow_spec`, every ``flows/*/specs/*`` module and each
+installed plugin's spec module), so importing it never pulls in JAX;
+every module on that list must stay JAX-free to keep the guarantee.
+It holds only while ``src/dnsjax/__init__.py`` stays empty: importing
+any ``dnsjax.*`` submodule runs the package ``__init__`` first.
 ``tests/test_snapshot_export.py`` asserts it.
 
 Snapshot-native layout
 ----------------------
 A component chunk read straight off disk and reshaped to
-``(a_size, n_kz, n_kx)`` *is* the snapshot-native layout -- which, in format 6
-(the reader's floor), is also the solver's in-memory spectral layout (the state
-is stored untransposed), and this reader never transposes it.  Axis 2 is always
-the real-FFT axis (``n_kx = nx // 2``).  Per family:
+``(a_size, n_kz, n_kx)`` *is* the snapshot-native layout, the solver's
+own (the :mod:`dnsjax.snapshot` module docstring, "On-disk layout"), and
+this reader never transposes it.  Axis 2 is always the real-FFT axis
+(``n_kx = nx // 2``).  Per family:
 
 ==================  =======================  =================
 family              spectral axes (as read)  physical axes
@@ -30,13 +29,12 @@ triply-periodic     (ky, kz, kx)             (y, z, x)
 ==================  =======================  =================
 
 Components are ``(u_x, u_y, u_z)`` for cartesian / triply-periodic and
-``(u_z, u_r, u_θ)`` for cylindrical / annular -- as of snapshot format
-6 the stored components *are* these physical components (each the
-transform of a real field; the solver confines its decoupled
-``u_±`` / spin bases to the implicit solves).  A flow storing further
-components, or naming its axes otherwise, labels them in its spec
-(``FlowSpec.components``, ``FlowSpec.axis_names``).  Returned
-components are stored components, one-to-one (:func:`geometry_info`).
+``(u_z, u_r, u_θ)`` for cylindrical / annular: the stored components *are*
+these physical components, each the transform of a real field.  A
+flow storing further components, or naming its axes otherwise, labels
+them in its spec (``FlowSpec.components``, ``FlowSpec.axis_names``).
+Returned components are stored components, one-to-one
+(:func:`geometry_info`).
 
 Component order is (streamwise, wall-normal, spanwise) for the
 cartesian, triply-periodic, and cylindrical (pipe) families, but
@@ -74,8 +72,7 @@ from ..snapshot_meta import (
 )
 
 # Flow systems per geometry family, from the JAX-free flow-spec
-# registry (the single source of truth: a new flow spec extends these
-# automatically).
+# registry: a new flow spec extends these automatically.
 CARTESIAN_SYSTEMS = frozenset(_registry.cartesian_systems)
 CYLINDRICAL_SYSTEMS = frozenset(_registry.cylindrical_systems)
 ANNULAR_SYSTEMS = frozenset(_registry.annular_systems)
@@ -156,13 +153,12 @@ class Namespace:
 def params_namespace(meta: dict) -> Namespace:
     """Internal-named parameter view over snapshot metadata.
 
-    Stored metadata records the flow-relevant **public** names;
-    this maps them back to internal names and rehydrates the
-    hidden-derived internal fields (the annular azimuthal ``geo.lz``,
-    the derived ``phys.re``/``re2``) via
-    :func:`dnsjax.flows.registry.internalize_stored` -- so downstream
-    code reads ``params.res.nx`` / ``params.geo.lz`` etc. exactly as
-    the solver's live singleton would hold them.
+    Maps the stored flow-relevant **public** names back to internal
+    names and rehydrates the hidden-derived internal fields, the
+    internalization :func:`dnsjax.parameters.trajectory_defining_changes`
+    applies (:func:`dnsjax.flows.registry.internalize_stored`), so
+    downstream code reads ``params.res.nx`` / ``params.geo.lz`` exactly
+    as the solver's live singleton would hold them.
     """
     stored = meta["params"]
     system = meta.get("system") or stored.get("phys", {}).get("system")
@@ -192,11 +188,11 @@ class GeometryInfo:
     components: tuple[str, ...]
     wall_normal_axis: int  # physical axis carrying the wall-normal direction
     grid_axis: int | None  # spectral axis stored as a grid (None if periodic)
-    # Azimuthal wedge fundamental (``geo.m0``; 1 = full circle).  The
-    # stored azimuthal harmonics are the *multiples* ``m = m0 * h``, and
-    # it is that physical `$m$` -- not the harmonic index ``h`` -- that
-    # sets the pipe's axis parity class (:func:`radial_derivative`).
-    # 1 for every family without an azimuthal direction.
+    # Azimuthal wedge fundamental (``geo.m0``; 1 = full circle, and for
+    # every family without an azimuthal direction).  The stored
+    # harmonics are the *multiples* ``m = m0 * h``: the physical `$m$`,
+    # not the harmonic index ``h``, sets the pipe's axis parity class
+    # (:func:`radial_derivative`).
     azimuthal_m0: int = 1
     # Axis-parity class of each component, ``True`` for the `$(-1)^m$`
     # class (``FlowSpec.component_parity``): the cylindrical and
@@ -263,12 +259,11 @@ def geometry_info(params: Namespace) -> GeometryInfo:
     (``FlowSpec.components``, ``axis_names``, ``component_parity``,
     ``analysis_metric``).
 
-    *params* is normally the :class:`Namespace` view over a snapshot's
-    embedded parameters, but the live pydantic ``params`` singleton is
-    also passed here (the in-process tests).  Both are read through
-    **plain attribute access only** -- no mapping API, since a
-    pydantic model has none.  Use ``getattr(section, name, default)``
-    for a field that may be absent on one of the two.
+    *params* is the :class:`Namespace` view over a snapshot's embedded
+    parameters, or the live pydantic ``params`` singleton (the in-process
+    tests): both are read through **plain attribute access only**, since a
+    pydantic model has no mapping API.  A field that may be absent on one
+    of the two takes ``getattr(section, name, default)``.
     """
     system = str(params.phys.system)
     spec = _registry.spec_for(system)
@@ -301,10 +296,7 @@ def geometry_info(params: Namespace) -> GeometryInfo:
             components=spec.components or ("u_z", "u_r", "u_theta"),
             wall_normal_axis=0,
             grid_axis=0,
-            # ``getattr``, not ``Namespace.get``: this function is
-            # duck-typed on plain attribute access, and the in-process
-            # tests hand it the *live pydantic* ``params`` singleton,
-            # whose ``geo`` has no mapping API.
+            # ``getattr``, not ``Namespace.get`` (the docstring).
             azimuthal_m0=int(getattr(params.geo, "m0", 1) or 1),
             component_parity=spec.component_parity or VELOCITY_PARITY,
             metric=_axial_metric(spec, params),
@@ -334,8 +326,8 @@ def geometry_info(params: Namespace) -> GeometryInfo:
 def read_meta(path: str | Path) -> dict:
     """Parsed ``_dnsjax_meta.json`` of a dnsjax snapshot.
 
-    Raises a clear error for a non-snapshot file, so callers get a
-    useful message rather than a tar parse error.
+    A non-snapshot file raises a ``ValueError`` naming it, not a tar
+    parse error.
     """
     path = Path(path)
     if not is_snapshot_file(path):

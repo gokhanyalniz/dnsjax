@@ -171,11 +171,11 @@ def zeropad_fft(
     wrap-order mode placement is exact for any parity of the pad
     `$n - N$` and any parity of `$N$`.  Built as a single
     ``concatenate`` of the two kept slices around a zeros block (one
-    output write pass, mirroring :func:`truncate_fft`; the zero-init +
-    two scatter passes it replaces wrote the padded array roughly
-    twice).  The padded axis is locally stored in the stage where each
-    pad happens, so the zeros block created with *out_shard*
-    concatenates without a reshard.
+    output write pass, mirroring :func:`truncate_fft`; a zero-init plus
+    two scatters would write the padded array roughly twice).  The
+    padded axis is locally stored in the stage where each pad happens,
+    so the zeros block created with *out_shard* concatenates without a
+    reshard.
 
     Parameters
     ----------
@@ -221,20 +221,16 @@ def truncate_fft(
 ) -> Array:
     r"""Truncate a full-complex FFT output along *axis* to its kept modes.
 
-    The aliased modes are dropped.
-
-    Keeps the lowest `$n/2$` positive and `$n/2 - 1$` negative
-    modes, discarding all higher modes including the Nyquist mode.
+    Keeps the lowest `$n/2$` positive and `$n/2 - 1$` negative modes,
+    dropping the aliased (all higher) modes, the Nyquist mode included.
     The output has `$n - 1$` stored modes -- the layout of
     :func:`dnsjax.harmonics.complex_harmonics`.  *n* is a Fourier mode
     count and so is **even** (``validate_parameters`` refuses an odd
-    one: at odd *n* there is no Nyquist mode to drop, and dropping one
-    anyway strands a genuine harmonic's conjugate partner).  Formed by
-    concatenating the kept slices (one copy;
-    no zero-init plus scatters); the wrap-order placement is exact for
-    any parity of `$N - n$`.  The truncated axis is locally stored in
-    every pipeline stage, so the input sharding carries over to the
-    output.
+    one; :mod:`dnsjax.harmonics` says why).  Formed by concatenating the
+    kept slices (one copy; no zero-init plus scatters); the wrap-order
+    placement is exact for any parity of `$N - n$`.  The truncated axis
+    is locally stored in every pipeline stage, so the input sharding
+    carries over to the output.
 
     Parameters
     ----------
@@ -332,9 +328,6 @@ def _rfft2d(x: Array) -> Array:
     k_x$`] `$\to$` z-FFT `$\to$` [reshard #2:
     `$y \leftrightarrow k_z$`].
 
-    Reshard #1 is skipped when ``np1 == 1`` (layouts are
-    identical).  Reshard #2 is skipped when ``np0 == 1``.
-
     Parameters
     ----------
     x:
@@ -354,7 +347,6 @@ def _rfft2d(x: Array) -> Array:
     spec = sharding._fft_spec_scalar_shard
 
     # ---- Step 1: real FFT in x (y sharded by np0, z by np1) --
-    # (kx divisibility padding appended within the truncate)
     y = truncate_rfft(
         shard_map(
             lambda a: jnp.fft.rfft(a, axis=2, norm="forward"),
@@ -372,7 +364,6 @@ def _rfft2d(x: Array) -> Array:
         y = reshard(y, mid)
 
     # ---- Step 2: complex FFT in z, then truncate aliased modes
-    # (kz divisibility padding appended within the truncate)
     y = truncate_fft(
         shard_map(
             lambda a: jnp.fft.fft(a, axis=1, norm="forward"),
@@ -427,13 +418,11 @@ def _irfft2d(x: Array) -> Array:
     if sharding.ny_y_pad:
         x = _pad_y(x, spec)
 
-    # ---- Reshard #2 reverse: kz <-> y (skipped when np0==1;
-    # the mid and spec layouts are then identical) --
+    # ---- Reshard #2 reverse: kz <-> y (skipped when np0==1) --
     if sharding.a0 is not None:
         x = reshard(x, mid)
 
     # ---- Step 1: zero-pad z then inverse FFT in z ------------
-    # (kz divisibility padding skipped by the zero-pad slices)
     y = zeropad_fft(
         x, padded_res.nz_padded, 1, mid, strip=sharding.nz_spec_pad
     )
@@ -449,7 +438,6 @@ def _irfft2d(x: Array) -> Array:
         y = reshard(y, phys)
 
     # ---- Step 2: zero-pad kx then inverse real FFT in x ------
-    # (kx divisibility padding skipped by the zero-pad slice)
     y = zeropad_rfft(
         y,
         padded_res.nx_padded // 2 + 1,
@@ -494,7 +482,6 @@ def _rfft3d(x: Array) -> Array:
     spec = sharding._fft_spec_scalar_shard
 
     # ---- Step 1: real FFT in x --------------------------------
-    # (kx divisibility padding appended within the truncate)
     y = truncate_rfft(
         shard_map(
             lambda a: jnp.fft.rfft(a, axis=2, norm="forward"),
@@ -512,7 +499,6 @@ def _rfft3d(x: Array) -> Array:
         y = reshard(y, mid)
 
     # ---- Step 2: complex FFT in z, then truncate ---------------
-    # (kz divisibility padding appended within the truncate)
     y = truncate_fft(
         shard_map(
             lambda a: jnp.fft.fft(a, axis=1, norm="forward"),
@@ -583,7 +569,6 @@ def _irfft3d(x: Array) -> Array:
         y = reshard(y, mid)
 
     # ---- Step 2: zero-pad z then inverse FFT in z -------------
-    # (kz divisibility padding skipped by the zero-pad slices)
     y = zeropad_fft(
         y, padded_res.nz_padded, 1, mid, strip=sharding.nz_spec_pad
     )
@@ -599,7 +584,6 @@ def _irfft3d(x: Array) -> Array:
         y = reshard(y, phys)
 
     # ---- Step 3: zero-pad kx then inverse real FFT in x -------
-    # (kx divisibility padding skipped by the zero-pad slice)
     y = zeropad_rfft(
         y,
         padded_res.nx_padded // 2 + 1,

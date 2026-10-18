@@ -3,16 +3,16 @@ r"""Predictor-corrector time integration factory.
 Provides :func:`make_stepper`, which builds the JIT-compiled stepping
 functions from flow-specific callables -- ``predict_and_fully_correct``
 (the fused corrector loop) and ``step_cnab2``, each with an optional
-measured variant.
-The overall iteration structure (Euler
-predictor + iterative Crank-Nicolson corrector, Willis 2017) is shared
-across all flow types; only the RHS evaluation, Helmholtz solve, and
-norm computation differ.  With *l_bf_fn* provided and
+measured variant.  The overall iteration structure (Euler predictor +
+iterative Crank-Nicolson corrector, Willis 2017) is shared across all
+flow types; only the RHS evaluation, Helmholtz solve, and norm
+computation differ.  With *l_bf_fn* provided and
 ``step.split_corrector`` enabled (an opt-in, default off), the fused
 corrector runs in split form (``_split_core``): the linear coupling
-iterates FFT-free between full-RHS refreshes.  ``step.corrector_iterations``
-(also opt-in, default 0) replaces both correctors' dynamic loop with a
-static-trip-count one, which is what makes a step reverse-differentiable.
+iterates FFT-free between full-RHS refreshes.
+``step.corrector_iterations`` (also opt-in, default 0) replaces both
+correctors' dynamic loop with a static-trip-count one, which is what
+makes a step reverse-differentiable.
 
 For triply-periodic flows the Helmholtz solve is algebraic (pointwise
 multiply by ``ldt_1``, ``ildt_2``).  For wall-bounded flows it is a
@@ -147,24 +147,20 @@ def make_stepper(
     l_bf_fn:
         Optional ``state -> l_bf`` giving the *linear* base-flow
         coupling term (``u' x curl(U) + U x omega'``) evaluated
-        **without** any FFT (spectral/matrix-free), used by the
-        CN/AB2 scheme and by the opt-in split ``iterative-cn``
-        corrector (``step.split_corrector``, default off).  When
-        provided,
-        ``step_cnab2`` advances the
-        pure self-advection ``u' x omega' = get_rhs_fn - l_bf_fn``
-        explicitly (AB2) while treating ``l_bf_fn`` implicitly
-        (Crank-Nicolson) via an FFT-free corrector -- required for
-        wall-bounded flows, where the base-flow coupling carries a
-        stiff wall-normal derivative on the wall-clustered grid (see
-        ``step_cnab2`` below) -- and
+        **without** any FFT (spectral/matrix-free).  When provided,
+        ``step_cnab2`` advances the pure self-advection
+        ``u' x omega' = get_rhs_fn - l_bf_fn`` explicitly (AB2) while
+        treating ``l_bf_fn`` implicitly (Crank-Nicolson) via an
+        FFT-free corrector -- required for wall-bounded flows, where
+        the base-flow coupling carries a stiff wall-normal derivative
+        on the wall-clustered grid -- and, with the opt-in
+        ``step.split_corrector`` (default off),
         ``predict_and_fully_correct(_measured)`` likewise split their
-        corrector around it (``_split_core``;
-        ``step.split_corrector = False`` restores the unsplit
-        corrector exactly).  When ``None`` (triply-periodic, whose
-        Fourier ``y`` makes the coupling non-stiff) ``step_cnab2`` is
-        the plain explicit-AB2 step and the corrector is always
-        unsplit.
+        ``iterative-cn`` corrector around it (``_split_core``;
+        ``step.split_corrector = False`` restores the unsplit corrector
+        exactly).  When ``None`` (triply-periodic, whose Fourier ``y``
+        makes the coupling non-stiff) ``step_cnab2`` is the plain
+        explicit-AB2 step and the corrector is always unsplit.
     finalize_fn:
         Optional ``(state, *args) -> state`` applied **once** to the
         accepted state of every completed step -- at the end of
@@ -187,13 +183,13 @@ def make_stepper(
         geometry builders read the ``flow.dt`` / ``flow.ab2_kappa``
         pytree leaves, so ``step.adaptive`` can change both between
         calls without retracing.  The AB2 forcing becomes the
-        variable-step
-        `$(1 + \kappa/2)\,N^n - (\kappa/2)\,N^{n-1}$` (second order
-        for any `$\kappa$`, exactly `$\tfrac{3}{2}/\tfrac{1}{2}$` at
-        `$\kappa = 1$`), and the split corrector's tail-entry gain
-        uses the live ``dt``.  ``None`` (the default) freezes both
-        at ``params.step.dt`` / ``1`` -- the constant-dt behaviour,
-        bit-identical to the literal `$3/2$`, `$1/2$` weights.
+        variable-step `$(1 + \kappa/2)\,N^n - (\kappa/2)\,N^{n-1}$`
+        (second order for any `$\kappa$`, exactly
+        `$\tfrac{3}{2}/\tfrac{1}{2}$` at `$\kappa = 1$`), and the split
+        corrector's tail-entry gain uses the live ``dt``.  ``None``
+        (the default) freezes both at ``params.step.dt`` / ``1`` -- the
+        constant-dt behaviour, bit-identical to the literal `$3/2$`,
+        `$1/2$` weights.
 
     Returns
     -------
@@ -203,12 +199,10 @@ def make_stepper(
         under ``step.corrector_iterations``).  Signature:
         ``state -> (prediction_state, error, num_c, aux)``, *aux*
         being the converged correction's diagnostics (see
-        *correct_fn*).
-        With *l_bf_fn* and ``step.split_corrector`` enabled (opt-in,
-        default off) the corrector runs in split form -- the linear
-        coupling iterates FFT-free between full-RHS refreshes, same
-        converged CN fixed point and ``error``/``num_c`` semantics (see
-        ``_split_core``).
+        *correct_fn*).  Under the split corrector (*l_bf_fn* with
+        ``step.split_corrector``) the converged CN fixed point and the
+        ``error``/``num_c`` semantics are the unsplit corrector's
+        (``_split_core``).
         **Donates** *state* (the main-loop rebind pattern
         ``state, ... = step(state, ...)``); a caller that reuses
         its state afterwards -- e.g. a warm-up call -- must pass
@@ -224,25 +218,14 @@ def make_stepper(
         *get_rhs_measured_fn* is not given.
     step_cnab2:
         One CN/AB2 step (Crank-Nicolson viscous + explicit 2nd-order
-        Adams-Bashforth nonlinear), selected by ``step.scheme ==
-        "cnab2"``.  Signature: ``(state, carry) -> (state_next, carry,
-        error, num_c, aux)``; the caller carries ``carry`` back
-        unchanged.
+        Adams-Bashforth nonlinear, **one FFT/step** either way),
+        selected by ``step.scheme == "cnab2"``.  Signature:
+        ``(state, carry) -> (state_next, carry, error, num_c, aux)``;
+        the caller carries ``carry`` back unchanged.
         **Donates** *state* and *carry* (both are rebound by the main
         loop); callers that reuse either afterwards must pass copies.
-        **One FFT/step** either way (the single expensive nonlinear
-        transform).  Without *l_bf_fn* (triply-periodic): the plain
-        explicit-AB2 step, ``carry`` is the previous full nonlinear
-        RHS `$N^{n-1}$`, ``error = 0``, ``num_c = 0`` (no corrector).
-        With *l_bf_fn* (wall-bounded): ``carry`` is the previous
-        **self-advection** RHS `$N_{nl}^{n-1} = (u' \times
-        \omega')^{n-1}$`; the step forms the AB2 forcing
-        `$\tfrac{3}{2} N_{nl}^n - \tfrac{1}{2} N_{nl}^{n-1}$` (fixed,
-        one FFT) and makes the base-flow coupling implicit
-        (Crank-Nicolson) via an **FFT-free** corrector loop (a
-        converged linear corrector is the exact CN-implicit `$L_{bf}$`
-        solve), reporting its iteration count ``num_c`` and final
-        ``error``.
+        What ``carry``, ``error`` and ``num_c`` hold with and without
+        *l_bf_fn*: its docstring below.
     step_cnab2_measured:
         As ``step_cnab2``, but its first RHS evaluation (at `$u^n$`)
         also returns the physical-space measurements.  Signature:
@@ -260,13 +243,11 @@ def make_stepper(
         def _step_scales(*args: object) -> tuple[Array, Array]:
             return jnp.asarray(params.step.dt), jnp.ones(())
 
-    # Fixed corrector count (``step.corrector_iterations``, opt-in,
-    # default 0 = iterate to tolerance).  Read once here, like the
-    # core selection below: the geometry builders run after the
-    # configuration is final.  ``n > 0`` replaces the dynamic
-    # ``while_loop`` with a static-trip-count ``fori_loop``, which
-    # lowers to a ``scan`` and so reverse-differentiates -- see the
-    # ``TimeStepping`` docstring.
+    # Fixed corrector count (``step.corrector_iterations``; 0 = iterate
+    # to tolerance), read once here like the core selection below: the
+    # geometry builders run after the configuration is final.  The
+    # static-trip-count ``fori_loop`` lowers to a ``scan`` and so
+    # reverse-differentiates (the ``TimeStepping`` docstring).
     _n_fixed: int = params.step.corrector_iterations
 
     def _finalized(state: Array, *args) -> Array:
@@ -449,8 +430,8 @@ def make_stepper(
     # Corrector core for predict_and_fully_correct(_measured): the
     # split corrector needs the FFT-free coupling (wall-bounded) and
     # is gated by ``step.split_corrector`` -- an A/B knob, see the
-    # ``TimeStepping`` docstring.  Resolved at construction time (the
-    # geometry builders run after the configuration is final).
+    # ``TimeStepping`` docstring.  Resolved at construction time, like
+    # ``_n_fixed``.
     if l_bf_fn is not None and params.step.split_corrector:
         _fully_correct_core = _split_core
     else:
@@ -462,13 +443,11 @@ def make_stepper(
     ) -> tuple[Array, Array, Array, dict[str, Array]]:
         """Predict + all corrector iterations in one JIT scope.
 
-        Wall-bounded flows run the split corrector (``_split_core``)
-        when the opt-in ``step.split_corrector`` is enabled (default
-        off), else the unsplit corrector.
-        *state* is donated: the output state may reuse its buffer
-        (one field-sized allocation saved per step in the main
-        loop).  Callers that keep using their input must pass a
-        copy (see the ``__main__`` warm-up calls).
+        The corrector is ``_fully_correct_core``, split or unsplit
+        (above).  *state* is donated: the output state may reuse its
+        buffer (one field-sized allocation saved per step in the main
+        loop).  Callers that keep using their input must pass a copy
+        (see the ``__main__`` warm-up calls).
         """
         rhs_prev = get_rhs_fn(state, *args)
         prediction, error, num_c, aux = _fully_correct_core(
@@ -595,10 +574,9 @@ def make_stepper(
 
     _zero_err = jnp.zeros(())
     _zero_c = jnp.int32(0)
-    # The corrector-side ``aux`` of a step that runs no corrector: the
-    # explicit-AB2 branch below.  Empty is a *leafless* pytree, so it
-    # costs nothing in a loop carry or a ``lax.cond`` branch -- and it
-    # is also what every geometry with nothing to report returns.
+    # The corrector-side ``aux`` of the explicit-AB2 branch below, which
+    # runs no corrector: empty, a *leafless* pytree, so free in a loop
+    # carry or a ``lax.cond`` branch (*correct_fn* above).
     _no_aux: dict[str, Array] = {}
 
     @jit(donate_argnums=(0, 1))
@@ -608,29 +586,31 @@ def make_stepper(
         r"""One CN/AB2 step (``step.scheme == "cnab2"``).
 
         Crank-Nicolson viscous + 2nd-order Adams-Bashforth explicit
-        nonlinear, **one FFT/step**.  ``carry`` is threaded by the
-        caller (feed the returned ``carry`` back unchanged).  The
-        returned ``carry`` is independent of the ``carry`` argument
-        (it is `$N_{nl}(u^n)$`, recomputed from *state* alone), so the
-        caller can prime it with a discarded
-        ``step_cnab2(state_0, zeros)`` call and take the *first*
-        integration step with ``iterative-cn`` (the ``__main__``
-        bootstrap) -- no forward-Euler start is involved.  Returns
-        ``(state_next, carry, error, num_c, aux)``, *aux* as in
+        nonlinear, **one FFT/step** (the single expensive nonlinear
+        transform).  ``carry`` is threaded by the caller (feed the
+        returned ``carry`` back unchanged).  The returned ``carry`` is
+        independent of the ``carry`` argument (it is `$N_{nl}(u^n)$`
+        with *l_bf_fn*, `$N(u^n)$` without, recomputed from *state*
+        alone), so the caller can prime it with
+        a discarded ``step_cnab2(state_0, zeros)`` call and take the
+        *first* integration step with ``iterative-cn`` (the
+        ``__main__`` bootstrap) -- no forward-Euler start is involved.
+        Returns ``(state_next, carry, error, num_c, aux)``, *aux* as in
         :func:`make_stepper`'s *correct_fn* (``{}`` without a
         corrector).  *state* and *carry* are both donated (callers
         reusing either pass copies).
 
         With *l_bf_fn* (wall-bounded) the base-flow coupling is made
-        implicit via an FFT-free corrector (see ``_cnab2_lbf_core``);
-        ``carry`` is the self-advection RHS `$N_{nl}^{n-1}$`.  Without
-        it (triply-periodic) this is the plain explicit-AB2 step whose
-        predictor is exactly ``_imm_iteration(u, u, F, F)`` with
+        implicit via an FFT-free corrector loop (``_cnab2_lbf_core``),
+        whose iteration count and final correction norm are ``num_c``
+        and ``error``; ``carry`` is the self-advection RHS
+        `$N_{nl}^{n-1} = (u' \times \omega')^{n-1}$`.  Without it
+        (triply-periodic) this is the plain explicit-AB2 step
+        ``predict_fn(u, F)`` with
         `$F = (1 + \kappa/2)\,N^n - (\kappa/2)\,N^{n-1}$`
-        (`$\kappa = \Delta t_n/\Delta t_{n-1}$`, see
-        *step_scales_fn*); ``carry`` is
-        `$N^{n-1}$` and there is no corrector (``error = 0``,
-        ``num_c = 0``).
+        (`$\kappa = \Delta t_n/\Delta t_{n-1}$`, see *step_scales_fn*);
+        ``carry`` is the full nonlinear RHS `$N^{n-1}$` and there is no
+        corrector (``error = 0``, ``num_c = 0``).
 
         **Memory**: cnab2 is a *throughput* optimization (1 vs
         `$2 + c$` FFT evaluations per step), not a peak-memory one --

@@ -8,16 +8,18 @@ like the random field, it has no offline CLI.
 
 **Fixed-physical structure (a spot, surrounded by laminar flow).** The
 perturbation is a compact structure of *fixed physical size*, localized
-in **every homogeneous direction**, peak-normalized so that
-`$\max|\mathbf{u}'| = A$` (the ``amplitude`` argument) at any domain
-size.  Growing a box length therefore only adds laminar flow around the
-spot, so the volume-averaged statistics scale as `$1 / (L_x L_z)$` -- the
-total perturbation energy is domain-independent.  Box-proportional
-sizing would forfeit both properties: a width set as a *fraction* of the
-box, or a single cross-plane Fourier mode (whose `$1/\beta$`
-streamfunction prefactor with `$\beta = 2\pi / L$` makes the
-cross-stream velocity grow `$\propto L$`), blows the perturbation up
-with the domain instead of holding it fixed.
+in **every homogeneous direction** but the pipe's azimuth (which it
+fills at a fixed period: :func:`generate_cylindrical_rolls`),
+peak-normalized so that `$\max|\mathbf{u}'| = A$` (the ``amplitude``
+argument) at any domain size.  Growing a box length therefore only
+adds laminar flow around the spot, so the volume-averaged statistics
+scale as `$1 / (L_x L_z)$` -- the total perturbation energy is
+domain-independent.  Box-proportional sizing would forfeit both
+properties: a width set as a *fraction* of the box, or a single
+cross-plane Fourier mode (whose `$1/\beta$` streamfunction prefactor
+with `$\beta = 2\pi / L$` makes the cross-stream velocity grow
+`$\propto L$`), blows the perturbation up with the domain instead of
+holding it fixed.
 
 **Construction (Cartesian; `$x$` streamwise, `$z$` spanwise, `$y$`
 wall-normal).** With zero streamwise velocity and a `$y$`-`$z$`
@@ -44,13 +46,11 @@ docstrings).  Every flow chooses its own rolls through the
 :func:`generate_localized_rolls` calls: a core-geometry flow takes its
 geometry's generator here, and a total-field flow adds its laminar state.
 
-**Triply-periodic.** `$y$` is Fourier rather than a wall-normal grid, so
-the only wall-specific ingredient -- `$G$`, whose shape exists to satisfy
-the no-slip conditions -- is replaced by the same fixed-physical
-localization the homogeneous directions use, and `$G'$` becomes the exact
-`$\mathrm{i}k_y\hat G$`.  The divergence then cancels analytically
-(round-off, not truncation-level) and the mean mode is zero structurally;
-see :func:`generate_periodic_rolls`.
+**Triply-periodic.** `$y$` is Fourier there, so `$G$` (shaped for
+no-slip) becomes the localization the homogeneous directions use and
+`$G'$` its exact spectral derivative: the divergence cancels to
+round-off and the mean mode is zero structurally
+(:func:`generate_periodic_rolls`).
 
 **Mean-free by construction**, and (wall-bounded) there is nothing admissible
 to keep.  The `$(0,0)$` content the roll pair would otherwise carry is
@@ -80,11 +80,9 @@ pair:
   only when `$L/\lambda \in \mathbb{Z}$`, and 2 % of the peak coefficient at
   e.g. `$L = 2\pi$`, `$\lambda = 4$`.
 
-In the triply-periodic family the mean mode is a single bin rather than
-a `$y$` profile, and the *first* mechanism alone settles it on both
-components at once (`$u_z$`'s `$\mathrm{i}k_y$` is a spectral derivative
-there too), so the second is kept only for parity and for the host-side
-peak.  The pipe would need neither in exact arithmetic -- its
+In the triply-periodic family the *first* mechanism alone settles it
+(:func:`generate_periodic_rolls`).  The pipe would need neither in
+exact arithmetic -- its
 azimuthal factors are exactly one period over the wedge and its `$u_z$`
 is identically zero -- but its DC bins are round-off rather than zero,
 so they are zeroed too.  Removing a roll factor's mean cannot disturb the
@@ -98,23 +96,19 @@ needs.  Guard: ``tests/test_localized_rolls.py``.
 **Separable, sharded construction (no replication).** Each component is
 an outer product `$(\text{wall-normal profile}) \otimes (\text{complex-}
 \text{axis spectrum}) \otimes (\text{real-axis spectrum})$` built
-**directly in spectral space, sharded**, from small 1-D factors via the
-dnsjax broadcast-of-sharded-factors idiom (the same pattern that builds
-``Fourier.k2`` / ``mean_mask``): the complex-FFT-axis factor is placed on
-the ``np0`` mesh axis, the real-FFT-axis factor on ``np1``, and the
-broadcast product is sharded -- so **no full array is ever materialized**
-and the field is device-count-independent.  The peak normalization is a
-one-time host-side computation on the small 1-D factor signals (also
-replication-free).  No-slip is **exact** where there are walls (the wall
-slice of every profile is identically zero, never transformed); the
-triply-periodic member passes a `$k_y$` spectrum in that same slot,
-which is unsharded on every mesh exactly as a wall-normal profile is.
-Reality is automatic: every 1-D factor spectrum is the forward FFT of a
-*real* signal, hence conjugate-symmetric, and separable products
-preserve that Hermitian symmetry -- no enforcement step (unlike the
-random field's ``enforce_hermitian_slice``).  The 1-D spectra are
-zero-padded to the mesh-padded mode counts, so padding modes stay
-identically zero on any device mesh.
+**directly in spectral space, sharded**, from small 1-D factors
+(:func:`_separable_scalar`), so **no full array is ever materialized**
+and the field is device-count-independent; the peak normalization is a
+one-time host-side computation on the 1-D factor signals
+(:func:`peak_velocity`).  No-slip is **exact** where there are walls
+(the wall slice of every profile is identically zero, never
+transformed); the triply-periodic member passes a `$k_y$` spectrum in
+that same slot, which is unsharded on every mesh exactly as a
+wall-normal profile is.  Reality is automatic: every 1-D factor
+spectrum is the forward FFT of a *real* signal, hence
+conjugate-symmetric, and separable products preserve that Hermitian
+symmetry -- no enforcement step (unlike the random field's
+``enforce_hermitian_slice``).
 
 **Import-order discipline**: only NumPy and the JAX-free
 ``harmonics`` / ``parameters`` leaves are imported at module top; ``jax``,
@@ -131,10 +125,9 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-# Wavenumber sequences come from the JAX-free ``harmonics`` leaf: the
-# builders must never fetch the ``fourier`` singleton's wavenumber
-# arrays, which are global multi-device arrays (not addressable per
-# process under ``mpirun``).
+# Host wavenumbers from the JAX-free ``harmonics`` leaf: the
+# ``fourier`` singleton's arrays are global multi-device arrays, not
+# addressable per process under ``mpirun``.
 from ..flows.registry import flow_hook
 from ..harmonics import complex_harmonics, real_harmonics
 from ..parameters import derived_params, params
@@ -636,14 +629,13 @@ def generate_periodic_rolls(
       for parity with the other generators (and for the host-side peak),
       but nothing here depends on them.
 
-    Reality is automatic for the same reason as elsewhere: every 1-D
-    factor is the forward transform of a *real* signal, and a separable
-    product of conjugate-symmetric factors satisfies the periodic
-    family's joint `$f(k_y,k_z,0) = \overline{f(-k_y,-k_z,0)}$`
-    condition on the `$k_x = 0$` plane (which the random-field generator
-    needs ``_periodic_hermitian_raw`` to arrange).  That pairing needs
-    **even** mode counts, which ``validate_parameters`` guarantees for
-    every Fourier axis (:mod:`dnsjax.harmonics`).
+    Reality is automatic (module docstring): the separable product
+    satisfies the periodic family's joint
+    `$f(k_y,k_z,0) = \overline{f(-k_y,-k_z,0)}$` condition on the
+    `$k_x = 0$` plane, which the random field arranges with
+    ``_periodic_hermitian_raw``.  That pairing needs **even** mode
+    counts, which ``validate_parameters`` guarantees for every Fourier
+    axis (:mod:`dnsjax.harmonics`).
     """
     from jax import numpy as jnp
 

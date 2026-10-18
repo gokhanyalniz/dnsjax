@@ -1,8 +1,7 @@
 """Standard-library snapshot metadata helpers (JAX-free).
 
-A dnsjax snapshot is a single **uncompressed tar** archive wrapping a
-zarr3 store plus a JSON metadata member (see :mod:`dnsjax.snapshot`).
-This module reads the parts that must be available *before* JAX is
+This module reads the parts of a snapshot (the format:
+:mod:`dnsjax.snapshot`) that must be available *before* JAX is
 configured -- the embedded parameters and the component byte offsets --
 using only the standard library (``tarfile`` / ``json``).  It imports
 nothing from the rest of the package, so it is a safe leaf dependency
@@ -49,19 +48,20 @@ nor runs the fork handlers of the MPI and RPC libraries it has loaded.
 
 **Atomic sidecars.**  A ``.bin`` stream writer (an extension
 section's, say) creates its JSON sidecar on the **main** process while
-**every** rank tests the same path's existence
-to choose between "create" and "validate and append".  A plain
-``open(path, "w")`` makes the path exist before its content does, so a
-rank whose test lands inside that window loads zero bytes and dies in
-``json.load`` (``JSONDecodeError: Expecting value: line 1 column 1``)
--- a race seen on a fresh output directory under ``mpirun -np 2``.
-Committing by rename (:func:`write_sidecar_json`) makes the path appear
-only once complete, so the loser of the race sees either no file (and,
-not being the main process, does nothing) or the whole of it; the
-rename is atomic on any POSIX filesystem because the ``.partial``
-sibling shares the directory.  A run record a later resume reads back
-is written the same way, where a truncated write would be equally
-fatal.
+**every** rank tests the same path's existence to choose between
+"create" and "validate and append".  A plain ``open(path, "w")`` makes
+the path exist before its content does, so a rank whose test lands
+inside that window loads zero bytes and dies in ``json.load``
+(``JSONDecodeError: Expecting value: line 1 column 1``) -- a race seen
+on a fresh output directory under ``mpirun -np 2``, and measured at 138
+of 300 attempts with a concurrent reader: a routine multi-process
+failure, not a rare one.  Committing by rename
+(:func:`write_sidecar_json`) makes the path appear only once complete,
+so the loser of the race sees either no file (and, not being the main
+process, does nothing) or the whole of it; the rename is atomic on any
+POSIX filesystem because the ``.partial`` sibling shares the directory.
+A run record a later resume reads back is written the same way, where
+a truncated write would be equally fatal.
 """
 
 import contextlib
@@ -86,12 +86,10 @@ _CHUNK_PREFIX = "state/c/"
 _CHUNK_SUFFIX = "/0/0/0"
 
 #: Tar member prefix of the optional solver-carried fields
-#: (``carry/c/{slot}/0/0/0``): a second zarr3 array beside ``state``,
-#: written by :func:`dnsjax.snapshot.save_snapshot` when a run's solver
-#: carries state beyond the velocity (the pipe family's spin-quad
-#: differences; ``outs.snapshot_embed_carry``) and read back only by
-#: the solver's own resume.  Every other reader walks ``state/c/`` and
-#: never sees it.
+#: (``carry/c/{slot}/0/0/0``; the :mod:`dnsjax.snapshot` docstring),
+#: written by :func:`dnsjax.snapshot.save_snapshot` under
+#: ``outs.snapshot_embed_carry`` and read back only by the solver's own
+#: resume.  Every other reader walks ``state/c/`` and never sees it.
 CARRY_PREFIX = "carry/c/"
 
 #: Tar member prefix of the optional static pressure
@@ -204,9 +202,8 @@ def is_snapshot_file(path: str | Path) -> bool:
     """True when *path* is a dnsjax single-file snapshot.
 
     A dnsjax snapshot is an uncompressed tar containing a
-    :data:`META_MEMBER` member; testing for that member (rather than a
-    suffix convention) is what lets the caller tell a real snapshot
-    from any other file it was handed.
+    :data:`META_MEMBER` member; testing for that member, not a suffix,
+    tells a real snapshot from any other file the caller was handed.
     """
     path = Path(path)
     if not path.is_file():
@@ -220,12 +217,11 @@ def is_snapshot_file(path: str | Path) -> bool:
 
 #: Oldest readable snapshot ``format_version``.  Format 6 stores the
 #: state in the solver's native spectral layout, in physical
-#: components for every family (cylindrical/annular `$u_r$`,
-#: `$u_\theta$`, and any further stored component), with the embedded
-#: ``params`` dump in the flow-relevant public-named surface
-#: representation.  A pre-6 file differs in at least one of those
-#: conventions and would be silently misread, so anything older is
-#: rejected -- never translated (no compatibility shim by design).
+#: components for every family, with the embedded ``params`` dump in
+#: the flow-relevant public-named surface representation
+#: (:mod:`dnsjax.snapshot`).  A pre-6 file differs in at least one of
+#: those conventions and would be silently misread, so anything older
+#: is rejected -- never translated (no compatibility shim by design).
 MIN_FORMAT_VERSION: int = 6
 
 
@@ -234,8 +230,8 @@ def read_snapshot_meta(path: str | Path) -> dict:
 
     The single version choke point: every consumer (resume, offline
     analysis, scripts) reads metadata through here, and a snapshot
-    older than :data:`MIN_FORMAT_VERSION` is rejected with a clear
-    message rather than misread under the wrong params convention.
+    older than :data:`MIN_FORMAT_VERSION` is rejected rather than
+    misread under the wrong params convention.
     """
     path = Path(path)
     with _snapshot_tar(path) as tf:
@@ -291,12 +287,11 @@ def _check_chunks_match_meta(
     consults the member it lands in, so if the two ever disagree a
     reader walks off the end of one chunk and into the next
     component's bytes -- and returns them as state.  Both come from
-    one call in the writer, which is exactly the sort of
-    invariant that holds until someone refactors around it, and
-    nothing downstream could tell afterwards: the wrong bytes are
-    well-formed complex numbers.
+    one call in the writer, an invariant a refactor could break with
+    nothing downstream able to tell: the wrong bytes are well-formed
+    complex numbers.
 
-    Cheap enough to do unconditionally -- the sizes are already in the
+    Cheap enough to do unconditionally: the sizes are already in the
     tar headers being walked, and the metadata member is ~2 KiB.
     """
     if meta_raw is None:
@@ -357,10 +352,10 @@ def snapshot_component_offsets(path: str | Path) -> dict[int, int]:
     the flow's ``n_components`` for one storing more; the chunks must
     be a contiguous range ``0..N-1``.
 
-    This is the one place that hands out byte positions to trust, so it
-    is also where they are checked against the metadata that describes
-    them (:func:`_check_chunks_match_meta`) -- rather than leaving each
-    caller to remember.
+    The one place that hands out byte positions to trust, so it checks
+    them against the metadata that describes them
+    (:func:`_check_chunks_match_meta`) rather than leaving that to each
+    caller.
     """
     path = Path(path)
     offsets, sizes, meta_raw = _chunk_members(path, _CHUNK_PREFIX)

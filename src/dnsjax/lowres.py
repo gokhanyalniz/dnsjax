@@ -293,9 +293,9 @@ class LowResWriter:
         *fields* is the full-resolution spectral field to store, in
         physical components (``(C, Ny, Nkz, Nkx)``), and *pressure* its
         full-resolution pressure (``(Ny, Nkz, Nkx)``, ``None`` for
-        none); *field*
-        names what they are (``"state"``, ``"difference"``) and
-        *pressure_note* what the pressure is, for the metadata.
+        none); *field* names what they are (``"state"``,
+        ``"difference"``) and *pressure_note* what the pressure is, for
+        the metadata.
         """
         extra = {
             "lowres": {

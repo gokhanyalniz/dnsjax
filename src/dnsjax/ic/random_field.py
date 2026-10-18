@@ -59,24 +59,20 @@ difference field settles into (Design notes: "Shape is not growth").
 **The wall window is scale-dependent** (``random_wall_confinement``,
 the `$a$` of :func:`scaled_wall_window`): a mode's window peaks where
 the base window equals `$1/(a|k|)$`, so modes below `$1/a$` still fill
-the gap while smaller ones sit nearer the wall.  This is the one factor
-that moves the perturbation's wall-normal distribution at all -- the
-smoothness filter does not, measurably.  It is on by default for
-both uses (Design notes: "The scale-dependent window, measured").  `$a$`
-is dimensionless, so it carries no
-Reynolds number and no box length; `$a = 0$` is the plain window; and
-`$|k| = 0$` recovers it whatever `$a$` is, which is why the `$(0, 0)$`
-column and :mod:`dnsjax.ic.mean_mode` see no change from any of this.
+the gap while smaller ones sit nearer the wall.  It is the one factor
+that moves the perturbation's wall-normal distribution (Design notes:
+"The window sets the wall-normal distribution"), and it is on by
+default for both uses ("The scale-dependent window, measured").  `$a$`
+is dimensionless, so it carries no Reynolds number and no box length;
+`$a = 0$` is the plain window; and `$|k| = 0$` recovers it whatever
+`$a$` is, which is why the `$(0, 0)$` column and
+:mod:`dnsjax.ic.mean_mode` see no change from any of this.
 
 The field is then normalized so the volume-averaged L2 norm equals
-``amplitude``.  Each wall-bounded mode is built by solving continuity for
-one velocity component (a `$1/k$` factor that would **inflate** the
-low-wavenumber spectrum and make it domain-dependent -- as the box grows
-the lowest mode would dominate), so the finished divergence-free mode is
-rescaled to the envelope energy (:func:`normalize_mode`) rather than
-scaling the raw draw.  The triply-periodic family instead uses a Leray
-projection (:func:`_leray`) that never divides by `$k$` and needs no such
-step.
+``amplitude``, each wall-bounded mode having first been rescaled to its
+envelope energy once divergence-free (:func:`normalize_mode` says why);
+the triply-periodic family's Leray projection (:func:`_leray`) needs no
+such step.
 
 **Every flow chooses its own random IC** through the
 ``init_random_state`` hook of its flow module (the flow-module surface,
@@ -120,14 +116,10 @@ truncation-level (projected by the first corrector step).
 
 **The seed** is the first element of every per-mode key, so the field
 is a function of ``(seed, global mode index)`` alone -- identical at any
-``(np0, np1)``, *provided every process holds the same seed*.  That is
-the entry points' job: an unset ``init.random_seed`` (or an entry
-point's own seed) is drawn once and agreed across processes before any
-generator here is called (:mod:`dnsjax.seeding`,
-``bootstrap.resolve_seed``).  Per-rank
-draws would assemble one field out of unrelated streams -- still
-divergence-free, still correctly normalized, and reproducible from no
-recorded seed at all.
+``(np0, np1)``, *provided every process holds the same seed*, which the
+entry points ensure before any generator here is called (an unset seed
+is drawn once and agreed: :mod:`dnsjax.seeding`,
+``bootstrap.resolve_seed``).
 
 **Import-order discipline**: only NumPy and the JAX-free
 ``harmonics`` / ``parameters`` leaves are imported at module top.  ``jax``,
@@ -230,8 +222,7 @@ if TYPE_CHECKING:
 # The real-FFT axis (kx for Cartesian/periodic, kz for cylindrical)
 # stores only non-negative wavenumbers.  On the complex-FFT axis
 # at kx=0 (or kz=0 for cylindrical), the stored modes must satisfy
-# conjugate symmetry for the physical field to be real.  The helper
-# below is pure NumPy (no JAX) since it works on the host array.
+# conjugate symmetry for the physical field to be real.
 
 
 def enforce_hermitian_slice(
@@ -267,16 +258,11 @@ def enforce_hermitian_slice(
 
 # ── Per-device mode generation (no full-array replication) ───────
 #
-# Each device fills only its own ``(axis2, axis3)`` modes, keyed by the
-# *global* mode index so the field is identical at any ``(np0, np1)``
-# device configuration.  Numpy has no random access into a single PRNG
-# stream, so each mode draws from its own key; the divergence-free /
-# no-slip / norm properties and device-count independence hold by
-# construction (Design notes: "Per-mode keys, not one stream").
-# Conjugate symmetry on the real-FFT-axis-0 plane is enforced *by
-# construction* (the negative partner is the conjugate of the same
-# canonical draw), so no cross-device communication and no plane
-# replication are needed.
+# One key per global ``(axis2, axis3)`` mode (module docstring; Design
+# notes: "Per-mode keys, not one stream").  Conjugate symmetry on the
+# real-FFT-axis-0 plane holds by construction (the negative partner is
+# the conjugate of the same canonical draw), so no cross-device
+# communication and no plane replication are needed.
 
 
 def column_draw(
@@ -346,13 +332,10 @@ def wall_normal_filter(coord: np.ndarray, decay: float) -> np.ndarray:
     wall-normal Nyquist.  This applies the missing factor: expand the column in
     the orthonormal polynomial basis of *coord*, weight index `$j$` by
     `$\sqrt{\text{decay}}^{\,j}$` -- so its *energy* follows
-    `$\text{decay}^{\,j}$` -- and transform back.  *decay* is `$1 - s_w$` from
-    the **separate** ``wall_smoothness`` knob, not the periodic directions'
-    `$1 - s$`: theirs is `$(1-s)^{2|k|}$` in energy, in a wavenumber that
-    carries units where `$j$` counts modes, and the two calibrate an order of
-    magnitude apart.  The module docstring has the argument, and
-    :func:`scaled_wall_window` has the reason this is *not* the knob that
-    moves the field's wall-normal energy distribution.
+    `$\text{decay}^{\,j}$` -- and transform back.  *decay* is `$1 - s_w$`,
+    from the **separate** ``wall_smoothness`` knob (Design notes: "Two
+    knobs, not one"); :func:`scaled_wall_window` says why this is *not* the
+    knob that moves the field's wall-normal energy distribution.
 
     *coord* is the variable the field is smooth in, ascending: `$y$`
     (Cartesian), `$r$` (annular), and `$r^2$` for the pipe -- an
@@ -508,16 +491,12 @@ def generate_cartesian(
 ) -> Array:
     """Generate a random divergence-free Cartesian perturbation.
 
-    Built per device (no full-array replication): each device fills only
-    its own ``(k_z, k_x)`` modes, keyed by the global mode index.  The
-    wall-normal velocity carries a squared no-slip window
-    ``(1-y^2)^2`` -- narrowed towards the wall by the mode's own
-    wavenumber (:func:`scaled_wall_window`) -- so its value and first
-    derivative vanish at the walls and the
-    continuity-derived component inherits a truncation-level wall value
-    (projected by the first corrector step) while the independent
-    components keep exact wall zeros.  Returns the sharded spectral state
-    of shape ``(3, Ny, Nkz, Nkx)``.
+    Returns the sharded spectral state of shape ``(3, Ny, Nkz, Nkx)``,
+    built per device (module docstring).  The wall-normal velocity
+    carries the squared window ``(1-y^2)^2``, narrowed towards the wall
+    by the mode's own wavenumber (:func:`scaled_wall_window`); the
+    independent components keep exact wall zeros, the continuity-derived
+    one a truncation-level wall value.
 
     With *mean_flow* the `$(k_x, k_z) = (0, 0)$` column is kept rather
     than zeroed, conditioned on the mean-mode conservation laws by
@@ -634,17 +613,15 @@ def generate_cylindrical(
 ) -> Array:
     r"""Generate a random perturbation for pipe flow.
 
-    Built per device (no full-array replication): each device fills only
-    its own ``(m, k_z)`` modes, keyed by the global mode index.  Returns
-    the sharded spectral state of shape ``(3, Nr, Nm, Nkz)`` in
-    `$(u_z, u_r, u_\theta)$` form.  `$u_r$` and `$u_\theta$` carry a
-    squared wall window `$(1-r)^2$` (value and first derivative vanish
-    at `$r = 1$`), narrowed towards the wall by the mode's own
-    wavenumber (:func:`scaled_wall_window`), so for
-    `$k_z \neq 0$` the continuity-derived `$u_z$`
-    inherits a truncation-level wall value (projected by the first
-    corrector step).  The inner end `$r = 0$` is the axis, not a wall,
-    and every column carries the **axis-regularity** envelope
+    Returns the sharded spectral state of shape ``(3, Nr, Nm, Nkz)`` in
+    `$(u_z, u_r, u_\theta)$` form, built per device (module docstring).
+    `$u_r$` and `$u_\theta$` carry the squared wall window `$(1-r)^2$`,
+    zero with its derivative at `$r = 1$` and narrowed towards the wall
+    by the mode's own wavenumber (:func:`scaled_wall_window`); for
+    `$k_z \neq 0$` the continuity-derived `$u_z$` has a truncation-level
+    wall value.  The
+    inner end `$r = 0$` is the axis, not a wall, and every column carries
+    the **axis-regularity** envelope
 
     .. math::
         u_z \sim r^{|m|}, \qquad
@@ -719,11 +696,8 @@ def generate_cylindrical(
             for lj in range(n_kz):
                 g3 = kz_start + lj  # global k_z index (axis 3, real)
                 if g2 == 0 and g3 == 0:
-                    # Mean mode: the (0, 0) conservation laws are only
-                    # established for the Cartesian flows, so every
-                    # other flow defers ``init.random_mean_flow``
-                    # (``dnsjax.ic.mean_mode``, and the per-flow
-                    # ``DeferredSpec``s); ``buf`` starts at zero.
+                    # Mean mode: left at zero (``init.random_mean_flow``
+                    # is Cartesian-only; module docstring).
                     continue
                 kz_val = kz_np[g3]
                 window_wall = scaled_wall_window(
@@ -738,13 +712,9 @@ def generate_cylindrical(
                 col[0] *= window_wall
                 col[1] *= window_wn
                 col[2] *= window_wn
-                # Axis-regularity envelope at r = 0 (the docstring):
-                # u_z ~ r^|m|, u_pm ~ r^|m +- 1|.  Applied in the u_pm
-                # basis because the condition is a cancellation
-                # *between* u_r and u_theta -- enveloping them
-                # separately leaves u_+ two orders too large.  Parity
-                # follows from it, so this replaces (not supplements)
-                # a parity-only window.
+                # Axis-regularity envelope at r = 0, in the u_pm basis
+                # (the docstring): u_z ~ r^|m|, u_pm ~ r^|m +- 1|; it
+                # replaces, not supplements, a parity-only window.
                 cp = (col[1] + 1j * col[2]) * rs_np ** abs(m_val + 1)
                 cm = (col[1] - 1j * col[2]) * rs_np ** abs(m_val - 1)
                 col[1] = (cp + cm) / 2
@@ -797,22 +767,16 @@ def generate_annular(
 ) -> Array:
     r"""Generate a random perturbation for Taylor-Couette flow.
 
-    Built per device (no full-array replication): each device fills only
-    its own ``(m, k_z)`` modes, keyed by the global mode index.  Returns
-    the sharded spectral state of shape ``(3, Nr, Nm, Nkz)`` in
-    `$(u_z, u_r, u_\theta)$` form.  `$u_r$` and `$u_\theta$` carry a
-    squared no-slip window `$((r-r_1)(r_2-r))^2$` (value and first
-    derivative vanish at both walls), narrowed towards the walls by the
-    mode's own wavenumber (:func:`scaled_wall_window`), so for
-    `$k_z \neq 0$` the
-    continuity-derived `$u_z$` inherits a truncation-level wall value
-    (projected by the first corrector step); the independent components
-    keep exact wall zeros.  For `$k_z = 0$` the axial `$u_z$` drops out
-    of continuity, so it is closed through `$u_\theta$` instead (exact
-    discretely); the `$m = 0$` mean has `$u_r = 0$`.  The `$k_z = 0$`
-    plane is drawn per-component Hermitian (:func:`hermitian_column`)
-    so every physical component -- including the axial-mean swirl --
-    is real.
+    Returns the sharded spectral state of shape ``(3, Nr, Nm, Nkz)`` in
+    `$(u_z, u_r, u_\theta)$` form, built per device (module docstring).
+    `$u_r$` and `$u_\theta$` carry the squared window
+    `$((r-r_1)(r_2-r))^2$`, zero with its derivative at both walls and
+    narrowed towards them by the mode's own wavenumber
+    (:func:`scaled_wall_window`); the independent components keep exact
+    wall zeros, the continuity-derived `$u_z$` (`$k_z \neq 0$`) a
+    truncation-level wall value.  The `$k_z = 0$` closure through
+    `$u_\theta$` and the Hermitian `$k_z = 0$` plane are as in
+    :func:`generate_cylindrical`.
     """
     from ..geometries.wall_bounded.annular import (
         build_annular_grid,
@@ -862,11 +826,8 @@ def generate_annular(
             for lj in range(n_kz):
                 g3 = kz_start + lj  # global k_z index (axis 3, real)
                 if g2 == 0 and g3 == 0:
-                    # Mean mode: the (0, 0) conservation laws are only
-                    # established for the Cartesian flows, so every
-                    # other flow defers ``init.random_mean_flow``
-                    # (``dnsjax.ic.mean_mode``, and the per-flow
-                    # ``DeferredSpec``s); ``buf`` starts at zero.
+                    # Mean mode: left at zero (``init.random_mean_flow``
+                    # is Cartesian-only; module docstring).
                     continue
                 kz_val = kz_np[g3]
                 window_lin = scaled_wall_window(
@@ -881,12 +842,8 @@ def generate_annular(
                 col[0] *= window_lin
                 col[1] *= window_wn
                 col[2] *= window_wn
-                # Close continuity per mode against the annular
-                # divergence D1 u_r + u_r/r + (im/r) u_theta + i k_z u_z,
-                # keeping u_r's filtered/windowed draw.  Both u_z
-                # (k_z != 0) and u_theta (k_z = 0, m != 0) enter with an
-                # r-diagonal coefficient, so solving for one of them is
-                # exact discretely ((1/r).r = I elementwise).
+                # Close continuity as ``generate_cylindrical`` does (the
+                # same divergence, an r-diagonal solve).
                 if kz_val != 0:
                     div_perp = (
                         real_product(col[1], D1_np.T)
@@ -926,13 +883,12 @@ def generate_triply_periodic(
 ) -> Array:
     """Generate a random divergence-free periodic perturbation.
 
-    Built per device (no full-array replication): each device fills only
-    its own ``(k_z, k_x)`` columns over the full (unsharded) ``k_y`` axis,
-    keyed by the global mode index, and Leray-projects each column to
-    enforce incompressibility.  Conjugate symmetry on the ``k_x = 0``
-    plane (the joint ``f(ky,kz,0) = conj(f(-ky,-kz,0))``) holds by
-    construction.  Returns the sharded spectral state of shape
-    ``(3, Nky, Nkz, Nkx)``.
+    Built per device (module docstring): each device fills its own
+    ``(k_z, k_x)`` columns over the full (unsharded) ``k_y`` axis and
+    Leray-projects each column to enforce incompressibility.  Conjugate
+    symmetry on the ``k_x = 0`` plane (the joint
+    ``f(ky,kz,0) = conj(f(-ky,-kz,0))``) holds by construction.  Returns
+    the sharded spectral state of shape ``(3, Nky, Nkz, Nkx)``.
     """
     from ..geometries.triply_periodic.triply_periodic import (
         fourier,
@@ -969,11 +925,8 @@ def generate_triply_periodic(
                     np.abs(ky_np) + abs(kz_val) + abs(kx_val)
                 )
                 col = _leray(col, kx_val, ky_np, kz_val)
-                # Mean mode: the (0, 0) conservation laws are only
-                # established for the Cartesian flows, so every other
-                # flow defers ``init.random_mean_flow``
-                # (``dnsjax.ic.mean_mode``, and the per-flow
-                # ``DeferredSpec``s).
+                # Mean mode: zeroed (``init.random_mean_flow`` is
+                # Cartesian-only; module docstring).
                 if g2 == 0 and g3 == 0:
                     col[:, 0] = 0.0  # mean mode (ky=kz=kx=0)
                 buf[:, :, li, lj] = col

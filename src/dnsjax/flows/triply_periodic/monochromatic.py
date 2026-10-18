@@ -1,28 +1,17 @@
 r"""Triply-periodic Kolmogorov flow (monochromatic sine forcing).
 
-This module defines the ``MonochromaticFlow`` dataclass that holds all
-precomputed, flow-specific data: base flow, forcing, and laminar-state
-diagnostics.  Geometry-general infrastructure (time-stepping coefficients,
-solvers, divergence correction) is inherited from
-``geometries.triply_periodic.triply_periodic.TriplyPeriodicFlow``.
+``MonochromaticFlow`` holds the flow-specific data (base flow, forcing,
+laminar-state diagnostics) on top of
+``geometries.triply_periodic.triply_periodic.TriplyPeriodicFlow``, which
+holds the time-stepping coefficients, solvers and divergence correction.
+The module exports the flow-module surface of
+:class:`~dnsjax.flow_spec.FlowSpec`; its ``set_dt`` / ``reset_ab2_kappa``
+recompute ``ldt_1`` / ``ildt_2`` without a recompile.
 
-It also exports the flow interface consumed by ``__main__``:
-
-- ``predict_and_fully_correct`` -- fused predictor + corrector
-- ``predict_and_fully_correct_measured`` -- fused step + CFL
-  measurements (``steps.dat``)
-- ``step_cnab2`` / ``step_cnab2_measured`` -- the CN/AB2 stepping pair
-- ``set_dt`` / ``reset_ab2_kappa`` -- adaptive-dt hooks
-  (``step.adaptive``; ``ldt_1``/``ildt_2`` recompute, no recompile)
-- ``init_state`` -- the ``start_from_laminar`` initial state
-- ``get_stats`` -- diagnostic statistics
-- ``get_perturbation_energy`` -- the cheap `$E'$` read for the
-  laminarization check
-
-The post-step divergence correction + mean-mode zeroing is fused
-into every stepper (``_finalize_state`` via ``make_stepper``'s
+The post-step divergence correction and mean-mode zeroing are fused
+into every stepper (``_finalize_state``, ``make_stepper``'s
 *finalize_fn*), so the returned state is already projected and no
-separate ``correct_velocity`` export exists.
+``correct_velocity`` export exists.
 
 Base flow construction
 ----------------------

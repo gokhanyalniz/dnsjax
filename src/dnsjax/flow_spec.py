@@ -165,10 +165,13 @@ class FlowSpec:
     The module exports:
 
     - the stepping surface: ``flow`` (the flow instance the steppers
-      are bound to), ``init_state``, ``get_stats``,
-      ``predict_and_fully_correct(_measured)``,
-      ``step_cnab2(_measured)``, ``set_dt`` / ``reset_ab2_kappa`` (the
-      adaptive-dt hooks) and ``get_perturbation_energy``;
+      are bound to), ``init_state`` (the ``start_from_laminar`` state),
+      ``get_stats``, ``predict_and_fully_correct(_measured)``,
+      ``step_cnab2(_measured)`` (a ``_measured`` variant also returns
+      the CFL measurements of ``steps.dat``), ``set_dt`` /
+      ``reset_ab2_kappa`` (the adaptive-dt hooks) and
+      ``get_perturbation_energy`` (the cheap `$E'$` read behind the
+      laminarization check);
     - the initial-condition hooks ``init_random_state(amplitude,
       smoothness, wall_smoothness, wall_confinement, seed, mean_flow)``
       and ``init_localized_rolls(amplitude, width, wavelength)``, which
@@ -179,7 +182,9 @@ class FlowSpec:
       ``to_solver_basis`` / ``from_solver_basis`` (the geometry's,
       re-exported), which ``__main__`` requires there: a state that
       enters the stepper in the wrong basis steps without error, only
-      wrongly;
+      wrongly.  A Cartesian or triply-periodic state is physical
+      throughout and exports no pair; every consumer looks the pair up
+      with ``getattr`` and falls back to the identity;
     - on the cylindrical geometry, the core ``cylindrical.fourier``
       singleton, whose parity classes the resume regrid and ``[lowres]``
       read for every cylindrical flow, and the velocity components in
@@ -195,10 +200,13 @@ class FlowSpec:
     Array]`` is the wall-shear inference of the mean-mode driving from
     the physical-basis state (the same contract as ``get_stats``),
     exported only by flows that can apply one (``phys.driving`` /
-    ``phys.block_mean_spanwise_velocity``).  It supplies the extra
-    ``stats.dat`` column names and the ``t = t0`` row, which has no
-    step behind it to report the applied value of; ``__main__`` reads
-    it with ``getattr`` and falls back to no column.
+    ``phys.block_mean_spanwise_velocity``): the applied force `$-\Pi$`
+    (:mod:`dnsjax.ic.mean_mode`) under the driving columns' keys,
+    ``{}`` when no driving knob is on.  It supplies those ``stats.dat``
+    column names and the ``t = t0`` row, which has no step behind it;
+    every later row carries the value the corrector applied, threaded
+    out of the step.  ``__main__`` reads it with ``getattr`` and falls
+    back to no column.
     ``CARRIED_FIELDS`` names the solver state's trailing slots past the
     ``n_components`` physical ones (the pipe's spin-quad differences),
     which ``from_solver_basis`` drops and ``outs.snapshot_embed_carry``

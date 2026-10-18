@@ -1,23 +1,20 @@
 r"""Pipe flow: pressure-driven flow through a circular pipe.
 
-This module defines the ``PipeFlow`` dataclass, which holds the pipe
-base flow; the geometry (the radial grid, half-CGL under the default
+``PipeFlow`` adds the base flow to
+:class:`~dnsjax.geometries.wall_bounded.cylindrical.CylindricalFlow`,
+which holds the geometry (the radial grid, half-CGL under the default
 ``iterative-cn`` scheme and rigged-CGL under ``cnab2``; parity-reduced
-FD matrices; influence-matrix operators and iteration; solvers) is
-inherited from
-:class:`~dnsjax.geometries.wall_bounded.cylindrical.CylindricalFlow`.
-The module exports the flow-module surface that
-:class:`~dnsjax.flow_spec.FlowSpec` lists under ``flow_module``, the
-optional ``get_driving``, the transient-growth hook
-``frozen_profile_flow``, the basis pair ``to_solver_basis`` /
-``from_solver_basis``, and ``CARRIED_FIELDS`` (the snapshot ``carry/``
-member).
+FD matrices; influence-matrix operators and iteration; solvers).  The
+module exports the flow-module surface of
+:class:`~dnsjax.flow_spec.FlowSpec`, with the optional ``get_driving``,
+the transient-growth hook ``frozen_profile_flow``, the basis pair
+``to_solver_basis`` / ``from_solver_basis`` and ``CARRIED_FIELDS``
+(the snapshot ``carry/`` member).
 
 Base flow
 ---------
-The laminar base flow is
-`$\mathbf{U} = (1 - r^2, 0, 0)$` in `$(u_z, u_r, u_\theta)$`
-on `$r \in (0, 1]$`, the Hagen-Poiseuille parabolic profile.
+The Hagen-Poiseuille profile `$\mathbf{U} = (1 - r^2, 0, 0)$` in
+`$(u_z, u_r, u_\theta)$` on `$r \in (0, 1]$`:
 
 - `$dU_z/dr = -2r$`
 - `$\nabla \times \mathbf{U} = (0,\; 0,\; 2r)$`
@@ -28,14 +25,10 @@ on `$r \in (0, 1]$`, the Hagen-Poiseuille parabolic profile.
 Moving frame
 ------------
 ``phys.u_grid`` defaults to the laminar bulk velocity
-`$U_{b,\mathrm{lam}} = 1/2$` for pipe flow, so by default the run
-evolves in the frame translating axially at `$U_{grid} = 1/2$`: the
-convective frame term `$+ i k_z U_{grid} \mathbf{u}'$` is added in
-the cylindrical ``_get_rhs_core`` / ``_l_bf`` and the CFL diagnostic
-advects with `$\mathbf{U} - U_{grid}\hat{\mathbf{z}}$` (see
-``parameters.update_parameters`` and
-``geometries.wall_bounded._base.pad_base_flow``).  Set
-``--phys.u_grid 0`` for the laboratory frame.
+`$U_{b,\mathrm{lam}} = 1/2$`, so a run evolves in the frame translating
+axially at that speed (the frame term and the frame-relative CFL:
+:func:`~dnsjax.geometries.wall_bounded._base.pad_base_flow`).
+``--phys.u_grid 0`` selects the laboratory frame.
 """
 
 from dataclasses import dataclass
@@ -217,10 +210,9 @@ def _get_stats_jit(
 ) -> dict[str, Array]:
     r"""Compute diagnostic statistics.
 
-    *state* is the **physical** `$(u_z, u_r, u_\theta)$` view of the
-    field -- diagnostics sit outside the solver, whose working basis
-    is the decoupled `$(u_z, u_+, u_-)$` one (the ``cylindrical.py``
-    module docstring).
+    *state* is the **physical** `$(u_z, u_r, u_\theta)$` view:
+    diagnostics sit outside the solver, which works in the decoupled
+    `$(u_z, u_+, u_-)$` basis (the ``cylindrical.py`` module docstring).
 
     - `$E'$`: perturbation kinetic energy (cylindrical norm
       with radial Jacobian `$r$`).
@@ -235,9 +227,9 @@ def _get_stats_jit(
     - `$U'_{b,z}$`, `$U'_{b,\theta}$`: perturbation bulk
       velocity in the axial and azimuthal directions.
 
-    All total-field quantities are computed algebraically
-    from perturbation norms and laminar constants, without
-    constructing `$\mathbf{u}' + \mathbf{U}$`.
+    All total-field quantities are computed algebraically from
+    perturbation norms and laminar constants, without constructing
+    `$\mathbf{u}' + \mathbf{U}$`.
     """
     Re = params.phys.re
     perturbation_energy = _perturbation_energy(state, fourier_, flow_)
@@ -336,16 +328,7 @@ def _get_driving_jit(state: Array, flow_: PipeFlow) -> dict[str, Array]:
 
 
 def get_driving(state: Array) -> dict[str, Array]:
-    r"""Applied mean-mode driving inferred from *state* alone.
-
-    The optional flow-module export ``__main__`` uses for the one
-    ``stats.dat`` row with no step behind it (``t = t0``); every other
-    row carries the value the corrector applied, threaded out
-    of the step.  Same keys and sign as that column (the applied
-    force `$-\Pi$`, :mod:`dnsjax.ic.mean_mode`), ``{}`` when no
-    driving knob is on.  Takes the **physical** view of *state*, like
-    :func:`get_stats`.
-    """
+    """Applied mean-mode driving (:class:`~dnsjax.flow_spec.FlowSpec`)."""
     return _get_driving_jit(state, flow)
 
 

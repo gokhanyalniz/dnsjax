@@ -3,24 +3,23 @@ r"""Legacy primitive `$(u_\pm, p)$` influence-matrix path, cylindrical.
 ``res.consistent_imm`` is **on by default**; the pipe's implicit step is
 then the spin-quad reformulation
 (:func:`._cylindrical_stepping._imm_iteration_vw`), which never forms a
-pressure.  Setting the flag to ``False`` selects the
-**legacy** scheme kept here: the primitive Kleiser-Schumann
-influence-matrix method, which solves `$(u_z, u_+, u_-)$` against a
-pressure Poisson solve and enforces continuity only at the wall.  It is
-retained for reference and for reproducing older trajectories; a state
-it steps carries a truncation-level discrete divergence, amplified at
-the wall (converging under refinement).  The full comparison and the
-measured ledger: the :mod:`dnsjax.parameters` Design notes
+pressure.  Setting the flag to ``False`` selects the **legacy** scheme
+kept here: the primitive Kleiser-Schumann influence-matrix method,
+which solves `$(u_z, u_+, u_-)$` against a pressure Poisson solve and
+enforces continuity only at the wall.  It is retained for reference
+and for reproducing older trajectories; a state it steps carries a
+truncation-level discrete divergence, amplified at the wall
+(converging under refinement).  The full comparison and the measured
+ledger: the :mod:`dnsjax.parameters` Design notes
 ("Consistent influence matrix") and the shared scheme record on
 :func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`.
 
 Everything here is reachable **only** when the flag is off, so
 ``cylindrical.py`` and ``_cylindrical_stepping.py`` import this module
 lazily inside their flag-off branches and the default path never
-imports it at all.  The dependency runs the other way at module scope
--- this module imports the shared `$H_k$` builders and types from
-``cylindrical.py`` -- which is why the import must be deferred there
-rather than declared at the top of that file.
+imports it.  The dependency runs the other way at module scope -- this
+module imports the shared `$H_k$` builders and types from
+``cylindrical.py`` -- which is why the import must be deferred there.
 
 Contents: the Neumann-BC pressure Poisson operator in both storage
 backends (:func:`_build_Lk_band_gpu`, :func:`_build_Lk_dense_gpu`), the
@@ -153,18 +152,14 @@ def _hk_bands(
 ) -> list[Array]:
     r"""Assemble the banded `$H_k$` group (+, -, z) at *dt*.
 
-    Single-sources the band assembly for the setup-checked build, the
-    adaptive ``dt_max`` stability pre-check, and the jitted ``set_dt``
-    rebuild (:func:`.cylindrical._build_dt_leaves`).  Pallas backend only.
-
-    The half-width is read back from the already-factored (and
-    ``dt``-independent) `$L_k$`, whose ``L`` factor is
-    ``(Nr, p, Nm, Nkz)`` -- a static shape, so this works inside
-    ``jit`` (``set_dt``) where a host-side ``matrix_half_bandwidth`` on
-    the traced ``A_base`` could not.  It is ``fd_order`` in **both**
-    flag states: ``res.consistent_imm`` swaps in a band-preserving
-    Dirichlet recovery operator, so no shipped configuration widens
-    the band.
+    As :func:`.cartesian._hk_bands` -- single-sourced for the
+    setup-checked build, the adaptive ``dt_max`` pre-check and the
+    jitted ``set_dt`` rebuild (:func:`.cylindrical._build_dt_leaves`),
+    the half-width read back from the factored `$L_k$` (``L`` factor
+    ``(Nr, p, Nm, Nkz)``) -- for the legacy group; Pallas backend only.
+    The half-width is ``fd_order`` in **both** flag states:
+    ``res.consistent_imm`` swaps in a band-preserving Dirichlet
+    recovery operator, so no shipped configuration widens the band.
     """
     p_band = flow_.Lk_op.L.shape[1]
     m_s = fourier_.m[0, ..., None]
@@ -261,7 +256,7 @@ def _abase_matvec(
     ----------
     u:
         Field, shape ``(Nr, Nm, Nkz)``.
-    flow\_:
+    flow_:
         Cylindrical flow data (uses ``A_base_pos``,
         ``A_base_ghost`` -- the combination above, precomputed).
     parity_sign:
@@ -323,14 +318,10 @@ def derive_homogeneous_data(
     `$M = D_{1,\mathrm{wall}} \cdot (v_+ + v_-)/2$` and ``M_inv`` its
     reciprocal (the pipe has one wall).
     """
-    # This run-once setup stays in the mode-outer (Nm, Nkz, Nr)
-    # layout: the influence-matrix einsums below operate on it and
-    # the results are transposed to field layout (Nr, Nm, Nkz) at
-    # the end.  ``.solve`` takes a mode-inner field, so each setup
-    # solve is wrapped (transpose in, transpose out) to keep this
-    # layout.  A natively mode-inner setup would drop the wrappers,
-    # but it would only relocate a one-time transpose (the hot path
-    # is mode-inner already).
+    # The mode-outer (Nm, Nkz, Nr) setup layout: each mode-inner
+    # ``.solve`` is wrapped by transposes, and the results go to field
+    # layout (Nr, Nm, Nkz) at the end (run once; why:
+    # ``CartesianFlow._derive_imm_homogeneous_data``).
     e_wall = (
         jnp.zeros(
             (Nm, Nkz, Nr),
@@ -485,7 +476,7 @@ def _imm_iteration_vp(
     # Cylindrical divergence at time n.  ``dnsjax.analysis`` mirrors
     # this operator in physical components; changing it here means
     # changing ``snapshot_ops.divergence`` and the transcription in
-    # ``tests/test_snapshot_export.py`` (``_solver_divergence``),
+    # ``tests/_snapshot_export.py`` (``solver_divergence``),
     # which pins the two together.
     div_n = (
         (dy_all[:, 0] + (m + 1) * inv_r * up_n) / 2
@@ -514,22 +505,22 @@ def _imm_iteration_vp(
     pP = flow_.Lk_op.solve(f_hat_P)
 
     # Stage 3: Helmholtz solves for each component.  The Hk construction
-    # is built **y-leading** ``(N_r, C, ...)`` so the batched D1/D2 GEMMs
-    # contract the leading wall-normal axis transpose-free (component axis
-    # 1); the solve takes that layout directly (``component_axis=1``) and
-    # we unstack.  ``inv_r``/``inv_r2`` get a trailing axis to broadcast
-    # over the C axis; ``kz2``/``mean_mask`` are trailing-mode broadcasts
-    # (layout-invariant).
+    # is built **y-leading** ``(N_r, C, ...)`` so the batched matvec
+    # contracts the leading wall-normal axis transpose-free (component
+    # axis 1); the solve takes that layout directly
+    # (``component_axis=1``).  ``inv_r``/``inv_r2`` get a trailing axis
+    # to broadcast over the C axis; ``kz2``/``mean_mask`` are
+    # trailing-mode broadcasts (layout-invariant).
     vel_n_stack = jnp.stack([up_n, um_n, uz_n], axis=1)  # (N_r, 3, ...)
 
     # The pressure needs a bare `$D_1$` (for its gradient); the three
     # velocity components need only `$A_{\mathrm{base}} = D_2 +
     # (1/r) D_1$`, which is precomputed in the parity-reduced
-    # ``pos``/``ghost`` pair.  So they no longer share one `$D_1$`
-    # batch: applying `$A_{\mathrm{base}}$` to the velocity stack
-    # directly drops the separate `$D_2$` matvec and the field-sized
-    # `$1/r$` multiply-add, taking the stage from a 4-wide `$D_1$` plus
-    # a 3-wide `$D_2$` to a 3-wide `$A_{\mathrm{base}}$` plus a 1-wide
+    # ``pos``/``ghost`` pair.  So they do not share one `$D_1$` batch:
+    # applying `$A_{\mathrm{base}}$` to the velocity stack directly
+    # drops the separate `$D_2$` matvec and the field-sized `$1/r$`
+    # multiply-add, taking the stage from a 4-wide `$D_1$` plus a
+    # 3-wide `$D_2$` to a 3-wide `$A_{\mathrm{base}}$` plus a 1-wide
     # `$D_1$`.
     D1_pP = _parity_y_matvec(flow_.D1_pos, flow_.D1_ghost, pP, parity_sign_p)
     m_over_r = m * inv_r  # (1, Nm, 1) * (Nr, 1, 1) → (Nr, Nm, 1)
@@ -605,12 +596,10 @@ def _imm_iteration_vp(
     up_new = up_new - ur_corr
     um_new = um_new - ur_corr
 
-    # Constant-bulk-velocity enforcement (shared with the default
-    # scheme: :func:`.cylindrical._apply_bulk_correction`).  At the
-    # mean mode alpha = 0 and ikz = 0, so ``uz_arb`` already equals the
-    # uncorrected ``uz_new`` there -- reading the bulk from it is what
-    # lets the IMM correction and the bulk correction fuse into a
-    # single expression, which is why the source and target differ.
+    # Constant-bulk-velocity enforcement, shared with the default scheme
+    # (:func:`.cylindrical._apply_bulk_correction`, which says why
+    # source and target differ): at the mean mode alpha = 0 and
+    # ikz = 0, so ``uz_arb`` already equals the uncorrected ``uz_new``.
     uz_new, aux = _apply_bulk_correction(
         uz_arb - ikz * qz_corr, uz_arb, fourier_.mean_mask, flow_
     )

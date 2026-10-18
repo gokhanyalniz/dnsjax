@@ -43,9 +43,9 @@ Design notes
 **Why an unset seed is drawn, not defaulted.**  With a hard-coded
 default, an ensemble of "independent" runs launched without an explicit
 seed is not an ensemble: every member draws the same initial condition
-and the same sequence of every other random draw.  Reproducibility is not
-what a fixed default buys -- recording the drawn seed buys the same
-thing without pinning every user to one realization.
+and the same sequence of every other random draw.  Recording the drawn
+seed buys the reproducibility a fixed default would, without pinning
+every user to one realization.
 
 **Why the sentinel is ``None``, not a pydantic ``default_factory``.**
 Several sites compare a live value against a freshly constructed model

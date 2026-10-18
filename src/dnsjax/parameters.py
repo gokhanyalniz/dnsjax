@@ -5,12 +5,14 @@ parameters embedded in a resumed snapshot (:func:`read_snapshot_params`)
 -> ``parameters.toml`` (if present) -> command-line arguments.  The
 snapshot layer is skipped for the parameters that must be known to
 configure JAX *before* the snapshot is read (``dist.np0``, ``dist.np1``,
-``dist.platform``, ``res.double_precision``) and for the
-resume-decision fields ``init.snapshot`` / ``init.force_resume``
-(recorded for lineage, never inherited); those come only from
-defaults / TOML / CLI.  The global singletons ``params``,
-``derived_params``, and ``padded_res`` are mutated in-place by
-:func:`update_parameters` so that every module sees the same state.
+``dist.platform``, ``res.double_precision``), for the resume-decision
+fields ``init.snapshot`` / ``init.force_resume`` (recorded for lineage,
+never inherited) and for the execution-only ``[solver]`` section
+(:func:`read_snapshot_params`); those come only from defaults / TOML /
+CLI.  The global singletons ``params`` and ``derived_params`` are
+mutated in place by :func:`update_parameters`, and ``padded_res`` by
+:meth:`PaddedResolution.set_padded_resolution`, so that every module
+sees the same state.
 
 Design notes
 ------------
@@ -280,44 +282,36 @@ ns_to_s: float = 10 ** (-9)  # nanoseconds to seconds
 class Distribution(BaseModel):
     r"""Device distribution and backend platform.
 
-    The total device count is ``np0 * np1``.  Both default
-    to 1 (single device).
+    The total device count is ``np0 * np1``; both default to 1 (single
+    device).
 
     Double parallelization
     ----------------------
-    ``np0`` splits the wall-normal axis (`$y$` / `$r$`) in
-    physical space and the spanwise-wavenumber axis
-    (`$k_z$` / `$m$`) in spectral space.  ``np1`` splits
-    the spanwise axis (`$z$`) in physical space and the
-    streamwise-wavenumber axis (`$k_x$`) in spectral space.
-    Each device holds the full wall-normal extent in spectral
-    space, so FD solves are unchanged.
-
-    When ``np0 == 1`` (default), the decomposition collapses
-    to a 1D scheme (only `$k_x$` / `$z$` distributed).
+    ``np0`` splits the wall-normal axis (`$y$` / `$r$`) in physical
+    space and the spanwise-wavenumber axis (`$k_z$` / `$m$`) in
+    spectral space, ``np1`` the spanwise axis (`$z$`) and the
+    streamwise-wavenumber axis (`$k_x$`); at ``np0 == 1`` (default)
+    only `$k_x$` / `$z$` are distributed.  The mesh and the layouts:
+    :mod:`dnsjax.sharding` ("Two-axis decomposition").
 
     Divisibility
     ------------
-    No divisibility requirements: every axis a mesh
-    direction splits is auto-padded, and each adjustment is
-    reported by a startup diagnostic (padding costs FFT and
-    solve work, so it is never silent).  The spectral `$k_z$`
-    / `$k_x$` axes are zero-padded to the next multiple of
-    ``np0`` / ``np1``; for wall-bounded flows the physical
-    `$y$` axis is likewise zero-padded (stripped after the
-    `$y \leftrightarrow k_z$` reshard); the padded physical
-    sizes -- ``nz_padded`` (split by ``np1``) and, for
-    periodic flows, ``ny_padded`` (split by ``np0``) -- are
-    rounded up to the next FFT-friendly (7-smooth) multiple
-    (:func:`round_up_padded_smooth`; marginally more
-    oversampling, physically neutral).  Divisible,
-    smooth-padding sizes avoid the padding overhead entirely.
-    Note that CGL grids traditionally
-    use ``ny = 2^k + 1`` (``N + 1`` collocation points for
-    ``N`` Chebyshev polynomials), but any ``ny >= 2`` is
-    valid: the code uses finite differences, not spectral
-    Chebyshev transforms, and the Clenshaw--Curtis
-    quadrature handles both even and odd ``ny``.
+    No divisibility requirements: every axis a mesh direction splits is
+    auto-padded, and each adjustment is reported by a startup diagnostic
+    (padding costs FFT and solve work, so it is never silent).  The
+    spectral `$k_z$` / `$k_x$` axes are zero-padded to the next multiple
+    of ``np0`` / ``np1``; for wall-bounded flows the physical `$y$` axis
+    is likewise zero-padded (stripped after the `$y \leftrightarrow k_z$`
+    reshard); the padded physical sizes -- ``nz_padded`` (split by
+    ``np1``) and, for periodic flows, ``ny_padded`` (split by
+    ``np0``) -- are rounded up to the next FFT-friendly (7-smooth)
+    multiple (:func:`round_up_padded_smooth`; marginally more
+    oversampling, physically neutral).  Divisible, smooth-padding sizes
+    avoid the padding overhead entirely.  CGL grids traditionally use
+    ``ny = 2^k + 1`` (``N + 1`` collocation points for ``N`` Chebyshev
+    polynomials), but any ``ny >= 2`` is valid: the code uses finite
+    differences, not spectral Chebyshev transforms, and the
+    Clenshaw--Curtis quadrature handles both even and odd ``ny``.
 
     Choosing the grid
     -----------------
@@ -387,84 +381,74 @@ class Distribution(BaseModel):
     machine is then worth one pair of runs.
 
     What these rules leave open on a given node -- the rank count, the
-    grid axis, the Pallas tile, the precision -- is measured there by
-    a sweep of one fixed problem over every candidate layout;
-    ``docs/scaling.md`` ("Target nodes") gives the
-    starting configuration for a two-socket CPU node and a four-GPU
-    one.
+    grid axis, the Pallas tile, the precision -- is measured there by a
+    sweep of one fixed problem over every candidate layout;
+    ``docs/scaling.md`` ("Target nodes") gives the starting
+    configuration for a two-socket CPU node and a four-GPU one.
 
     Process topology
     ----------------
-    Only a **multi-process** run needs a launcher.  One process
-    starts no distributed runtime at all -- there is nothing to
-    coordinate -- so a run that fits in one is launched directly: no
-    ``mpirun``, no coordinator, no site knowledge and no MPI on the
-    machine, ``uv run dnsjax ...`` included
-    (``bootstrap._bootstrap_distributed``).  ``JAX_LOCAL_DEVICE_IDS``
-    is still honoured there: ``bootstrap._apply_local_device_ids``
-    narrows the devices as ``jax.distributed.initialize`` would have.
-    On CPU one process means exactly one device: several CPU devices
-    in one process is oversubscription, and asking for it is refused
-    with the ``mpirun -np N`` that works.
+    Only a **multi-process** run needs a launcher.  One process starts
+    no distributed runtime at all -- there is nothing to coordinate --
+    so a run that fits in one is launched directly: no ``mpirun``, no
+    coordinator, no site knowledge and no MPI on the machine,
+    ``uv run dnsjax ...`` included (``bootstrap._bootstrap_distributed``).
+    ``JAX_LOCAL_DEVICE_IDS`` is still honoured there:
+    ``bootstrap._apply_local_device_ids`` narrows the devices as
+    ``jax.distributed.initialize`` would have.  On CPU one process means
+    exactly one device: several CPU devices in one process is
+    oversubscription, and asking for it is refused with the
+    ``mpirun -np N`` that works.
 
-    ``np0 * np1`` counts *devices*, not processes: the mesh
-    only requires ``jax.device_count() == np0 * np1``, so a
-    multi-GPU run may be one process per device (the usual
-    ``mpirun``/``srun -n N`` launch) **or a single process
-    addressing all devices** -- which needs no launcher
-    either, since a lone process takes every visible GPU.
-    Under a launcher, that process is instead narrowed to its
-    local rank's device unless
-    ``JAX_LOCAL_DEVICE_IDS=0,1,...`` spans the GPUs
-    (overrides the SLURM one-device-per-task heuristic),
-    e.g. ``srun -n 1 --overlap`` inside a 4-GPU allocation
-    with ``JAX_LOCAL_DEVICE_IDS=0,1,2,3 --dist.np0 2
-    --dist.np1 2``.  Both topologies produce identical
-    global meshes, trajectories, and snapshots (resume is
-    np-agnostic), and both are validated on real multi-GPU
-    hardware (a benchmark of the solve on a multi-GPU node).
-    The single-process form avoids cross-process NCCL
-    entirely -- the reliable choice on single-node
-    allocations where multi-process collectives hang
-    (observed with JAX 0.10.2 and NCCL 2.30 on H100 nodes:
-    the first execution of a large multi-collective program
-    hangs while every small-program collective works).
-    Multi-node runs necessarily remain multi-process; use
-    one task per node spanning that node's GPUs.
+    ``np0 * np1`` counts *devices*, not processes: the mesh only
+    requires ``jax.device_count() == np0 * np1``, so a multi-GPU run may
+    be one process per device (the usual ``mpirun``/``srun -n N``
+    launch) **or a single process addressing all devices** -- which
+    needs no launcher either, since a lone process takes every visible
+    GPU.  Under a launcher, that process is instead narrowed to its
+    local rank's device unless ``JAX_LOCAL_DEVICE_IDS=0,1,...`` spans
+    the GPUs (overrides the SLURM one-device-per-task heuristic), e.g.
+    ``srun -n 1 --overlap`` inside a 4-GPU allocation with
+    ``JAX_LOCAL_DEVICE_IDS=0,1,2,3 --dist.np0 2 --dist.np1 2``.  Both
+    topologies produce identical global meshes, trajectories, and
+    snapshots (resume is np-agnostic), and both are validated on real
+    multi-GPU hardware (a benchmark of the solve on a multi-GPU node).
+    The single-process form avoids cross-process NCCL entirely -- the
+    reliable choice on single-node allocations where multi-process
+    collectives hang (observed with JAX 0.10.2 and NCCL 2.30 on H100
+    nodes: the first execution of a large multi-collective program
+    hangs while every small-program collective works).  Multi-node runs
+    necessarily remain multi-process; use one task per node spanning
+    that node's GPUs.
 
-    In multi-process launches, never narrow per-task GPU
-    visibility (SLURM ``--gpus-per-task`` and the like):
-    NCCL's cuMem cross-process P2P import requires the peer
-    device to be visible to the importing process and fails
-    hard otherwise (``ncclP2pImportShareableBuffer ...
-    Cuda failure 101 'invalid device ordinal'``).  Leave
-    every job GPU visible to every task and select the
-    per-task device explicitly (``JAX_LOCAL_DEVICE_IDS``;
-    JAX's SLURM detection uses ``[SLURM_LOCALID]`` by
-    default, which is correct under full visibility).
+    In multi-process launches, never narrow per-task GPU visibility
+    (SLURM ``--gpus-per-task`` and the like): NCCL's cuMem cross-process
+    P2P import requires the peer device to be visible to the importing
+    process and fails hard otherwise (``ncclP2pImportShareableBuffer ...
+    Cuda failure 101 'invalid device ordinal'``).  Leave every job GPU
+    visible to every task and select the per-task device explicitly
+    (``JAX_LOCAL_DEVICE_IDS``; JAX's SLURM detection uses
+    ``[SLURM_LOCALID]`` by default, which is correct under full
+    visibility).
 
-    The ranks find each other from the launcher environment
-    when it describes itself fully enough, and otherwise from
-    JAX's own cluster detection (SLURM under ``srun``, the
-    cloud environments, Open MPI 4).  The layout comes from
-    the MPI implementation (``OMPI_COMM_WORLD_*``, or the
-    MPICH/MVAPICH2 equivalents) and the coordinator from
-    ``JAX_COORDINATOR_ADDRESS``, else -- in order -- loopback
-    when every rank is on this node, the launcher's own
-    daemon URI, or the queueing system's node list
-    (``PBS_NODEFILE``, the SLURM node list,
-    ``LSB_DJOB_HOSTFILE`` / ``LSB_HOSTS``, ``PE_HOSTFILE``).
+    The ranks find each other from the launcher environment when it
+    describes itself fully enough, and otherwise from JAX's own cluster
+    detection (SLURM under ``srun``, the cloud environments,
+    Open MPI 4).  The layout comes from the MPI implementation
+    (``OMPI_COMM_WORLD_*``, or the MPICH/MVAPICH2 equivalents) and the
+    coordinator from ``JAX_COORDINATOR_ADDRESS``, else -- in order --
+    loopback when every rank is on this node, the launcher's own daemon
+    URI, or the queueing system's node list (``PBS_NODEFILE``, the SLURM
+    node list, ``LSB_DJOB_HOSTFILE`` / ``LSB_HOSTS``, ``PE_HOSTFILE``).
     That covers Open MPI 5, whose PRRTE launcher dropped the
-    ``OMPI_MCA_orte_hnp_uri`` JAX's plugin keys on, and every
-    scheduler JAX has no plugin for; a machine matching
-    nothing is one ``JAX_COORDINATOR_ADDRESS`` export away,
-    and says so.  The port is derived from a per-*launch*
-    identifier so that concurrent runs inside one allocation
-    cannot collide on it (``JAX_COORDINATOR_PORT``
-    overrides).  Rank *discovery* only: GPU collectives
-    remain NCCL, and ``JAX_LOCAL_DEVICE_IDS`` is honoured
-    either way, so the single-process launch above is
-    unaffected.
+    ``OMPI_MCA_orte_hnp_uri`` JAX's plugin keys on, and every scheduler
+    JAX has no plugin for; a machine matching nothing is one
+    ``JAX_COORDINATOR_ADDRESS`` export away, and says so.  The port is
+    derived from a per-*launch* identifier so that concurrent runs
+    inside one allocation cannot collide on it
+    (``JAX_COORDINATOR_PORT`` overrides).  Rank *discovery* only: GPU
+    collectives remain NCCL, and ``JAX_LOCAL_DEVICE_IDS`` is honoured
+    either way, so the single-process launch above is unaffected.
 
     CPU runs: threads per rank
     --------------------------
@@ -472,14 +456,13 @@ class Distribution(BaseModel):
     comes from MPI ranks and from nothing else; an intra-op thread pool
     is not a second axis to tune, and this holds however many devices
     the run has -- a lone process is pinned exactly like a rank of
-    sixteen, and is not special-cased.
-    ``bootstrap.configure_jax_runtime`` applies it: ``NPROC`` sizes the
-    pool and is set there with ``setdefault``, so ``export NPROC=<n>``
-    before launching overrides the pin for a deliberate experiment;
-    ``--xla_cpu_multi_thread_eigen=false`` rides along as a small extra
-    serialization and is applied only while the pin is 1.  If a CPU
-    run is device-starved, the answer is more ranks (Design notes:
-    "One thread per rank").
+    sixteen.  ``bootstrap.configure_jax_runtime`` applies it: ``NPROC``
+    sizes the pool and is set there with ``setdefault``, so
+    ``export NPROC=<n>`` before launching overrides the pin for a
+    deliberate experiment; ``--xla_cpu_multi_thread_eigen=false`` rides
+    along as a small extra serialization and is applied only while the
+    pin is 1.  If a CPU run is device-starved, the answer is more ranks
+    (Design notes: "One thread per rank").
 
     CPU runs under SLURM
     --------------------
@@ -502,13 +485,12 @@ class Distribution(BaseModel):
     collectives; routing them through MPI instead is faster, and a
     multi-device CPU run is launched under ``mpirun`` by definition --
     it is one process per device.  Such a run therefore selects MPI by
-    itself whenever it can
-    (``bootstrap.configure_jax_runtime``), and prints which backend it
-    got.  What it needs is the MPItrampoline path JAX's MPI
-    collectives dlopen: ``MPITRAMPOLINE_LIB`` pointing at an
-    MPIwrapper-built ``libmpiwrapper.so``, or that library on
-    ``LD_LIBRARY_PATH``.  Without one the run stays on gloo and says
-    so (building the wrapper: ``docs/cpu-collectives.md``); with
+    itself whenever it can (``bootstrap.configure_jax_runtime``), and
+    prints which backend it got.  What it needs is the MPItrampoline
+    path JAX's MPI collectives dlopen: ``MPITRAMPOLINE_LIB`` pointing at
+    an MPIwrapper-built ``libmpiwrapper.so``, or that library on
+    ``LD_LIBRARY_PATH``.  Without one the run stays on gloo and says so
+    (building the wrapper: ``docs/cpu-collectives.md``); with
     ``JAX_CPU_COLLECTIVES_IMPLEMENTATION`` set, that choice wins
     outright.  By how much MPI wins is a property of the target
     machine's interconnect, so it is worth timing there (one
@@ -577,11 +559,9 @@ class Physics(BaseModel):
     # Sign convention: re1 >= 0; re2 may be negative (counter-rotation).
     # Case 1 (inner-driven): re1 > 0  -> Re_ref = re1.
     # Case 2 (outer-driven): re1 == 0, re2 > 0 -> Re_ref = re2.
-    # ``update_parameters`` validates these, derives the circular-Couette
-    # coefficients A0, B0 and radii (onto ``derived_params``), and sets
-    # ``re = Re_ref`` so every downstream 1/re viscous/IMM/stats path is
-    # reused unchanged.  See the annular branch of ``update_parameters``
-    # and ``flows.wall_bounded.taylor_couette``.
+    # The flow spec's derive hook validates these, sets ``re = Re_ref``
+    # and derives the radii and circular-Couette coefficients onto
+    # ``derived_params`` (``flows/wall_bounded/specs/_family.py``).
     re1: float | None = Field(
         default=None,
         description=(
@@ -623,9 +603,8 @@ class Physics(BaseModel):
             "or the bulk velocity constant."
         ),
     )
-    # Independent of ``driving``: Cartesian blocks the spanwise (z)
-    # mean, annular the axial (z) mean; the azimuthal mean evolves
-    # freely.
+    # Independent of ``driving``; on the annulus the azimuthal mean
+    # evolves freely.
     block_mean_spanwise_velocity: bool = Field(
         default=False,
         description=(
@@ -637,22 +616,19 @@ class Physics(BaseModel):
     # the homogeneous "grid" direction: streamwise x (Cartesian) or
     # axial z (cylindrical / annular).  The time derivative becomes
     # d/dt - U_grid d/dx_0, i.e. the *convective-form* frame term
-    # +U_grid d/dx_0 u' = i k_0 U_grid u' is added to the RHS -- a
-    # mode-diagonal, non-stiff, divergence-free (projection-neutral)
-    # term, integrated implicitly (inside the iterative-CN corrector;
-    # via ``_l_bf`` for CN/AB2).  It de-advects snapshots, improves
-    # temporal accuracy, and relaxes the corrector-contraction dt limit
-    # (the advecting velocity drops to ``U - U_grid``) -- though not
-    # cnab2's explicit self-advection CFL, which is set by the
-    # frame-invariant ``u' x omega'``.  Not the
-    # rotational-form splitting `omega' x c + grad(c . u')` (whose
-    # explicit `c d/dy u'` piece is wall-stiff and unstable).  When
-    # ``None`` (default) it resolves to the flow's laminar bulk
-    # velocity in the grid direction (1/2 for the pipe, 2/3 for plane
-    # Poiseuille, 0 otherwise); see ``update_parameters`` and
-    # ``derived_params.u_grid``.  Only meaningful for wall-bounded
-    # systems (periodic flows reject it).
-    # A changed ``u_grid`` on resume is trajectory-defining (the stored
+    # +U_grid d/dx_0 u' = i k_0 U_grid u' is added to the RHS,
+    # integrated implicitly (inside the iterative-CN corrector; via
+    # ``_l_bf`` for CN/AB2); why that form: the ``_base`` Design notes,
+    # "The moving frame's convective form".  It de-advects snapshots,
+    # improves temporal accuracy, and relaxes the corrector-contraction
+    # dt limit (the advecting velocity drops to ``U - U_grid``) --
+    # though not cnab2's explicit self-advection CFL, which is set by
+    # the frame-invariant ``u' x omega'``.  When ``None`` (default) it
+    # resolves to the flow's laminar bulk velocity in the grid direction
+    # (1/2 for the pipe, 2/3 for plane Poiseuille, 0 otherwise); see
+    # ``update_parameters`` and ``derived_params.u_grid``.  Only
+    # meaningful for wall-bounded systems (periodic flows reject it).  A
+    # changed ``u_grid`` on resume is trajectory-defining (the stored
     # fields drift between frames).
     u_grid: float | None = Field(
         default=None,
@@ -679,9 +655,8 @@ class Geometry(BaseModel):
        family ``"half-cgl"`` under the default ``iterative-cn``
        scheme or ``"rigged-cgl"`` under ``cnab2`` (see below).
        Because the resolved value is concrete, snapshots embed the
-       grid they ran and a resume pins it -- the
-       scheme-dependent default never silently re-grids an old
-       trajectory.
+       grid they ran and a resume pins it -- the scheme-dependent
+       default never silently re-grids an old trajectory.
 
     Setting both ``wall_grid`` and ``grid_type`` is an error, and each
     family accepts only its own grid names (the per-flow surface and
@@ -842,18 +817,14 @@ class Resolution(BaseModel):
             "half-width, not an accuracy order)."
         ),
     )
-    # Wall-bounded only (all three families), on by default: advance the
-    # wall-normal velocity and vorticity and reconstruct the tangential
-    # pair, which makes the projection discretely exact at the price of
-    # a truncation-level residual in a momentum equation nothing solves
-    # (Design notes: "Consistent influence matrix").  ``False`` selects
-    # the legacy primitive Kleiser-Schumann `$(v, p)$` scheme (each
-    # geometry's ``_<geometry>_primitive_imm.py``): kept, tested and
-    # supported, but not recommended, since a state it steps carries a
-    # truncation-level discrete divergence, amplified at the walls
-    # (converging under refinement).  Two reasons remain to
-    # select it: reproducing a trajectory computed before the default
-    # moved, and a **deep annulus** (small ``geo.eta``) at tight
+    # Wall-bounded only (all three families); both formulations, the
+    # legacy one's divergence and the measurements: Design notes,
+    # "Consistent influence matrix".  ``False`` selects the legacy
+    # primitive Kleiser-Schumann `$(v, p)$` scheme (each geometry's
+    # ``_<geometry>_primitive_imm.py``): kept, tested and supported, but
+    # not recommended.  Two reasons remain to select it: reproducing a
+    # trajectory computed before the default moved, and a
+    # **deep annulus** (small ``geo.eta``) at tight
     # ``step.corrector_tolerance``, where the `$(u_r, \omega_r)$` pair's
     # Picard-lagged spin partners contract slowly (why that degradation
     # is loud rather than silent: ``annular._imm_iteration_vw``; the
@@ -915,22 +886,19 @@ class Initiation(BaseModel):
     ``isnap`` are inherited only when none of the Physics/Geometry/
     Resolution parameters, nor a trajectory-defining extension section,
     was overridden to a value different from the snapshot's (a
-    *continuation*).  Any
-    such change starts a NEW trajectory by default
-    (``it = t = isnap = 0``); ``force_resume`` keeps the run continuous
-    instead.  See
-    :func:`trajectory_defining_changes`.  A snapshot recording a
-    parameter section this installation does not register (a plugin's
-    that was in use when it was written) refuses to resume unless
-    ``force_resume`` is set, since the section may define the
+    *continuation*, :func:`trajectory_defining_changes`).  Any such
+    change starts a NEW trajectory by default (``it = t = isnap = 0``);
+    ``force_resume`` keeps the run continuous instead.  A snapshot
+    recording a parameter section this installation does not register
+    (a plugin's that was in use when it was written) refuses to resume
+    unless ``force_resume`` is set, since the section may define the
     trajectory (:func:`unregistered_sections`).
 
-    Seeds (``random_seed`` here, and any an extension section
-    declares) default to **unset**, meaning "draw one
-    from the system entropy pool at startup"; the drawn value is
-    printed and recorded, and a run that needs a seed it cannot draw
-    refuses rather than falling back to a fixed one.  The contract and
-    the reasons behind it: :mod:`dnsjax.seeding`.
+    Seeds (``random_seed`` here, and any an extension section declares)
+    default to **unset**, meaning "draw one from the system entropy pool
+    at startup"; the drawn value is printed and recorded, and a run that
+    needs a seed it cannot draw refuses rather than falling back to a
+    fixed one (the contract and its reasons: :mod:`dnsjax.seeding`).
     """
 
     start_from_laminar: bool = Field(
@@ -988,16 +956,13 @@ class Initiation(BaseModel):
         description=("Target L2 norm of the random initial perturbation."),
     )
     # The *horizontal* law only: per-mode energy
-    # ``(1 - s)^(2(|k_x| + |k_z|))`` in physical wavenumbers.  The
-    # wall-normal polynomial-degree law is ``random_wall_smoothness``,
-    # its own field: the two are separate laws, and
-    # the moment either moves they want values an order of magnitude
-    # apart, so one knob cannot serve both.  The value here seeds a
-    # *laminar* state, where large scales trigger transition; a
-    # perturbation of a turbulent state wants a much smaller value,
-    # below the minimal flow unit, which an entry point making one
-    # keeps as its own default.  What ``s`` sets and why the two
-    # differ: ``ic/random_field.py``.
+    # ``(1 - s)^(2(|k_x| + |k_z|))`` in physical wavenumbers; the
+    # wall-normal polynomial-degree law is ``random_wall_smoothness``.
+    # The value here seeds a *laminar* state, where large scales trigger
+    # transition; a perturbation of a turbulent state wants a much
+    # smaller value, below the minimal flow unit, which an entry point
+    # making one keeps as its own default.  What ``s`` sets and why the
+    # two laws take separate knobs: ``ic/random_field.py``.
     random_smoothness: float = Field(
         gt=0,
         lt=1,
@@ -1039,12 +1004,11 @@ class Initiation(BaseModel):
             "the same window."
         ),
     )
-    # Unset means "draw one": ``bootstrap.resolve_run_seeds`` resolves
-    # it from the OS entropy pool at startup -- but only when this run
-    # builds a random IC (:func:`random_ic_selected`) -- prints
-    # it with its source, and leaves the concrete value here, so the
-    # snapshot records the seed that ran.  A ``default_factory`` would
-    # be wrong: see the :mod:`dnsjax.seeding` docstring.
+    # Unset means "draw one": ``bootstrap.resolve_run_seeds`` draws it
+    # at startup, only when this run builds a random IC
+    # (:func:`random_ic_selected`), prints it and leaves the concrete
+    # value here, so the snapshot records the seed that ran (why not a
+    # ``default_factory``: the :mod:`dnsjax.seeding` Design notes).
     random_seed: int | None = Field(
         default=None,
         description=(
@@ -1055,15 +1019,14 @@ class Initiation(BaseModel):
     )
     # Cartesian-only, and **off** by default there too: only the
     # Cartesian flows have their (kx, kz) = (0, 0) conservation laws
-    # established, so every other flow defers this field, and a
-    # default that held for only two of the wall-bounded flows would
-    # make the mean mode behave differently per geometry for no
-    # user-visible reason.  Off is also the inert value the deferred
-    # check in ``validate_parameters`` compares a direct assignment
-    # against.  The localized-rolls perturbation stays mean-free
-    # whatever this is set to (its (0, 0) content is a cubic in y,
-    # which the compatibility conditions annihilate --
-    # ``ic/localized_rolls.py``).
+    # established, so every other flow defers this field, and a default
+    # that held for only two of the wall-bounded flows would make the
+    # mean mode behave differently per geometry for no user-visible
+    # reason.  Off is also the inert value the deferred check in
+    # ``validate_parameters`` compares a direct assignment against.
+    # The localized-rolls perturbation stays mean-free whatever this is
+    # (its (0, 0) content is a cubic in y, which the compatibility
+    # conditions annihilate: ``ic/localized_rolls.py``).
     random_mean_flow: bool = Field(
         default=False,
         description=(
@@ -1107,10 +1070,8 @@ class Initiation(BaseModel):
 class Outputs(BaseModel):
     """Output frequency controls (in time-step counts).
 
-    Each optional cadence is off when unset **or 0**: a layer cannot
-    unset a field it inherited (:func:`update_parameters` drops a
-    ``None``), so ``0`` is how a resume switches one off, and the merge
-    turns it back into unset (:data:`OFF_CADENCES`).
+    Each optional cadence is off when unset **or 0**, ``0`` being how a
+    resume switches off an inherited one (:data:`OFF_CADENCES`).
     """
 
     # All cadences count time steps taken.
@@ -1202,12 +1163,9 @@ class Outputs(BaseModel):
         ),
     )
     # Pipe family only (the flows whose default ``res.consistent_imm``
-    # scheme carries solver state beyond the velocity -- its two
-    # spin-quad difference halves, ``_cylindrical_stepping``): write
-    # them as each snapshot's ``carry/`` member, so a resume continues
-    # the trajectory to round-off rather than re-deriving them from the
-    # velocity (a one-off, truncation-sized change).  Two more fields on
-    # a pipe snapshot's three; the member and its resume rules:
+    # scheme carries solver state beyond the velocity): two more fields
+    # on a pipe snapshot's three.  What the ``carry/`` member holds, what
+    # a resume without it does, and its resume rules:
     # :mod:`dnsjax.snapshot`.
     snapshot_embed_carry: bool = Field(
         default=True,
@@ -1245,24 +1203,18 @@ class Lowres(BaseModel):
     r"""Reduced-resolution snapshots, written on a cadence of their own.
 
     Every ``it_lowres`` steps the run writes
-    ``lowres/lowres_{it:010d}.tar`` (:mod:`dnsjax.lowres`): the stored
-    state -- every component the flow stores -- at the resolution
-    below, in the snapshot
-    format, and under ``pressure`` the static pressure as one more
-    member.  The Fourier axes drop their highest modes; the wall-normal
-    axis is interpolated exactly as a regridding resume does it (the
-    spectral Chebyshev / parity maps between CGL grids), onto the same
-    grid type at the reduced count.  Every field is computed at the
-    run's own resolution and only then reduced.
+    ``lowres/lowres_{it:010d}.tar``, the stored state at the resolution
+    below (and, under ``pressure``, the static pressure), as output, not
+    as a checkpoint.  What a file holds and how each axis is reduced:
+    :mod:`dnsjax.lowres`.
 
     Each target defaults to the run's own count, a set one may not
     exceed it, and a Fourier target must be even, like ``res``.  The
     names follow the flow's ``res`` names (``nz`` / ``nr`` /
-    ``ntheta`` on the cylindrical and annular flows).  These files are
-    output, not checkpoints: a resume refuses them, and they carry no
-    solver-carried fields.  Inherited on resume like ``[outs]``, and
-    switched off the same way: ``it_lowres = 0`` (a run of another
-    entry point seeded from a ``[lowres]`` run's snapshot included).
+    ``ntheta`` on the cylindrical and annular flows).  Inherited on
+    resume like ``[outs]``, and switched off the same way:
+    ``it_lowres = 0`` (a run of another entry point seeded from a
+    ``[lowres]`` run's snapshot included).
     """
 
     it_lowres: int | None = Field(
@@ -1326,25 +1278,23 @@ class TimeStepping(BaseModel):
       Stable well past the advective CFL; costs ``2 + num_corrector``
       RHS/FFT evaluations per step.
 
-      Wall-bounded split corrector (``split_corrector``, an opt-in,
-      default off).  In the rotational perturbation form the iterated
-      RHS contains the
+      Wall-bounded split corrector (``split_corrector``, opt-in).  In
+      the rotational perturbation form the iterated RHS contains the
       *linear* coupling -- ``L_bf``, the frame term, and (per
-      ``implicit_mean_coupling``) ``L_mf`` -- i.e. exactly the
-      FFT-free ``_l_bf`` the CN/AB2 scheme makes implicit.  The split
-      corrector iterates that part FFT-free: each outer (FFT)
-      iteration freezes the pure self-advection ``N_nl = get_rhs -
-      l_bf`` at the last full evaluation, converges the coupling by
-      re-evaluating only ``l_bf`` (matvecs / a mean-mode ``psum``, no
-      transform), then refreshes the full RHS once and corrects.  The
-      composite fixed point is the same CN equation and the loop
-      always exits on a fresh-RHS correction, so trajectories agree
-      within ``corrector_tolerance`` and the reported ``num_c`` /
-      ``error`` keep their meaning (extra FFT evaluations / last
-      fresh-RHS correction norm) -- ``corrector.dat`` is comparable
-      across the setting.  It pays off only once ``dt`` pushes the
-      unsplit corrector toward ``max_corrector_iterations``, and is
-      slower otherwise (Design notes: "The split corrector stays
+      ``implicit_mean_coupling``) ``L_mf`` -- i.e. exactly the FFT-free
+      ``_l_bf`` the CN/AB2 scheme makes implicit.  The split corrector
+      iterates that part FFT-free: each outer (FFT) iteration freezes
+      the pure self-advection ``N_nl = get_rhs - l_bf`` at the last full
+      evaluation, converges the coupling by re-evaluating only ``l_bf``
+      (matvecs / a mean-mode ``psum``, no transform), then refreshes the
+      full RHS once and corrects.  The composite fixed point is the same
+      CN equation and the loop always exits on a fresh-RHS correction,
+      so trajectories agree within ``corrector_tolerance`` and the
+      reported ``num_c`` / ``error`` keep their meaning (extra FFT
+      evaluations / last fresh-RHS correction norm) -- ``corrector.dat``
+      is comparable across the setting.  It pays off only once ``dt``
+      pushes the unsplit corrector toward ``max_corrector_iterations``,
+      and is slower otherwise (Design notes: "The split corrector stays
       opt-in").  When enabled: the tail launches an implicit solve only
       while the coupling estimate still moves the state
       (``c dt ||l_bf(u_j) - l_bf(u_{j-1})|| > tol``, a cheap test), so a
@@ -1352,17 +1302,18 @@ class TimeStepping(BaseModel):
       norm, not a solve -- and a step whose first correction already
       meets tolerance costs 2 FFT evaluations either way.  A split
       corrector that fails to reach tolerance automatically redoes the
-      step with the unsplit corrector (``lax.cond``, stdout
-      diagnostic), pinning the worst case to the unsplit path.
-      Triply-periodic flows have no coupling (``l_bf_fn = None``) and
-      always run unsplit.
+      step with the unsplit corrector (``lax.cond``, stdout diagnostic),
+      pinning the worst case to the unsplit path.  Triply-periodic flows
+      have no coupling (``l_bf_fn = None``) and always run unsplit.
     - ``"cnab2"``: Crank-Nicolson viscous (implicitness *c*) + 2nd-order
-      Adams-Bashforth nonlinear (explicit ``1.5 N^n - 0.5 N^{n-1}``).
+      Adams-Bashforth nonlinear (explicit
+      ``(1 + kappa/2) N^n - (kappa/2) N^{n-1}``, ``kappa`` the step
+      ratio ``dt_n / dt_{n-1}``: ``1.5 N^n - 0.5 N^{n-1}`` at constant
+      ``dt``; ``make_stepper``'s *step_scales_fn* in ``timestep.py``).
       **One** expensive nonlinear/FFT evaluation per step; the previous
-      nonlinear RHS is carried by the main loop, seeded by a discarded
-      priming ``step_cnab2(state, zeros)`` call while ``iterative-cn``
-      takes the first integration step (see ``step_cnab2`` in
-      ``timestep.py``).  Explicit *self-advection*, so ``dt`` is
+      nonlinear RHS is carried by the main loop, primed while
+      ``iterative-cn`` takes the first integration step (``step_cnab2``
+      in ``timestep.py``).  Explicit *self-advection*, so ``dt`` is
       advective-CFL-limited -- a net win (~3x fewer FFTs) on
       CFL-limited (turbulent) runs.
 
@@ -1378,14 +1329,13 @@ class TimeStepping(BaseModel):
       wall).  To restore the advective limit, wall-bounded cnab2 makes
       only the *self-advection* ``u' x omega'`` explicit (AB2) and
       treats ``L_bf`` implicitly (Crank-Nicolson) via an **FFT-free**
-      fixed-point corrector (it re-evaluates only the matrix-free
-      ``L_bf``, no FFT), so ``corrector_tolerance`` /
-      ``max_corrector_iterations`` **do** apply here.  The first step
-      self-starts with ``iterative-cn``, and if the coupling corrector
-      fails to converge on a step (its Picard rate reaches 1 -- only at
-      ``dt`` well past the advective limit, e.g. plane-Couette
-      ``dt >~ 0.2``) that step automatically falls back to a full
-      ``iterative-cn`` step (a stdout diagnostic is printed).
+      fixed-point corrector (re-evaluating only the matrix-free
+      ``L_bf``), so ``corrector_tolerance`` /
+      ``max_corrector_iterations`` **do** apply here.  A step whose
+      coupling corrector fails to converge (its Picard rate reaches 1 --
+      only at ``dt`` well past the advective limit, e.g. plane-Couette
+      ``dt >~ 0.2``) automatically falls back to a full ``iterative-cn``
+      step (a stdout diagnostic is printed).
 
       The residual ``dt`` bound is then the ordinary explicit
       self-advection CFL of the *fluctuations* on the clustered grid
@@ -1398,32 +1348,29 @@ class TimeStepping(BaseModel):
       the fluctuation amplitude, and a *weak* AB2 imaginary-axis
       instability that needs sustained ``CFL_th >~ 0.5``, so pass/fail
       is trajectory-marginal near the boundary.  The **rigged-CGL**
-      radial grid puts ``r_0 ~ Delta r``, twice the half-CGL
-      ``Delta r/2``, which raises the admissible cnab2 ``dt`` and is
-      why it is the ``cnab2``-default radial grid; the tighter half-CGL
-      grid (``geo.grid_type = 'half-cgl'``, the ``iterative-cn``
-      default) destabilizes cnab2 and is restricted to
-      ``iterative-cn``.  Cartesian flows feel the near-wall
+      grid's ``r_0 ~ Delta r``, twice the half-CGL ``Delta r/2``,
+      raises the admissible cnab2 ``dt``; hence the rigged ``cnab2``
+      default and half-CGL's restriction to ``iterative-cn`` (the
+      ``Geometry`` docstring).  Cartesian flows feel the near-wall
       ``dy ~ 1/N^2`` spacing instead.  A strongly non-normal base flow
       (counter-rotating Taylor-Couette) amplifies the explicit
       self-advection error further into a delayed blow-up needing a
-      much smaller ``dt``; the coupling corrector converges throughout
-      (it is *not* a corrector failure), so the fallback typically does
-      not fire.  These are inherent explicit-nonlinear limits, not a
-      coupling failure: such regimes want ``iterative-cn`` or a smaller
-      ``dt`` (Design notes: "Where the cnab2 step bound binds").
-      Triply-periodic cnab2 has none of this (uniform Fourier grid, no
-      coupling stiffness): it is the plain one-FFT no-corrector
-      explicit-AB2 step.
+      much smaller ``dt``, while the coupling corrector converges
+      throughout, so the fallback typically does not fire.  These are
+      inherent explicit-nonlinear limits, not a coupling failure: such
+      regimes want ``iterative-cn`` or a smaller ``dt`` (Design notes:
+      "Where the cnab2 step bound binds").  Triply-periodic cnab2 has
+      none of this (uniform Fourier grid, no coupling stiffness): it is
+      the plain one-FFT no-corrector explicit-AB2 step.
 
       ``implicit_mean_coupling`` (wall-bounded, default on; the cnab2
       corrector and the split iterative-cn one -- every FFT-free
       corrector reads ``_l_bf``) additionally folds the coupling with
-      the *instantaneous mean
-      flow* -- ``L_mf = u' x curl(mean u') + (mean u') x omega'``, the
-      same cross-product structure as ``L_bf`` with the time-varying
-      mean profile ``extract_mean_mode(u')`` in place of ``U`` -- into
-      the implicit coupling term, still FFT-free (the mean mode is a
+      the *instantaneous mean flow* --
+      ``L_mf = u' x curl(mean u') + (mean u') x omega'``, the same
+      cross-product structure as ``L_bf`` with the time-varying mean
+      profile ``extract_mean_mode(u')`` in place of ``U`` -- into the
+      implicit coupling term, still FFT-free (the mean mode is a
       ``psum``; each geometry ``_l_bf`` adds the mean profiles onto the
       base-flow profiles, the coupling being linear in the profile
       pair).  The explicit AB2 remainder is then the pure
@@ -1432,12 +1379,12 @@ class TimeStepping(BaseModel):
       profile, whose ``L_bf`` is otherwise zero) no longer rides the
       explicit term, removing its advective-CFL contribution (decisive
       for a total-field flow at a large ``dt``; Design notes: "Implicit
-      mean-flow coupling").  The double-counted
-      mean-mean product is a purely wall-normal (radial) profile at the
-      mean mode, absorbed by the mean pressure in the projection -- and
-      the AB2/CN split is second-order consistent for *any* choice of
-      the implicit functional, since the explicit part is always the
-      exact remainder ``get_rhs - l_bf``.
+      mean-flow coupling").  The double-counted mean-mean product is a
+      purely wall-normal (radial) profile at the mean mode, absorbed by
+      the mean pressure in the projection -- and the AB2/CN split is
+      second-order consistent for *any* choice of the implicit
+      functional, since the explicit part is always the exact remainder
+      ``get_rhs - l_bf``.
 
     ``implicitness`` *c* is the Crank-Nicolson split weight
     (``c = 0.5`` = second-order trapezoidal): in ``"iterative-cn"`` it
@@ -1480,10 +1427,8 @@ class TimeStepping(BaseModel):
     advective CFL bounding ``cnab2``; every shipped flow contracts at
     the default ``dt = 0.01`` from its default random IC
     (``tests/test_random_smoke.py``).  ``phys.u_grid`` relaxes it (the
-    advecting velocity drops to ``U - U_grid``) -- this contraction
-    limit only, not the advective CFL bounding ``cnab2``, whose
-    ``u' x omega'`` term is frame-invariant (see the ``u_grid`` field
-    docs).
+    advecting velocity drops to ``U - U_grid``), but not ``cnab2``'s
+    advective CFL (the ``u_grid`` field comment says why).
 
     Fixed corrector count (``corrector_iterations``)
     ------------------------------------------------
@@ -1594,9 +1539,7 @@ class TimeStepping(BaseModel):
             "-- reduce dt."
         ),
     )
-    # Folds ``L_mf`` into the FFT-free coupling term ``_l_bf`` shared
-    # by the wall-bounded CN/AB2 scheme and the split ``iterative-cn``
-    # corrector.  See the class docstring.
+    # ``L_mf`` and the correctors that read it: the class docstring.
     implicit_mean_coupling: bool = Field(
         default=True,
         description=(
@@ -1605,12 +1548,8 @@ class TimeStepping(BaseModel):
             "the split iterative-cn corrector)."
         ),
     )
-    # Same CN fixed point; coupling-driven corrector iterations stop
-    # costing one FFT evaluation each.  At realistic ``dt`` the
-    # unsplit corrector converges in ~1--2 iterations for every flow
-    # (measured), so the split only pays off once ``dt`` pushes the
-    # unsplit corrector towards its iteration cap.  See the class
-    # docstring.
+    # The class docstring; why opt-in: Design notes, "The split
+    # corrector stays opt-in".
     split_corrector: bool = Field(
         default=False,
         description=(
@@ -1619,12 +1558,9 @@ class TimeStepping(BaseModel):
             "refreshes; no effect on cnab2."
         ),
     )
-    # A static trip count lowers to a ``scan`` and so reverse-
-    # differentiates, which a ``while_loop`` does not; this is the only
-    # thing standing between a step and ``jax.grad``.  Off by an
-    # in-range value rather than ``None``: ``update_parameters`` drops
-    # ``None``, so an optional field could never be switched off from a
-    # layer.  See the class docstring.
+    # Why the knob exists: the class docstring.  Off by an in-range
+    # value rather than ``None``: ``update_parameters`` drops ``None``,
+    # so an optional field could never be switched off from a layer.
     corrector_iterations: int = Field(
         ge=0,
         default=0,
@@ -1712,15 +1648,14 @@ class Termination(BaseModel):
 
     # *Relative* to the run's initial condition: the loop stops at
     # ``init.t0 + max_sim_time``, where ``init.t0`` is the resumed
-    # snapshot's timestamp on a resume and the fresh-start value
-    # otherwise.  A snapshot at ``t = 100`` continued with
-    # ``max_sim_time = 300`` therefore stops at ``t = 400``: what a
-    # launch integrates does not depend on where its trajectory
-    # started, so one horizon serves an ensemble of members harvested
-    # at different times.  The consequence for a run split across
-    # several launches (a wall-clock budget, a resume) is that each
-    # launch
-    # gets the whole horizon again -- a fixed *absolute* end time is
+    # snapshot's timestamp on a continuation, 0 on a resume that starts
+    # a new trajectory, and the configured value on a fresh start.  A
+    # snapshot at ``t = 100`` continued with ``max_sim_time = 300``
+    # therefore stops at ``t = 400``: what a launch integrates does not
+    # depend on where its trajectory started, so one horizon serves an
+    # ensemble of members harvested at different times.  A run split
+    # across several launches (a wall-clock budget, a resume) gets the
+    # whole horizon again at each launch; a fixed *absolute* end time is
     # expressed by shortening ``max_sim_time`` on the resume.
     max_sim_time: float | None = Field(
         default=None,
@@ -1785,29 +1720,18 @@ class Solver(BaseModel):
     """
 
     # ``"pallas"`` (the default for all wall-bounded systems): the
-    # production backend -- a one-program-per-mode sequential banded
-    # sweep via a Pallas/Triton kernel on CUDA and ROCm GPUs (validated
-    # on one GPU and on several), the same banded math as a sequential
-    # pure-JAX sweep on CPU, and the smallest operator storage
-    # (``O(N_y p)`` no-pivot banded factors per mode vs the dense
-    # ``O(N_y^2)``).  Operators are assembled directly in banded
-    # storage by each geometry's ``_build_{Lk,Hk}_band_gpu`` via the
-    # shared ``solvers._assemble_banded_operator`` helper, then
-    # factored and stability-checked once at setup by
-    # ``solvers._build_pallas_operator`` (an unstable no-pivot LU is
-    # a hard error; a merely ill-conditioned operator prints a notice
-    # -- see ``pallas_stability_tol``).  The solve is a
-    # shard_map-local region (each device runs the kernel on its
-    # local mode-plane block; no communication).
-    # ``"dense"``: full ``Ny x Ny`` pivoted LU factors per Fourier
-    # mode.  The *reference* backend: the mathematically readable
-    # formulation of the operators and the regression reference the
-    # Pallas path is tested against -- not a production backend (a
-    # wall-bounded run selecting it prints a warning).
+    # production banded backend -- the Pallas/Triton kernel on CUDA and
+    # ROCm GPUs (validated on one GPU and on several), the same banded
+    # math as a pure-JAX sweep on CPU -- with the smallest operator
+    # storage (``O(N_y p)`` no-pivot banded factors per mode vs the
+    # dense ``O(N_y^2)``).  ``"dense"``: full ``Ny x Ny`` pivoted LU
+    # factors per Fourier mode, the *reference* backend the Pallas path
+    # is tested against, not a production one (a wall-bounded run
+    # selecting it prints a warning).  Both, the assembly and the
+    # setup-time stability check: :mod:`dnsjax.solvers`.
     # Triply-periodic systems have no wall-normal matrix solves (the
-    # implicit step is diagonal in spectral space), so no ``solver``
-    # backend applies there: the field is wall-bounded-only (absent
-    # from the periodic parameter surfaces) and the periodic
+    # implicit step is diagonal in spectral space), so the field is
+    # absent from the periodic parameter surfaces and the periodic
     # geometry never reads it.
     backend: Literal["pallas", "dense"] = Field(
         default="pallas",
@@ -1817,16 +1741,12 @@ class Solver(BaseModel):
             "backend kept for readability and regression checks."
         ),
     )
-    # A *modifier* on the pallas backend, not a third backend:
-    # ``backend == "pallas"`` means banded **storage**, which both the
-    # Triton kernel and the portable pure-JAX sweep read.  Which sweep
-    # runs is normally decided by the platform (kernel on
-    # ``TRITON_PLATFORMS``, portable elsewhere --
-    # ``solvers._kernel_path``); this pins it.  ``False`` on a GPU buys
-    # reverse-mode differentiability without the custom adjoint, and is
-    # the reference that adjoint is checked against; it costs the
-    # kernel's speed.  ``True`` on any other platform cannot execute a
-    # Triton kernel and is refused.
+    # A *modifier* on the pallas backend, not a third backend (the class
+    # docstring): it pins the sweep the platform would otherwise choose
+    # (``solvers._kernel_path``, which says what each pin buys).
+    # ``False`` on a GPU costs the kernel's speed; ``True`` off
+    # ``TRITON_PLATFORMS`` cannot execute a Triton kernel and is
+    # refused.
     pallas_kernel: bool | None = Field(
         default=None,
         description=(
@@ -1843,13 +1763,11 @@ class Solver(BaseModel):
     # ``"dense"`` contracts the full ``N_y x N_y`` matrix as a real
     # GEMM; ``"banded"`` sums the stencil's shifted wall-normal slices
     # and skips the structural zeros the GEMM multiplies (~95 % of its
-    # FLOPs at ``N_y = 385``).  ``"auto"`` takes the stencil on CPU --
-    # x1.18 per step at the per-rank size of a 128-rank
-    # ``1280 x 385 x 320`` run, x1.04-1.08 for the other geometries at
-    # moderate sizes, within a few per cent at the smallest test grids
-    # (the ``_base`` Design notes) -- and the GEMM elsewhere: on GPU the
-    # choice is unmeasured.  Read at trace time, like
-    # ``rhs_transform_chunks``.  Wall-bounded systems only.
+    # FLOPs at ``N_y = 385``).  ``"auto"`` takes the stencil on CPU
+    # (measured: the ``_base`` Design notes, "The wall-normal stencil")
+    # and the GEMM elsewhere: on GPU the choice is unmeasured.  Read at
+    # trace time, like ``rhs_transform_chunks``.  Wall-bounded systems
+    # only.
     wall_normal_matvec: Literal["auto", "dense", "banded"] = Field(
         default="auto",
         description=(
@@ -1859,17 +1777,15 @@ class Solver(BaseModel):
             "machine precision."
         ),
     )
-    # ``"pallas"`` backend only: one Pallas program solves a
-    # ``bm0 x bm1`` tile of Fourier modes, vectorizing the banded
-    # sweep across the tile.  ``1`` is one program per mode; ``> 1``
-    # coalesces mode loads and fills more SIMD lanes (default 2: the
-    # H100 tuning, 4 warps/program).  The mode plane is padded up to
-    # whole tiles (a masked partial-tile band load is observed to
-    # miscompile on GPU -- see ``solvers._pallas_banded_solve``):
-    # factors once at construction, the RHS per solve.  The padded
-    # modes cost memory and solve work proportional to the roundup fraction --
-    # negligible at DNS mode counts, but worth shrinking the tile for
-    # when the plane is small relative to it (e.g. ``nx/2 < 32``).
+    # ``"pallas"`` backend only: one Pallas program sweeps a
+    # ``bm0 x bm1`` tile of Fourier modes (default 2: the H100 tuning;
+    # the ``solvers`` Design notes, "The Pallas mode tile").  The mode
+    # plane is padded up to whole tiles (why: the
+    # ``solvers._pallas_banded_solve`` docstring, "Why the plane is
+    # padded"); the padded modes cost memory and solve work
+    # proportional to the roundup fraction -- negligible at DNS mode
+    # counts, but worth shrinking the tile for when the plane is small
+    # relative to it (e.g. ``nx/2 < 32``).
     pallas_block_m0: int = Field(
         ge=1,
         default=2,
@@ -1878,10 +1794,9 @@ class Solver(BaseModel):
             "axis (power of two; default tuned on H100)."
         ),
     )
-    # ``"pallas"`` backend only: the innermost, coalesced mode axis.
-    # The default ``32`` is the H100 tuning -- one warp wide, so a
-    # warp's band load fully coalesces.  Same internal padding to full
-    # tiles as ``pallas_block_m0``.
+    # ``"pallas"`` backend only: the tile's innermost, coalesced mode
+    # axis (default 32: the H100 tuning, one warp wide; the same Design
+    # notes entry), padded to whole tiles like ``pallas_block_m0``.
     pallas_block_m1: int = Field(
         ge=1,
         default=32,
@@ -1891,12 +1806,10 @@ class Solver(BaseModel):
             "on H100)."
         ),
     )
-    # ``"pallas"`` backend only: max relative residual
-    # ``||A x - b|| / ||b||`` over modes, measured once per operator
-    # group at setup.  Above it, ``solvers._build_pallas_operator``
-    # prints an ill-conditioning notice (benign LU element growth) or
-    # raises on genuine no-pivot instability (see
-    # ``solvers._NO_PIVOT_GROWTH_TOL``).
+    # ``"pallas"`` backend only: an operator group whose setup-time
+    # relative solve residual exceeds it, with benign LU element
+    # growth, gets an ill-conditioning notice; the check, and the
+    # growth bound that raises instead: ``solvers._build_pallas_operator``.
     pallas_stability_tol: float = Field(
         gt=0,
         default=1e-6,
@@ -1907,14 +1820,11 @@ class Solver(BaseModel):
     )
     # Applies to the 6-field velocity+vorticity batch of
     # ``rhs.get_nonlin`` and to any larger batch a flow transforms
-    # through ``fft.chunked_transform``.  ``k > 1`` splits the batch into
-    # ``k`` balanced groups, cutting the transform-stage transient
-    # (the padded intermediate buffers; see the ``fft.py`` memory
-    # note) by ~``k`` at the cost of ``k``x the FFT dispatches (and
-    # ``k`` smaller reshard rounds per stage on multi-device runs).
-    # Raise it only when that transient sets the device-memory peak:
-    # chiefly a flow's larger batch, the velocity's 6-field transient
-    # being several times smaller.  Forward transforms stay fused.
+    # through ``fft.chunked_transform``, which says what ``k`` groups
+    # trade (with the ``fft.py`` memory note).  Raise it only when the
+    # transform-stage transient sets the device-memory peak: chiefly a
+    # flow's larger batch, the velocity's 6-field transient being
+    # several times smaller.  Forward transforms stay fused.
     rhs_transform_chunks: int = Field(
         ge=1,
         default=1,
@@ -2193,20 +2103,18 @@ def read_snapshot_params(
     means (:func:`unregistered_sections`).
 
     Returns ``None`` when *snapshot_path* is not a dnsjax snapshot file
-    (a laminar start, or a missing path), so the caller skips
-    the snapshot layer.  Stored metadata
-    records the flow-relevant **public** names; they are mapped back
-    to internal names via
+    (a laminar start, or a missing path), so the caller skips the
+    snapshot layer.  Stored metadata records the flow-relevant
+    **public** names; they are mapped back to internal names via
     :func:`dnsjax.flows.registry.internalize_stored`, which **raises**
     on a stored core-section key this version does not define
-    (``solver`` excepted, see below).
-    Snapshots embed the *resolved* configuration (concrete
-    ``geo.grid_type``, materialized per-flow defaults), so the
-    snapshot layer pins the trajectory's actual setup on resume; the
-    hidden-derived internal fields (e.g. the annular azimuthal
-    ``geo.lz``) are *not* rehydrated here -- ``update_parameters``
-    re-derives them from the stored public fields, and rehydrating
-    would mark them explicitly set.
+    (``solver`` excepted, see below).  Snapshots embed the *resolved*
+    configuration (concrete ``geo.grid_type``, materialized per-flow
+    defaults), so the snapshot layer pins the trajectory's actual setup
+    on resume; the hidden-derived internal fields (e.g. the annular
+    azimuthal ``geo.lz``) are *not* rehydrated here --
+    ``update_parameters`` re-derives them from the stored public
+    fields, and rehydrating would mark them explicitly set.
     """
     from .extensions import EXTENSIONS
     from .flows.registry import internalize_stored
@@ -2235,8 +2143,7 @@ def read_snapshot_params(
     # snapshot.  That is also why ``internalize_stored`` exempts this
     # one section from its unknown-key error: the drop happens here,
     # *after* internalization, so a snapshot naming a solver knob this
-    # version no longer defines must survive the pass above to reach
-    # it.
+    # version no longer defines must survive the pass above to reach it.
     snap.pop("solver", None)
     overlays: dict[str, dict] = {}
     for name in tuple(snap):
@@ -2298,13 +2205,11 @@ def random_ic_selected(p: Parameters | None = None) -> bool:
     """Whether this run's start mode is the random-field IC.
 
     Mirrors -- and is used by -- the start-mode precedence chain in
-    ``dnsjax.__main__.run`` (a ``snapshot`` path wins over every
-    in-process mode, then ``start_from_laminar``, then
-    ``localized_rolls``, then ``random_field``), so the one condition
-    is written once.  ``bootstrap.resolve_run_seeds`` reads it to
-    decide whether the run needs ``init.random_seed`` resolved at all:
-    a laminar, rolls or resume start draws nothing and so needs no
-    entropy source.
+    ``dnsjax.__main__.run`` (the :class:`Initiation` docstring), so the
+    one condition is written once.  ``bootstrap.resolve_run_seeds``
+    reads it to decide whether the run needs ``init.random_seed``
+    resolved at all: a laminar, rolls or resume start draws nothing and
+    so needs no entropy source.
 
     *p* defaults to the global :data:`params`.
     """
@@ -2438,19 +2343,18 @@ def update_parameters(params_new: Parameters) -> None:
     unset fields retain their previous values -- a ``None`` is skipped,
     so no layer can unset a field, and an optional cadence is switched
     off with ``0`` instead, turned back into unset here
-    (:data:`OFF_CADENCES`).  The ``(section, key)`` of
-    every explicitly-set field is recorded (across all layers) in the
+    (:data:`OFF_CADENCES`).  The ``(section, key)`` of every
+    explicitly-set field is recorded (across all layers) in the
     module-level :data:`_user_set_fields`, so a per-flow default (a
     ``FieldSpec.default`` override, e.g. a flow's own axial period
     ``geo.lx``) is materialized only when the user / snapshot / TOML
     never set the field.  Corollary: a **direct** assignment
     (``params.geo.grid_type = ...``) never enters
-    :data:`_user_set_fields` and is silently restored /
-    re-materialized on the next call -- scripts and tests must set
-    spec-defaulted fields through ``update_parameters(Parameters(...))``.
-    The flow-specific parameter math itself lives
-    in the flow specs (``flows/*/specs/``, dispatched via
-    :func:`dnsjax.flows.registry.spec_for`).
+    :data:`_user_set_fields` and is silently restored / re-materialized
+    on the next call -- scripts and tests must set spec-defaulted fields
+    through ``update_parameters(Parameters(...))``.  The flow-specific
+    parameter math itself lives in the flow specs (``flows/*/specs/``,
+    dispatched via :func:`dnsjax.flows.registry.spec_for`).
     """
     for category, dict in params_new.model_dump(exclude_unset=True).items():
         if dict is not None:
@@ -2511,10 +2415,8 @@ def update_parameters(params_new: Parameters) -> None:
                     if value != sec_before[key]:
                         _derive_written.add((section, key))
 
-    # The viscosity multiplying the velocity Laplacian: 1/re unless the
-    # flow's spec gives its own (``FlowSpec.viscosity``).  Read by the
-    # cylindrical / annular operator builders and IMM -- which is why
-    # they take it from here rather than forming 1/re themselves.
+    # ``DerivedParameters.nu``: the cylindrical / annular operator
+    # builders and IMM read it here rather than forming 1/re themselves.
     if spec.viscosity is not None:
         derived_params.nu = spec.viscosity(params)
     else:
@@ -2540,14 +2442,10 @@ def update_parameters(params_new: Parameters) -> None:
     )
 
     # Resolve the wall-normal grid's per-flow default when the user /
-    # snapshot / TOML never set ``geo.grid_type``.  Resolving to a
-    # *concrete* value here (rather than interpreting ``None`` at grid
-    # construction) makes every snapshot embed the grid it
-    # ran, so a resume pins the trajectory's grid independently of
-    # later defaults.  Re-resolved on every layer application (a later
-    # ``system`` / ``scheme`` override cannot inherit a stale
-    # default); assigned directly -- not via the merge loop -- so the
-    # field never enters ``_user_set_fields``.  A custom
+    # snapshot / TOML never set ``geo.grid_type``, to a *concrete* value
+    # (why: the ``Geometry`` docstring, item 3), on every layer like the
+    # spec defaults above; assigned directly, not via the merge loop, so
+    # the field never enters ``_user_set_fields``.  A custom
     # ``geo.wall_grid`` file forces ``grid_type = None`` (setting both
     # is an error); flows without a wall-normal grid stay ``None``.
     if ("geo", "grid_type") not in _user_set_fields:
@@ -2643,10 +2541,8 @@ def validate_parameters() -> None:
 
     spec = spec_for(params.phys.system)
 
-    # Fourier axes must carry an **even** mode count: the stored layout
-    # omits the Nyquist mode, which exists only at an even count, and
-    # supporting odd ones would buy at most one, untrustworthy, mode
-    # (:mod:`dnsjax.harmonics` says why).  ``res.nx`` (real FFT) and
+    # Fourier axes must carry an **even** mode count (why: the error
+    # below and :mod:`dnsjax.harmonics`).  ``res.nx`` (real FFT) and
     # ``res.nz`` (complex) are Fourier axes for every flow; ``res.ny``
     # is one only for the triply-periodic family, and is the
     # wall-normal grid size elsewhere.
@@ -2667,10 +2563,9 @@ def validate_parameters() -> None:
                 f"dnsjax.harmonics.  Use {_n + 1}."
             )
 
-    # Reduced-resolution snapshots ([lowres]): a set target is a count
-    # the run holds at least as many of, even on a Fourier axis (the
-    # Nyquist argument above), and a custom wall grid has no
-    # counterpart at another wall-normal count.
+    # Reduced-resolution snapshots ([lowres]): a set target is at most
+    # the run's count and even on a Fourier axis, and a custom wall grid
+    # allows no other wall-normal count (the errors say why).
     for _axis in ("nx", "ny", "nz"):
         _target = getattr(params.lowres, _axis)
         if _target is None:
@@ -2761,8 +2656,8 @@ def validate_parameters() -> None:
         )
 
     # Extension sections (the plugins' and any script-registered
-    # one): each relevant extension's
-    # validate hook runs here, with the merged global ``params``.
+    # one): every extension's validate hook runs here, relevant or not
+    # (``validate_extensions``), with the merged global ``params``.
     from .extensions import validate_extensions
 
     validate_extensions(params)
@@ -2783,11 +2678,10 @@ def validate_parameters() -> None:
     # flow whose module exports no ``get_driving`` would make the
     # corrector emit a ``-dPdz'`` diagnostic for it, so ``__main__``
     # would size ``stats.dat`` one column short and fail mid-run on the
-    # first stats row.  The CLI/TOML reject both at
-    # parse; this is the scripts-and-tests path.  It runs after
-    # ``spec.validate`` so a flow that refuses one of these itself
-    # (plane-couette's constant-bulk refusal) keeps its own, more
-    # specific message.
+    # first stats row.  The CLI/TOML reject both at parse; this is the
+    # scripts-and-tests path.  It runs after ``spec.validate`` so a flow
+    # that refuses one of these itself (plane-couette's constant-bulk
+    # refusal) keeps its own, more specific message.
     for _drive_field in ("driving", "block_mean_spanwise_velocity"):
         _default = Physics.model_fields[_drive_field].get_default(
             call_default_factory=True
@@ -3018,11 +2912,9 @@ class PaddedResolution:
 
         The natural sizes are ``oversampling_factor * n // 2`` (`$y$`
         oversampled for periodic flows, never for wall-bounded ones --
-        their wall-normal direction is FD, not Fourier);
-        :meth:`apply_rounding` then rounds every
-        FFT axis up to a mesh-divisible, FFT-friendly 7-smooth length
-        (``nx_padded``, the real-FFT axis, is never sharded in physical
-        space and is rounded to an even length instead).
+        their wall-normal direction is FD, not Fourier), raised by the
+        flow spec's ``FlowSpec.pad`` hook if it has one, then rounded by
+        :meth:`apply_rounding`.
         """
         self.notes = []
 

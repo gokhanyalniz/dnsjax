@@ -1,9 +1,9 @@
 r"""Shared infrastructure for wall-bounded geometries.
 
-Functions shared by the wall-bounded geometry modules (Cartesian,
-cylindrical, annular, and any a plugin builds on them) live here to
-avoid duplication.  Geometry-specific code (operator assembly, IMM
-iteration, curl, etc.) stays in the respective geometry modules.
+What the wall-bounded geometry modules (Cartesian, cylindrical,
+annular, and any a plugin builds on them) share; geometry-specific
+code (operator assembly, IMM iteration, curl, etc.) stays in each
+geometry module.
 
 Design notes
 ------------
@@ -29,14 +29,14 @@ x1.08 and x0.95, a viscoelastic Dean and pipe x1.04 and x1.05
 falls from 18.25 to 4.45 GFLOP.  The gain grows with `$N_y$` (the
 GEMM's FLOPs per point do); on the smallest test grids the stencil's
 fixed cost can leave it a few per cent behind.  The step temporaries
-are unchanged, but for the viscoelastic Dean's (+0.15 %: its
-re/im split on the 9-field tensor stacks); the stored parts add ``~30 KB`` per
-matrix, and the unrolled stencils about 2.5 s of compile per step
-program.  The stencil's first form padded the field by the full
-half-bandwidth and summed `$2p + 3$` shifted slices (19 at
-``fd_order = 8``): x1.03 at the first size above and **x0.85** at the
-last, because half those terms multiply the zeros outside an interior
-row's stencil and the fused pad turns every read into a bounds-checked
+are unchanged, except the viscoelastic Dean's (+0.15 %: its re/im
+split on the 9-field tensor stacks); the stored parts add ``~30 KB``
+per matrix, and the unrolled stencils about 2.5 s of compile per step
+program.  A stencil padding the field by the full half-bandwidth and
+summing `$2p + 3$` shifted slices (19 at ``fd_order = 8``; rejected)
+measured x1.03 at the first size above and **x0.85** at the last,
+because half those terms multiply the zeros outside an interior row's
+stencil and the fused pad turns every read into a bounds-checked
 select.  Splitting off the wall rows
 (:func:`dnsjax.fd.stencil_decomposition`) removes both.  Promoting a
 real band onto a complex field cost a further ~10 % of the step at the
@@ -56,8 +56,8 @@ a few tenths of a percent, under the timing noise floor.  It is kept
 because it is bit-identical and strictly less work, and because both
 halves grow where an 8-core machine cannot show them: with the
 corrector count (every extra iteration is another stack *and* another
-collective) and with the rank count on a slower fabric, the ``psum``
-being latency- rather than volume-bound.  It is not a measured win,
+collective) and with the rank count on a slower fabric (the latency
+argument of :func:`extract_mean_modes`).  It is not a measured win,
 and a re-measurement on a small machine should not expect one.
 
 **The moving frame's convective form.**  The frame term is applied as
@@ -233,48 +233,44 @@ def apply_y_matrix(
     Computes ``einsum("ij, jzx -> izx", mat, field)`` for a 3-d
     *field*, or a component-batched contraction for a 4-d *field*.
 
-    **Two paths for an FD matrix.**  A :class:`YMatrix` (the
-    geometries' ``D1``, ``D2``, ``A_base``, ``D1_pos`` /
-    ``A_base_pos``) is applied either as the dense GEMM below or as a
-    stencil (:func:`_stencil`), per ``solver.wall_normal_matvec``
-    (``"auto"``: the stencil on CPU, the GEMM elsewhere).  A plain
-    array (an interpolation matrix, a ghost corner) always takes the
-    GEMM.  The two agree to machine precision.  The GEMM costs
-    `$2 N_y$` FLOPs per output point, almost all of them on structural
-    zeros; the stencil costs two per term of the row's own stencil,
-    about 10 terms at ``fd_order = 8``, which decides it on CPU, where
-    the GEMM is compute-bound (Design notes: "The wall-normal
-    stencil").
+    **Two paths for an FD matrix.**  A :class:`YMatrix` is applied
+    either as the dense GEMM below or as a stencil (:func:`_stencil`),
+    per ``solver.wall_normal_matvec`` (``"auto"``: the stencil on CPU,
+    the GEMM elsewhere); a plain array always takes the GEMM.  The two
+    agree to machine precision.  The GEMM costs `$2 N_y$` FLOPs per
+    output point, almost all of them on structural zeros; the stencil
+    costs two per term of the row's own stencil, about 10 terms at
+    ``fd_order = 8``, which decides it on CPU, where the GEMM is
+    compute-bound (Design notes: "The wall-normal stencil").
 
-    **Layout / transposes (GEMM path).**  The contraction runs as a
-    GEMM over the wall-normal axis.  When that axis is **leading** (the
-    3-d case, or 4-d with ``component_axis == 1`` so *field* is
-    `$(N_y, C, N_1, N_2)$`) it is already in GEMM contraction position
-    and **no transpose is emitted**.  With ``component_axis == 0``
-    (*field* `$(C, N_y, N_1, N_2)$`) the wall-normal axis is interior,
-    so XLA transposes it into position and back -- two field-sized
-    transposes per call.  The batched IMM/RHS matvecs therefore stack
-    their inputs **y-leading** and pass ``component_axis=1``; this keeps
-    the single batched GEMM (one per ``D1``/``D2``) yet emits zero
-    transposes (confirmed: ``ij, jczx -> iczx`` lowers transpose-free
-    for ``cuda``, vs one transpose for ``ij, cjzx -> cizx``).
+    **Layout / transposes (GEMM path).**  When the wall-normal axis is
+    **leading** (the 3-d case, or 4-d with ``component_axis == 1`` so
+    *field* is `$(N_y, C, N_1, N_2)$`) it is already in GEMM
+    contraction position and **no transpose is emitted**.  With
+    ``component_axis == 0`` (*field* `$(C, N_y, N_1, N_2)$`) the
+    wall-normal axis is interior, so XLA moves it into contraction
+    position: a field-sized transpose per call (one emitted for
+    ``cuda``, below).  The batched
+    IMM/RHS matvecs therefore stack their inputs **y-leading** and pass
+    ``component_axis=1``; this keeps the single batched GEMM (one per
+    ``D1``/``D2``) yet emits zero transposes (confirmed:
+    ``ij, jczx -> iczx`` lowers transpose-free for ``cuda``, vs one
+    transpose for ``ij, cjzx -> cizx``).
 
-    A complex *field* is first split into a real trailing re/im
-    axis so the contraction runs as a real GEMM: half the FLOPs
-    of the complex GEMM that dtype promotion would otherwise
-    produce (a real-by-complex ``einsum`` upcasts and runs
-    4-real-multiply complex arithmetic).  The split and merge
-    are field-sized elementwise passes that fuse with
-    neighbouring ops; the win grows with `$N_y$` (GEMM FLOPs
-    scale as `$N_y$` per element, the passes do not).
+    A complex *field* is first split into a real trailing re/im axis so
+    the contraction runs as a real GEMM: half the FLOPs of the complex
+    GEMM that dtype promotion would otherwise produce (a real-by-complex
+    ``einsum`` upcasts and runs 4-real-multiply complex arithmetic).
+    The split and merge are field-sized elementwise passes that fuse
+    with neighbouring ops; the win grows with `$N_y$` (GEMM FLOPs scale
+    as `$N_y$` per element, the passes do not).
 
     Parameters
     ----------
     mat:
-        A :class:`YMatrix` (a square FD operator), or a plain real
-        matrix ``(M, N_y)``, which always takes the GEMM: an
-        interpolation matrix, or ``M < N_y`` for partial-row
-        corrections.
+        A square FD operator (:class:`YMatrix`), or a plain real matrix
+        ``(M, N_y)``, which always takes the GEMM: an interpolation
+        matrix, or ``M < N_y`` for partial-row corrections.
     field:
         Real or complex field of shape ``(N_y, N_1, N_2)`` (3-d), or
         4-d with the wall-normal axis at position ``component_axis + 1``
@@ -488,22 +484,19 @@ def extract_mean_modes(*states: Array) -> tuple[Array, ...]:
     ``psum`` replicates the lot.  Returns one array per argument, in
     order, each shaped ``(C_i, N_y)``.
 
-    Use it wherever two mean modes are wanted at the same point.  What
-    it saves is *not* arithmetic -- the slice is `$O(C N_y)$` either way
-    -- but the per-collective cost, which is what this function is
-    bound by: the payload is a few kB, so an all-reduce of it is pure
-    latency, and that latency is per *call*, not per byte.  Halving the
-    call count therefore halves the cost, and the effect grows with the
-    rank count and with a slower interconnect (a gloo/TCP CPU run being
-    the extreme).
+    Use it wherever two mean modes are wanted at the same point.  It
+    saves collectives, not arithmetic (the slice is `$O(C N_y)$` either
+    way), and collectives bound this function: the payload is a few kB,
+    so an all-reduce of it is pure latency, per *call*, not per byte.
+    Halving the call count halves the cost, the more so with more ranks
+    and a slower interconnect (a gloo/TCP CPU run being the extreme).
 
-    It also removes the reason a caller would otherwise **stack** two
-    fields to make one call: a ``shard_map`` operand crosses a
+    Nor need a caller **stack** two fields to make one call, which
+    would materialize a field-sized copy, written, read once and
+    discarded on every call: a ``shard_map`` operand crosses a
     manual-sharding boundary, so XLA cannot sink the interior
-    ``[:, :, 0, 0]`` slice back out into the producer, and the stack is
-    materialized in full -- a field-sized copy written, read once and
-    discarded, on every call.  Passing the two fields separately costs
-    nothing (each is an array the caller already holds; a bare
+    ``[:, :, 0, 0]`` slice back out into the producer.  Separate fields
+    cost nothing (each is an array the caller already holds; a bare
     ``x[None]`` on a `$(N_y, N_{k_z}, N_{k_x})$` field is a degenerate
     reshape, not a copy).
 
@@ -529,8 +522,8 @@ def extract_mean_modes(*states: Array) -> tuple[Array, ...]:
     """
 
     def _local(*shards: Array) -> Array:
-        # A single-argument call must compile to exactly what
-        # ``extract_mean_mode`` always did, so no 1-element concatenate.
+        # A single-argument call must compile to the bare slice and
+        # psum (``extract_mean_mode``), so no 1-element concatenate.
         firsts = (
             shards[0][:, :, 0, 0]
             if len(shards) == 1
@@ -567,11 +560,10 @@ def extract_mean_mode(state: Array) -> Array:
     `$k_z = k_x = 0$` mode of shape ``(C, N_y)`` in
     `$O(N_y)$` work per device via ``shard_map`` + ``psum``.
 
-    The one-argument case of :func:`extract_mean_modes`, and compiles
-    to what it always did (that function skips its concatenate at
-    ``n = 1``).  Reach for the variadic form whenever two mean modes
-    are wanted at once -- the collective is latency-bound, so two calls
-    cost twice one.
+    The one-argument case of :func:`extract_mean_modes`, which skips its
+    concatenate at ``n = 1``.  Reach for the variadic form whenever two
+    mean modes are wanted at once (:func:`extract_mean_modes` says
+    why).
 
     For a quantity derived from the mean mode, extract first and
     operate on the ``(C, N_y)`` column whenever the two commute: the
@@ -908,10 +900,9 @@ def build_wall_bounded_stepper(
     def set_dt(new_dt: float) -> None:
         """Switch the live time step to *new_dt* (adaptive dt).
 
-        Jitted on-device rebuild of the ``dt``-dependent leaves +
-        in-place assignment on the bound flow singleton; also sets
-        ``ab2_kappa = new_dt / dt_prev`` for the next CN/AB2 step
-        (see the builder docstring).  No stepper recompiles.
+        The jitted on-device leaf rebuild, assigned in place, and
+        ``ab2_kappa = new_dt / dt_prev`` of the builder's Notes; no
+        stepper recompiles.
         """
         kappa = new_dt / _dt_box[0]
         leaves = _dt_leaves_jit(

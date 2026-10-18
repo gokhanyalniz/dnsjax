@@ -1,30 +1,27 @@
 r"""Physical-space measurements for the nonlinear-term hook.
 
-Some diagnostics need the velocity in physical space, which
-exists only transiently inside the nonlinear-term evaluation
-(:func:`dnsjax.rhs.get_nonlin`), on the dealiased
-(3/2-oversampled) grid.  Rather than re-transforming the state,
-such measurements plug into ``get_nonlin`` through its optional
-``measure_fn`` callback:
+Some diagnostics need the velocity in physical space, which exists only
+transiently inside the nonlinear-term evaluation
+(:func:`dnsjax.rhs.get_nonlin`), on the dealiased (3/2-oversampled)
+grid.  Rather than re-transforming the state, such measurements plug
+into ``get_nonlin`` through its optional ``measure_fn`` callback:
 
-    ``measure_fn(velocity_phys, vorticity_phys)
-    -> dict[str, Array]``
+    ``measure_fn(velocity_phys, vorticity_phys) -> dict[str, Array]``
 
-where both inputs have shape ``(3, ny_phys, nz_padded,
-nx_padded)`` (layout ``[C, y, z, x]``) and the returned dict
-maps column names to replicated scalars.  The dict structure
-must be static (same keys every call) so the JIT-compiled
-stepper has a fixed output pytree; ``__main__`` derives the
-``steps.dat`` header from the keys of a warm-up call.  Note
-that dicts returned through ``jit`` are canonicalized to
-sorted key order, which sets the column order of
-``steps.dat`` (as with ``get_stats`` and ``stats.dat``).
+where both inputs have shape ``(3, ny_phys, nz_padded, nx_padded)``
+(layout ``[C, y, z, x]``) and the returned dict maps column names to
+replicated scalars.  The dict structure must be static (same keys every
+call) so the JIT-compiled stepper has a fixed output pytree;
+``__main__`` derives the ``steps.dat`` header from the keys of a warm-up
+call.  Dicts returned through ``jit`` are canonicalized to sorted key
+order, which sets the column order of ``steps.dat`` (as with
+``get_stats`` and ``stats.dat``).
 
-A new physical-space measurement follows the same pattern: a
-``get_*`` function here taking the physical fields plus precomputed
-flow data, wired through the geometry's ``_get_rhs_measured``
-wrapper.  The one implemented so far is the CFL
-(Courant-Friedrichs-Lewy) number, :func:`get_cfl`.
+A new physical-space measurement follows the same pattern: a ``get_*``
+function here taking the physical fields plus precomputed flow data,
+wired through the geometry's ``_get_rhs_measured`` wrapper.  The one
+implemented is the CFL (Courant-Friedrichs-Lewy) number,
+:func:`get_cfl`.
 """
 
 from jax import Array
@@ -41,13 +38,11 @@ def get_cfl(
     r"""CFL numbers of the advecting velocity on the current grid.
 
     With the advecting velocity
-    `$\mathbf{u} = \mathbf{u}' + \mathbf{U}_{\!adv}$` -- where
-    *base_flow* is the advection base velocity, which in a moving
-    frame of reference is `$\mathbf{U}_{\!adv} = \mathbf{U}
-    - U_{grid}\hat{\mathbf{e}}_0$` -- and the local advection length
-    scale `$\Delta_i$` of each direction
-    (encoded in *inv_spacing*), computes the per-direction CFL
-    numbers and the sum-form total
+    `$\mathbf{u} = \mathbf{u}' + \mathbf{U}_{\!adv}$` (*base_flow*,
+    the advection base velocity, frame-relative in a moving frame of
+    reference) and the local advection length scale `$\Delta_i$` of
+    each direction (encoded in *inv_spacing*), computes the
+    per-direction CFL numbers and the sum-form total
 
     .. math::
         \mathrm{CFL}_i = \Delta t \max_{\mathbf{x}}

@@ -1,15 +1,13 @@
 r"""Triply-periodic geometry: operators, norms, solvers and stepper.
 
-Provides all geometry-general infrastructure for triply-periodic flows:
-the ``Fourier`` wavenumber class, the ``TriplyPeriodicFlow`` base
-dataclass (time-stepping coefficients), algebraic Helmholtz predict /
-correct operations, divergence correction, state initialization, and the
-``build_triply_periodic_stepper`` factory.
-
-Flow-specific modules (e.g. ``flows.triply_periodic.monochromatic``)
-subclass ``TriplyPeriodicFlow`` to define the base flow, then call
-``build_triply_periodic_stepper`` to obtain ready-to-use time-stepping
-functions.
+The geometry-general infrastructure of triply-periodic flows: the
+``Fourier`` wavenumber class, the ``TriplyPeriodicFlow`` base dataclass
+(time-stepping coefficients), algebraic Helmholtz predict / correct
+operations, divergence correction, state initialization and the
+``build_triply_periodic_stepper`` factory.  A flow module (e.g.
+``flows.triply_periodic.monochromatic``) subclasses
+``TriplyPeriodicFlow`` with its base flow and calls
+``build_triply_periodic_stepper`` for its time-stepping functions.
 """
 
 from collections.abc import Callable
@@ -42,19 +40,18 @@ ly = 4
 class Fourier:
     r"""Wavenumber grids for the triply-periodic geometry.
 
-    Broadcasting shapes match the spectral layout
-    ``(ky, kz, kx)``:
+    Broadcasting shapes match the spectral layout ``(ky, kz, kx)``:
 
     - ``kx``: shape ``(1, 1, nx_spec)`` — sharded on ``np1``.
     - ``kz``: shape ``(1, nz_spec, 1)`` — sharded on ``np0``.
     - ``ky``: shape ``(ny-1, 1, 1)`` — fully local.
 
-    ``k_metric`` equals 2 for `$k_x > 0$` and 1 for
-    `$k_x = 0$`, accounting for the Hermitian symmetry of
-    the real FFT.  ``lapl`` is `$-k^2$` and ``inv_lapl`` its inverse,
-    zero wherever `$k^2 = 0$`: at the mean mode, and at padding slots,
-    whose wavenumbers here are zero rather than placeholders -- their
-    fields are identically zero and no per-mode operator is solved.
+    ``k_metric`` equals 2 for `$k_x > 0$` and 1 for `$k_x = 0$`,
+    accounting for the Hermitian symmetry of the real FFT.  ``lapl`` is
+    `$-k^2$` and ``inv_lapl`` its inverse, zero wherever `$k^2 = 0$`: at
+    the mean mode, and at padding slots, whose wavenumbers here are zero
+    rather than placeholders -- their fields are identically zero and no
+    per-mode operator is solved.
 
     The wavenumber arrays are global multi-device arrays: host-side
     consumers recompute them from the JAX-free
@@ -131,10 +128,11 @@ def get_inprod(
     A direct Parseval sum over all Fourier modes.  The summand is
     complex and the result is real (the conjugate-symmetric layout's
     imaginary parts cancel), so the real part is taken **elementwise**
-    before the reduction: that is exactly what a ``dtype=`` float
-    accumulator did -- cast, then sum -- but spelled out, so NumPy's
-    cast rule stops warning about it on every call, and the reduction
-    carries no imaginary half.  Bit-identical to the cast form.
+    before the reduction: the cast-then-sum of a ``dtype=`` float
+    accumulator, spelled out, so it raises none of the warnings NumPy's
+    cast rule gives the cast form on every call, and the reduction
+    carries no imaginary half.
+    Bit-identical to the cast form.
     """
     return jnp.sum(
         (jnp.conj(vector_spec_1) * k_metric * vector_spec_2).real,
@@ -199,13 +197,12 @@ def inverse_laplacian(data_spec: Array, inv_lapl_spec: Array) -> Array:
 class TriplyPeriodicFlow:
     """Precomputed data for triply-periodic flows.
 
-    Subclasses must set ``base_flow`` and ``curl_base_flow``
-    *after* calling ``super().__post_init__()``, which builds
-    the time-stepping coefficients ``ldt_1`` and ``ildt_2``.
-    ``dt``/``ab2_kappa`` are the live time step and AB2 step
-    ratio as 0-d array leaves (read by the steppers instead of
-    ``params.step.dt``; rebuilt with ``ldt_1``/``ildt_2`` by the
-    builder's ``set_dt``).
+    Subclasses must set ``base_flow`` and ``curl_base_flow`` *after*
+    calling ``super().__post_init__()``, which builds the time-stepping
+    coefficients ``ldt_1`` and ``ildt_2``.  ``dt``/``ab2_kappa`` are the
+    live time step and AB2 step ratio as 0-d array leaves (read by the
+    steppers instead of ``params.step.dt``; rebuilt with
+    ``ldt_1``/``ildt_2`` by the builder's ``set_dt``).
     """
 
     dt: Array = field(init=False)
@@ -261,15 +258,14 @@ class TriplyPeriodicFlow:
         )
         # (``_build_dt_leaves`` mirrors the two coefficients with a
         # traced dt for the adaptive-dt rebuild; this eager build
-        # keeps the historical Python-float arithmetic bit-exact.)
+        # keeps the bit-exact Python-float arithmetic above.)
 
-        # Inverse local advection length scales for the CFL
-        # diagnostic (:func:`dnsjax.measurements.get_cfl`),
-        # per component (u, v, w); all three directions are
-        # uniform.  Uses the spectral-resolution spacing
-        # `$\Delta = L/n$`; switch to ``padded_res.nx_padded``
-        # / ``ny_padded`` / ``nz_padded`` for the
-        # dealiased-grid convention.
+        # Inverse local advection length scales for the CFL diagnostic
+        # (:func:`dnsjax.measurements.get_cfl`), per component (u, v,
+        # w); all three directions are uniform.  Uses the
+        # spectral-resolution spacing `$\Delta = L/n$`; switch to
+        # ``padded_res.nx_padded`` / ``ny_padded`` / ``nz_padded`` for
+        # the dealiased-grid convention.
         inv_vals = jnp.array(
             [
                 params.res.nx / params.geo.lx,
@@ -501,15 +497,12 @@ def _norm(
 def correct_divergence(state: Array, fourier_: Fourier) -> Array:
     r"""Project velocity onto the divergence-free subspace.
 
-    This is the **post-step** incompressibility projection.
-    The first projection happens inside :func:`_get_rhs`,
-    where the pressure Poisson solve removes the divergent
-    part of the nonlinear term before the Helmholtz step.
-    This second projection removes any residual divergence
-    accumulated during the corrector iterations.  It runs
-    *inside* the stepper's jit scope (:func:`_finalize_state`
-    via ``make_stepper``'s *finalize_fn*), fused with the
-    step's tail rather than as a separate per-step dispatch.
+    The **post-step** incompressibility projection.  The first
+    projection happens inside :func:`_get_rhs`, where the pressure
+    Poisson solve removes the divergent part of the nonlinear term
+    before the Helmholtz step; this second one removes any residual
+    divergence accumulated during the corrector iterations, fused into
+    the step's tail by :func:`_finalize_state`.
     """
     correction = -gradient(
         inverse_laplacian(
@@ -578,11 +571,9 @@ def build_triply_periodic_stepper(
     ``reset_ab2_kappa`` are the adaptive-dt hooks backed by
     ``_build_dt_leaves``).  ``step_cnab2`` and its measured variant
     are the CN/AB2 scheme (``step.scheme == "cnab2"``).  The post-step
-    divergence
-    projection + mean-mode zeroing (:func:`_finalize_state`) is
-    fused into every step via ``make_stepper``'s *finalize_fn*,
-    so the accepted state is already projected on return (no
-    separate per-step call).
+    divergence projection + mean-mode zeroing (:func:`_finalize_state`)
+    is fused into every step of both schemes, so the accepted state is
+    already projected on return (no separate per-step call).
     """
 
     def _step_scales(fourier_: Fourier, flow_: TriplyPeriodicFlow) -> tuple:
@@ -627,9 +618,7 @@ def build_triply_periodic_stepper(
         Returns ``(state_next, carry, error, num_c, aux)``: ``error`` and
         ``num_c`` are ``0`` -- triply-periodic needs no base-flow-coupling
         corrector, its Fourier ``y`` making that term non-stiff -- and
-        *aux* is empty.  The divergence projection
-        (:func:`_finalize_state`) is fused into the step, as for the
-        corrector scheme.
+        *aux* is empty.
         """
         return _step_cnab2_jit(state, carry, fourier, flow)
 

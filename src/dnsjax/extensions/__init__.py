@@ -42,29 +42,25 @@ class ParamExtension:
 
     ``name`` is the TOML section, the CLI prefix (``--name.field``),
     and the metadata key; ``relevant(system)`` decides whether the
-    section appears on a flow's surface (an irrelevant section is a
-    strict error, like any other irrelevant parameter), except for the
-    entry point that owns it, whose surfaces carry it on every flow
+    section appears on a flow's surface, except for the entry point
+    that owns it, whose surfaces carry it on every flow
     (``own_extensions`` of :func:`dnsjax.bootstrap.resolve_parameters`);
-    ``validate(values, params)`` runs with the global checks after
-    the final configuration layer -- unconditionally, so it must
-    itself reject a *configured* section on an unsupported system
-    (see :func:`validate_extensions`); ``trajectory_defining`` folds
-    the section into the resume trajectory comparison;
+    ``validate(values, params)`` runs with the global checks after the
+    final configuration layer, unconditionally (what a hook must
+    therefore do: :func:`validate_extensions`); ``trajectory_defining``
+    folds the section into the resume trajectory comparison;
     ``record_in_metadata`` includes the resolved section in snapshot
     metadata / sidecar params dumps while it is configured (so a dump
     records what the run uses, and a recorded section an installation
     does not register is known to have been in use:
     :func:`dnsjax.parameters.unregistered_sections`).  ``off_cadences``
-    names the
-    section's optional cadences that ``0`` switches off -- turned back
-    into unset by :func:`apply_extension_layer`, as
-    :data:`dnsjax.parameters.OFF_CADENCES` are by the core merge --
-    and ``reset_when_off`` makes a ``0`` there reset the **whole**
-    section to its defaults, for an all-or-none section whose other
-    knobs, inherited and impossible to unset, would otherwise fail its
-    "set together" check.  ``values`` is the live merged singleton
-    (analogous to the global ``params``).
+    names the section's optional cadences that ``0`` switches off --
+    turned back into unset by :func:`apply_extension_layer`, as
+    :data:`dnsjax.parameters.OFF_CADENCES` are by the core merge -- and
+    ``reset_when_off`` makes a ``0`` there reset the **whole** section
+    to its defaults, for an all-or-none section whose other knobs,
+    inherited and impossible to unset, would otherwise fail its "set
+    together" check.  ``values`` is the live merged singleton.
 
     ``configured(values)`` says whether the section is switched on;
     ``None`` means it only parameterizes the entry point that owns it.
@@ -253,13 +249,13 @@ class RunHooks:
     non-finite value, and the run aborts with it (exit code 3), as on a
     non-finite core diagnostic.
 
-    The fine print: the first iteration's :meth:`sample` sees the same
-    state :meth:`start` recorded (``it0``), so a cadence hook
-    gates on ``it > it0`` itself; :meth:`modify` returns the state to
-    step from and cannot report (an exception from any hook is an
-    ordinary traceback); under ``cnab2`` the carried nonlinear history
-    is not offered to :meth:`modify`, so a modified state steps with
-    the history of the unmodified one; :meth:`finish` receives the
+    The first iteration's :meth:`sample` sees the same state
+    :meth:`start` recorded (``it0``), so a cadence hook gates on
+    ``it > it0`` itself; :meth:`modify` returns the state to step from
+    and cannot report (an exception from any hook is an ordinary
+    traceback); under ``cnab2`` the carried nonlinear history is not
+    offered to :meth:`modify`, so a modified state steps with the
+    history of the unmodified one; :meth:`finish` receives the
     post-loop ``it`` (one past the last :meth:`modify`'s) and is
     skipped on a non-finite abort and on a termination signal, which
     flush unchecked and exit; and the step donates its input, so a

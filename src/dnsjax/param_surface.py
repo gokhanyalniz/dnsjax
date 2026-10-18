@@ -177,8 +177,8 @@ def build_surface_model(
     ``parameters.toml``.  Both are ``extra="forbid"`` throughout.
     *extensions* appends the given
     :class:`~dnsjax.extensions.ParamExtension` sections (each entry
-    point passes the sections it supports -- the production solver its
-    flow-relevant built-ins, an analysis CLI its own).
+    point passes the sections it supports -- the production solver the
+    registered ones relevant to the flow, an analysis CLI its own).
     """
     entries = surface_entries(spec)
     sections: dict[str, dict] = {}

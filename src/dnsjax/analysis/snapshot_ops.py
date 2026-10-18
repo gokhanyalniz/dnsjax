@@ -5,10 +5,9 @@ The differential operators (:func:`derivative`, :func:`gradient`,
 snapshot-native layout and basis returned by
 :func:`dnsjax.analysis.read_state` (``return_spectral=True``):
 ``(u_z, u_r, u_θ)`` for cylindrical/annular, ``(u_x, u_y, u_z)``
-otherwise.  Differentiation is exact -- ``× i k`` along Fourier axes
-(using the wavenumbers from ``spectral_coords``) and a finite-difference
-``D1`` along the wall-normal/radial grid axis -- and returns spectral
-fields.
+otherwise.  Differentiation is the exact ``× i k`` along Fourier axes
+(the wavenumbers from ``spectral_coords``) and a finite-difference ``D1``
+along the wall-normal/radial grid axis, and returns spectral fields.
 
 :func:`integrate` works on **physical** fields and ``physical_coords``
 (nonlinear integrands such as ``|u|²`` are formed in physical space;
@@ -19,12 +18,12 @@ axis.
 
 :func:`to_physical` / :func:`to_spectral` bridge the two spaces.
 
-Directions are named per geometry: ``"x"/"y"/"z"`` (cartesian),
-``"r"/"z"/"theta"`` (cylindrical/annular, ``z`` axial), ``"x"/"y"/"z"``
-(triply-periodic), unless the flow names its axes itself
+Directions are named per geometry: ``"x"/"y"/"z"`` (cartesian,
+triply-periodic), ``"r"/"z"/"theta"`` (cylindrical/annular, ``z``
+axial), unless the flow names its axes itself
 (:attr:`~dnsjax.analysis._core.GeometryInfo.name`).  Wall-normal
-derivatives/integrals require the full wall-normal grid -- do not
-subset ``wall_normal_points`` first.
+derivatives/integrals require the full wall-normal grid: do not subset
+``wall_normal_points`` first.
 
 A cylindrical flow bent along its axis carries an axial scale factor
 `$h(r, \theta)$` (:attr:`~dnsjax.analysis._core.GeometryInfo.metric`):

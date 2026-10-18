@@ -1,27 +1,24 @@
 r"""Convert a native-layout velocity field into a dnsjax snapshot.
 
-This is a **library** (not a CLI): a converter for a particular
-simulator imports it to pack a velocity field -- already arranged in
-dnsjax's **native** component/axis structure -- into dnsjax's
-single-file (tar-wrapped zarr3) snapshot format.  Every flow whose
-state is the three velocity components is accepted; one carrying more
-(``FlowSpec.n_components``) is refused.  Like
-:mod:`dnsjax.ic.random_field` it configures the global parameter
-singletons (one system per process) and calls
-``snapshot.save_snapshot``, but instead of *generating* a field it
-*packs a supplied one*.  Conversion runs single-device (``np = 1``);
-any external ``[streamwise, wall-normal, spanwise]`` -> native
-permutation and component mixing is the **caller's** responsibility,
-not this module's.
+A **library** (not a CLI): a converter for a particular simulator imports
+it to pack a velocity field, already arranged in dnsjax's **native**
+component/axis structure, into dnsjax's single-file (tar-wrapped zarr3)
+snapshot format.  Every flow whose state is the three velocity components
+is accepted; one carrying more (``FlowSpec.n_components``) is refused.  It
+configures the global parameter singletons (one system per process) and
+writes the supplied field with ``snapshot.save_snapshot``.  Conversion
+runs single-device (``np = 1``); any external
+``[streamwise, wall-normal, spanwise]`` -> native permutation and
+component mixing is the **caller's** responsibility.
 
 It is the *inbound* half of :mod:`dnsjax.analysis`, whose other members
-only read: it belongs here because it is the round trip's other
-direction, and because only ``src/`` is packaged -- a ``scripts/`` copy
-never reaches an installed ``dnsjax`` at all.  Unlike the JAX-free
-reading API it needs the **solver runtime** to build the state, but
-every JAX import is in-function, so *importing* this module stays
-NumPy-only and the package-level "``import dnsjax.analysis`` never
-imports JAX" guarantee is untouched (see :mod:`dnsjax.analysis._core`).
+only read: it belongs here as the round trip's other direction, and
+because only ``src/`` is packaged (a ``scripts/`` copy never reaches an
+installed ``dnsjax``).  Unlike the JAX-free reading API it needs the
+**solver runtime** to build the state, but every JAX import is
+in-function, so *importing* this module stays NumPy-only and the
+package-level "``import dnsjax.analysis`` never imports JAX" guarantee
+is untouched (:mod:`dnsjax.analysis._core`).
 
 Native input layout (physical and spectral)
 -------------------------------------------
@@ -70,11 +67,8 @@ triply-periodic        `$(u_x,u_y,u_z)$`        `$(k_y, k_z, k_x)$`
 cylindrical, annular   `$(u_z,u_r,u_\theta)$`   `$(r, m, k_z)$`
 =====================  =======================  ====================
 
-True shapes are ``(ny, nz-1, nx//2)`` (Cartesian, cylindrical,
-annular) and ``(ny-1, nz-1, nx//2)`` (triply-periodic).  In format 6 (the
-reader's floor) this table is literal: the on-disk chunk bytes *are*
-this native state (the solver's spectral layout, no transpose), in
-the physical component basis above.
+The on-disk chunk bytes *are* this state (the shapes: the
+:mod:`dnsjax.snapshot` module docstring, "On-disk layout").
 
 Parameter surface
 -----------------
@@ -108,13 +102,11 @@ Algorithm
 
 Perturbation or total field
 ---------------------------
-What a snapshot stores depends on the flow (``FlowSpec.total_field``):
-the perturbation `$\mathbf{u}'$` around the laminar base flow
-`$\mathbf{U}$` for the base-flow systems, where `$\mathbf{U}$` lives in
-the ``flow`` dataclass and is **not** part of the state; the **total**
-field for a force-driven one.  It performs **no** base-flow
-subtraction: the input must already be the stored quantity for the
-chosen system.
+The input must already be what a snapshot of the chosen system stores
+(``FlowSpec.total_field``): the perturbation `$\mathbf{u}'$` for a
+base-flow system, whose laminar `$\mathbf{U}$` lives in the ``flow``
+dataclass and is **not** part of the state, or the **total** field for a
+force-driven one.  This module performs **no** base-flow subtraction.
 
 Wall-normal grid
 ----------------
@@ -447,7 +439,7 @@ def configure_target(
     Must be called **once per process, before** ``to_spectral_state`` /
     ``write_snapshot`` (the geometry ``fourier`` singleton is built at
     import).  Mirrors the :mod:`dnsjax.ic.random_field` import-order
-    idiom (single device, CPU).
+    idiom; it configures a single CPU device.
 
     Parameters
     ----------
@@ -557,13 +549,14 @@ def to_spectral_state(
 ) -> Any:
     r"""Pack a native-layout velocity field into dnsjax's spectral state.
 
-    Requires ``configure_target`` to have been called.  ``field`` is in
-    dnsjax's native component/axis order at the native (unpadded)
-    resolution -- physical ``(3, ny, nz, nx)`` or spectral with the
-    Fourier axes transformed (see the module docstring).
+    Requires ``configure_target`` to have been called.
 
     Parameters
     ----------
+    field:
+        The velocity in dnsjax's native component/axis order at the
+        native (unpadded) resolution: physical ``(3, ny, nz, nx)``, or
+        spectral with the Fourier axes transformed (module docstring).
     space:
         ``"physical"`` or ``"spectral"`` (native layout, no 3/2 padding).
     input_norm:

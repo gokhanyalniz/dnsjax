@@ -16,10 +16,10 @@ the measured ledger: the :mod:`dnsjax.parameters` Design notes
 
 Everything here is reachable **only** when the flag is off, so
 ``annular.py`` imports this module lazily inside its flag-off branches
-and the default path never imports it at all.  The dependency runs the
-other way at module scope -- this module imports the shared `$H_k$`
-builders and types from ``annular.py`` -- which is why the import must
-be deferred there rather than declared at the top of that file.
+and the default path never imports it.  The dependency runs the other
+way at module scope -- this module imports the shared `$H_k$` builders
+and types from ``annular.py`` -- which is why the import must be
+deferred there.
 
 Contents: the Neumann-BC pressure Poisson operator in both storage
 backends (:func:`_build_Lk_band_gpu`, :func:`_build_Lk_dense_gpu`), the
@@ -121,15 +121,11 @@ def _hk_bands(
 ) -> list[Array]:
     r"""Assemble the banded `$H_k$` group (+, -, z) at *dt*.
 
-    Single-sources the band assembly for the setup-checked build, the
-    adaptive ``dt_max`` stability pre-check, and the jitted ``set_dt``
-    rebuild (:func:`.annular._build_dt_leaves`).  Pallas backend only.
-
-    The half-width is read back from the already-factored (and
-    ``dt``-independent) `$L_k$`, whose ``L`` factor is
-    ``(Nr, p, Nm, Nkz)`` -- a static shape, so this works inside
-    ``jit`` where a host-side measurement on the traced ``A_base``
-    could not.
+    As :func:`.cartesian._hk_bands` -- single-sourced for the
+    setup-checked build, the adaptive ``dt_max`` pre-check and the
+    jitted ``set_dt`` rebuild (:func:`.annular._build_dt_leaves`), the
+    half-width read back from the factored `$L_k$` (``L`` factor
+    ``(Nr, p, Nm, Nkz)``) -- for the legacy group; Pallas backend only.
     """
     m_s = fourier_.m[0, ..., None]
     kz2_s = fourier_.kz2[0, ..., None]
@@ -235,14 +231,10 @@ def derive_homogeneous_data(
     mean mode (where `$d_{\mathrm{wall}} = 0$`, so the correction
     vanishes regardless).
     """
-    # This run-once setup stays in the mode-outer (Nm, Nkz, Nr)
-    # layout: the influence-matrix einsums below operate on it and
-    # the results are transposed to field layout (Nr, Nm, Nkz) at
-    # the end.  ``.solve`` takes a mode-inner field, so each setup
-    # solve is wrapped (transpose in, transpose out) to keep this
-    # layout.  A natively mode-inner setup would drop the wrappers,
-    # but it would only relocate a one-time transpose (the hot path
-    # is mode-inner already).
+    # The mode-outer (Nm, Nkz, Nr) setup layout: each mode-inner
+    # ``.solve`` is wrapped by transposes, and the results go to field
+    # layout (Nr, Nm, Nkz) at the end (run once; why:
+    # ``CartesianFlow._derive_imm_homogeneous_data``).
     e_inner = (
         jnp.zeros(
             (Nm, Nkz, Nr),
@@ -379,18 +371,17 @@ def _imm_iteration_vp(
     m_sq = fourier_.m2
 
     # Batch the D1 derivatives for the divergence and the explicit
-    # Hk^- matvec (u_z included) into a single GEMM; only the
-    # newly solved pP needs a second D1 after the Poisson solve below.
-    # Stack y-leading (N_r, 7, ...) so the batched D1 GEMM (shared by
-    # the divergence and the Hk^- matvec below) contracts the leading
-    # wall-normal axis transpose-free; the component axis is 1.
+    # Hk^- matvec (u_z included) into a single GEMM, stacked y-leading
+    # (N_r, 7, ...) so it contracts the leading wall-normal axis
+    # transpose-free (component axis 1); only the newly solved pP needs
+    # a second D1 after the Poisson solve below.
     all_v = jnp.stack([up_n, um_n, uz_n, NLp_j, NLp_n, NLm_j, NLm_n], axis=1)
     dy_all = apply_y_matrix(flow_.D1, all_v, component_axis=1)
 
     # ``dnsjax.analysis`` mirrors this operator in physical
     # components; changing it here means changing
     # ``snapshot_ops.divergence`` and the transcription in
-    # ``tests/test_snapshot_export.py`` (``_solver_divergence``),
+    # ``tests/_snapshot_export.py`` (``solver_divergence``),
     # which pins the two together.
     div_n = (
         (dy_all[:, 0] + (m + 1) * inv_r * up_n) / 2
@@ -415,14 +406,13 @@ def _imm_iteration_vp(
     f_hat_P = f_hat.at[0].set(0.0).at[-1].set(0.0)
     pP = flow_.Lk_op.solve(f_hat_P)
 
-    # Stage 3: pressure gradient and explicit Hk^- matvec.  D1 of the
-    # velocity (u_+, u_-, u_z) was already formed above as dy_all[:3];
-    # only the newly solved pP needs a fresh D1.
-    # y-leading (N_r, 3, ...) Hk construction: the D2 GEMM and the
-    # reused D1_vel stay transpose-free (component axis 1); the solve
-    # takes this layout (component_axis=1) and we unstack.  inv_r/inv_r2
-    # get a trailing axis to broadcast over C; kz2/mean_mask are
-    # trailing-mode broadcasts (layout-invariant).
+    # Stage 3: pressure gradient and explicit Hk^- matvec, D1 of the
+    # velocity (u_+, u_-, u_z) reused from dy_all[:3].  y-leading
+    # (N_r, 3, ...) Hk construction: the D2 GEMM and the reused D1_vel
+    # stay transpose-free (component axis 1); the solve takes this
+    # layout (component_axis=1).  inv_r/inv_r2 get a trailing axis to
+    # broadcast over C; kz2/mean_mask are trailing-mode broadcasts
+    # (layout-invariant).
     vel_n_stack = jnp.stack([up_n, um_n, uz_n], axis=1)  # (N_r, 3, ...)
     D1_pP = apply_y_matrix(flow_.D1, pP)
     D1_vel = dy_all[:, :3]
@@ -492,11 +482,10 @@ def _imm_iteration_vp(
     up_new = up_new - ur_corr
     um_new = um_new - ur_corr
 
-    # Axial bulk blocking (shared with the default scheme:
-    # :func:`.annular._apply_bulk_correction`).  At the mean mode
-    # alpha = 0 and ikz = 0, so ``uz_arb`` already equals the
-    # uncorrected uz there; reading the bulk from it fuses the IMM and
-    # bulk corrections, which is why source and target differ.
+    # Axial bulk blocking, shared with the default scheme
+    # (:func:`.annular._apply_bulk_correction` and its uz_src / uz_new
+    # split): at the mean mode alpha = 0 and ikz = 0, so ``uz_arb``
+    # already equals the uncorrected uz.
     uz_new, aux = _apply_bulk_correction(
         uz_arb - ikz * q_corr, uz_arb, mean_mask, flow_
     )

@@ -33,17 +33,13 @@ with :func:`resolve_seed` instead, once it can.
 
 Production parsing is *surface-based* and two-pass:
 :func:`peek_run_context` scans the raw argv / ``parameters.toml`` (no
-pydantic) for the flow system (CLI ``--phys.system`` > TOML > resumed
-snapshot > model default), ``--help`` (with an optional flow
-positional: ``dnsjax --help pipe``), and ``--sample-toml``; then the
-per-flow surface model (:mod:`dnsjax.param_surface`) parses the CLI
-and validates the TOML strictly -- a parameter that does not apply to
-the selected flow is an error, aliased fields go by their public
-names, and per-flow defaults are materialized.  The flow-relevant
-extension sections (:mod:`dnsjax.extensions`) ride the same surface:
-each layer's extension overlay is applied to the extension singletons
-right after its core ``update_parameters`` call, snapshot layer
-included.
+pydantic) for the flow system, ``--help`` and ``--sample-toml``
+(:class:`RunContext`); then the per-flow surface model
+(:mod:`dnsjax.param_surface`) parses the CLI and validates the TOML
+strictly (:func:`resolve_parameters`).  The flow-relevant extension
+sections (:mod:`dnsjax.extensions`) ride the same surface: each
+layer's extension overlay is applied to the extension singletons right
+after its core ``update_parameters`` call, snapshot layer included.
 
 This module is JAX-free at import time (JAX is imported inside the
 configuration functions), so it is always safe to import first.
@@ -65,21 +61,20 @@ fatal-if-called reproduces the normal run's ``stats.dat`` and snapshot
 byte for byte.  Device selection loses nothing, because
 :func:`_apply_local_device_ids` does by hand the one thing
 ``initialize`` would have done: a launch under ``mpirun -np 1`` keeps
-exactly its devices, while a bare one -- which no source narrows --
-takes every visible device, which is what lets one process drive a
-whole multi-GPU node without MPI.
+exactly its devices, and a bare one takes every visible device (that
+docstring).
 
-**The coordinator port.**  The order of :data:`_PORT_VARS` is not
-cosmetic.  A *scheduler job id* is shared by every ``mpirun`` in the
-job, so seeding on it hands two concurrent launches -- the ensemble
-members of one allocation, launched together -- the same
-port, whereupon the second run's rank 0 connects to the first run's
-coordination service and is killed by it (``INTERNAL: wrong service
-incarnation``, then ``signal 6``; measured).  ``PMIX_NAMESPACE``
-identifies the *launch* and is published identically to every rank by
-every PMIx-based launcher (Open MPI 4 and 5, PRRTE, Flux, Slurm's PMIx
-plugin), so it comes first, and the job ids are the fallback for
-launchers that publish none.  That every rank agrees on it is the PMIx
+**The coordinator port.**  The order of :data:`_PORT_VARS` matters.  A
+*scheduler job id* is shared by every ``mpirun`` in the job, so seeding
+on it hands two concurrent launches -- the ensemble members of one
+allocation, launched together -- the same port, whereupon the second
+run's rank 0 connects to the first run's coordination service and is
+killed by it (``INTERNAL: wrong service incarnation``, then
+``signal 6``; measured).  ``PMIX_NAMESPACE`` identifies the *launch*
+and is published identically to every rank by every PMIx-based
+launcher (Open MPI 4 and 5, PRRTE, Flux, Slurm's PMIx plugin), so it
+comes first, and the job ids are the fallback for launchers that
+publish none.  That every rank agrees on it is the PMIx
 contract, and is measured: one namespace shared by four ranks on four
 *different* nodes of a scattered Open MPI 5.0.10 PBS job, and in every
 single-node job sampled.  The string (``prterun-<launch host>-<pid>@<n>``)
@@ -110,8 +105,7 @@ it, carry 5.x.
 
 **MPI collectives on CPU.**  Routing the cross-process collectives
 through MPI rather than gloo is the faster choice on a cluster and
-costs nothing to arrange, since a multi-device CPU run is one process
-per device and so under ``mpirun`` by definition.  Two conditions come
+costs nothing to arrange (the ``Distribution`` docstring).  Two conditions come
 with it.  Nothing may touch ``MPI_Init`` before XLA: XLA calls it
 unconditionally, so a process that had already initialized MPI
 aborts (Open MPI 4.1.6: ``mpi_init: invoked multiple times``).  And
@@ -123,20 +117,17 @@ only starts once a run has real work in flight, so the failure looks
 like a mesh or machine quirk rather than a race -- ``Communicator
 requested from a thread that is not the one MPI was initialized from``
 -- and it is fatal.  Reproduced at ``np0=4 x np1=4`` on 16 ranks and
-fixed there by the inline dispatch, which does not cost MPI its
+removed there by the inline dispatch, which does not cost MPI its
 advantage: 0.80 s/t against gloo's 1.14 (4 ranks on a 16-core
 machine, plane Couette `$32^3$`, interleaved), on top of gloo's own
 strong scaling there (1.39x on 2 ranks, 2.28x on 4).  Inline dispatch
-is not the whole fix, though: a program dispatched while an input is
-still being written goes to the pool all the same, and a program's
-collectives can run off the launching thread anyway, so
-:mod:`dnsjax.sharding` also opens every communicator the mesh uses as
-it builds the mesh (``sharding._warm_communicators``).  The choice is
-made per rank against that rank's own filesystem and reported by rank
-0 only, so the wrapper library has to be visible identically
-everywhere: a node that cannot see it picks gloo while its peers pick
-MPI, and the run hangs with nothing said.  Exporting
-``MPITRAMPOLINE_LIB`` in the job script is what guarantees that.
+alone does not keep every collective on that thread, so the mesh also
+opens its communicators as it is built (``sharding._warm_communicators``;
+the :mod:`dnsjax.sharding` Design notes, "Warming the MPI communicators").
+The choice is made per rank and reported by rank 0 only, so a node that
+cannot see the wrapper library picks gloo while its peers pick MPI, and
+the run hangs with nothing said (the remedy: the ``Distribution``
+docstring).
 
 **A distribution's Python.**  Some interpreter builds abort a
 multi-process run inside ``MPI_Init`` with ``free(): invalid pointer``
@@ -147,9 +138,7 @@ library's ``environ`` (a copy relocation: ``R_X86_64_COPY`` in
 wrapper deep-bound (``RTLD_DEEPBIND``), so Open MPI reads two
 environment arrays and frees a string it does not own.  The
 interpreters uv manages read ``environ`` through the global offset
-table and are unaffected, as is every gloo run; loading Open MPI
-before the interpreter starts (``LD_PRELOAD`` of ``libmpi.so.40``,
-exported to every rank) leaves one environment.  The user-facing check
+table and are unaffected, as is every gloo run.  The user-facing check
 and the ways round it: ``docs/cpu-collectives.md``.
 """
 
@@ -247,15 +236,14 @@ def configure_jax_platform(
     that only the production entry point needs.  Must be called
     *before* importing :mod:`dnsjax.sharding` or any geometry module.
 
-    The thread pool stays unpinned here, and that is **not** a second
-    opinion about threading: a solver run takes one thread per rank,
-    full stop (the ``Distribution`` docstring).  This is the path
-    offline scripts and in-process tests take, which is not a solver
-    run -- they are one process doing setup-shaped work with no ranks
-    to spread it over, and several of them deliberately hold several
-    forced CPU devices at once.  Do not add the production pinning
-    here; do not read its absence as licence to relax the production
-    one.
+    The thread pool stays unpinned here on purpose, and that is **not**
+    a second opinion about threading: a solver run takes one thread per
+    rank (the ``Distribution`` docstring), while this is the path of
+    offline scripts and in-process tests, one process doing
+    setup-shaped work with no ranks to spread it over, several of them
+    deliberately holding several forced CPU devices at once.  Do not
+    add the production pinning here, and do not read its absence as
+    licence to relax the production one.
 
     After this, :data:`sharding` reports the active device
     unambiguously (its banner reads the live device), and
@@ -614,12 +602,11 @@ def resolve_parameters(
     script whose surface carries its own section alone, e.g.
     ``[perturb]``, passes an explicit tuple); *own_extensions* names
     the entry point's own sections (e.g. the transient-growth
-    ``[tg]``), added to every flow's surface,
-    relevant or not, so a flow the entry point does not support meets
-    its own check rather than an unrecognized flag.  The bare
-    ``--help`` shows the sections that do not depend on the flow: an
-    explicit *extensions* tuple and *own_extensions*.  *prog* names
-    the program in help/usage/errors.
+    ``[tg]``), added to every flow's surface, relevant or not, so a
+    flow the entry point does not support meets its own check rather
+    than an unrecognized flag.  The bare ``--help`` shows the sections
+    that do not depend on the flow: an explicit *extensions* tuple and
+    *own_extensions*.  *prog* names the program in help/usage/errors.
 
     Ends with ``validate_parameters()`` and
     ``padded_res.set_padded_resolution(params)``, so ``params`` and
@@ -652,9 +639,8 @@ def resolve_parameters(
 
     if ctx.help_requested:
         spec = spec_for(ctx.help_system) if ctx.help_system else None
-        # Global help (no flow named) shows no *flow-relevant* section,
-        # only the flow-independent ones: an explicit tuple and the
-        # entry point's own sections (e.g. the transient-growth [tg]).
+        # Global help (no flow named) shows only the flow-independent
+        # sections (the docstring).
         help_exts = (
             _exts(spec.system)
             if spec is not None
@@ -732,12 +718,10 @@ def resolve_parameters(
     if snapshot_path is not None:
         # An unreadable snapshot (below ``MIN_FORMAT_VERSION``, or
         # malformed metadata) raises ``ValueError`` from deep inside
-        # ``snapshot_meta``.  Present it the way every other
-        # resume-time failure here is presented -- one ``<prog>:
-        # error:`` line -- rather than as a raw traceback; the message
-        # already names the version and the reason.  (A run naming no
-        # system meets the same refusal earlier, in
-        # ``peek_run_context``.)
+        # ``snapshot_meta``; like every other resume-time failure here
+        # it becomes one ``<prog>: error:`` line, not a traceback (the
+        # message names the version and the reason).  A run naming no
+        # system meets the same refusal earlier, in ``peek_run_context``.
         try:
             stored_system = _snapshot_system(snapshot_path)
         except ValueError as exc:
@@ -831,10 +815,9 @@ def resolve_parameters(
 # launcher, in priority order.  Open MPI is what dnsjax is launched
 # under in practice and the only family verified here; the other two
 # are the published contracts of the MPICH-derived stacks (Intel MPI
-# and Cray MPICH set the ``PMI_*`` pair, MVAPICH2 its own) and are
-# untested -- they cost four lines and are the difference between
-# "falls back to JAX's detection, which knows no MPI but Open MPI 4"
-# and "runs".
+# and Cray MPICH set the ``PMI_*`` pair, MVAPICH2 its own), untested;
+# without them such a launch falls back to JAX's detection, which
+# knows no MPI but Open MPI 4.
 _RANK_VARS: tuple[tuple[str, str, str, str], ...] = (
     (
         "OMPI_COMM_WORLD_RANK",
@@ -1091,9 +1074,8 @@ def _coordinator_host(ranks: _Ranks) -> str | None:
     3. The scheduler's node list: ``PBS_NODEFILE``, the SLURM node list
        (:func:`_slurm_host`), LSF's ``LSB_DJOB_HOSTFILE`` / ``LSB_HOSTS``,
        Grid Engine's ``PE_HOSTFILE``.  Each names the job's first node,
-       which is where ``mpirun`` runs and where rank 0 lands under the
-       default by-slot mapping, and every rank reads the same value
-       (Design notes: "The coordinator host").
+       rank 0's under the default by-slot mapping, and every rank reads
+       the same value (Design notes: "The coordinator host").
 
     Every source is pinned offline (``tests/test_bootstrap.py``).
     Loopback and ``PBS_NODEFILE`` have also met real launches (one
@@ -1131,7 +1113,7 @@ def _launcher_params() -> dict[str, object] | None:
     combination is what covers Open MPI 5, whose PRRTE launcher
     dropped the ``OMPI_MCA_orte_hnp_uri`` JAX's own plugin keys on
     while still publishing ``OMPI_COMM_WORLD_*``: the rank layout is
-    right there and only the address is genuinely missing.
+    there and only the address is missing.
 
     ``JAX_LOCAL_DEVICE_IDS`` is honoured rather than overwritten -- JAX
     reads it only along the detection path this bypasses, and the
@@ -1396,18 +1378,15 @@ def resolve_seed(label: str, flag: str, value: int | None) -> int:
     Returns *value* untouched when it is not ``None`` (a layer supplied
     it).  Otherwise process 0 draws from the OS entropy pool and the
     result is broadcast, so **every process ends up with the same
-    seed**: :mod:`dnsjax.ic.random_field` keys each mode's draw on
-    ``(seed, global mode index)`` and per-rank draws would assemble one
-    field out of unrelated streams -- divergence-free and correctly
-    normalized, but reproducible from no recorded seed at all.
+    seed** (why, and why the payload is two 31-bit words: the
+    :mod:`dnsjax.seeding` module docstring, "Width and cross-process
+    transport").
 
     The payload is ``[ok, high, low]`` in ``int32``: the seed as the two
-    31-bit words of :func:`dnsjax.seeding.split_seed` (exact whether or
-    not ``jax_enable_x64`` is on -- it follows ``res.double_precision``,
-    and an ``int64`` payload would be truncated in single precision),
-    behind a success flag.  A failure is broadcast rather than raised on
-    the spot so that **every** rank raises, instead of the peers
-    blocking forever in a collective process 0 has already left.
+    words of :func:`dnsjax.seeding.split_seed`, behind a success flag.
+    A failure is broadcast rather than raised on the spot so that
+    **every** rank raises, instead of the peers blocking forever in a
+    collective process 0 has already left.
 
     Must be called on every process, after :func:`configure_jax_runtime`
     and outside any main-process gate.  Raises ``SystemExit`` when no

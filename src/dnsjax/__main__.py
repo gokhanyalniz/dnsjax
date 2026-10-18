@@ -3,15 +3,11 @@
 
 Import order
 ------------
-JAX platform and distributed backend must be configured
-*before* importing any module that reads ``sharding`` or a
-geometry module, because those modules instantiate global
-singletons (``params``, ``derived_params``, ``sharding``,
-``fourier``) at import time.  This module enforces the
-constraint by keeping all setup in :func:`main` (via
-:mod:`dnsjax.bootstrap`) and deferring ``import jax`` and all
-flow-module imports until after CLI / TOML configuration is
-applied.
+The :mod:`dnsjax.bootstrap` order holds here (the parameters final and
+JAX configured before ``sharding`` or a geometry module builds its
+import-time singleton, ``sharding`` or ``fourier``): all setup runs in
+:func:`main`, and ``import jax`` and every flow-module import wait
+until the CLI / TOML configuration is applied.
 
 Execution phases
 ----------------
@@ -23,9 +19,8 @@ Execution phases
    and the ``python -m dnsjax`` guard target.
 
 2. **Main loop** (:func:`run`):
-   initialize velocity (a provided snapshot wins; otherwise an
-   in-process random / localized-rolls / laminar IC, with random
-   the default), then iterate:
+   initialize velocity (the start modes and their precedence: the
+   :class:`~dnsjax.parameters.Initiation` docstring), then iterate:
 
    - One step: the flow module's fused predictor + corrector
      (``predict_and_fully_correct``, iterative CN) or, under
@@ -37,26 +32,27 @@ Execution phases
    - Periodic diagnostic output (the flow module's ``get_stats``)
 
    The loop terminates when the elapsed simulation time
-   (``stop.max_sim_time``, counted from ``init.t0``), the
-   wall-clock time or the corrector divergence criterion is
-   reached, with ``stop.check_laminarization`` when ``E'``
-   falls below ``stop.laminarization_threshold``, or on a stop
-   request (``RUNNING`` deleted, or ``SIGUSR1``; "Run status"
-   below).  The wall-clock budget and the stop request are judged
-   at the ``outs.it_error_check`` cadence by all processes together
+   (``stop.max_sim_time``, counted from ``init.t0``), the wall-clock
+   time or the corrector divergence criterion (not under a fixed
+   ``step.corrector_iterations``) is reached, with
+   ``stop.check_laminarization`` when ``E'`` falls below
+   ``stop.laminarization_threshold``, or on a stop request (``RUNNING``
+   deleted, or ``SIGUSR1``; "Run status" below).  The wall-clock budget
+   and the stop request are judged at the ``outs.it_error_check``
+   cadence by all processes together
    (:meth:`~dnsjax.run_status.RunStatus.stop_flags`, one
    :meth:`~dnsjax.sharding.Sharding.any_process_each`): each process
    reads its own clock from its own start, and a budget running out
    between two processes' readings would otherwise send one into
-   another step's collectives while the other leaves the loop,
-   hanging both.  The corrector error and iteration counters stay on
-   the device; the error is synced to the host only every
+   another step's collectives while the other leaves the loop, hanging
+   both.  The corrector error and iteration counters stay on the
+   device; the error is synced to the host only every
    ``outs.it_error_check`` steps so that JAX async dispatch can
    pipeline steps.  What is synced is the device-side running
    **maximum** of the error since the previous sync, so a step that
    failed to converge between syncs is still seen -- divergence is
-   detected at most ``it_error_check`` steps late, never missed --
-   and the shutdown folds in the unsynced tail the same way.
+   detected at most ``it_error_check`` steps late, never missed -- and
+   the shutdown folds in the unsynced tail the same way.
 
 Diagnostic streams
 ------------------
@@ -68,13 +64,13 @@ buffered non-finite diagnostic aborts before a snapshot of the same
 broken state is written, and the ``.dat`` files stay consistent with
 each snapshot), and on a termination signal (``flush_all_buffers``,
 which calls the shared ``_flush_stats``).  Buffering avoids a
-host-device sync per sample; each flush is then ``fsync``-ed, so the
-rows are on disk immediately once the on-device buffer is flushed.
-``stats.dat`` (written by the main device, appended) has a header row
-of column names (``t`` plus the ``get_stats`` keys) followed by
-whitespace-aligned rows at ``stats_precision`` significant digits.
-The header is ``#``-commented (:func:`_write_dat_header`), so
-``numpy.loadtxt`` reads a stream with no extra flags.
+host-device sync per sample; each flush is ``fsync``-ed, so flushed
+rows are on disk at once.  ``stats.dat`` (written by the main device,
+appended) has a header row of column names (``t`` plus the
+``get_stats`` keys) followed by whitespace-aligned rows at
+``stats_precision`` significant digits.  The header is ``#``-commented
+(:func:`_write_dat_header`), so ``numpy.loadtxt`` reads a stream with
+no extra flags.
 
 Under ``phys.driving = "constant_bulk_velocity"`` or
 ``phys.block_mean_spanwise_velocity``, the last ``stats.dat`` columns
@@ -121,22 +117,19 @@ the pre-step time.  ``outs.it_error_check`` must not exceed
 
 A configured extension section can add a stream, or a modification
 of the state, of its own (``ParamExtension.runtime``; where in the
-loop each of its hooks runs: the :class:`dnsjax.extensions.RunHooks`
-docstring).  Its records are flushed, and checked for non-finite
-values, with the core streams; a state modification fires after
-every record of its iteration and immediately before the step, so
-every saved state precedes it.
+loop each of its hooks runs, and how its records are flushed and
+checked: the :class:`dnsjax.extensions.RunHooks` docstring).
 
-Every diagnostic is guarded against non-finite floats: each
-flushed buffer row (stats / steps / corrector) is scanned on the
-host, and the host-synced scalars -- the corrector error and
-``E'`` at the ``it_error_check`` cadence, plus the initial and
-final stats -- are checked directly.  A NaN or inf prints one
-``FATAL: non-finite ...`` line naming the quantity, flushes all
-streams unchecked (the offending rows are already on disk for
-post-mortem), skips the final snapshot (the state is non-finite;
-the last snapshot on disk is the post-mortem artefact), and exits
-with code **3**.  Detection lags the device by at most the flush /
+Every diagnostic is guarded against non-finite floats: each flushed
+buffer row (stats / steps / corrector) is scanned on the host, and the
+host-synced scalars -- the corrector error and ``E'`` at the
+``it_error_check`` cadence, the CFL the adaptive controller reads, and
+the initial and final stats -- are checked directly.  A NaN or inf
+prints one ``FATAL: non-finite ...`` line naming the quantity, flushes
+all streams unchecked (the offending rows are already on disk for
+post-mortem), skips the final snapshot (the state is non-finite; the
+last snapshot on disk is the post-mortem artefact), and exits with code
+**3**.  Detection lags the device by at most the flush /
 ``it_error_check`` cadence, preserving async dispatch.
 
 Snapshots and resume
@@ -145,54 +138,33 @@ Snapshots are named ``state{isnap}.tar`` (``isnap`` zero-padded to
 ``outs.snapshot_pad_width``), where ``isnap`` is a per-run counter
 (start ``init.isnap0``) bumped on every write by
 :func:`_save_numbered_snapshot`.  By default the IC is saved as
-``state00000.tar`` for any non-continuation start and the final
-state is saved on termination (both independent of
-``outs.it_snapshot``, deduped against a periodic write at the same
-``it``); the periodic save runs at the **top** of the loop so it
-shares the ``it_stats`` computation.  Each snapshot embeds the
-state's ``get_stats`` as ``_dnsjax_stats.json``
-(``outs.snapshot_embed_stats``).  Every snapshot write also
-flushes the buffered stats / steps / corrector rows to their
-``.dat`` files (``flush_all_buffers``), keeping them consistent
-with the snapshot.
+``state00000.tar`` for any non-continuation start and the final state
+is saved on termination (both independent of ``outs.it_snapshot``,
+deduped against a periodic write at the same ``it``); the periodic save
+runs at the **top** of the loop so it shares the ``it_stats``
+computation.  Each snapshot embeds the state's ``get_stats`` as
+``_dnsjax_stats.json`` (``outs.snapshot_embed_stats``).
 
-When ``init.snapshot`` points at a snapshot tar file (an
-uncompressed tar wrapping a zarr3 store; see
-:mod:`dnsjax.snapshot`), the parameters embedded in its metadata
-are merged in as a configuration layer above the code defaults but
-below ``parameters.toml`` and the CLI (``read_snapshot_params``,
-which lists what a resume never inherits).  The resume is a
-*continuation* (inherit ``t`` / ``it`` / ``isnap`` from the
-snapshot, do not re-save the IC) only when
-:func:`dnsjax.parameters.trajectory_defining_changes` is empty -- no
-Physics/Geometry/Resolution parameter, and nothing in a
-trajectory-defining extension section, was overridden to a value
-different from the snapshot's.
-Any such change starts a NEW trajectory (``t = it = isnap = 0``, IC
-re-saved as ``state00000.tar``) unless ``init.force_resume`` is set.
-A snapshot recording a parameter section nothing installed here
-registers (a plugin's, in use when it was written) is refused at
-startup unless ``init.force_resume`` is set, and the banner then names
-what is left out (:func:`dnsjax.parameters.unregistered_sections`).
-When the current wall-normal grid differs from the snapshot's,
-``_interpolate_if_needed`` interpolates the state at load time (see
-:mod:`dnsjax.fd` for the interpolation methods).
+A resume from ``init.snapshot`` (the format: :mod:`dnsjax.snapshot`)
+takes the snapshot's embedded parameters as a layer
+(:func:`dnsjax.bootstrap.resolve_parameters`; what it never inherits:
+:func:`dnsjax.parameters.read_snapshot_params`).  The
+:class:`~dnsjax.parameters.Initiation` docstring says when it continues
+the trajectory (``t`` / ``it`` / ``isnap`` inherited) or starts a NEW
+one, and when a recorded section nothing installed here registers
+refuses it; the banner names a section resumed past under
+``init.force_resume``.  When the current wall-normal grid differs from
+the snapshot's, ``_interpolate_if_needed`` interpolates the state at
+load time (the interpolation methods: :mod:`dnsjax.fd`).
 
 Run status
 ----------
 :func:`main` runs everything after the JAX setup inside a
-:class:`dnsjax.run_status.RunStatus`: ``RUNNING`` in the run directory
-while the run is live, then ``FINISHED`` (a stop criterion of the
-run's own), ``STOPPED`` (on request) or ``TERMINATED`` (a failure,
-with its reason).  A stop request takes the closing path the
-wall-clock budget takes: the final stats row, the extensions' final
-records and snapshot (``outs.snapshot_save_final``), then every
-stream flushed.
-Exit codes: 0 for ``FINISHED`` and ``STOPPED``; for ``TERMINATED``, 4
-when the corrector failed to converge (after the final snapshot, which
-is the post-mortem state), 3 for the non-finite guard, ``128 + n`` for
-signal ``n`` and 1 otherwise.  The files, the MPI rules and what no
-file can record: the :mod:`dnsjax.run_status` module docstring.
+:class:`dnsjax.run_status.RunStatus`, whose module docstring holds the
+status files, the exit codes, a stop request's closing path, the MPI
+rules and what no file can record.  A corrector that failed to
+converge exits 4 after the final snapshot, which is the post-mortem
+state.
 
 Benchmarking
 ------------
@@ -452,7 +424,7 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
     # --- Flow dispatch -------------------------------------------------------
     # Registry-driven: the flow spec names its runtime module
     # (``FlowSpec.flow_module``), so registering a spec is the whole
-    # dispatch story -- no per-system branch here.
+    # dispatch, with no per-system branch here.
 
     _spec = spec_for(params.phys.system)
     if _spec.flow_module is None:
@@ -463,10 +435,8 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
     _flow_mod = importlib.import_module(_spec.flow_module)
     get_perturbation_energy = _flow_mod.get_perturbation_energy
     get_stats = _flow_mod.get_stats
-    # Optional: the applied mean-mode driving, inferred from a state.
-    # Only flows that can apply one export it (see ``flow_spec``); it
-    # supplies both the extra ``stats.dat`` column names and the one row
-    # that has no step behind it.
+    # Optional: the applied mean-mode driving's column names and its
+    # ``t = t0`` row (``FlowSpec``).
     get_driving = getattr(_flow_mod, "get_driving", None)
     init_state = _flow_mod.init_state
     predict_and_fully_correct = _flow_mod.predict_and_fully_correct
@@ -479,27 +449,19 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
     reset_ab2_kappa = _flow_mod.reset_ab2_kappa
 
     # --- Component-basis boundary --------------------------------------------
-    # The cylindrical/annular solvers work in a decoupled basis
-    # (``u_± = u_r ± i u_θ``, and likewise for any further components a
-    # flow carries) that diagonalizes their implicit operators, while
-    # everything outside the time stepper -- snapshots, diagnostics,
-    # extension streams,
-    # initial conditions, the analysis package -- works in physical
-    # components.  These two maps are that boundary; a given state
-    # crosses it at most once and never crosses back (the physical
-    # form is a *view* built for the consumers and dropped, so no
-    # re-encode is needed).  Cartesian and triply-periodic flows have
-    # no such basis, hence the identity fallback.
+    # The cylindrical/annular solver basis meets the physical components
+    # here (the boundary: ``_base.to_pm_basis``; the exported pair and
+    # the identity fallback: ``FlowSpec``).  A given state crosses it at
+    # most once and never crosses back: the physical form is a *view*
+    # built for the consumers and dropped, so nothing is re-encoded.
     def _identity_basis(state):
         return state
 
-    # The fallback is correct for a flow with no solver basis, but it
-    # is also indistinguishable from a flow that *has* one and forgot
-    # to re-export the pair -- which would feed the stepper a physical
-    # state with no error, only wrong answers.  The cylindrical and
-    # annular geometries always carry one (every flow on them, whatever
-    # else it carries -- the geometry lists span them), so require it
-    # there and let the fallback serve the rest.
+    # The fallback cannot tell a flow with no solver basis from one that
+    # forgot to re-export the pair, whose physical state would step with
+    # no error, only wrong answers.  Every flow on the cylindrical and
+    # annular geometries carries one (the geometry lists span them), so
+    # require it there and let the fallback serve the rest.
     _needs_basis = params.phys.system in (
         *cylindrical_systems,
         *annular_systems,
@@ -537,13 +499,10 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
     # --- Initial condition ---------------------------------------------------
     from .snapshot_meta import is_snapshot_file
 
-    # Start-mode precedence: a provided snapshot file wins over every
-    # in-process mode; then start_from_laminar, then localized_rolls,
-    # then random_field (the default).  A *continuation* resume (dnsjax
-    # snapshot with unchanged trajectory params) inherits t/it/isnap and
-    # does not re-save the IC; every other start is a fresh trajectory:
-    # isnap begins at init.isnap0 and the IC is saved as state00000.tar
-    # (see the IC-save block below).
+    # The start modes in the precedence of the ``Initiation`` docstring.
+    # A *continuation* resume inherits t/it/isnap and does not re-save
+    # the IC; every other start saves it (the IC-save block below), its
+    # isnap from init.isnap0, or 0 for a new trajectory off a snapshot.
     resumed_continuation: bool = False
     # Whether a snapshot's stored solver-carried fields may replace the
     # re-derived ones (no trajectory-defining change; see below).
@@ -571,10 +530,7 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
         state, t_snap, it_snap = load_snapshot(params.init.snapshot)
         meta = read_metadata(params.init.snapshot)
 
-        # Continuation vs new trajectory: any override of a Physics /
-        # Geometry / Resolution parameter to a value different from the
-        # snapshot's starts a new trajectory (reset t/it/isnap) unless
-        # init.force_resume is set.
+        # Continuation vs new trajectory (the ``Initiation`` docstring).
         changes = trajectory_defining_changes(meta["params"])
         carry_restorable = not changes
         if changes and not params.init.force_resume:
@@ -612,10 +568,9 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
                 jnp,
             )
     elif params.init.snapshot is not None:
-        # A path was given but it is not a dnsjax snapshot.  Refusing
-        # here is deliberate: falling through to an in-process mode
-        # would start a run that computes something the user never
-        # asked for (a typo'd path is the common case).
+        # A path that is not a dnsjax snapshot is refused on purpose,
+        # never fallen through (the ``Initiation`` docstring says why; a
+        # typo'd path is the common case).
         if Path(params.init.snapshot).exists():
             why = (
                 "is not a dnsjax snapshot file: expected an uncompressed "
@@ -629,9 +584,9 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
         # Laminar / closed-form base state (snapshot is None here).
         state = init_state()
     elif params.init.localized_rolls:
-        # In-process deterministic localized-rolls ("spot") IC (no
-        # snapshot file). The flow dispatch above already built the
-        # geometry ``fourier`` singleton this consumes.
+        # In-process deterministic localized-rolls ("spot") IC; like the
+        # random IC below, it consumes the geometry ``fourier`` singleton
+        # the flow dispatch above built.
         from .ic.localized_rolls import generate_localized_rolls
 
         state = generate_localized_rolls(
@@ -646,9 +601,7 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
             f"wavelength={params.init.localized_rolls_wavelength}."
         )
     elif random_ic_selected():
-        # In-process random divergence-free IC -- the default start mode
-        # (no snapshot file). The flow dispatch above already built the
-        # geometry ``fourier`` singleton this consumes.
+        # In-process random divergence-free IC, the default start mode.
         from .ic.random_field import generate_random_state
 
         state = generate_random_state(
@@ -707,10 +660,8 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
     isnap: int = isnap_start
     last_saved_it: int | None = None
 
-    # The solver state's trailing slots past the flow's physical
-    # components: state the pass carries across steps (the pipe
-    # family's spin-quad differences), invisible to every consumer and
-    # dropped by ``from_solver_basis``.  None elsewhere.
+    # The solver state's carried slots past its physical components
+    # (``CARRIED_FIELDS``, ``FlowSpec``), absent on most flows.
     n_physical: int = _spec.n_components
     carried_names: tuple[str, ...] = tuple(
         getattr(_flow_mod, "CARRIED_FIELDS", ())
@@ -784,14 +735,10 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
     # the run must not end on it -- see the ``TimeStepping`` docstring.
     fixed_corrector: bool = params.step.corrector_iterations > 0
 
-    # Adaptive CFL controller (``step.adaptive``): the loop reads the
-    # measured total CFL every ``cfl_cadence`` steps, asks
-    # ``propose_dt`` for the next step, and on an accepted change
-    # rebuilds the dt-dependent flow leaves on device (``set_dt``) and
-    # mutates the live ``params.step.dt`` (time accounting, snapshot
-    # embedding, and resume all read it).  ``kappa_pending`` tracks
-    # the one step that runs with the AB2 ratio ``dt_new/dt_old``
-    # before ``reset_ab2_kappa`` restores 1 (see ``TimeStepping``).
+    # Adaptive CFL controller (``step.adaptive``; the module docstring,
+    # "Diagnostic streams"): ``kappa_pending`` tracks the one step that
+    # runs with the AB2 ratio ``dt_new/dt_old`` before
+    # ``reset_ab2_kappa`` restores 1 (see ``TimeStepping``).
     adaptive: bool = params.step.adaptive
     cfl_cadence: int = params.step.cfl_cadence
     kappa_pending: bool = False
@@ -806,13 +753,10 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
     laminarized: bool = False
     e_prime_host: float = float("inf")
 
-    # Corrector counters stay on the device and accumulate lazily;
-    # they are synced to the host only every ``it_error_check``
-    # steps (error) or at shutdown (totals), so the host can keep
-    # enqueueing steps ahead of the device (JAX async dispatch).  The
-    # error is carried as its running maximum since the last sync
-    # (``jnp.maximum`` also carries a NaN through), so the check
-    # judges every step in between rather than the one it lands on.
+    # Corrector counters stay on the device (the module docstring,
+    # "Execution phases"): the error's running maximum syncs every
+    # ``it_error_check`` steps (``jnp.maximum`` also carries a NaN
+    # through), the totals at shutdown.
     it_error_check: int = params.outs.it_error_check
     c_sum = jnp.zeros((), dtype=jnp.int32)
     err_max_dev = jnp.zeros((), dtype=sharding.float_type)
@@ -885,12 +829,9 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
     state = to_solver_basis(state)
 
     # A resumed state's carried slots: ``to_solver_basis`` derived them
-    # from the velocity, which is the right thing for any other start.
-    # A snapshot that stored the solver's own (``carry/``) continues the
-    # trajectory exactly with them instead -- but only the trajectory
-    # it was written on: any trajectory-defining change (a ``geo.lz`` or
-    # ``geo.m0`` override rescales what each stored mode means, a
-    # ``res`` one re-grids) re-derives them, and
+    # from the velocity; the snapshot's own (``carry/``) replace them
+    # only when no trajectory-defining parameter changed (why: the
+    # :mod:`dnsjax.snapshot` docstring, "Solver-carried fields"), and
     # :func:`dnsjax.snapshot.load_snapshot_carry` re-checks the grid.
     if params.init.snapshot is not None and state.shape[0] > n_physical:
         from .snapshot import load_snapshot_carry
@@ -1011,10 +952,8 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
             _write_dat_header(steps_file, ["t"] + steps_names, steps_col_width)
 
     # --- Corrector buffer setup ----------------------------------------
-    # Records the corrector iteration count ``c`` and final error every
-    # ``it_corrector`` steps; both are already returned by every step
-    # (no measured stepper variant needed).  Same buffering / format as
-    # the stats and steps streams.
+    # ``corrector.dat`` (the module docstring): every step returns ``c``
+    # and the error, so it needs no measured stepper variant.
     measure_corrector: bool = params.outs.it_corrector is not None
     if measure_corrector:
         corr_names = ["c", "error"]
@@ -1053,10 +992,9 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
     def flush_all_buffers(check: bool = True) -> None:
         """Flush every buffered diagnostic stream to disk and reset it.
 
-        Called at shutdown, before every snapshot write, after the
-        first (JIT-heavy) step, and on a termination signal, so the
-        ``.dat`` files stay consistent with the snapshots and survive
-        an interruption.  The disk write is main-device only; the
+        Called at the flush points the module docstring lists
+        ("Diagnostic streams") but a full buffer, which the loop flushes
+        per stream.  The disk write is main-device only; the
         index / timestamp-list reset runs on all ranks (matching the
         in-loop fill-flush) so the ranks stay in lockstep.  With
         *check* (the default) the flushed rows are scanned for
@@ -1124,15 +1062,14 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
     def _abort_non_finite(reason: str) -> None:
         """Abort the run on a non-finite (NaN/inf) diagnostic value.
 
-        Prints one FATAL line, flushes every stream unchecked (the
-        offending rows are already on disk from the checked flush that
-        found them), and exits with code 3.  Deliberately writes no
-        final snapshot -- the state is non-finite; the last snapshot on
-        disk is the post-mortem artefact.  Buffer-scan aborts fire on
+        Prints the FATAL line, flushes every stream unchecked and exits
+        with code 3, writing no final snapshot (why: the module
+        docstring, "Diagnostic streams").  Buffer-scan aborts fire on
         the main process only (flushes are main-device-gated) and rely
         on the launcher to tear down the peers, like
         ``sharding.exit``; the scalar-guard aborts (corrector error,
-        ``E'``, initial/final stats) fire identically on every rank.
+        ``E'``, CFL, initial/final stats) fire identically on every
+        rank.
         """
         status.note(reason)
         sharding.print(f"FATAL: {reason}; aborting.")
@@ -1207,9 +1144,9 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
         # Physical view of u^n, built at most once per iteration and
         # shared by every full-field consumer below (the component-basis
         # boundary; an extension stream converts its own extracted
-        # columns instead, which are far smaller than the field).  ``None`` on
-        # an ordinary step, and the identity on the geometries whose
-        # solver basis *is* the physical one.
+        # columns instead, far smaller than the field).  ``None`` on an
+        # ordinary step, and the identity on the geometries whose solver
+        # basis *is* the physical one.
         do_stats = (
             params.outs.it_stats is not None
             and it % params.outs.it_stats == 0
@@ -1231,7 +1168,7 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
             else None
         )
 
-        # Periodic diagnostic output -> GPU buffer
+        # Periodic diagnostic output -> device buffer
         if do_stats:
             # ``last_driving`` is the driving applied by the step that
             # produced this state (the previous iteration's), which is
@@ -1272,10 +1209,8 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
         if do_snapshot:
             # ``stats`` was computed above for this same state.
             snap_stats = stats if do_stats else get_stats(state_phys)
-            # Flush first (checked; also keeps the .dat files
-            # consistent with this snapshot): a buffered non-finite
-            # diagnostic must abort before a snapshot of the same
-            # broken state is written.
+            # Flush first, checked: a buffered non-finite row aborts
+            # before this snapshot is written (the module docstring).
             flush_all_buffers()
             isnap = _save_numbered_snapshot(
                 state_phys, t, it, snap_stats, isnap, _carried(state)
@@ -1290,10 +1225,9 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
         # to the step's peak allocation for nothing.
         state_phys = None
 
-        # Extension modifications of the state, after every record of
-        # this iteration and immediately before the step, so every
-        # saved state precedes them (a resumed continuation never
-        # applies one twice).
+        # Extension modifications (``RunHooks.modify``), immediately
+        # before the step: every saved state precedes them, so a resumed
+        # continuation never applies one twice.
         for hooks in run_hooks:
             state = hooks.modify(it, state, t)
 
@@ -1308,7 +1242,7 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
         # CN/AB2 self-start: take the first step with the
         # iterative-CN corrector (it needs no RHS history and is not
         # advective-CFL bound), then switch to CN/AB2 with the
-        # ``rhs_prev`` history seeded from ``u^0`` below.
+        # ``rhs_prev`` history the priming call above seeded at ``u^0``.
         if is_cnab2 and it > params.init.it0:
             if do_measure:
                 (
@@ -1360,7 +1294,7 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
                 if bad is not None:
                     _abort_non_finite(bad)
 
-        # Corrector diagnostic -> GPU buffer: this step's iteration
+        # Corrector diagnostic -> device buffer: this step's iteration
         # count and final error, timestamped at the pre-step time.
         if measure_corrector and it % params.outs.it_corrector == 0:
             corr_buffer = corr_buffer.at[corr_idx].set(
@@ -1394,12 +1328,10 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
         t += params.step.dt
         it += 1
 
-        # Adaptive-dt controller: consume the CFL measured at the
-        # completed step's pre-step state (that step is booked
-        # at the old dt above) and, on an accepted proposal, switch
-        # the live dt -- an on-device leaf rebuild (``set_dt``), no
-        # recompilation.  ``reset_ab2_kappa`` restores the AB2 ratio
-        # to 1 after exactly one step at the new dt.
+        # Adaptive-dt controller (the module docstring): consume the CFL
+        # measured at the completed step's pre-step state (that step is
+        # booked at the old dt above) and, on an accepted proposal,
+        # switch the live dt.
         if adaptive:
             changed = False
             if do_cfl:
@@ -1450,14 +1382,12 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
                 )
 
             if check_laminarization:
-                # Laminarization (relaminarization) trigger: stop once
-                # the perturbation kinetic energy E' falls below the
-                # threshold.  ``state`` here is the fully updated
-                # post-step field (the periodic divergence correction
-                # is fused into the step itself), so this is a second
-                # state and gets its own single crossing of the
-                # component-basis boundary -- the top-of-loop view was
-                # of u^n and is long gone.
+                # Laminarization trigger (the stop set up above).
+                # ``state`` here is the fully updated post-step field
+                # (the periodic divergence correction is fused into the
+                # step itself), a second state with its own single
+                # crossing of the component-basis boundary: the
+                # top-of-loop view was of u^n and is gone.
                 e_prime_host = float(_perturbation_energy_solver(state))
                 if not math.isfinite(e_prime_host):
                     # A NaN would otherwise compare False against the
@@ -1562,9 +1492,7 @@ def run(wall_time_start: int, status: RunStatus) -> Outcome:
         and it > params.init.it0
         and it != last_saved_it
     ):
-        # Flush first (checked; also keeps the .dat files consistent
-        # with this snapshot): buffered non-finite rows abort before
-        # the write.
+        # Flush first, checked, as before a periodic snapshot.
         flush_all_buffers()
         isnap = _save_numbered_snapshot(
             state_phys, t, it, stats, isnap, _carried(state)
@@ -1883,9 +1811,9 @@ def _print_banner(setup: ResolvedSetup, seed_notes: list[str]) -> None:
     for note in seed_notes:
         print(note, flush=True)
     # The full resolved-parameter dump is provenance for a real run
-    # but pure repeated noise when a test launches the solver dozens
-    # of times (the launching command already carries every argument
-    # and a failing test dumps the child output).  The mpirun smoke
+    # but repeated noise when a test launches the solver dozens of
+    # times (the launching command already carries every argument and
+    # a failing test dumps the child output).  The mpirun smoke
     # tests set ``DNSJAX_QUIET_STARTUP=1`` (``tests/_live.run_live``)
     # to skip it; a normal run is unaffected.
     if os.environ.get("DNSJAX_QUIET_STARTUP") != "1":

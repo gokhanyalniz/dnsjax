@@ -7,79 +7,20 @@ concrete-value branching are used directly.
 
 Functions
 ---------
-fornberg_weights:
-    Fornberg's (1998) algorithm for FD weights on non-uniform
-    grids.
-build_diff_matrices:
-    Assemble first- and second-derivative matrices D1, D2.
-matrix_half_bandwidth:
-    Measured half-bandwidth of an assembled operator, ignoring the
-    rows a caller overwrites with boundary rows (the banded-storage
-    size).
-stencil_decomposition:
-    Split a square banded operator into its interior band and the two
-    near-wall corner blocks (the storage of a stencil application).
-build_integration_weights:
-    Composite polynomial quadrature weights on a non-uniform grid
-    (``fd_order``-accurate; the general-purpose rule).
-axis_augmented_weights:
-    The full-disc radial rule on a grid without `$r = 0$`:
-    :func:`build_integration_weights` on the axis-augmented grid,
-    correct for either parity.
-positive_quadrature:
-    The highest-order rule up to a requested order whose weights are
-    all positive (a definite discrete norm); the solver's weights on
-    every non-CGL grid.
-clenshaw_curtis_weights:
-    Clenshaw-Curtis quadrature weights on a CGL grid (spectral for
-    smooth integrands; used by the full-CGL Cartesian and annular
-    grids, where it is exact for smooth base/mean profiles).
-cgl_radial_quadrature_weights:
-    Parity-specific spectral radial quadrature ``(w_even, w_odd)`` for
-    a cylindrical half-CGL / rigged-CGL grid (Clenshaw-Curtis with
-    weight ``r`` on ``[0,1]``, baking in the ``r=0`` reconstruction;
-    positive). The pipe's spectral analogue of the Cartesian/annular
-    CC; ``None`` for a non-CGL grid (caller uses the composite rule).
-local_grid_spacing:
-    Per-node local grid spacing (the CFL advective length scale).
-tanh_two_sided_grid:
-    Symmetric tanh-stretched wall-normal grid on [-1, 1]
-    (clustering at both walls).
-tanh_one_sided_grid:
-    One-sided tanh-stretched radial grid on (0, 1] (clustering
-    at the wall `$r = 1$`, no point at `$r = 0$`).
-grid_nodes:
-    The nodes each geometry's grid builder produces, in float64
-    and without its operators (any resolution, any run precision).
-axis_extrapolation_weights:
-    Weights to evaluate a radial field at the axis `$r = 0$` (even /
-    odd / one-sided); a shared JAX-free leaf.  On a detected radial
-    CGL grid the even path is the exact parity-constrained spectral
-    fit (`$x = r^2$` Chebyshev), elsewhere the local Fornberg rule.
-is_cgl_grid:
-    Detect whether a grid is Chebyshev-Gauss-Lobatto.
-cgl_axis_gap:
-    Detect a cylindrical radial CGL grid's axis gap (0 = half-CGL,
-    1 = rigged-CGL, None = neither).
-chebyshev_interpolation_matrix:
-    CGL-to-CGL interpolation via Chebyshev coefficient
-    truncation/extension.
-cgl_parity_interpolation_matrices:
-    Spectral parity interpolation between cylindrical radial CGL
-    grids (half / rigged, any combination); returns
-    ``(T_even, T_odd)``.
-local_interpolation_matrix:
-    General interpolation via local ``fd_order+1``-point Fornberg
-    stencils (bounded Lebesgue constant on any monotone grid; the
-    fallback for custom / tanh / undetected grids).
-build_interpolation_matrix:
-    Dispatcher selecting the optimal interpolation method.
-
-Cylindrical wall-normal interpolation on resume takes the spectral
-parity path (``cgl_parity_interpolation_matrices``) for the detected
-half-CGL / rigged-CGL grids (machine precision); custom / tanh /
-undetected grids use the local ``fd_order`` stencil
-(``local_interpolation_matrix``).
+Derivatives and their storage (:func:`fornberg_weights`,
+:func:`build_diff_matrices`, :func:`matrix_half_bandwidth`,
+:func:`stencil_decomposition`); quadrature (the general-purpose
+composite :func:`build_integration_weights`,
+:func:`axis_augmented_weights`, :func:`positive_quadrature`,
+:func:`clenshaw_curtis_weights`, :func:`cgl_radial_quadrature_weights`);
+grids (:func:`local_grid_spacing`, :func:`tanh_two_sided_grid`,
+:func:`tanh_one_sided_grid`, :func:`grid_nodes`) and their detection
+(:func:`is_cgl_grid`, :func:`cgl_axis_gap`); the value at the axis
+(:func:`axis_extrapolation_weights`); interpolation
+(:func:`build_interpolation_matrix`, dispatching by
+:func:`interpolation_route` to :func:`chebyshev_interpolation_matrix`,
+:func:`cgl_parity_interpolation_matrices` or the fallback
+:func:`local_interpolation_matrix`).
 
 Design notes
 ------------
@@ -209,11 +150,10 @@ def matrix_half_bandwidth(A: ndarray, skip_rows: Sequence[int] = ()) -> int:
     row 1), but not for a composed operator: `$D_1 D_1$` reaches
     `$p + \lceil p/2 \rceil - 1$` (11 at ``fd_order = 8``).  No
     shipped configuration composes an operator, so every caller
-    measures ``fd_order`` back.  Measuring rather than assuming is
-    kept because the assumption is the kind that fails silently: an
-    under-sized band truncates entries instead of erroring, and the
-    same ``p`` is reused to band neighbouring operators
-    (e.g. `$D_1 + 1/r$`).
+    measures ``fd_order`` back.  Measuring rather than assuming guards
+    a silent failure: an under-sized band truncates entries instead of
+    erroring, and the same ``p`` is reused to band neighbouring
+    operators (e.g. `$D_1 + 1/r$`).
 
     Parameters
     ----------
@@ -447,7 +387,8 @@ def positive_quadrature(
     ``lambda q: build_integration_weights(y, q)``); this returns
     ``(weights, q)`` for the largest `$q \le p$` whose weights are all
     strictly positive, so the discrete energy norm, the corrector norm
-    and the bulk-velocity constraint built on them stay definite.
+    and the bulk-velocity constraint built on them stay definite.  The
+    solver's weights on every non-CGL grid come from it.
 
     Why it is needed: a high-order interpolatory stencil can carry
     negative weights, on near-uniform spacing (as the 9-point
@@ -652,10 +593,9 @@ def local_grid_spacing(nodes: ndarray) -> ndarray:
     (`$\Delta_0 = y_1 - y_0$`,
     `$\Delta_{N-1} = y_{N-1} - y_{N-2}$`).  Used as the local
     advection length scale of the CFL diagnostic
-    (:mod:`dnsjax.measurements`).  Note the one-sided end
-    convention also applies to the innermost node of the radial
-    CGL grid, whose distance to the (excluded) axis
-    `$r = 0$` is not considered.
+    (:mod:`dnsjax.measurements`).  The one-sided end convention also
+    applies to the innermost node of the radial CGL grid, whose
+    distance to the (excluded) axis `$r = 0$` is not considered.
 
     Parameters
     ----------
@@ -1057,9 +997,8 @@ def cgl_radial_quadrature_weights(
     **spectrally** exact for a smooth field of parity `$\sigma$` in
     `$r$`.  It completes the positive-half values to the full CGL grid
     by parity -- with the *local* ``order`` rule for the rigged axis
-    node: the fully exact rule is uniquely pinned and provably
-    non-positive at large `$N_r$`, see
-    :func:`_cgl_completion_matrices` -- and applies the full-grid
+    node, the fully exact one being non-positive at large `$N_r$`
+    (:func:`_cgl_completion_matrices`) -- and applies the full-grid
     Clenshaw-Curtis rule with weight `$r$` on `$[0, 1]$`
     (:func:`_halfrange_r_moments`):
     `$w_\sigma = E_\sigma^{\mathsf T} W$`.  Both vectors are strictly
@@ -1101,13 +1040,11 @@ def cgl_parity_interpolation_matrices(
     `$\sigma = \pm 1$` under `$r \to -r$`:
 
     1.  **Complete** the source positive half to its full CGL grid
-        (`$2 N_r^{\mathrm{old}} + g_{\mathrm{old}}$` points): the
-        negative half by parity `$f(-r) = \sigma f(r)$`, and (only
-        when `$g_{\mathrm{old}} = 1$`) the dropped axis centre node
-        by the exact spectral parity-constrained fit
-        (:func:`_spectral_even_axis_weights`) for `$\sigma = +1$`
-        (an even field is smooth in `$r^2$`) or `$0$` for
-        `$\sigma = -1$` (an odd field vanishes at the axis).
+        (`$2 N_r^{\mathrm{old}} + g_{\mathrm{old}}$` points) by parity
+        `$f(-r) = \sigma f(r)$`, and (only when
+        `$g_{\mathrm{old}} = 1$`) the dropped axis centre node by the
+        exact spectral fit (:func:`_cgl_completion_matrices` with
+        ``order=None``).
     2.  **Interpolate** full CGL `$\to$` full CGL by Chebyshev
         coefficients (:func:`chebyshev_interpolation_matrix`).
     3.  **Restrict** to the target's positive half (drop its centre
@@ -1121,11 +1058,10 @@ def cgl_parity_interpolation_matrices(
     `$\sigma = (-1)^{m+1}$`.
 
     Every ingredient is spectral (the axis reconstruction included),
-    so this is machine-precision for a resolved field --
-    vastly better than the ``fd_order``
-    :func:`local_interpolation_matrix` on these grids.  Used for
-    every half/rigged cylindrical resume; ``local`` handles only
-    custom / tanh / undetected grids.
+    so this is machine-precision for a resolved field -- vastly better
+    than the ``fd_order`` :func:`local_interpolation_matrix` on these
+    grids.  Used for every half/rigged cylindrical resume; ``local``
+    handles only custom / tanh / undetected grids.
 
     Parameters
     ----------
@@ -1165,20 +1101,18 @@ def local_interpolation_matrix(
     to the grid ends near the boundaries -- and the 0-th Fornberg
     weights (:func:`fornberg_weights`) evaluate the local Lagrange
     interpolant.  Unlike a single global degree-``N-1`` polynomial
-    fit, the local stencil has a bounded Lebesgue constant on *any*
-    monotone grid (``O(10)`` vs the global fit's ``1e9``--``1e15`` on
-    the lopsided radial CGL point set, which blows the field up on
-    resume).  Accuracy is ``order``-th order.  It is the fallback for
-    custom / tanh / undetected grids; the spectral
+    fit, which blows the field up on resume
+    (Design notes: "No global fit in `$r$`"), the local stencil has a
+    bounded Lebesgue constant (``O(10)``) on *any* monotone grid.
+    Accuracy is ``order``-th order.  It is the fallback for custom /
+    tanh / undetected grids; the spectral
     :func:`cgl_parity_interpolation_matrices` handles the detected
     half-CGL / rigged-CGL cylindrical grids.
 
     Near the axis a target below the innermost source node (e.g. a
     rigged-to-half radial-grid change on resume of a custom grid) is
     extrapolated by the same one-sided window; the short (sub-spacing)
-    reach keeps the Lebesgue constant ``O(10)``.  (Detected radial CGL
-    grids take the spectral :func:`cgl_parity_interpolation_matrices`
-    path, not this fallback.)
+    reach keeps the Lebesgue constant ``O(10)``.
 
     Parameters
     ----------
@@ -1252,26 +1186,21 @@ def build_interpolation_matrix(
 ) -> ndarray | tuple[ndarray, ndarray]:
     r"""Select the optimal interpolation method for the grids.
 
-    - Cartesian with both grids CGL: Chebyshev coefficient
-      truncation/extension (spectrally optimal).
-    - Cylindrical with both grids detected radial CGL grids
-      (half-CGL or rigged-CGL, :func:`cgl_axis_gap`): the spectral
-      parity interpolation :func:`cgl_parity_interpolation_matrices`,
-      returning an ``(T_even, T_odd)`` **tuple** applied per
-      azimuthal mode by the caller (near machine precision, vs
-      ``order`` for the local stencil).
-    - Annular with both grids CGL on `$[r_1, r_2]$`: Chebyshev
-      coefficient truncation/extension after affine mapping to
-      `$[-1, 1]$` (spectrally optimal; the Chebyshev matrix is
-      domain-independent, so the same path applies under the affine
-      map).
-    - Otherwise (custom / tanh / undetected grid): local
-      ``order``-stencil Fornberg interpolation
+    The choice is :func:`interpolation_route`'s (which grids take which
+    route), which a caller may name in its log:
+
+    - ``"chebyshev"``: Chebyshev coefficient truncation/extension
+      (spectrally optimal; the Chebyshev matrix is domain-independent,
+      so the same path applies to annular grids on `$[r_1, r_2]$`
+      under the affine map to `$[-1, 1]$`).
+    - ``"parity"``: the spectral parity interpolation
+      :func:`cgl_parity_interpolation_matrices`, returning an
+      ``(T_even, T_odd)`` **tuple** applied per azimuthal mode by the
+      caller (near machine precision, vs ``order`` for the local
+      stencil).
+    - ``"stencil"``: local ``order``-stencil Fornberg interpolation
       (:func:`local_interpolation_matrix`), whose Lebesgue constant
       stays bounded on any monotone grid.
-
-    The choice is :func:`interpolation_route`'s, which a caller may
-    name in its log.
 
     Parameters
     ----------
@@ -1297,13 +1226,8 @@ def build_interpolation_matrix(
     y_new = np.asarray(y_new, dtype=np.float64)
     route = interpolation_route(y_old, y_new, geometry)
     if route == "chebyshev":
-        # The Chebyshev matrix depends on the point counts alone (it
-        # works in coefficient space), so the annular affine map costs
-        # nothing.
         return chebyshev_interpolation_matrix(len(y_old), len(y_new))
     if route == "parity":
-        # An (T_even, T_odd) pair, applied per azimuthal mode by the
-        # caller.
         return cgl_parity_interpolation_matrices(
             len(y_old), len(y_new), cgl_axis_gap(y_old), cgl_axis_gap(y_new)
         )

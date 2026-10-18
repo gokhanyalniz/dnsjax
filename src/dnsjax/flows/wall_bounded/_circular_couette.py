@@ -5,16 +5,14 @@ Every flow with the circular-Couette base profile
 flow, whatever its control parameters: Taylor-Couette takes
 `$(\mathrm{Re}_1, \mathrm{Re}_2, \eta)$`, and another
 parameterization (a plugin's) differs only in its spec, which lands in
-the same ``derived_params.ccf_A``/``ccf_B``/radii.  Everything such
-flow modules share therefore lives here once: the flow dataclass (base
-flow, curl, laminar constants), the transient-growth
-``frozen_profile_flow`` builder, and the jitted diagnostics.
-
-The per-system modules (:mod:`.taylor_couette`, and any other) remain
-the user-facing surface -- their docstrings carry the per-flow
-conventions -- and each instantiates its own ``flow`` singleton of the
-class defined here, plus the thin wrappers that bind it for
-``__main__`` and the analysis drivers.
+the same ``derived_params.ccf_A``/``ccf_B``/radii.  What such flow
+modules share lives here once: the flow dataclass (base flow, curl,
+laminar constants), the transient-growth ``frozen_profile_flow``
+builder and the jitted diagnostics.  Each per-system module
+(:mod:`.taylor_couette`, or a plugin's) stays the user-facing surface,
+its docstring carrying the per-flow conventions, and binds its own
+``flow`` singleton of this class with thin wrappers for ``__main__``
+and the analysis drivers.
 """
 
 from dataclasses import dataclass
@@ -175,10 +173,9 @@ def _get_stats_jit(
 ) -> dict[str, Array]:
     r"""Compute diagnostic statistics.
 
-    *state* is the **physical** `$(u_z, u_r, u_\theta)$` view of the
-    field -- diagnostics sit outside the solver, whose working basis
-    is the decoupled `$(u_z, u_+, u_-)$` one (the ``annular.py``
-    module docstring).
+    *state* is the **physical** `$(u_z, u_r, u_\theta)$` view:
+    diagnostics sit outside the solver, which works in the decoupled
+    `$(u_z, u_+, u_-)$` basis (the ``annular.py`` module docstring).
 
     - `$E'$`: perturbation kinetic energy (annular norm with radial
       Jacobian `$r$`).

@@ -1,16 +1,16 @@
 r"""Static pressure of a Cartesian wall-bounded field, on the IMM closure.
 
 The default `$v$`-`$\omega_y$` step (``res.consistent_imm``) never forms
-a pressure, and the legacy primitive step forms the
+a pressure, and the legacy primitive step works with the
 Crank-Nicolson-weighted Bernoulli one.  This module recovers the
 instantaneous **static** pressure of a stored field from the field
 alone, consistently with the discrete dynamics that produced it: the
 perturbation pressure `$p'$` of one state, which the reduced-resolution
 snapshots of :mod:`dnsjax.lowres` store, or the difference pressure
 `$\Delta p$` of two states (:func:`convective_nonlinear` with a
-reference), which a lockstep two-state run takes for its difference
-pressure.  All solve the same problem with a different
-source; nothing below reads the source except as a source.
+reference), which a lockstep two-state run takes.  Both solve the same
+problem with a different source, which nothing below reads except as
+a source.
 
 Interior equation
 -----------------
@@ -146,12 +146,9 @@ class PoissonPressure:
     run (its cost: the module's Design notes).
 
     A **pytree**, like the flow and solver dataclasses it is built
-    from, and for the same reason: every field is a global
-    multi-device array, so the jitted callers must take it as an
-    *argument*.  A ``static_argnames`` entry would embed the factors
-    in the trace as constants -- which works on one process and
-    raises ``Closing over jax.Array that spans non-addressable (non
-    process local) devices`` on the first multi-process run.
+    from: every field is a global multi-device array, so the jitted
+    callers take it as an *argument*, never as a ``static_argnames``
+    entry (why: ``sharding.register_dataclass_pytree``).
     """
 
     op: DenseJAXSolver | PerModeBandedPallasOperator
@@ -187,7 +184,7 @@ class PoissonPressure:
             `$\hat{\mathcal{N}}_y$`, the wall-normal component of the
             nonlinear term, same shape.  Needed only for the wall
             closure's residual.
-        flow\_, fourier\_:
+        flow_, fourier_:
             The geometry singletons.
 
         Returns
@@ -342,12 +339,11 @@ def convective_nonlinear(
     \hat{\mathbf{u}}'^{(1)}$` and `$\Delta\hat v\,\partial_y
     \mathbf{U}_b$`.  That is, to round-off, the sum of the six
     convective pieces a difference-energy budget splits it into,
-    without the split: 30 transforms, and each
-    half of a component's pair goes back on its own, behind its own
-    barrier, so one gradient set is live at a time -- the peak the
-    pressure of a reduced difference snapshot sets (Design notes:
-    "Cost").
-    Without a reference the program is the single-state one above, unchanged.
+    without the split: 30 transforms, and each half of a component's
+    pair goes back on its own, behind its own barrier, so one gradient
+    set is live at a time -- the peak the pressure of a reduced
+    difference snapshot sets (Design notes: "Cost").  Without a
+    reference the program is the single-state one above, unchanged.
 
     Returns ``(n_hat, div_n)``: `$\hat{\mathcal{N}}$`
     ``(3, Ny, Nkz, Nkx)`` and the solver's own discrete divergence of

@@ -49,29 +49,28 @@ handler flushes the streams and exits ``128 + n``; during setup, before
 any stream exists, ``SIGTERM`` exits the same way with nothing to
 flush, so ``TERMINATED`` is written from the moment ``RUNNING`` is).
 A scheduler sends ``SIGKILL`` soon after ``SIGTERM`` (SLURM's
-``KillWait``, often 30 s), which may not leave time for a final
-snapshot.  For a job time
-limit, set ``stop.max_wall_time`` below it, or ask the scheduler for
-an early ``SIGUSR1`` (SLURM: ``--signal=USR1@<seconds>``).
+``KillWait``, often 30 s), which may not leave time for a final snapshot.
+For a job time limit, set ``stop.max_wall_time`` below it, or ask the
+scheduler for an early ``SIGUSR1`` (SLURM: ``--signal=USR1@<seconds>``).
 
 The files
 ---------
 Each file is ``key: value`` lines, its own event's timestamp first
 (ISO 8601, local time with its offset).  The keys that follow are
-``started``, ``reason``, ``exit`` and ``snapshot``.  The last is the
-newest snapshot this run wrote, the point a resume continues from.
+``started``, ``reason``, ``exit`` and ``snapshot``, the newest
+snapshot this run wrote (the point a resume continues from).
 ``RUNNING`` instead carries what identifies the live run: ``host``,
 ``pid``, ``boot`` (the kernel boot id, where there is one),
 ``processes`` and ``job`` (``SLURM_JOB_ID``, when set).
 
-Process 0 writes ``RUNNING``, ``FINISHED`` and ``STOPPED``.  It records
+Process 0 writes ``RUNNING``, ``FINISHED`` and ``STOPPED``, and records
 every abnormal end in ``TERMINATED``.  Another process appends a block
-of its own (with a ``process`` line) only for an uncaught exception.
-That is the one end it may live to record while process 0 sits in a
-collective until it is killed.  Every write is complete or absent: a
-whole file goes through a ``.partial`` rename, and ``TERMINATED``
-blocks are appended and ``fsync``-ed.  An end file is written before
-``RUNNING`` is removed, so the directory always holds one status file.
+of its own (with a ``process`` line) only for an uncaught exception,
+the one end it may live to record while process 0 sits in a collective
+until it is killed.  Every write is complete or absent: a whole file
+goes through a ``.partial`` rename, and ``TERMINATED`` blocks are
+appended and ``fsync``-ed.  An end file is written before ``RUNNING``
+is removed, so the directory always holds one status file.
 
 A start removes the ``FINISHED``, ``STOPPED`` or ``TERMINATED`` of an
 earlier segment.  It refuses, on every process and touching no file,
@@ -104,16 +103,16 @@ this machine since this boot.
 
 **What the poll costs.**  One process pays a ``stat`` of ``RUNNING``
 per ``outs.it_error_check`` steps and no collective.  Several pay one
-gather of three ``int32`` there, where only a ``stop.max_wall_time``
-run paid one (of one ``int32``) before.  It sits at the host sync the
-corrector-error check already makes, so asynchronous dispatch loses
-nothing more.  Measured on CPU, two processes on one AMD Ryzen 7 PRO
-7840U over the MPI collectives, as the mean of 500 calls after 20
-warm-up ones: 0.30 ms for the three-flag gather, against 0.21 ms for
-the one-flag gather.  At the default cadence that is 0.03 ms per step:
-under 1 % of a step even for a `$16 \times 33 \times 16$` plane
-Couette box (a few ms per step there), and a smaller share wherever a
-step takes longer.
+gather of three ``int32`` there; without the request, only a
+``stop.max_wall_time`` run would gather, one ``int32``.  It sits at the
+host sync the corrector-error check already makes, so asynchronous
+dispatch loses nothing more.  Measured on CPU, two processes on one AMD
+Ryzen 7 PRO 7840U over the MPI collectives, as the mean of 500 calls
+after 20 warm-up ones: 0.30 ms for the three-flag gather, against
+0.21 ms for the one-flag gather.  At the default cadence that is
+0.03 ms per step: under 1 % of a step even for a `$16 \times 33 \times 16$`
+plane Couette box (a few ms per step there), and a smaller share
+wherever a step takes longer.
 
 **Why SIGUSR1 restarts system calls.**  A process-directed signal can
 be delivered to any thread that does not block it, an XLA or MPI
@@ -353,8 +352,8 @@ class RunStatus:
     multi-process run, so every process enters at the same point) and
     writes the new one; leaving writes the end file from
     :attr:`outcome`, or ``TERMINATED`` when an exception (a
-    ``SystemExit`` included) is leaving, which it re-raises.  The
-    module docstring is the contract.
+    ``SystemExit`` included, unless its code is 0 or ``None``) is
+    leaving, which it re-raises.  The module docstring is the contract.
     """
 
     def __init__(

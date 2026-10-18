@@ -319,10 +319,9 @@ def internalize_stored(
             if internal is None and (section, public) in global_keys:
                 internal = public
             if internal is None and (section, public) in spec.deferred_map:
-                # Known and deliberately refused for this flow: passed
-                # through so a snapshot older than the deferral stays
-                # resumable (the docstring; ``externalize`` never
-                # records a deferred field, so only those reach here).
+                # A deferred key passes through (the docstring);
+                # ``externalize`` never records one, so only a snapshot
+                # older than the deferral reaches here.
                 internal = public
             if internal is None:
                 if section != "solver":

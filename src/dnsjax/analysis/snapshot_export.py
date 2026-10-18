@@ -2,8 +2,7 @@ r"""Read a dnsjax snapshot into NumPy arrays (no JAX, no zarr3).
 
 :func:`read_state` opens a single-file snapshot and returns the
 velocity field in physical and/or spectral space (in the native axis
-layout -- the on-disk bytes are the solver's spectral layout, and
-nothing is ever transposed), the matching coordinate arrays, and the
+layout, never transposed), the matching coordinate arrays, and the
 embedded parameters and stats.  It reads the **least data possible**:
 only the requested velocity components and, for wall-bounded
 snapshots, only the requested wall-normal slabs are pulled off disk.
@@ -102,15 +101,14 @@ def read_state(
         (``FlowSpec.components`` names them).
     wall_normal_points:
         Optional list/array of wall-normal coordinate *values*.  The
-        nearest unique grid points are selected (de-duplicated, sorted)
-        and only that slice of the field and the corresponding
-        wall-normal grid are returned.  For wall-bounded snapshots only
-        those slabs are read from disk (minimal I/O) and the subset
-        applies to both physical and spectral output.  For
-        triply-periodic snapshots the full ``k_y`` axis is read and
-        transformed first, then the physical ``y`` axis is sliced
-        (spectral output keeps the full ``k_y`` -- its wall-normal axis
-        is a Fourier axis, not a grid).
+        nearest grid points are selected (de-duplicated, sorted), and
+        only that slice of the field and of the wall-normal grid is
+        returned.  For wall-bounded snapshots only those slabs are read
+        from disk (minimal I/O) and the subset applies to both physical
+        and spectral output.  For triply-periodic snapshots the full
+        ``k_y`` axis is read and transformed first, then the physical
+        ``y`` axis is sliced (spectral output keeps the full ``k_y``:
+        its wall-normal axis is a Fourier axis, not a grid).
 
     Returns
     -------
@@ -163,14 +161,11 @@ def read_pressure(
 ) -> StateData:
     r"""Read a reduced-resolution snapshot's static pressure.
 
-    The ``pressure/`` member :mod:`dnsjax.lowres` writes beside the
-    state under ``lowres.pressure`` (plane Couette and plane
-    Poiseuille): the periodic static pressure perturbation `$p'$` -- the
-    mean pressure gradient is the driving, in ``stats.dat`` -- with the
-    `$(0, 0)$` mode's gauge set to zero at the upper wall, or a
-    pressure another writer stores in the same container (a difference
-    `$\Delta p$`).  The snapshot's metadata ``pressure`` entry says
-    which.
+    The ``pressure/`` member (the :mod:`dnsjax.lowres` module docstring,
+    "What a file holds"): the periodic static pressure perturbation
+    `$p'$` -- the mean pressure gradient is the driving, in
+    ``stats.dat`` -- or a difference `$\Delta p$`, as the metadata
+    ``pressure`` entry states.
 
     Same arguments and same :class:`StateData` as :func:`read_state`,
     with the one scalar as the only component (``physical == (p,)``).

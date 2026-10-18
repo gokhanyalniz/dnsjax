@@ -8,9 +8,8 @@ leading slots of the state and the carried slots after them (a flow
 evolving more components brings its own stepping): the pseudo-spectral
 RHS, the FFT-free base-flow coupling, the `$u_r$`-`$\omega_r$`
 influence-matrix pass, the predictor / corrector / norm and the stepper
-factory.  They are written once here and parametrized by the flow
-dataclass, whose operators, grids, parity classes and band families all
-stay in the geometry modules.
+factory, parametrized by the flow dataclass, whose operators, grids,
+parity classes and band families all stay in the geometry modules.
 
 This module imports **neither** geometry: the type names in the
 signatures below exist only under ``TYPE_CHECKING`` (hence
@@ -53,8 +52,7 @@ pipe            749 ms              275 ms
 
 The solve cost is **geometry-independent to 1.5 %**, so the whole spread is
 non-solve.  Subtracting the isolated solve from ``_imm_iteration`` does not
-give the non-solve work: the isolated timing over-counts the fused one, and the
-difference goes negative in the Cartesian row.
+give the non-solve work: the isolated timing over-counts the fused one.
 
 The annulus is the control that attributes the rest, since it
 shares every curvilinear cost (`$u_\pm$` basis crossings, the
@@ -85,16 +83,13 @@ The promotion is also bit-identical to the split form, since
 `$(w + 0i)(a + bi)$` evaluates the zero cross-terms exactly.
 
 **Wall differences on the iterate.**  The two differences are taken on the
-iterate, not lagged to `$t^n$`, because the lag can go unstable.  What the
-sums do not cancel is
-`$(L_{s+}^{-1} - L_{s-}^{-1})\,d$`: the two spin families differ by `$4m/r^2$`
-in `$m_{\mathrm{eff}}^2$` against a Helmholtz scale `$1/(c\nu\Delta t)$`, so
-the leftover is small only while `$\nu/\Delta r$` is.  Lagged, it is computed
-from the state and feeds the next step's wall data, closing a growth loop
-**across time steps**, where nothing damps or observes it.  Measured on
-``pipe`` (`$32^2$` transverse modes, `$l_z = 5$`, `$\Delta t = 0.01$`, random
-IC of amplitude 0.1), lagged against iterated, with a legacy-path control
-clean in every row:
+iterate, not lagged to `$t^n$`, because the lag can go unstable: lagged, the
+leftover the sums do not cancel feeds the next step's wall data and closes a
+growth loop **across time steps**, where nothing damps or observes it (the
+mechanism: :func:`_imm_iteration_vw`, "Why the iterate and not `$t^n$`").
+Measured on ``pipe`` (`$32^2$` transverse modes, `$l_z = 5$`,
+`$\Delta t = 0.01$`, random IC of amplitude 0.1), lagged against iterated,
+with a legacy-path control clean in every row:
 
 - `$\mathrm{Re} = 1$` / `$n_r = 32$`: lagged non-finite at
   `$t = 0.37$`; iterated decays monotonically to 1.7e-4 over 100
@@ -214,11 +209,9 @@ def mean_driving(state: Array, flow_: CylindricalFlow) -> dict[str, Array]:
     :mod:`dnsjax.ic.mean_mode` derives it).  Holding the bulk fixed
     therefore applies exactly `$-\Pi_z = -2\nu\tau_z$` -- the same
     number :func:`_apply_bulk_correction` applies, up to the time
-    discretization, under the same key and sign.
-
-    Used for the ``t = t0`` ``stats.dat`` row, which has no step behind
-    it (:mod:`dnsjax.__main__`); every other row reports the value the
-    corrector applied.
+    discretization, under the same key and sign.  It serves the flow's
+    ``get_driving`` (:class:`~dnsjax.flow_spec.FlowSpec`: the ``t = t0``
+    row).
     """
     if params.phys.driving != "constant_bulk_velocity":
         return {}
@@ -281,22 +274,16 @@ def _curl_fn(
 ) -> Array:
     r"""Spectral curl in cylindrical coordinates.
 
-    Input/output in `$(u_z, u_r, u_\theta)$` representation.
-    All operations are spectral multiplications (`$im$`,
-    `$ik_z$`), diagonal scalings (`$1/r$`), and FD
-    matrix-vector products (`$D_1$`).  Radial derivatives use
-    the parity-reduced `$D_1$`: the common
-    `$D_{1,\mathrm{pos}}$` part plus the ghost correction
-    signed by each field's parity (`$(-1)^m$` for `$u_z$`,
-    `$(-1)^{m+1}$` for `$u_\theta$`).
+    Input/output in `$(u_z, u_r, u_\theta)$` representation: spectral
+    multiplications (`$im$`, `$ik_z$`), diagonal scalings (`$1/r$`) and
+    FD matrix-vector products (`$D_1$`).  Radial derivatives use the
+    parity-reduced `$D_1$`: the common `$D_{1,\mathrm{pos}}$` part plus
+    the ghost correction signed by each field's parity (`$(-1)^m$` for
+    `$u_z$`, `$(-1)^{m+1}$` for `$u_\theta$`).
 
     .. math::
-        \omega_r = \frac{im}{r}\,u_z - ik_z\,u_\theta
-
-    .. math::
-        \omega_\theta = ik_z\,u_r - D_1\,u_z
-
-    .. math::
+        \omega_r = \frac{im}{r}\,u_z - ik_z\,u_\theta, \quad
+        \omega_\theta = ik_z\,u_r - D_1\,u_z, \quad
         \omega_z = D_1\,u_\theta + \frac{1}{r}\,u_\theta
                  - \frac{im}{r}\,u_r
     """
@@ -337,30 +324,24 @@ def _l_bf(
 ) -> Array:
     r"""Linear base-flow coupling (FFT-free), in `$(u_z, u_+, u_-)$`.
 
-    Mirrors :func:`_get_rhs_core`'s conversion to the `$(u_z, u_r,
-    u_\theta)$` triad (the cross products are defined on the
-    physical triad), but evaluates only the two *linear* base-flow
-    cross-product terms (:func:`base_flow_coupling`) -- no Fourier
-    transform (the base flow is a radial profile, and
-    `$\boldsymbol{\omega}'$` is the spectral :func:`_curl_fn`; that
-    curl is the same subexpression ``get_rhs`` builds, so evaluating
-    both at one state costs one curl -- XLA CSE, see
-    ``_cnab2_lbf_core``).  The pure self-advection
+    The Cartesian :func:`~.cartesian._l_bf` on the physical
+    `$(u_z, u_r, u_\theta)$` triad the cross products are defined on:
+    the state is converted as :func:`_get_rhs_core` converts it, and
+    only the two *linear* base-flow cross-product terms
+    (:func:`base_flow_coupling` of the radial base-flow profiles and the
+    spectral :func:`_curl_fn`) are evaluated -- no Fourier transform.
+    That curl is the same subexpression ``get_rhs`` builds, so
+    evaluating both at one state costs one curl (XLA CSE, see
+    ``_cnab2_lbf_core``).  As there, the CN/AB2 scheme makes this term,
+    with its stiff radial derivative on the wall-clustered grid,
+    implicit while the pure self-advection
     `$\mathbf{u}' \times \boldsymbol{\omega}' =
-    \text{get\_rhs} - \text{\_l\_bf}$` stays explicit; this term (with
-    its stiff radial derivative on the wall-clustered grid) is made
-    implicit by the CN/AB2 scheme -- see ``step_cnab2`` in
-    :mod:`dnsjax.timestep`.
-
-    With ``params.step.implicit_mean_coupling`` (default on) the
-    *instantaneous mean-flow* coupling is folded in by adding the
-    `$m = k_z = 0$` mean profiles of the `$(u_z, u_r, u_\theta)$`
-    state and of `$\boldsymbol{\omega}'$` (the curl being linear and
-    mode-diagonal, the mean of the curl *is* the curl of the mean)
-    onto the base-flow profiles -- FFT-free
-    (``extract_mean_mode`` is a ``psum``); see the Cartesian
-    ``_l_bf`` and the ``TimeStepping`` docstring in
-    :mod:`dnsjax.parameters`.
+    \text{get\_rhs} - \text{\_l\_bf}$` stays explicit (``step_cnab2``
+    in :mod:`dnsjax.timestep`), and with
+    ``params.step.implicit_mean_coupling`` (default on) the
+    *instantaneous mean-flow* coupling is folded in, FFT-free, by adding
+    the `$m = k_z = 0$` mean profiles of the `$(u_z, u_r, u_\theta)$`
+    state and of `$\boldsymbol{\omega}'$` onto the base-flow profiles.
     """
     state_rthz = from_pm_basis(state)
 
@@ -368,9 +349,7 @@ def _l_bf(
     base = flow_.base_flow
     curl_base = flow_.curl_base_flow
     if params.step.implicit_mean_coupling:
-        # One collective for the pair: this runs once per corrector
-        # iteration under cnab2 / the split corrector, and the psum is
-        # latency-bound (:func:`extract_mean_modes`).
+        # One collective for the pair, as in ``cartesian._l_bf``.
         mean_u, mean_om = extract_mean_modes(state_rthz, omega)
         base = base + mean_u[:, :, None, None]
         curl_base = curl_base + mean_om[:, :, None, None]
@@ -398,9 +377,8 @@ def _get_rhs_core(
 ) -> Array | tuple[Array, dict[str, Array]]:
     r"""Evaluate the nonlinear RHS in `$(u_z, u_+, u_-)$` form.
 
-    1. Convert `$(u_z, u_+, u_-) \to (u_z, u_r, u_\theta)$` -- the
-       real FFTs need components that are individually
-       Hermitian-symmetric, which `$u_\pm$` are not, so the
+    1. Convert `$(u_z, u_+, u_-) \to (u_z, u_r, u_\theta)$` for the
+       real FFTs (the ``cylindrical`` module docstring), so the
        physical-space fields (and the *measure_fn* CFL) are always
        the physical triad.
     2. Compute the rotational-form nonlinear term via
@@ -498,7 +476,7 @@ def _parity_y_matvec(
 
     The ghost term is added to the first `$g$` rows sliced off and
     concatenated back with the rest, not scattered in with
-    ``.at[:g].add``: on the stencil path that scatter held one extra
+    ``.at[:g].add``: on the stencil path that scatter holds one extra
     spectral field at the step's peak (+1.2 % of the pipe step's
     temporaries, measured at ``16 x 33 x 16`` and ``32 x 97 x 64``);
     the concatenation holds none, and trims the GEMM path's peak too.
@@ -601,8 +579,8 @@ def column_differences(
     """:func:`kinematic_differences` of solver-basis mode columns.
 
     ``(K, 3, N_r)`` in, ``(K, N_CARRIED, N_r)`` out: the carried-slot
-    contribution of mode columns injected into a state (a forcing
-    kick's, say).
+    contribution of mode columns injected into a state (by an
+    extension, say).
     """
     field_ = jnp.moveaxis(columns, 0, -1)[..., None]  # (3, N_r, K, 1)
     diff = kinematic_differences(field_, fourier_, flow_)
@@ -696,7 +674,7 @@ def _imm_iteration_vw(
     fit, whose sharper near-axis stencils amplified the loop), so it
     cannot be iterated at all.
 
-    The fix is to evolve the *spin combinations*, which diagonalize
+    So the pipe evolves the *spin combinations*, which diagonalize
     that coupling exactly -- the same trick `$u_\pm = u_r \pm i
     u_\theta$` already plays for the primitive scheme.  With
     `$\Phi_\pm := (\Delta\mathbf{u})_\pm$` and
@@ -717,22 +695,21 @@ def _imm_iteration_vw(
         \Phi = \tfrac12(\Phi_+ + \Phi_-), \qquad
         \omega_r = \tfrac12(\omega_+ + \omega_-)
 
-    feed the recovery.  Nothing in the **interior** is Picard-iterated
-    -- the spin coupling the annulus lags is diagonalized exactly here,
-    not lagged.  The one iterated quantity is the pair of free wall
-    differences below, whose loop the corrector's own contraction
-    bounds (and reports).  Cost: five per-mode banded solves
-    against the primitive scheme's four, over **three** band families
-    against its four (the quad shares two; the recovery is
-    ``dt``-free), all at half-width ``fd_order``.
+    feed the recovery.  Nothing in the **interior** is Picard-iterated;
+    the one iterated quantity is the pair of free wall differences
+    below, whose loop the corrector's own contraction bounds (and
+    reports).  Cost: five per-mode banded solves against the primitive
+    scheme's four, over **three** band families against its four (the
+    quad shares two; the recovery is ``dt``-free), all at half-width
+    ``fd_order``.
 
     That extra solve makes the pipe the one geometry where this flag
     costs throughput (Design notes: "The spin quad's throughput"), and
     the pass's cost beyond its solves is matvec volume (Design notes:
     "Why this pass costs ~2x Cartesian").  The trade is forced, not
-    chosen: the `$\mp 2im/r^2$` spin coupling is what the annulus lags
-    and the axis forbids lagging, so exact diagonalization -- and the
-    doubling it brings -- is the only route here.
+    chosen: the axis forbids lagging the `$\mp 2im/r^2$` spin coupling
+    the annulus lags, so exact diagonalization -- and the doubling it
+    brings -- is the only route here.
 
     Boundary conditions, and the two iterated wall differences
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1069,16 +1046,12 @@ def _imm_iteration_vw(
     # The difference halves of the solved quad, for the next step: the
     # particular solve's plus the influence correction's (the unit-wall
     # response puts the same alpha into both slots, whose difference
-    # half is ``phi_1_diff``).  Their wall values came from the ITERATE
-    # (the wall row above), which the accepted velocity differs from by
-    # the corrector residual -- amplified by the wall stencil, and,
-    # carried, no longer thrown away at the next step.  So they are
-    # reset from the accepted velocity: a wall datum changed by
+    # half is ``phi_1_diff``), with the iterate's wall data reset to the
+    # accepted velocity's (docstring): a wall datum changed by
     # `$\pm\Delta$` across the pair moves the difference half by
-    # `$\Delta$` times the unit response's *sum* half
-    # (``phi_1_sum``), leaving exactly what a fully converged corrector
-    # would have carried (docstring).  Zero on the mean plane, where
-    # the slots held the packed mean momentum.
+    # `$\Delta$` times the unit response's *sum* half (``phi_1_sum``).
+    # Zero on the mean plane, where the slots held the packed mean
+    # momentum.
     d_phi_new, d_om_new = _wall_differences(velocity_new, fourier_, flow_)
     carried_new = jnp.where(
         mean_mask,

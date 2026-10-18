@@ -8,20 +8,22 @@ which never forms a pressure.  Setting the flag to ``False`` selects the
 influence-matrix method, which solves the three velocity components
 against a pressure Poisson solve and enforces continuity only at the two
 walls.  It is retained for reference and for reproducing older
-trajectories; a state it steps carries a truncation-level discrete
-divergence, amplified at the walls (converging under refinement).  The
-full comparison and the measured ledger: the
-:mod:`dnsjax.parameters` Design notes ("Consistent influence matrix")
-and :func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`;
-the four other repairs that were tried and retired: the
-:mod:`~dnsjax.geometries.wall_bounded.cartesian` Design notes.
+trajectories.  The divergence a state it steps carries, the full
+comparison and the measured ledger: the :mod:`dnsjax.parameters`
+Design notes ("Consistent influence matrix") and
+:func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`; the
+four retired repairs: the :mod:`~dnsjax.geometries.wall_bounded.cartesian`
+Design notes ("Routes tried and retired").
 
-Everything here is reachable **only** when the flag is off, so
-``cartesian.py`` imports this module lazily inside its flag-off branches
-and the default path never imports it at all.  The dependency runs the
-other way at module scope -- this module imports the shared operators and
-types from ``cartesian.py`` -- which is why the import must be deferred
-there rather than declared at the top of that file.
+Everything here is reachable **only** when the flag is off, but for the
+two Neumann builders, which
+:func:`~dnsjax.geometries.wall_bounded.cartesian.build_poisson_operator`
+also uses under either flag; ``cartesian.py`` imports this module
+lazily, inside its flag-off branches and that function, so the default
+step never imports it.  The dependency runs the other way at module
+scope -- this module imports the shared operators and types from
+``cartesian.py`` -- which is why the import must be deferred there
+rather than declared at the top of that file.
 
 Contents: the Neumann-BC pressure Poisson operator in both storage
 backends (:func:`_build_Lk_band_gpu`, :func:`_build_Lk_dense_gpu`), its
@@ -61,15 +63,14 @@ def _build_Lk_band_gpu(
 ) -> Array:
     r"""Build `$L_k$` in banded storage for the Pallas backend.
 
-    Same Neumann-BC pressure Poisson operator
-    `$L_k = D_2 - k^2 I$` as :func:`_build_Lk_dense_gpu`,
-    but assembled directly in banded
-    layout ``(Nkz, Nkx, Ny, 2p+1)``
-    (``band[..., i, d] = L_k[..., i, i-p+d]``) from the base band
-    ``_banded_from_dense(D2, p)``, with no ``(Ny, Ny)`` per mode.  The
-    `$-k^2$` shift is constant across rows; Neumann `$D_1$` rows sit at
-    **both** walls (rows 0 and ``Ny-1``), with a mean-mode identity pin
-    at the outer wall (the only `$k^2 = 0$` system).
+    Same Neumann-BC pressure Poisson operator `$L_k = D_2 - k^2 I$` as
+    :func:`_build_Lk_dense_gpu`, but assembled directly in banded layout
+    ``(Nkz, Nkx, Ny, 2p+1)`` (``band[..., i, d] = L_k[..., i, i-p+d]``)
+    from the base band ``_banded_from_dense(D2, p)``, with no
+    ``(Ny, Ny)`` per mode.  The `$-k^2$` shift is constant across rows;
+    Neumann `$D_1$` rows sit at **both** walls (rows 0 and ``Ny-1``),
+    with a mean-mode identity pin at the outer wall (the only
+    `$k^2 = 0$` system).
 
     Parameters
     ----------
@@ -132,20 +133,19 @@ def _lk_matvec(
     r"""Apply `$L_k u$` for the Neumann-BC pressure Poisson operator.
 
     Matrix-free evaluation that avoids storing the per-mode
-    ``(Nkz, Nkx, Ny, Ny)`` operator.  The interior of the
-    output is `$D_2 u - k^2 u$`; the wall rows use `$D_1$`
-    to encode Neumann BCs, except for the mean mode (the
-    only `$k^2 = 0$` mode) where the top-wall row pins
-    `$p_{N_y-1} = 0$` (matching
+    ``(Nkz, Nkx, Ny, Ny)`` operator.  The interior of the output is
+    `$D_2 u - k^2 u$`; the wall rows use `$D_1$` to encode Neumann BCs,
+    except for the mean mode (the only `$k^2 = 0$` mode) where the
+    top-wall row pins `$p_{N_y-1} = 0$` (matching
     :func:`_build_Lk_dense_gpu`).
 
     Parameters
     ----------
     u:
         Field, shape ``(Ny, Nkz, Nkx)``.
-    flow\_:
+    flow_:
         Cartesian flow data (uses ``D2``, ``D1_bnd``).
-    fourier\_:
+    fourier_:
         Wavenumber grids (uses ``k2``, ``mean_mask``).
     """
     D2u = apply_y_matrix(flow_.D2, u)
@@ -174,12 +174,11 @@ def derive_homogeneous_data(
     another LU solve -- everything below runs against the
     already-factored device operator.
 
-    In Schur-complement notation, the arrays ``p1, p2, v1, v2, q1, q2``
-    are the columns of `$A_{II}^{-1}\,A_{IB}$` (the interior-to-boundary
-    coupling through the factored interior operator), and ``M_inv`` is
-    `$S^{-1}$` where `$S$` is the `$2 \times 2$` Schur complement
-    (influence / capacitance matrix).  See :func:`_imm_iteration_vp` for
-    the full context.  The homogeneous pressures ``p1``, ``p2`` are
+    In Schur-complement notation (:func:`_imm_iteration_vp`,
+    "Mathematical equivalence"), ``p1, p2, v1, v2, q1, q2`` are the
+    columns of `$A_{II}^{-1}\,A_{IB}$` and ``M_inv`` is `$S^{-1}$`, the
+    inverse of the `$2 \times 2$` Schur complement (influence /
+    capacitance matrix).  The homogeneous pressures ``p1``, ``p2`` are
     needed only within this derivation (the IMM never assembles the
     pressure), so they are not stored on the dataclass.
 
@@ -201,21 +200,17 @@ def derive_homogeneous_data(
 
     Parameters
     ----------
-    flow\_:
+    flow_:
         The flow being built; every field below is written on it.
-    fourier\_:
+    fourier_:
         Wavenumber grids (uses ``mean_mask``).
     e_cols:
         The two unit wall vectors, mode-outer ``(Nkz, Nkx, Ny)``.
     """
-    # This run-once setup stays in the mode-outer (Nkz, Nkx, Ny)
-    # layout: the influence-matrix einsums below operate on it and
-    # the results are transposed to field layout (Ny, Nkz, Nkx) at
-    # the end.  ``.solve`` takes a mode-inner field, so each setup
-    # solve is wrapped (transpose in, transpose out) to keep this
-    # layout.  A natively mode-inner setup would drop the wrappers,
-    # but it would only relocate a one-time transpose (the hot path
-    # is mode-inner already).
+    # The dispatcher's mode-outer (Nkz, Nkx, Ny) setup layout: each
+    # mode-inner ``.solve`` is wrapped by transposes, and the results go
+    # to field layout (Ny, Nkz, Nkx) at the end (run once; see
+    # ``CartesianFlow._derive_imm_homogeneous_data``).
     e1_b, e2_b = e_cols
 
     p1_s = flow_.Lk_op.solve(e1_b.transpose(2, 0, 1)).transpose(1, 2, 0)
@@ -295,57 +290,50 @@ def _imm_iteration_vp(
        (since `$u = w = 0$` at walls).
     5. Apply the influence matrix
        `$\alpha = -M^{-1} d_{\mathrm{wall}}$`.
-    6. Assemble the corrected pressure and all three corrected
-       velocity components via Helmholtz linearity, with no
-       further Helmholtz solves:
+    6. Correct all three velocity components via Helmholtz linearity,
+       with no further Helmholtz solves; the corrected pressure
+       `$p = p_P + \alpha_1 p_1 + \alpha_2 p_2$` is never assembled,
+       only velocity is stepped:
 
-       - `$p = p_P + \alpha_1 p_1 + \alpha_2 p_2$`
        - `$v = v_{arb} + \alpha_1 v_1 + \alpha_2 v_2$`
        - `$u = u_{arb} - i k_x \Delta q$`
        - `$w = w_{arb} - i k_z \Delta q$`
 
        where `$\Delta q = \alpha_1 q_1 + \alpha_2 q_2$` and
-       `$q_i = H_k^{-1} p_i$` (precomputed), using the
-       factorization `$u^{(i)} = -i k_x q_i$`,
-       `$w^{(i)} = -i k_z q_i$` (the scalar `$-i k_x$`,
-       `$-i k_z$` commute with `$H_k^{-1}$` per mode).
-    7. Zero the mean-mode wall-normal velocity `$v$`.
-       Continuity `$\partial v / \partial y = 0$` plus
-       no-slip at both walls forces `$v \equiv 0$` there;
-       the projection prevents accumulation of numerical
-       noise from the Helmholtz RHS.
-    8. *(optional)* If ``constant_bulk_velocity``, zero the
-       mean-mode perturbation bulk velocity in the streamwise
-       direction `$(\cos\theta, 0, \sin\theta)$`.
-    9. *(optional)* If ``block_mean_spanwise_velocity``, zero
-       the mean-mode perturbation bulk velocity in the
-       spanwise direction `$(-\sin\theta, 0, \cos\theta)$`.
+       `$q_i = H_k^{-1} p_i$` (precomputed), using the factorization
+       `$u^{(i)} = -i k_x q_i$`, `$w^{(i)} = -i k_z q_i$` (the scalar
+       `$-i k_x$`, `$-i k_z$` commute with `$H_k^{-1}$` per mode).
+    7. Zero the mean-mode wall-normal velocity `$v$`.  Continuity
+       `$\partial v / \partial y = 0$` plus no-slip at both walls forces
+       `$v \equiv 0$` there; the projection prevents accumulation of
+       numerical noise from the Helmholtz RHS.
+    8. *(optional)* If ``constant_bulk_velocity``, zero the mean-mode
+       perturbation bulk velocity in the streamwise direction
+       `$(\cos\theta, 0, \sin\theta)$`.
+    9. *(optional)* If ``block_mean_spanwise_velocity``, zero the
+       mean-mode perturbation bulk velocity in the spanwise direction
+       `$(-\sin\theta, 0, \cos\theta)$`.
 
-    Steps 7--9 are orthogonal projections and do not
-    interfere; all mean-mode projections and writes go
-    through ``mean_mask``.  Padding modes need no writes:
-    their fields are identically zero (the forward FFT
-    re-zeroes the padding slots on every evaluation), their
-    placeholder-wavenumber operators are regular, and the
-    IMM corrections vanish there.
+    Steps 7--9 are orthogonal projections and do not interfere; all
+    mean-mode projections and writes go through ``mean_mask``.  Padding
+    modes need no writes (zero fields, regular placeholder-wavenumber
+    operators: :class:`~.cartesian.Fourier`), and the IMM corrections
+    vanish there.
 
     Mathematical equivalence
     ~~~~~~~~~~~~~~~~~~~~~~~~
-    The IMM is a **Schur-complement (capacitance-matrix)
-    reduction**.  The coupled pressure--velocity system has a
-    `$2 \times 2$` block structure with interior unknowns
-    (`$I$`) and boundary unknowns (`$B$`).  The influence
-    matrix `$M$` is the Schur complement
-    `$S = A_{BB} - A_{BI}\,A_{II}^{-1}\,A_{IB}$`; the
-    homogeneous data (``p1, p2, v1, v2, q1, q2``) are the
-    columns of `$A_{II}^{-1}\,A_{IB}$`.  The correction
-    (stage 6) is a **rank-2 low-rank update** to the particular
-    solution -- the same algebraic structure as the **Woodbury
-    matrix identity** applied to boundary conditions.  The
-    bulk-velocity correction (step 8) is a **rank-1
-    Sherman--Morrison update**.  Cylindrical: same structure
-    with a `$1 \times 1$` Schur complement (one wall at
-    `$r = 1$`).
+    The IMM is a **Schur-complement (capacitance-matrix) reduction**.
+    The coupled pressure--velocity system has a `$2 \times 2$` block
+    structure with interior unknowns (`$I$`) and boundary unknowns
+    (`$B$`).  The influence matrix `$M$` is the Schur complement
+    `$S = A_{BB} - A_{BI}\,A_{II}^{-1}\,A_{IB}$`; the homogeneous data
+    (``p1, p2, v1, v2, q1, q2``) are the columns of
+    `$A_{II}^{-1}\,A_{IB}$`.  The correction (stage 6) is a **rank-2
+    low-rank update** to the particular solution -- the same algebraic
+    structure as the **Woodbury matrix identity** applied to boundary
+    conditions.  The bulk-velocity correction (step 8) is a **rank-1
+    Sherman--Morrison update**.  Cylindrical: same structure with a
+    `$1 \times 1$` Schur complement (one wall at `$r = 1$`).
 
     The discrete continuity this scheme does *not* deliver -- the
     reason it is the legacy path rather than the default -- is
@@ -376,8 +364,8 @@ def _imm_iteration_vp(
     # d_hat^n (discrete divergence at time n; ~0 after first step).
     # ``dnsjax.analysis`` mirrors this operator; changing it here
     # means changing ``snapshot_ops.divergence`` and the
-    # transcription in ``tests/test_snapshot_export.py``
-    # (``_solver_divergence``), which pins the two together.
+    # transcription in ``tests/_snapshot_export.py``
+    # (``solver_divergence``), which pins the two together.
     d_hat_n = ikx * u_n + dy_v_n + ikz * w_n
 
     # Stage 1: interior pressure Poisson RHS.
@@ -440,15 +428,11 @@ def _imm_iteration_vp(
     alpha1 = alpha[..., 0][None]
     alpha2 = alpha[..., 1][None]
 
-    # Stage 6: corrected velocity components via Helmholtz
-    # linearity — no additional Helmholtz solves.  The corrected
-    # pressure (pP + alpha1 p1 + alpha2 p2) is never assembled:
-    # only velocity is stepped.
+    # Stage 6: corrected velocity components via Helmholtz linearity,
+    # no pressure assembled (docstring).
     v_new = v_arb + alpha1 * flow_.v1 + alpha2 * flow_.v2
 
-    # Horizontal corrections factor through the scalar potential Δq,
-    # since u^(i) = -ikx q_i and w^(i) = -ikz q_i (the -ikx, -ikz
-    # scalar factors commute with Hk linearity per mode).
+    # The horizontal corrections, through the scalar potential Δq.
     q_new = alpha1 * flow_.q1 + alpha2 * flow_.q2
 
     # Stage 7: zero mean-mode wall-normal velocity.

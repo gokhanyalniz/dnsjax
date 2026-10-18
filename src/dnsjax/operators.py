@@ -42,8 +42,7 @@ def real_harmonics(n: int) -> Array:
 
     Thin device-array wrapper over
     :func:`dnsjax.harmonics.real_harmonics` (the JAX-free source of
-    truth, shared with :mod:`dnsjax.analysis`): the Nyquist mode is
-    omitted, leaving `$n / 2$` modes `$[0, 1, \dots, n/2 - 1]$`.
+    truth, shared with :mod:`dnsjax.analysis`).
     """
     return jnp.asarray(_real_harmonics_np(n))
 
@@ -53,8 +52,7 @@ def complex_harmonics(n: int) -> Array:
 
     Thin device-array wrapper over
     :func:`dnsjax.harmonics.complex_harmonics` (the JAX-free source of
-    truth, shared with :mod:`dnsjax.analysis`): `$n - 1$` wavenumbers in
-    FFT order `$[0, 1, \dots, n/2-1, -n/2+1, \dots, -1]$`.
+    truth, shared with :mod:`dnsjax.analysis`).
     """
     return jnp.asarray(_complex_harmonics_np(n))
 
@@ -194,11 +192,9 @@ else:
     def phys_to_spec_2d(velocity_phys: Array) -> Array:
         r"""Forward 2D real FFT in `$(x, z)$`, batched over components.
 
-        The leading (component) axis is folded into the y-axis
-        before the transform and unfolded afterwards, so the
-        pipeline runs once on the flattened batch rather than once
-        per component (the module's Design notes: the collective
-        count is unchanged; the saving is the ``vmap`` dispatch).
+        The component axis is folded into y for the transform and
+        unfolded afterwards
+        (Design notes: "Folding the components into y at ``np0 = 1``").
 
         Parameters
         ----------
@@ -223,11 +219,9 @@ else:
     def spec_to_phys_2d(velocity_spec: Array) -> Array:
         r"""Inverse 2D real FFT in `$(x, z)$`, batched over components.
 
-        The leading (component) axis is folded into the y-axis
-        before the transform and unfolded afterwards, so the
-        pipeline runs once on the flattened batch rather than once
-        per component (the module's Design notes: the collective
-        count is unchanged; the saving is the ``vmap`` dispatch).
+        The component axis is folded into y for the transform and
+        unfolded afterwards
+        (Design notes: "Folding the components into y at ``np0 = 1``").
 
         Parameters
         ----------

@@ -1,107 +1,89 @@
 r"""Cylindrical geometry: Fourier class, norms, IMM, and solvers.
 
-Provides all geometry-general infrastructure for wall-bounded
-cylindrical flows: the ``Fourier`` wavenumber class, the
-``CylindricalFlow`` base dataclass (the radial grid -- half-CGL under
-the default ``iterative-cn`` scheme, rigged-CGL under ``cnab2``,
-selected by ``geo.grid_type`` -- its parity-reduced FD matrices and
-the IMM operators), spectral solvers (influence-matrix method,
-predictor-corrector time stepping), and diagnostic helpers (norms,
-perturbation energy, centreline interpolation).
+The geometry-general infrastructure of wall-bounded cylindrical
+flows: the ``Fourier`` wavenumber class, the ``CylindricalFlow`` base
+dataclass (the radial grid -- half-CGL under the default
+``iterative-cn`` scheme, rigged-CGL under ``cnab2``, selected by
+``geo.grid_type`` -- its parity-reduced FD matrices and the IMM
+operators), the spectral solvers (influence-matrix method,
+predictor-corrector time stepping; "What lives where") and the
+diagnostic helpers (norms, perturbation energy, centreline
+interpolation).  A flow module (e.g. ``flows.wall_bounded.pipe``)
+subclasses ``CylindricalFlow`` with its base flow and calls
+``build_cylindrical_stepper`` for its time-stepping functions.
 
 Decoupled velocity formulation
 ------------------------------
-The cylindrical Navier-Stokes vector Laplacian couples
-`$u_r$` and `$u_\theta$` through `$1/r^2$` terms.
-Following openpipeflow (Willis 2017), we decouple them via
+The cylindrical Navier-Stokes vector Laplacian couples `$u_r$` and
+`$u_\theta$` through `$1/r^2$` terms.  Following openpipeflow (Willis
+2017), we decouple them via
 
 .. math::
     u_+ = u_r + i\,u_\theta, \qquad
     u_- = u_r - i\,u_\theta,
 
-reducing the vector problem to three scalar Helmholtz
-equations with **effective azimuthal modes**:
+reducing the vector problem to three scalar Helmholtz equations with
+**effective azimuthal modes**
 
 .. math::
     m_{\mathrm{eff}} = m + 1 \;\text{for } u_+, \qquad
     m_{\mathrm{eff}} = m - 1 \;\text{for } u_-, \qquad
-    m_{\mathrm{eff}} = m     \;\text{for } u_z.
+    m_{\mathrm{eff}} = m     \;\text{for } u_z,
 
-The effective azimuthal mode `$m_{\mathrm{eff}}$` governs the
-scalar Laplacian structure: after decoupling, each component
-satisfies a Helmholtz equation whose radial operator is
+each with the radial operator
 `$\partial_r^2 + (1/r)\partial_r - m_{\mathrm{eff}}^2/r^2$`.
 
 This is the solver's **working** basis: the state carried between
-steps, the RHS, the corrector iterates and every operator below
-live in `$(u_z, u_+, u_-)$`.  It is not what anything outside the
-time stepper sees -- snapshots, diagnostics, extension streams,
-initial conditions and the analysis package all work in the physical
-triad `$(u_z, u_r, u_\theta)$`, and a given state crosses between
-the two at most once, at that boundary (``to_pm_basis`` /
-``from_pm_basis`` in ``_base.py``, driven by
-:mod:`dnsjax.__main__`).
-
-:func:`_get_rhs_core` and :func:`_l_bf` convert internally because
-the real FFT demands it: every physical component is the
-transform of a real field and is individually Hermitian-symmetric,
-whereas `$u_\pm$` are not
-(`$\overline{\hat u_+(k)} = \hat u_-(-k)$`).  The physical-space
-fields -- and hence the CFL measurement -- are therefore always
+steps, the RHS, the corrector iterates and every operator below live
+in `$(u_z, u_+, u_-)$`, while everything outside the time stepper
+works in the physical triad `$(u_z, u_r, u_\theta)$` and a state
+crosses at most once (:func:`._base.to_pm_basis` owns that boundary).
+:func:`_get_rhs_core` and :func:`_l_bf` convert internally because the
+real FFT demands it: every physical component is the transform of a
+real field and is individually Hermitian-symmetric, whereas `$u_\pm$`
+are not (`$\overline{\hat u_+(k)} = \hat u_-(-k)$`), so the
+physical-space fields -- and the CFL measurement -- are always
 `$(u_z, u_r, u_\theta)$`.
 
-Despite having different `$m_{\mathrm{eff}}$` values, `$u_+$`
-and `$u_-$` share the **same parity** `$(-1)^{m+1}$` -- that of
-`$u_r$` and `$u_\theta$`, preserved by the pointwise mixing.
-Parity is a kinematic property (how a field transforms under
-`$r \to -r$` on the auxiliary grid), while `$m_{\mathrm{eff}}$`
-determines the operator spectrum.  The coincidence
-`$(-1)^{m+1} = (-1)^{m-1}$` makes the parity identical.
+`$u_+$` and `$u_-$` have different `$m_{\mathrm{eff}}$` but share the
+**same parity** `$(-1)^{m+1}$`, that of `$u_r$` and `$u_\theta$`,
+preserved by the pointwise mixing: parity is kinematic (how a field
+transforms under `$r \to -r$` on the auxiliary grid), while
+`$m_{\mathrm{eff}}$` determines the operator spectrum, and the
+coincidence `$(-1)^{m+1} = (-1)^{m-1}$` makes the parity identical.
 
 Parity-reduced FD matrices
 --------------------------
-A field with azimuthal Fourier mode `$m$` must be
-single-valued when analytically continued across the pipe
-centre.  The point at radius `$r$` and angle
-`$\theta + \pi$` is the same physical point as `$(-r,
-\theta)$` on the auxiliary grid.  The factor
-`$e^{im\pi} = (-1)^m$` from the Fourier mode, combined
-with the reversal of `$\hat{e}_r$` and `$\hat{e}_\theta$`
-when crossing the origin, determines the parity of each
-field component:
+A field with azimuthal Fourier mode `$m$` must be single-valued when
+analytically continued across the pipe centre.  The point at radius
+`$r$` and angle `$\theta + \pi$` is the same physical point as
+`$(-r, \theta)$` on the auxiliary grid.  The factor
+`$e^{im\pi} = (-1)^m$` from the Fourier mode, combined with the
+reversal of `$\hat{e}_r$` and `$\hat{e}_\theta$` when crossing the
+origin, determines the parity of each field component:
 
-- Pressure `$p$` and axial velocity `$u_z$`:
-  parity `$(-1)^m$`, so `$m_{\mathrm{eff}} = m$`.
-- `$u_+ = u_r + i\,u_\theta$`: parity `$(-1)^{m+1}$`,
-  `$m_{\mathrm{eff}} = m + 1$` in the Helmholtz operator.
-- `$u_- = u_r - i\,u_\theta$`: parity `$(-1)^{m+1}$`,
-  `$m_{\mathrm{eff}} = m - 1$` in the Helmholtz operator.
-- `$u_r$` and `$u_\theta$` share that same `$(-1)^{m+1}$`
-  class, so the physical-basis diagnostics and the resume
-  regrid use the parity machinery unchanged.
+- Pressure `$p$` and axial velocity `$u_z$`: parity `$(-1)^m$`, so
+  `$m_{\mathrm{eff}} = m$`.
+- `$u_\pm = u_r \pm i\,u_\theta$`: parity `$(-1)^{m+1}$`,
+  `$m_{\mathrm{eff}} = m \pm 1$` in the Helmholtz operator.
+- `$u_r$` and `$u_\theta$` share that same `$(-1)^{m+1}$` class, so the
+  physical-basis diagnostics and the resume regrid use the parity
+  machinery unchanged.
 
-Even parity (`$m_{\mathrm{eff}}$` even) means `$g$` is
-symmetric about `$r = 0$`: `$g'(0) = 0$` (Neumann-like).
-Odd parity (`$m_{\mathrm{eff}}$` odd) means `$g$` is
-antisymmetric: `$g(0) = 0$` (Dirichlet-like).
-
-The parity-reduced FD matrices encode these constraints
-because the underlying stencils span across `$s = 0$` on
-the auxiliary grid.  No explicit regularity BCs or
-l'Hopital treatment at `$r = 0$` are needed.
+Even parity (`$m_{\mathrm{eff}}$` even) means a field `$g$` is
+symmetric about `$r = 0$`: `$g'(0) = 0$` (Neumann-like); odd parity
+(`$m_{\mathrm{eff}}$` odd), antisymmetric: `$g(0) = 0$`
+(Dirichlet-like).  The parity-reduced FD matrices encode these
+constraints because the underlying stencils span across `$s = 0$` on
+the auxiliary grid, so no explicit regularity BCs or l'Hopital
+treatment at `$r = 0$` are needed.
 
 Influence-matrix method (`$1 \times 1$`)
 ----------------------------------------
-The pipe has a single physical wall at `$r = 1$`.
-Regularity at `$r = 0$` is handled by the parity-reduced
-FD matrices, not by a boundary condition.  This gives a
-`$1 \times 1$` influence matrix -- simpler than the
-Cartesian `$2 \times 2$` case.
-
-Flow-specific modules (e.g. ``flows.wall_bounded.pipe``) subclass
-``CylindricalFlow`` to define the base flow, then call
-``build_cylindrical_stepper`` to obtain ready-to-use
-time-stepping functions.
+The pipe has a single physical wall, at `$r = 1$`; regularity at
+`$r = 0$` comes from the parity-reduced FD matrices, not from a
+boundary condition.  So the influence matrix is `$1 \times 1$`, against
+the Cartesian `$2 \times 2$`.
 
 What lives where
 ----------------
@@ -113,8 +95,7 @@ base-flow coupling, the influence-matrix pass, the predictor /
 corrector / norm and the stepper factory -- lives once in
 :mod:`._cylindrical_stepping`, shared with any flow a plugin builds on
 this geometry and parametrized by the flow dataclass; the names below
-re-exported
-from it keep this module the single import site it has always been.
+are re-exported from it, so this module stays the single import site.
 
 Design notes
 ------------
@@ -212,11 +193,9 @@ from ._cylindrical_stepping import (
     with_carried,  # noqa: F401 — re-exported
 )
 
-#: The solver -> physical half of the basis boundary, which the
-#: flow modules re-export so :mod:`dnsjax.__main__` can take the
-#: physical view of a state without knowing which geometry it drives
-#: (Cartesian and triply-periodic have none).  It reads the
-#: three velocity slots only, so it also drops the pass's carried
+#: The solver -> physical half of the basis boundary, which the flow
+#: modules re-export (:class:`~dnsjax.flow_spec.FlowSpec`).  It reads
+#: the three velocity slots only, so it also drops the pass's carried
 #: slots.  It runs in the hot loop, so it is exported jitted:
 #: ``__main__`` never jits a flow function itself, because an outer
 #: jit would trace the flow's global arrays in as constants, which a
@@ -276,35 +255,28 @@ class Fourier:
     `$r$`          ``y`` (FD)   none          grid points
     =============  ===========  ============  =============
 
-    ``k_metric`` equals 2 for `$k_z > 0$` and 1 for
-    `$k_z = 0$`, accounting for the Hermitian symmetry of
-    the real FFT (padding columns get 2 — inert, they only
-    ever weight zero fields).
+    ``k_metric`` equals 2 for `$k_z > 0$` and 1 for `$k_z = 0$`,
+    accounting for the Hermitian symmetry of the real FFT (padding
+    columns get 2 — inert, they only ever weight zero fields).
 
-    ``m_is_even`` is a boolean mask ``(1, nz_spec, 1)``
-    selecting the azimuthal modes where `$m$` is even, used
-    to choose the correct parity-reduced FD matrices.  At
-    padding slots it follows the parity of the placeholder
-    `$m$` values; the selected operators are regular either
-    way.
+    ``m_is_even`` is a boolean mask ``(1, nz_spec, 1)`` selecting the
+    azimuthal modes where `$m$` is even, used to choose the correct
+    parity-reduced FD matrices.  At padding slots it follows the
+    parity of the placeholder `$m$` values; the selected operators are
+    regular either way.
 
-    Padding slots (``nz_spec > nz - 1`` or
-    ``nx_spec > nx // 2``, spectral padding for 2D
-    divisibility) carry nonzero beyond-resolution
-    placeholder wavenumbers (see ``pad_harmonics`` in
-    :mod:`dnsjax.operators`): every per-mode operator
-    assembled at a padding slot is regular, and the fields
-    there are identically zero (the forward FFT re-zeroes
-    the padding slots on every evaluation), so the padding
-    modes need no special-casing.
+    Padding slots (``nz_spec > nz - 1`` or ``nx_spec > nx // 2``,
+    spectral padding for 2D divisibility) carry the nonzero
+    placeholder wavenumbers of :func:`~dnsjax.operators.pad_harmonics`,
+    which keep every per-mode operator assembled there regular while
+    the fields stay zero, so the padding modes need no special-casing.
 
-    ``mean_mask`` is a boolean mask that is ``True`` only at
-    the mean mode `$(m, k_z) = (0, 0)$` (global index
-    ``(0, 0)``; padding modes are appended at the end).  The
-    mean mode is the only `$m^2 + k_z^2 = 0$` mode, so this
-    single mask serves the operator pin row, the
-    influence-matrix mean branch, and all mean-mode physics
-    (projections and the constant-bulk-velocity write).
+    ``mean_mask`` is a boolean mask that is ``True`` only at the mean
+    mode `$(m, k_z) = (0, 0)$` (global index ``(0, 0)``; padding modes
+    are appended at the end).  The mean mode is the only
+    `$m^2 + k_z^2 = 0$` mode, so this single mask serves the operator
+    pin row, the influence-matrix mean branch, and all mean-mode
+    physics (projections and the constant-bulk-velocity write).
 
     The wavenumber arrays are global multi-device arrays: host-side
     consumers recompute them from the JAX-free
@@ -321,10 +293,8 @@ class Fourier:
     mean_mask: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        # The wavenumber vectors start as the ``operators`` wrappers'
-        # arrays, replicated on the mesh, so ``device_put`` reshards
-        # them on the devices; the arrays built in NumPy (the metric
-        # and the mean mask) are placed by ``sharding.distribute``.
+        # Placement as in ``cartesian.Fourier``: ``device_put`` for the
+        # mesh-replicated wrapper arrays, ``distribute`` for NumPy ones.
         a0, a1 = sharding.a0, sharding.a1
         kz = (
             (
@@ -361,8 +331,6 @@ class Fourier:
 
         # One-hot at the mean mode (m, kz) = (0, 0): the true
         # modes precede the padding, so it is global index (0, 0).
-        # The mean mode is the only m^2 + kz^2 = 0 mode (padding
-        # slots carry nonzero placeholder wavenumbers).
         mean = np.zeros((1, m.shape[1], kz.shape[2]), dtype=bool)
         mean[0, 0, 0] = True
 
@@ -400,10 +368,10 @@ def get_pert_enstrophy_cyl(
     r"""Perturbation enstrophy for the cylindrical geometry.
 
     Uses the identity
-    `$\Omega' = \langle |\nabla \mathbf{u}'|^2 \rangle$`,
-    split into radial-derivative, azimuthal, and axial terms.
-    The azimuthal term is the covariant azimuthal gradient in
-    `$(u_z, u_r, u_\theta)$` components,
+    `$\Omega' = \langle |\nabla \mathbf{u}'|^2 \rangle$`, split into
+    radial-derivative, azimuthal, and axial terms.  The azimuthal term
+    is the covariant azimuthal gradient in `$(u_z, u_r, u_\theta)$`
+    components,
 
     .. math::
         \frac{|im\,u_z|^2 + |im\,u_r - u_\theta|^2
@@ -427,9 +395,8 @@ def get_pert_enstrophy_cyl(
         Common part of first-derivative FD matrix (a
         :class:`~._base.YMatrix`).
     D1_ghost:
-        Ghost correction for `$D_1$`, trimmed to its nonzero
-        corner: shape ``(g, c)``, applied to the first ``c`` radial
-        points.
+        Ghost correction for `$D_1$`, trimmed to its nonzero corner
+        (shape ``(g, c)``), applied to the first ``c`` radial points.
     m_is_even:
         Boolean mask for even `$m$`, shape ``(1, Nm, 1)``.
     inv_r:
@@ -713,10 +680,8 @@ def build_cylindrical_grid(
         grid = tanh_one_sided_grid(ny, grid_stretch)
         rs = jnp.asarray(grid, dtype=sharding.float_type)
     elif grid_type in ("half-cgl", "rigged-cgl", None):
-        # "rigged-cgl" / None -> rigged (axis_gap = 1); "half-cgl" ->
-        # the staggered half grid (axis_gap = 0).  The resolved
-        # default is always concrete (pipe spec: half-cgl under
-        # iterative-cn, rigged-cgl under cnab2).
+        # "half-cgl" -> the staggered half grid (axis_gap = 0);
+        # "rigged-cgl" / None -> rigged (axis_gap = 1).
         axis_gap = 0 if grid_type == "half-cgl" else 1
         rs = build_radial_cgl_grid(ny, axis_gap)
     else:
@@ -732,20 +697,14 @@ def build_cylindrical_grid(
     # Full-disc quadrature int_0^1 f r dr with no axis grid point.
     qc = cgl_radial_quadrature_weights(rs_np, fd_order)
     if qc is not None:
-        # Detected radial CGL grid (rigged / half): spectral
-        # parity-specific weights, baking in the r=0 reconstruction
-        # (positive).  A single vector cannot be spectral for both
-        # parities, so w_even serves the energy norm and even
-        # integrands (mean u_z, dissipation), w_odd the odd mean
-        # u_theta -- the caller picks by each diagnostic's known
-        # parity.  See fd.cgl_radial_quadrature_weights.
+        # Detected radial CGL grid (rigged / half): the parity-specific
+        # spectral pair (docstring, ``y_weights`` / ``y_weights_odd``).
         w_even_np, w_odd_np = qc
     else:
-        # Custom / tanh grid: the parity-agnostic axis-augmented
-        # composite rule (g = f*r on [0, *rs] with the axis r=0 a free
-        # node, g(0)=0 for any bounded f; correct for either parity),
-        # at the highest order up to fd_order whose weights are all
-        # positive -- at fd_order = 8 the axis end rarely is.
+        # Custom / tanh grid: the axis-augmented composite rule
+        # integrates g = f*r on [0, *rs] with the axis r=0 a free node
+        # (g(0)=0 for any bounded f, so correct for either parity), at
+        # the order the docstring gives.
         w_aug = quadrature_weights(
             lambda q: axis_augmented_weights(rs_np, q), fd_order, "Radial", ny
         )
@@ -898,10 +857,9 @@ def _vw_recovery_parts(
 ) -> tuple[Array, Array]:
     r"""Per-mode pieces of the `$u_r$` recovery operator (vw scheme).
 
-    Identical algebra to the annular twin
-    (``annular._vw_recovery_parts``): the `$\Phi$` definition with the
-    reconstruction's `$u_\theta(u_r, \omega_r)$` substituted in, so the
-    recovery is exact per pass.
+    The algebra of ``annular._vw_recovery_parts`` (the `$\Phi$`
+    definition with the reconstruction's `$u_\theta(u_r, \omega_r)$`
+    substituted in, so the recovery is exact per pass):
 
     .. math::
         L_{v,\mathrm{mod}} = A_{\mathrm{base}}^{(v)}
@@ -1045,15 +1003,10 @@ class CylindricalFlow:
     ``geo.grid_type``), the parity-reduced FD matrices, and all
     per-mode IMM operators.
 
-    The velocity state is carried through the solver in decoupled
-    form `$(u_z, u_+, u_-)$` where
-
-    .. math::
-        u_+ = u_r + i\,u_\theta, \qquad
-        u_- = u_r - i\,u_\theta,
-
-    and in the physical triad everywhere outside it (the module
-    docstring; ``to_pm_basis``/``from_pm_basis``).
+    The velocity state is carried through the solver in the decoupled
+    form `$(u_z, u_+, u_-)$`, `$u_\pm = u_r \pm i\,u_\theta$`, and in
+    the physical triad everywhere outside it (the module docstring;
+    ``to_pm_basis``/``from_pm_basis``).
 
     The default scheme builds the spin pair `$(L_{s+}, L_{s-})$` -- the
     `$H_{k,\pm}$` families, `$m_{\mathrm{eff}} = m \pm 1$` on the
@@ -1199,16 +1152,12 @@ class CylindricalFlow:
             float(v) for v in np.asarray(self.rs)
         ]
 
-        # Inverse local advection length scales for the CFL
-        # diagnostic (:func:`dnsjax.measurements.get_cfl`),
-        # per component (u_z, u_r, u_theta), zero in the
-        # ny_y_pad rows.  The azimuthal scale is the arc length
-        # `$r \Delta\theta$` with `$\Delta\theta = l_z/n_z$`
-        # (theta period `$l_z = 2\pi/m_0$` over the wedge;
-        # ``geo.lz`` carries this).  Uniform directions use
-        # the spectral-resolution spacing `$\Delta = L/n$`;
-        # switch to ``padded_res.nx_padded`` / ``nz_padded``
-        # for the dealiased-grid convention.
+        # Inverse local advection length scales for the CFL diagnostic,
+        # as in ``CartesianFlow.__post_init__``, per component (u_z,
+        # u_r, u_theta).  The azimuthal scale is the arc length
+        # `$r \Delta\theta$` with `$\Delta\theta = l_z/n_z$` (theta
+        # period `$l_z = 2\pi/m_0$` over the wedge; ``geo.lz`` carries
+        # this).
         inv_sp = np.zeros(
             (3, Nr + sharding.ny_y_pad), dtype=sharding.float_type
         )
@@ -1231,12 +1180,10 @@ class CylindricalFlow:
 
         self.D1_pos = YMatrix.from_dense(D1_pos)
 
-        # Ghost correction matrices: the difference between the
-        # parity-reduced and the common (pos) part.  Stencils cross
-        # r = 0 only near the axis, so only a small leading corner is
-        # nonzero, and only that ``(g_rows, g_cols)`` corner is stored
-        # and applied (:func:`_ghost_extent`).  Both counts are unions
-        # over D1 and D2, so they bound ``A_base_ghost`` too.
+        # Ghost correction matrices (parity-reduced minus pos), stored
+        # as their nonzero ``(g_rows, g_cols)`` corner
+        # (:func:`_ghost_extent`, which says why both counts bound
+        # ``A_base_ghost`` too).
         D1_ghost_np = np.asarray(D1_even - D1_pos)
         D2_ghost_np = np.asarray(D2_even - D2_pos)
         g_rows, g_cols = _ghost_extent(D1_ghost_np, D2_ghost_np)
@@ -1270,7 +1217,7 @@ class CylindricalFlow:
         # FD GEMMs of the quad-wide stage -- measured as the largest
         # non-solve stage of the default pass.  Built for **both**
         # schemes: the legacy primitive path's ``_abase_matvec`` and
-        # its `$H_k^-$` batch compute the same combination by hand.
+        # its `$H_k^-$` batch apply it too.
         self.A_base_pos = YMatrix.from_dense(
             _build_A_base(D1_pos, D2_pos, self.inv_r)
         )
@@ -1292,12 +1239,11 @@ class CylindricalFlow:
             self.y_weights_odd, sharding.no_shard
         )
 
-        # Banded half-width: measured from the assembled base operator,
-        # not assumed.  The wall row (r = 1) is replaced by a BC row in
-        # every operator, so its own stencil need not fit.  Both
-        # `$D_2$` fits are direct, so this is ``fd_order`` under either
-        # flag.  Mirrors the Cartesian build; ``_hk_bands`` reads it
-        # back from the factored ``Lk``.
+        # Banded half-width, measured as in the Cartesian build, here on
+        # the assembled base operator without the wall row (r = 1, a BC
+        # row in every operator): ``fd_order`` under either flag, both
+        # `$D_2$` fits being direct.  ``_hk_bands`` reads it back from
+        # the factored ``Lk``.
         p_band = max(
             matrix_half_bandwidth(np.asarray(self.A_base_even), (-1,)),
             matrix_half_bandwidth(np.asarray(self.A_base_odd), (-1,)),
@@ -1420,8 +1366,7 @@ class CylindricalFlow:
             self.Lk_op = DenseJAXSolver(Lk_dense)
             del Lk_dense
 
-            # Combined Hk: the default spin pair (L_{s+}, L_{s-}), or
-            # the legacy (plus, minus, z) triple.
+            # Combined Hk: the same group as in the banded branch.
             if params.res.consistent_imm:
                 self.Hk_op = _hk_vw_dense_op(dt, fourier, self)
             else:
@@ -1434,11 +1379,9 @@ class CylindricalFlow:
         # response below reads it back through ``bulk_of_mean_profile``
         # (the influence-matrix columns do not read it).
         self._build_metric()
-        # The influence-matrix columns and the bulk response, as one
-        # compiled program taking this flow -- still under construction
-        # -- as its argument; run eagerly, every operation and every
-        # ``.solve``'s ``shard_map`` body compiles on its own.  A fresh
-        # ``jit`` per build, since the traced body reads ``params``.
+        # The influence-matrix columns and the bulk response in one
+        # fresh jit over the flow under construction, as in (and for
+        # the reasons of) ``CartesianFlow.__post_init__``.
         leaves = jax.jit(lambda f, fl: _imm_leaves(f, fl))(fourier, self)
         for name, leaf in leaves.items():
             setattr(self, name, leaf)
@@ -1707,8 +1650,8 @@ def _vw_spin_groups(
 ) -> tuple[tuple[Array, Array], tuple[Array, Array]]:
     r"""Per-slot `$(\text{parity}, m_{\mathrm{eff}}^2)$` of the spin pair.
 
-    The pair `$(+, -)$` the vw scheme uses, with the mean-plane packing
-    exception folded into the `$-$` slot.
+    The pair `$(+, -)$` the vw scheme uses; the mean-plane packing
+    exception of the `$-$` slot is the caller's (below).
 
     The vw quad `$(\Phi_\pm, \omega_\pm)$` rides the **existing**
     `$H_{k,\pm}$` families: `$m_{\mathrm{eff}}^2 = (m \pm 1)^2$` on the
@@ -1719,7 +1662,7 @@ def _vw_spin_groups(
     Helmholtz `$(m_{\mathrm{eff}}^2 = 0$`, *even* parity`$)$`.  The
     parity masks are `$(N_m, 1, 1)$` and cannot express a
     `$k_z$`-dependent flip, so the caller splices the **assembled**
-    bands instead; this returns the two ingredient triples.
+    bands instead; this returns the two ingredient pairs.
     """
     m_s = fourier_.m[0, ..., None]  # (Nm, 1, 1)
     m_is_even_s = fourier_.m_is_even[0, ..., None]  # (Nm, 1, 1)
@@ -1856,7 +1799,7 @@ def _build_dt_leaves(
     else:
         new.Hk_op = hk_dense_fn(dt, fourier_, new)
     # Lk_op (= the dt-free recovery under the vw scheme) is deliberately
-    # absent -- see test_adaptive's leaf dicts.
+    # absent -- see the leaf tables of ``tests/_adaptive.py``.
     leaves = {"dt": new.dt, "Hk_op": new.Hk_op}
     leaves |= _imm_leaves(fourier_, new)
     return leaves

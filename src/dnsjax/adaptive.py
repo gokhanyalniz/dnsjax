@@ -28,10 +28,10 @@ relative deadband: the current ``dt`` is kept unless the restricted
 proposal moves it by more than ``dt_threshold * dt``, suppressing
 rebuild churn from CFL noise.
 
-The controller is host-side and rank-deterministic: the measured CFL
-scalar is replicated across devices/ranks, so every rank computes the
-same proposal with no communication.  Knob semantics, defaults, and
-what an accepted change triggers (the on-device operator rebuild, the
+The controller is rank-deterministic: the measured CFL scalar is
+replicated across devices and ranks, so every rank computes the same
+proposal with no communication.  Knob semantics, defaults, and what an
+accepted change triggers (the on-device operator rebuild, the
 variable-step AB2 weight): the ``TimeStepping`` docstring in
 :mod:`dnsjax.parameters`.
 """

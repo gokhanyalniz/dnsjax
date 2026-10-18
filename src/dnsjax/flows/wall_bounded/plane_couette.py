@@ -1,27 +1,24 @@
 r"""Plane Couette flow: wall-bounded shear between two moving plates.
 
-This module defines the ``PlaneCouetteFlow`` dataclass, which holds the
-plane-Couette base flow; the geometry (wall-normal grid, FD matrices,
-influence-matrix operators and iteration, solvers) is inherited from
-:class:`~dnsjax.geometries.wall_bounded.cartesian.CartesianFlow`.  The
-module exports the flow-module surface that
-:class:`~dnsjax.flow_spec.FlowSpec` lists under ``flow_module``, the
-optional ``get_driving``, and the transient-growth hook
-``frozen_profile_flow``.
+``PlaneCouetteFlow`` adds the base flow to
+:class:`~dnsjax.geometries.wall_bounded.cartesian.CartesianFlow`, which
+holds the geometry (wall-normal grid, FD matrices, influence-matrix
+operators and iteration, solvers).  The module exports the flow-module
+surface of :class:`~dnsjax.flow_spec.FlowSpec`, with the optional
+``get_driving`` and the transient-growth hook ``frozen_profile_flow``.
 
 The influence-matrix method enforces the no-slip wall BCs and the
 *wall-row* divergence exactly at every time step; under the default
 ``res.consistent_imm`` the interior discrete divergence vanishes
-algebraically too, and only on the legacy primitive path is it left as
-a truncation-level residual.  No post-step projection is fused into the
+algebraically too, leaving a truncation-level residual only on the
+legacy primitive path.  No post-step projection is fused into the
 stepper, as the triply-periodic geometry fuses one: a wall-bounded
 state-side projection is unstable (the ``cartesian`` Design notes,
 "Routes tried and retired").
 
 Base flow
 ---------
-The laminar base flow is `$U(y) = y$` on `$y \in [-1, 1]$`, with
-the walls moving at `$\pm 1$`.  Its derived quantities:
+`$U(y) = y$` on `$y \in [-1, 1]$`, the walls moving at `$\pm 1$`:
 
 - `$dU_x/dy = 1$`
 - `$\nabla \times \mathbf{U} = (0, 0, -1)$`
@@ -31,10 +28,9 @@ Spanwise blocking
 -----------------
 With ``block_mean_spanwise_velocity = True``, each IMM iteration
 zeroes the perturbation bulk velocity in the spanwise direction
-`$(-\sin\theta, 0, \cos\theta)$`, simulating the presence of
-sidewalls that prevent net spanwise momentum.  This option is
-independent of ``driving`` and uses the same Helmholtz response
-as the streamwise constant-bulk-velocity enforcement.
+`$(-\sin\theta, 0, \cos\theta)$`, as sidewalls preventing net
+spanwise momentum would, independently of ``driving``
+(:func:`~dnsjax.geometries.wall_bounded.cartesian._apply_bulk_corrections`).
 """
 
 from dataclasses import dataclass
@@ -111,11 +107,9 @@ flow: PlaneCouetteFlow = PlaneCouetteFlow()
     reset_ab2_kappa,
 ) = build_cartesian_stepper(flow)
 
-# No ``to_solver_basis``/``from_solver_basis`` here, under either
-# ``res.consistent_imm`` formulation: the Cartesian state is physical
-# `(u, v, w)` throughout, and the default scheme's evolved scalars
-# never leave ``cartesian._imm_iteration_vw``.  Every consumer of the
-# pair looks it up with ``getattr`` and falls back to the identity.
+# No basis pair (FlowSpec): the state is physical `(u, v, w)` under
+# either ``res.consistent_imm`` formulation, the default's evolved
+# scalars never leaving ``cartesian._imm_iteration_vw``.
 
 
 def frozen_profile_flow(us: Array) -> PlaneCouetteFlow:
@@ -260,16 +254,7 @@ def _get_driving_jit(
 
 
 def get_driving(state: Array) -> dict[str, Array]:
-    r"""Applied mean-mode driving inferred from *state* alone.
-
-    The optional flow-module export ``__main__`` uses for the one
-    ``stats.dat`` row with no step behind it (``t = t0``); every other
-    row carries the value the corrector applied, threaded out
-    of the step.  Same keys and sign as that column (the applied
-    force `$-\Pi$`, :mod:`dnsjax.ic.mean_mode`), ``{}`` when no
-    driving knob is on.  Takes the **physical** view of *state*, like
-    :func:`get_stats`.
-    """
+    """Applied mean-mode driving (:class:`~dnsjax.flow_spec.FlowSpec`)."""
     return _get_driving_jit(state, flow)
 
 

@@ -32,8 +32,7 @@ reshape.
 
 On-disk layout
 --------------
-Each component is stored exactly as the solver holds it (the
-:mod:`dnsjax.sharding` spectral layout) at the true mode counts:
+Per component, in the :mod:`dnsjax.sharding` spectral layout:
 
 ===============  =======================  ================
 family           component shape          axes
@@ -43,34 +42,37 @@ triply-periodic  ``(ny-1, nz-1, nx//2)``  ``(ky, kz, kx)``
 ===============  =======================  ================
 
 `$k_x$` (the real-FFT axis, Nyquist omitted) is innermost; the
-wall-normal / `$k_y$` axis is outermost.
+wall-normal / `$k_y$` axis is outermost.  The components are the
+physical ones in every family (cylindrical/annular `$u_r$`,
+`$u_\theta$`, and any further component a flow stores): the caller
+converts the solver's decoupled `$u_\pm$` / spin working basis, so
+these functions stay basis-agnostic.
 
 I/O granularity and memory
 --------------------------
-No transpose is ever performed, and every transfer is one
-C-contiguous **slab**: a device's whole range of the chunk's slowest
-axis, for one component.  The chunk is the C-ordered global array
-``(A, kz, kx)`` (``A`` = the wall-normal / `$k_y$` axis), so its
-slowest-varying axis is ``A`` and its fastest is `$k_x$`.  The solver
-layout shards the two *fastest* axes (`$k_z$` by ``np0``, `$k_x$` by
-``np1``), which fragments a device's bytes into ``local_kx``-element
-pieces (Design notes: "Why an I/O layout").
+Every transfer is one C-contiguous **slab**: a device's whole range of
+the chunk's slowest axis, for one component.  The chunk is the
+C-ordered global array ``(A, kz, kx)`` (``A`` = the wall-normal /
+`$k_y$` axis), and the solver layout shards its two *fastest* axes
+(`$k_z$` by ``np0``, `$k_x$` by ``np1``), which fragments a device's
+bytes into ``local_kx``-element pieces
+(Design notes: "Why an I/O layout").
 
 So the state is resharded once per save onto an **I/O layout**
-(:func:`_io_spec`) that cuts the *slowest* axis instead: each device
-takes a contiguous slab of ``A`` and holds `$k_z$`/`$k_x$` whole, and
-its bytes become one contiguous range per component --
-``n_components * ndev`` transfers of tens of MiB.  That count holds
-on **every** mesh, not only an unpadded one, because the reshard also
-trims the solver layout's divisibility padding: the I/O buffer carries
-the *true* mode counts, so it **is** the device's byte range rather
-than a padded superset of it (:func:`_to_io_layout_core`,
-:func:`_io_local_shape`).  Reads take the mirror path (read the slabs,
-reshard back).  The cost is one exchange per save/load -- **one jitted
-program**, routed one mesh axis at a time (:func:`_via_mid`) -- plus a
-transient second copy of the state, distributed one local shard per
-device.  A single-device mesh already *is* the I/O layout and pays
-neither.
+(:func:`_io_spec`) that cuts ``A`` instead: each device takes a
+contiguous slab of ``A`` and holds `$k_z$`/`$k_x$` whole, and its bytes
+become one contiguous range per component -- at most
+``n_components * ndev`` transfers of tens of MiB (a device whose slab is
+empty makes none).  That bound holds on **every** mesh because
+the reshard also trims the solver layout's divisibility padding: the
+I/O buffer carries the *true* mode counts, so it **is** the device's
+byte range rather than a padded superset of it
+(:func:`_to_io_layout_core`, :func:`_io_local_shape`).  Reads take the
+mirror path (read the slabs, reshard back).  The cost is one exchange
+per save/load -- **one jitted program**, routed one mesh axis at a
+time (:func:`_via_mid`) -- plus a transient second copy of the state,
+distributed one local shard per device.  A single-device mesh already
+*is* the I/O layout and pays neither.
 
 **Extra memory per device by I/O engine** (beyond the resident
 state):
@@ -85,11 +87,11 @@ Host, no cupy (w and r)  one local shard  one shard
 =======================  ===============  =====================
 
 The "one local shard" column is the reshard's transient second copy,
-which every engine pays; it is absent on a single-device mesh.  The
-padding trim inside the reshard is free of it in the usual case --
-it replaces the leading-axis pad's buffer rather than adding one --
-and costs a second such transient only when the device count divides
-``A`` exactly *and* a mode axis is padded.
+which every engine pays (none on a single-device mesh).  The padding
+trim inside the reshard adds nothing in the usual case -- it replaces
+the leading-axis pad's buffer -- and costs a second such transient only
+when the device count divides ``A`` exactly *and* a mode axis is
+padded.
 
 I/O engine
 ----------
@@ -109,8 +111,10 @@ notes: "cuFile alignment").  TensorStore is used only to generate the
 ``zarr.json`` bytes (in a throwaway temporary directory); compression
 is never used (it would break random-access streaming).
 
-- **GDS** (NVIDIA GPUDirect Storage): when ``kvikio`` and ``cupy``
-  are available, slabs move directly between GPU memory and disk.
+- **GDS** (NVIDIA GPUDirect Storage): when ``kvikio``, ``cupy`` and
+  the nvidia-fs driver are usable (:func:`_gds_available`), slabs move
+  directly between GPU memory and disk; untested with that driver
+  loaded.
 - **Host + cupy** (NVIDIA GPU, no GDS): slabs are transferred one
   at a time with ``cupy.asnumpy`` (write) or ``cupy.ndarray.set``
   (read).
@@ -139,12 +143,13 @@ flow-relevant, public-named, resolved parameter dump
 (:func:`dnsjax.param_surface.recorded_params_dump`) for resume
 validation.  It is read with the standard library (no JAX) via
 :mod:`dnsjax.snapshot_meta`, shared with
-:func:`dnsjax.parameters.read_snapshot_params`.
+:func:`dnsjax.parameters.read_snapshot_params`; a snapshot of a format
+version below 6 is rejected there
+(:func:`dnsjax.snapshot_meta.read_snapshot_meta`), never translated.
 
 When stats are supplied, an optional ``_dnsjax_stats.json`` member
 holds the state's physical diagnostics (the ``get_stats`` dict as
-``{name: value}``); readers that do not need it ignore the
-extra member.
+``{name: value}``); readers that do not need it ignore it.
 
 Solver-carried fields (optional ``carry/``)
 -------------------------------------------
@@ -153,9 +158,9 @@ per-component chunking, holds state the **solver** carries beyond the
 velocity.  Only the pipe family's default scheme has any: two
 spin-quad difference halves it evolves rather than re-derives
 (``_cylindrical_stepping._imm_iteration_vw``; the metadata key
-``carried`` names them).  They are solver-internal: the stored state is the
-physical velocity as always, and nothing outside the solver's resume
-reads ``carry/``.  With it a resumed run continues its trajectory to
+``carried`` names them).  They are solver-internal: the stored state is
+the physical velocity, and nothing outside the solver's resume reads
+``carry/``.  With it a resumed run continues its trajectory to
 round-off; without it -- an older snapshot, one a script rewrote, or
 ``outs.snapshot_embed_carry = False`` -- the resume re-derives the two
 fields from the velocity, a one-off truncation-sized change.  So does
@@ -167,8 +172,7 @@ something else.
 
 Resolution changes at load
 --------------------------
-A resume may change **any** resolution axis; nothing about the read
-requires the current run to match the file.  The per-device slabs are
+A resume may change **any** resolution axis.  The per-device slabs are
 sized and offset from the stored ``native_shape``, and
 :func:`_from_io_layout_core` then regrids each axis on the layout
 where that axis is local, at no extra collective: the real-FFT
@@ -178,18 +182,9 @@ where that axis is local, at no extra collective: the real-FFT
 high-`$|k|$` end so every surviving mode keeps its wavenumber and the
 `$k_x = 0$` plane stays Hermitian-symmetric.  The wall-bounded leading
 axis is the FD wall-normal one and is left at the stored length for
-``__main__._interpolate_if_needed``.  What this does **not** do is
-re-interpret wavenumbers: a `$L_x$` / `$L_z$` change alongside a mode
-change rescales `$k = 2\pi q / L$` for the survivors too.
-
-The on-disk format is ``format_version: 6``: the solver's native
-spectral layout, physical components in every family
-(cylindrical/annular `$u_r$`, `$u_\theta$`, and any further component
-a flow stores; the solver's decoupled `$u_\pm$` / spin working basis
-is converted by the caller, so these functions stay basis-agnostic),
-and the public-named parameter dump.  Older
-snapshots are rejected at read
-(:func:`dnsjax.snapshot_meta.read_snapshot_meta`), never translated.
+``__main__._interpolate_if_needed``.  Wavenumbers are **not**
+re-interpreted: a `$L_x$` / `$L_z$` change alongside a mode change
+rescales `$k = 2\pi q / L$` for the survivors too.
 
 Design notes
 ------------
@@ -213,12 +208,12 @@ Neither needs an exotic grid: the first comes with any even ``np0``,
 and the second is absent from the usual power-of-two ``nx`` only
 because ``np1`` then happens to divide ``nx // 2``.
 
-**Not the pre-v5 layout.**  The store is still one fixed
-np-independent global array in the native order (that is what makes
-resume np-agnostic), and the on-disk bytes are unchanged: the I/O
-layout moves only *which device writes which byte range*.  The pre-v5
-layouts stored a sharded axis outermost instead, which cost a
-transpose of every slab on every save and load.
+**Not the pre-v5 layout.**  The store is one fixed np-independent
+global array in the native order (what makes resume np-agnostic), and
+the I/O layout leaves its bytes unchanged, moving only *which device
+writes which byte range*.  The pre-v5 layouts stored a sharded axis
+outermost instead, which cost a transpose of every slab on every save
+and load.
 
 **One jitted reshard.**  Expressed eagerly -- a :func:`jax.device_put`
 per leg -- the reshard is redistributed piece by piece instead of as a
@@ -232,15 +227,14 @@ reshard-bound.
 against a failure seen in practice.  ``import kvikio`` alone left
 ``kvikio.defaults`` unresolved on some versions, so the check raised
 ``AttributeError`` and took the "unusable" branch on a cluster that had
-kvikIO installed.  And without the nvidia-fs driver, kvikIO's compat
-shim (POSIX I/O on a thread pool) measured 1.5-6x *slower* than this
+kvikIO installed.  Without the nvidia-fs driver, kvikIO's compat shim
+(POSIX I/O on a thread pool) measured 1.5-6x *slower* than this
 module's own host path below 1 MiB spans.
 
 **cuFile alignment.**  cuFile's direct path prefers 4096-aligned file
 offsets; the tar's 512-aligned ones cost a bounce buffer for the head
-and tail of each transfer.  That was a real penalty when a transfer
-was 512 B and is a rounding error now that the I/O layout makes it
-tens of MiB.
+and tail of each transfer: a real penalty on a 512 B transfer, a
+rounding error on the I/O layout's tens of MiB.
 """
 
 import json
@@ -301,26 +295,24 @@ def _gds_available() -> bool:
     Four things must hold (Design notes: "Detecting GDS"):
 
     - **kvikIO imports.**  ``kvikio.defaults`` is a *submodule*, not
-      an attribute of the package, so bind the submodule itself
-      (``import kvikio.defaults as ...``, a ``sys.modules`` lookup)
-      rather than reaching for it through the package.
+      an attribute of the package, so the submodule itself is bound
+      (``import kvikio.defaults as ...``, a ``sys.modules`` lookup).
     - **The nvidia-fs driver is loaded.**  Without it kvikIO still
-      imports and still accepts every call; it services them
-      through its *compat* shim, which is not GDS and is slower than
-      the host path.  ``AUTO`` -- the default compat mode -- is exactly
-      the case that would otherwise be mistaken for "GDS is on".
+      imports and accepts every call, servicing them through its
+      *compat* shim, which is not GDS and is slower than the host
+      path.  ``AUTO`` -- the default compat mode -- is exactly the case
+      that would otherwise be mistaken for "GDS is on".
     - **Compat mode is not explicitly ``ON``.**
       ``defaults.get("compat_mode")`` returns a ``CompatMode`` enum
       (``OFF`` / ``ON`` / ``AUTO``), not a bool; a bare truth test
       would read ``AUTO`` as "compat" and demote every run.  Compare
       against the enum member.
     - **cupy imports.**  Both GDS engines wrap their device buffers
-      with it, so without cupy this path cannot run at all -- and
-      answering "GDS" would turn the first snapshot of the run into
-      an ``ImportError`` instead of a fallback.
+      with it; without cupy, answering "GDS" would turn the run's first
+      snapshot into an ``ImportError`` instead of a fallback.
 
     Cached: the answer cannot change within a process, and the
-    rejection line would otherwise print on every single snapshot.
+    rejection line would otherwise print on every snapshot.
     """
     try:
         import cupy  # noqa: F401  the GDS engines' buffer wrapper
@@ -358,10 +350,9 @@ def _require_dense(vec) -> None:
     contiguous only if the array it slices is dense row-major.  kvikIO
     reads ``__cuda_array_interface__`` and cupy's dlpack import honours
     whatever strides it is handed, so a non-default XLA layout would
-    transfer the *wrong bytes* with no error at all -- silent
-    corruption of a snapshot, which is the one artefact a run cannot
-    reconstruct.  Cheap to check, and it converts that class into a
-    crash.
+    transfer the *wrong bytes* with no error: silent corruption of a
+    snapshot, the one artefact a run cannot reconstruct.  The check is
+    cheap and turns that into a crash.
     """
     if not vec.flags.c_contiguous:
         raise ValueError(
@@ -376,9 +367,9 @@ def _cuda_ordinal(device) -> int:
 
     ``jax.local_devices()`` order is not guaranteed to be the CUDA
     ordinal order, and the read engines allocate cupy buffers whose
-    byte ranges were computed from the *JAX* device -- so the two must
-    be tied together explicitly.  ``local_hardware_id`` is that tie;
-    fall back to ``id`` on backends that do not expose it.
+    byte ranges were computed from the *JAX* device, so the two are
+    tied explicitly: by ``local_hardware_id``, else by ``id`` on
+    backends that do not expose it.
     """
     ordinal = getattr(device, "local_hardware_id", None)
     return int(ordinal if ordinal is not None else device.id)
@@ -452,19 +443,15 @@ def _n_devices() -> int:
 def _io_spec():
     r"""Partition spec of the snapshot **I/O layout**.
 
-    The stored chunk is the C-ordered global array
-    ``(A, kz_true, kx_true)``, so its *slowest*-varying axis is the
-    leading one (the wall-normal `$y$` / `$k_y$` axis, unsharded in
-    the solver layout).  Splitting **that** axis across every device
-    -- and leaving `$k_z$` and `$k_x$` whole, at the true mode counts
-    (:func:`_to_io_layout_core` trims the padding) -- makes each
-    device's bytes one contiguous file range per component.
-
-    The solver layout shards the two *fastest* axes instead (`$k_z$`
-    by ``np0``, `$k_x$` by ``np1``), which fragments a device's bytes
-    into ``local_kx``-element pieces, so :func:`_to_io_layout` reshards
-    once per save and :func:`load_snapshot` reshards back after the
-    read (Design notes: "Why an I/O layout").
+    It splits the leading, *slowest*-varying axis of the stored chunk
+    ``(A, kz_true, kx_true)`` (the wall-normal `$y$` / `$k_y$` axis,
+    unsharded in the solver layout) across every device and keeps
+    `$k_z$` and `$k_x$` whole at the true mode counts
+    (:func:`_to_io_layout_core` trims the padding), so each device's
+    bytes are one contiguous file range per component.
+    :func:`_to_io_layout` reshards onto it once per save and
+    :func:`load_snapshot` back after the read
+    (module docstring, "I/O granularity and memory").
     """
     axes = tuple(a for a in (sharding.a0, sharding.a1) if a is not None)
     # ``(a0, a1)`` splits the axis a0-major, so the slab index is the
@@ -504,20 +491,20 @@ def _io_local_shape(
 
     The leading axis is this device's (padded) slab; `$k_z$` and
     `$k_x$` are whole and at the **true** mode counts, the solver
-    layout's divisibility padding having been trimmed off inside the
-    reshard (:func:`_to_io_layout_core`).  So the buffer *is* the
-    device's byte range in the file: one contiguous slab per
-    component, whatever the mesh pads.
+    layout's divisibility padding trimmed inside the reshard
+    (:func:`_to_io_layout_core`).  So the buffer *is* the device's byte
+    range in the file: one contiguous slab per component, whatever the
+    mesh pads.
 
     The mode counts are passed in rather than read from ``params``
     because a read's are the **stored** ones, which a resolution-change
     resume leaves differing from the current run's: the buffer has to
     match the file (the offsets come from the same stored
     ``native_shape``), and :func:`_from_io_layout_core` regrids the
-    modes afterwards.  The save path passes the current counts, which
-    are the stored ones by definition.  *n_comp* is the component
-    count of the array being moved: the state's by default, the
-    carried fields' for the ``carry/`` member.
+    modes afterwards.  A save's are the counts the file stores
+    (:func:`_to_io_layout_core`).  *n_comp* is the component count of
+    the array being moved: the state's by default, the carried fields'
+    for the ``carry/`` member.
     """
     return (
         _n_components() if n_comp is None else n_comp,
@@ -534,10 +521,9 @@ def _a_offset(a_start: int, kz_true: int, kx_true: int) -> int:
     and a device owns whole `$(k_z, k_x)$` planes at the true mode
     counts, so its slab is the single contiguous element range
     ``[off, off + na * kz_true * kx_true)`` starting here -- the same
-    range in the file and in the local buffer, in the same order, with
-    no transpose and no fragmentation.  The one place the arithmetic
-    is written down; ``native_shape``, the shape it is derived from, is
-    cross-checked against the chunks in
+    range in the file and in the local buffer, in the same order.  The
+    one place the arithmetic is written down; ``native_shape``, the
+    shape it is derived from, is cross-checked against the chunks in
     :func:`dnsjax.snapshot_meta.snapshot_component_offsets`.
     """
     return a_start * kz_true * kx_true
@@ -576,11 +562,11 @@ def _resize_wrapped_axis(
     :func:`dnsjax.harmonics.stored_mode_counts`, the same leaf that
     defines the ordering.
 
-    A no-op when the counts agree, so the unchanged-resolution path
-    compiles to exactly what it did before.  *axis* must be **local**
-    on the caller's layout (a sharded axis cannot be sliced); the
-    zeros come from :func:`_pad_axis`, so they inherit the surrounding
-    array's sharding rather than needing a spec of their own.
+    A no-op when the counts agree, so it adds nothing to an
+    unchanged-resolution program.  *axis* must be **local** on the
+    caller's layout (a sharded axis cannot be sliced); the zeros come
+    from :func:`_pad_axis`, so they inherit the surrounding array's
+    sharding rather than needing a spec of their own.
     """
     if m_src == m_dst:
         return state
@@ -690,15 +676,13 @@ def resume_wall_grids(meta: dict) -> tuple[np.ndarray, np.ndarray]:
     ``(y_old, y_new)`` in float64: the wall-normal grid the stored
     state lives on (``wall_normal_grid`` of the metadata) and the one
     this run holds (``derived_params.wall_normal_grid``), for
-    :func:`wall_regrid_matrix` and :func:`same_wall_grid`.  Each is
-    rebuilt by :func:`wall_grid_nodes` from its ``res.ny`` /
-    ``geo.grid_type`` / ``geo.grid_stretch`` (the recorded ones, the
-    live ones) where that reproduces it to float32 rounding and it is
-    no custom ``geo.wall_grid``, else taken as it is
-    (:func:`_sharpened`).  So a single-precision run's float32-rounded
-    grids, recorded and held, still take the spectral route, and a
-    precision change alone is no regrid; a custom grid keeps the
-    stencil it always had.
+    :func:`wall_regrid_matrix` and :func:`same_wall_grid`.  Each goes
+    through :func:`_sharpened` with its own ``res.ny`` /
+    ``geo.grid_type`` / ``geo.grid_stretch`` / ``geo.wall_grid`` (the
+    recorded ones, the live ones), so a single-precision run's
+    float32-rounded grids, recorded and held, still take the spectral
+    route, and a precision change alone is no regrid; a custom grid is
+    never rebuilt.
     """
     from .flows.registry import stored_value
 
@@ -842,16 +826,15 @@ def _via_mid(
 
     Going straight between the solver layout ``P(-, -, a0, a1)`` and
     the I/O layout ``P(-, (a0, a1), -, -)`` relocates **both** mesh
-    axes onto a different array axis at once, and XLA's SPMD
-    partitioner cannot express that as an exchange.  It says so and
-    takes its "last resort": *replicate* the whole array on every
-    device, then slice.  That is ``ndev`` times the traffic and
-    ``ndev`` times the peak memory of the exchange it replaces --
-    it prints an "Involuntary full rematerialization" warning at
-    ``np0 > 1, np1 > 1``.
+    axes onto a different array axis at once, which XLA's SPMD
+    partitioner cannot express as an exchange.  It says so and takes
+    its "last resort": *replicate* the whole array on every device,
+    then slice -- ``ndev`` times the traffic and ``ndev`` times the
+    peak memory of the exchange it replaces, with an
+    "Involuntary full rematerialization" warning at ``np0 > 1, np1 > 1``.
 
     Routing through ``P(-, a0, -, a1)`` makes each leg a single-mesh-
-    axis move, which SPMD does express as an all-to-all.  On a 1D mesh
+    axis move, which SPMD expresses as an all-to-all.  On a 1D mesh
     one of the two legs is the identity (the intermediate spec equals
     the source or the target), so this costs nothing there.
 
@@ -873,13 +856,13 @@ def _to_io_layout_core(state: Array, kz_out: int, kx_out: int) -> Array:
     **One** jitted program, and *where* each trim sits is what makes it
     free.  The solver layout pads `$k_z$` to a multiple of ``np0`` and
     `$k_x$` to a multiple of ``np1``, neither of which the file has;
-    trimming them here rather than in the writers is what leaves every
-    device with one contiguous slab per component on **every** mesh
-    (see the module docstring).  A sharded axis cannot be sliced, so
-    each trim goes where its axis is local -- `$k_z$` on the mid
-    layout, `$k_x$` on the I/O layout -- which is also immediately
-    before the next collective, so the trimmed array *replaces* the
-    untrimmed one in the liveness window instead of adding to it.
+    trimming them here rather than in the writers leaves every device
+    one contiguous slab per component on **every** mesh (module
+    docstring).  A sharded axis cannot be sliced, so each trim goes
+    where its axis is local -- `$k_z$` on the mid layout, `$k_x$` on
+    the I/O layout -- which is also immediately before the next
+    collective, so the trimmed array *replaces* the untrimmed one in
+    the liveness window instead of adding to it.
 
     A trim is a no-op exactly when its mesh axis is 1
     (``round_up_padded(n, 1) == n``), i.e. exactly when the leg it
@@ -892,7 +875,7 @@ def _to_io_layout_core(state: Array, kz_out: int, kx_out: int) -> Array:
     same two points and at no extra collective -- `$k_z$` by
     :func:`_resize_wrapped_axis` (the wrap order), `$k_x$` by a prefix
     slice of the half axis.  At the true counts the resize is the
-    identity, so a snapshot compiles to exactly the program it did.
+    identity and adds nothing to a snapshot's program.
     """
     ndev = _n_devices()
     state = _pad_axis(state, 1, _a_local(state.shape[1], ndev) * ndev)
@@ -916,24 +899,21 @@ def _from_io_layout_core(
 ) -> Array:
     r"""Restore the mode padding, reshard back, drop the slab padding.
 
-    The exact mirror of :func:`_to_io_layout_core`, and for the same
-    reasons: each mode axis is re-padded where it is local (`$k_x$` on
-    the I/O layout, `$k_z$` on the mid one), and the leading-axis slice
-    has to follow the reshard because that axis is sharded until then
-    -- slicing a sharded axis is the ``ShardingTypeError`` trap.
+    The mirror of :func:`_to_io_layout_core`: each mode axis is
+    re-padded where it is local (`$k_x$` on the I/O layout, `$k_z$` on
+    the mid one), and the leading-axis slice follows the reshard
+    because that axis is sharded until then -- slicing a sharded axis
+    is the ``ShardingTypeError`` trap.
 
-    It is also where a **resolution-change** resume regrids the Fourier
-    axes, for exactly the same locality reason, and at no extra
-    collective: *kz_src* / *kx_src* are the snapshot's stored mode
-    counts, and each axis is resized to the current run's on the same
-    layout that then re-pads it.  `$k_x$` is the real-FFT half axis, so
-    there it is a plain truncate-or-append (:func:`_trim_axis` /
-    :func:`_pad_axis`); `$k_z$` is wrap-ordered and goes through
+    A **resolution-change** resume regrids the Fourier axes here too
+    (module docstring, "Resolution changes at load"): *kz_src* /
+    *kx_src* are the snapshot's stored mode counts, and each axis is
+    resized to the current run's on the layout that then re-pads it --
+    `$k_x$` by :func:`_trim_axis` / :func:`_pad_axis`, `$k_z$` by
     :func:`_resize_wrapped_axis`.  *ky_dst* is the periodic family's
     third Fourier axis (``res.ny - 1``), local only after the final
-    reshard; ``None`` for wall-bounded, whose leading axis is the FD
-    wall-normal one and is re-gridded later by
-    ``__main__._interpolate_if_needed``.
+    reshard; ``None`` for wall-bounded, whose leading axis is left at
+    the stored length.
     """
     state = _pad_axis(
         _trim_axis(state, 3, min(kx_src, _kx_true())), 3, sharding.nx_spec
@@ -992,18 +972,17 @@ def _to_io_layout(
 ) -> Array:
     r"""Reshard *state* onto the I/O layout, padding the leading axis.
 
-    One exchange per save, against ~1e5 serialized 512 B writes per
-    device without it.  Costs a transient second copy of the state,
-    distributed -- one local shard per device.  A single-device mesh
-    already *is* the I/O layout down to the padding (``np0 = np1 = 1``
-    pads no axis, so the trims and the slab pad in
+    Its cost, one exchange and a transient second copy of the state:
+    the module docstring ("I/O granularity and memory").  A
+    single-device mesh already *is* the I/O layout down to the padding
+    (``np0 = np1 = 1`` pads no axis, so the trims and the slab pad in
     :func:`_to_io_layout_core` are all no-ops), so it reshards nothing
     and pays neither.
 
     **The exchange must be one jitted program**: expressed eagerly, a
     :func:`jax.device_put` per leg, the runtime redistributes piece by
-    piece instead of emitting a collective, 338x slower on an H100
-    node (Design notes: "One jitted reshard").
+    piece instead of emitting a collective
+    (Design notes: "One jitted reshard").
 
     *kz_out* / *kx_out* (default: the run's true counts) are the mode
     counts the file stores (:func:`_to_io_layout_core`).  A single
@@ -1026,10 +1005,9 @@ def _n_components() -> int:
     """Number of stacked state components for the current system.
 
     The flow spec's ``n_components`` (3 velocity components unless
-    the flow carries more).
-    ``validate_snapshot_params`` enforces the ``phys.system`` match,
-    so a resumed snapshot's component count always equals this -- the
-    single source of truth for both save and load.
+    the flow carries more).  ``validate_snapshot_params`` enforces the
+    ``phys.system`` match, so a resumed snapshot's component count
+    always equals this: the single source of truth for save and load.
     """
     from .flows.registry import spec_for
 
@@ -1039,10 +1017,9 @@ def _n_components() -> int:
 def _padded_local_shape() -> tuple[int, ...]:
     """Padded per-device vector shape for the current mesh.
 
-    Used for allocating load buffers.  Each axis that is
-    sharded (``kz`` by ``np0``, ``kx`` by ``np1``) is divided
-    by its mesh axis size; unsharded axes keep their full
-    (potentially padded) extent.
+    The buffers :func:`assemble_local_shards` fills.  Each sharded axis
+    (``kz`` by ``np0``, ``kx`` by ``np1``) is divided by its mesh axis
+    size; unsharded axes keep their full (potentially padded) extent.
     """
     local_kz = sharding.nz_spec // sharding.np0
     local_kx = sharding.nx_spec // sharding.np1
@@ -1087,11 +1064,11 @@ def assemble_local_shards(
     r"""Assemble a sharded spectral state from per-device-generated shards.
 
     Builds a state directly in the **solver** layout, for the
-    in-process IC generators.  (:func:`load_snapshot` assembles on the
-    I/O layout instead and reshards -- its shards come from the file,
-    whose axis order is fixed, whereas a generator can fill
-    whichever block it is asked for.)  Each local device's padded
-    shard is allocated zero-filled (shape
+    in-process IC generators: a generator can fill whichever block it
+    is asked for, whereas :func:`load_snapshot`'s shards come from the
+    file, whose axis order is fixed, so it assembles on the I/O layout
+    and reshards.  Each local device's padded shard is allocated
+    zero-filled (shape
     :func:`_padded_local_shape`) and handed to
     ``fill_local(buf, kz_start, nkz, kx_start, nkx)``, which fills
     ``buf[:, :, :nkz, :nkx]`` with that device's **true** modes -- the
@@ -1233,11 +1210,10 @@ def _write_tar_skeleton(
     then each member's ``zarr.json``) are written in full; each chunk
     member -- every member's components in turn, ``{name}/c/{i}/0/0/0``
     -- gets a correct header followed by a sparse-reserved, zero-filled
-    data region padded to the 512-byte block boundary.  For a snapshot
-    with ``carry/`` that is exactly the order it always had.  The
-    archive ends with the two zero blocks tar expects.  After this the
-    file is full-length, so every device can safely write its disjoint
-    byte ranges into the chunk regions.
+    data region padded to the 512-byte block boundary.  The archive
+    ends with the two zero blocks tar expects.  After this the file is
+    full-length, so every device can safely write its disjoint byte
+    ranges into the chunk regions.
     """
     comp_nbytes = math.prod(comp_shape) * itemsize
     comp_padded = comp_nbytes + (-comp_nbytes) % 512
@@ -1301,21 +1277,17 @@ def _metadata(
 ) -> dict:
     r"""Serialize the ``_dnsjax_meta.json`` member content.
 
-    ``git_hash`` records the code revision that wrote the snapshot
-    (provenance only -- never read back on load).  Additive keys like
-    it need no ``format_version`` bump: readers use targeted lookups
-    and ignore unknown keys.  Format 6 stores physical components
-    (cylindrical/annular `$u_r$`, `$u_\theta$`, and any further
-    stored component) in the solver's native spectral layout, so
-    ``native_shape[1:]`` **is** the on-disk per-component chunk
-    shape; ``params`` is the flow-relevant, **public-named**,
-    resolved dump plus the relevant extension sections
-    (:func:`dnsjax.param_surface.recorded_params_dump`), mapped back
-    by readers via :func:`dnsjax.flows.registry.internalize_stored` /
-    ``stored_value``.  Pre-6 snapshots are rejected at
-    :func:`dnsjax.snapshot_meta.read_snapshot_meta`.  *carried* names
-    the optional ``carry/`` fields (key ``carried``, present only with
-    them).
+    The keys and the format: the module docstring ("On-disk layout",
+    "Metadata and versioning").  ``git_hash`` records the code
+    revision that wrote the snapshot (provenance only -- never read
+    back on load).  Additive keys like it need no ``format_version``
+    bump: readers use targeted lookups and ignore unknown keys.
+    ``params`` is the recorded dump with the relevant extension
+    sections (:func:`dnsjax.param_surface.recorded_params_dump`),
+    mapped back by readers via
+    :func:`dnsjax.flows.registry.internalize_stored` /
+    ``stored_value``.  *carried* names the optional ``carry/`` fields
+    (key ``carried``, present only with them).
 
     With *layout* the shape, grid and dump are the layout's (and
     *n_components* the stored array's), and its ``extra`` entries are
@@ -1388,12 +1360,11 @@ def _write_chunks_gds(
 ) -> None:
     """Stream each local shard to the tar slab-by-slab via kvikIO.
 
-    Each component's chunk lives at ``comp_offsets[comp]`` inside the
-    single archive; all writes are at that base plus the in-component
-    byte offset, directly from GPU memory (the slab is a contiguous
-    view of the shard -- no staging, no copies).  *state* is in the I/O
-    layout at the true mode counts (:func:`_to_io_layout`), so this is
-    exactly one write per component per device.
+    *state* is in the I/O layout at the true mode counts
+    (:func:`_to_io_layout`), so a device writes one slab per component,
+    at ``comp_offsets[comp]`` plus the in-component byte offset,
+    directly from GPU memory (the slab is a contiguous view of the
+    shard -- no staging, no copies).
     """
     import cupy as cp
     import kvikio
@@ -1412,11 +1383,10 @@ def _write_chunks_gds(
             for comp in range(len(comp_offsets)):
                 slab = cp_vec[comp][:na]
                 n = f.write(slab, file_offset=comp_offsets[comp] + off)
-                # A short write leaves the sparse-reserved zeros of the
-                # skeleton in place -- a snapshot that loads fine and is
-                # blank in the middle.  The host writer guards this too,
-                # and the I/O layout made each slab tens of MiB, so
-                # there is something substantial to lose.
+                # A short write would leave the skeleton's
+                # sparse-reserved zeros in place: a snapshot that loads
+                # fine and is blank in the middle (a slab is tens of
+                # MiB).
                 if n != slab.nbytes:
                     raise OSError(
                         f"short GDS write to {tar_path}: {n} of "
@@ -1463,10 +1433,9 @@ def _read_chunks_gds(
                     for comp in range(len(comp_offsets)):
                         slab = vec[comp][:na]
                         n = f.read(slab, file_offset=comp_offsets[comp] + off)
-                        # Short read = truncated archive; the buffer was
-                        # zero-allocated, so without this the tail of
-                        # the state silently stays blank (see the host
-                        # reader).
+                        # The buffer is zero-allocated: a short read
+                        # would leave the tail of the state silently
+                        # blank.
                         if n != slab.nbytes:
                             raise OSError(
                                 f"short GDS read from {tar_path}: "
@@ -1492,11 +1461,11 @@ def _write_serialized(
     """Rank-ordered (token-passing) write across processes.
 
     Process ``r`` writes its shards only on its turn, so no two
-    processes hold the archive open for writing at the same time.
-    This is safe on filesystems such as NFS where concurrent
-    disjoint-range writes can corrupt data: each process opens,
-    writes and *closes* the file within its turn, so the next process
-    sees flushed bytes (close-to-open consistency).
+    processes hold the archive open for writing at the same time, and
+    each opens, writes and *closes* the file within its turn, so the
+    next sees flushed bytes (close-to-open consistency): safe on
+    filesystems such as NFS where concurrent disjoint-range writes can
+    corrupt data.
 
     All processes call the same ordered sequence of barrier tags;
     only the write itself is gated on ``process_index``, so the
@@ -1521,13 +1490,12 @@ def _write_chunks_host(
 
     *state* is in the I/O layout at the true mode counts
     (:func:`_to_io_layout`), so a device's slab is one write per
-    component.  When cupy is available (NVIDIA GPU platforms) each slab
-    is staged through ``cupy.asnumpy``, so the extra host memory is one
-    slab -- a whole component, ``shard / n_components``, rather than a
-    plane: the trade that turns ~1e5 small writes into a handful of big
-    ones.  Otherwise (CPU runs, non-NVIDIA GPUs) the full shard is
-    copied once with ``np.asarray`` and the slabs are written directly
-    from it (the module docstring's memory table).
+    component.  With cupy (NVIDIA GPU platforms) each slab is staged
+    through ``cupy.asnumpy``: one slab of host memory, a whole
+    component (``shard / n_components``) rather than a plane, the price
+    of a handful of big writes.  Otherwise (CPU runs, non-NVIDIA GPUs)
+    the full shard is copied once with ``np.asarray`` and the slabs are
+    written directly from it (the module docstring's memory table).
     """
     a_true, kz_true, kx_true = comp_shape
     try:
@@ -1572,12 +1540,11 @@ def _read_chunks_host(
 ) -> list[Array]:
     r"""Read each device's leading-axis slab via host I/O.
 
-    Each slab lands in an I/O-layout shard (np-agnostic).  When cupy
-    is available (NVIDIA GPU platforms), the output buffer is allocated
-    on GPU and each component's slab is copied onto its contiguous view
-    via ``cupy.ndarray.set``, through one slab of host memory (a
-    component, ``shard / n_components``).  Otherwise (CPU runs,
-    non-NVIDIA GPUs), the shard is assembled on the host with
+    Each slab lands in an I/O-layout shard (np-agnostic).  With cupy
+    (NVIDIA GPU platforms) the output buffer is allocated on GPU and
+    each component's slab is copied onto its contiguous view via
+    ``cupy.ndarray.set``, through one slab of host memory.  Otherwise
+    (CPU runs, non-NVIDIA GPUs) the shard is assembled on the host with
     ``readinto`` (no temporaries) and transferred at the end via
     ``jax.device_put``.  The caller reshards the assembled array back
     to the solver layout.
@@ -1607,7 +1574,7 @@ def _read_chunks_host(
                                 f.seek(comp_offsets[comp] + off)
                                 raw = f.read(dst.nbytes)
                                 # A short read raises here, in
-                                # ``reshape`` -- see the plain branch.
+                                # ``reshape`` (see the plain branch).
                                 dst.set(
                                     np.frombuffer(raw, dtype=dtype).reshape(
                                         dst.shape
@@ -1626,10 +1593,10 @@ def _read_chunks_host(
                     f.seek(comp_offsets[comp] + off)
                     n = f.readinto(dst)
                     if n != dst.nbytes:
-                        # Short read = truncated archive.  Without this
-                        # the tail of the state is silently left as the
-                        # zeros it was allocated with (the cupy branch
-                        # raises on its own, via frombuffer's reshape).
+                        # Without this a short read would silently leave
+                        # the tail of the state as the zeros it was
+                        # allocated with (the cupy branch raises on its
+                        # own, via frombuffer's reshape).
                         raise OSError(
                             f"short read from {tar_path}: {n} of "
                             f"{dst.nbytes} bytes (component "
@@ -1678,9 +1645,7 @@ def write_archive(
     same order as every other collective.
     """
     path = Path(path)
-    # Everything is written to a sibling and renamed at the end, so
-    # the final name never names a half-written archive (see
-    # :data:`_PARTIAL_SUFFIX`).
+    # The sibling the archive is built in (:data:`_PARTIAL_SUFFIX`).
     partial = path.with_name(path.name + _PARTIAL_SUFFIX)
     itemsize = _np_dtype(dtype_name).itemsize
 
@@ -1721,8 +1686,7 @@ def write_archive(
         else:
             write_fn(array, partial, offsets, comp_shape, itemsize)
     # Every write has landed and every file handle is closed (the
-    # engines all use ``with``), so the archive is complete and can
-    # take its real name.
+    # engines all use ``with``): the archive is complete.
     _barrier("snapshot_write")
     if sharding.main_device:
         partial.replace(path)
@@ -1747,21 +1711,14 @@ def save_snapshot(
 ) -> None:
     r"""Save the spectral state to a single-file snapshot.
 
-    The field is streamed to the per-component zarr3 chunks (one per
-    state component: 3, or the flow's ``n_components``) inside
-    one uncompressed tar, in the solver's native spectral layout at
-    true (unpadded) mode counts -- no transpose anywhere.  Process 0
-    lays out the whole archive first; every device then writes its
-    disjoint byte ranges into the reserved chunk regions.  The write
-    goes to a ``.partial`` sibling that is renamed into place once
-    complete (:data:`_PARTIAL_SUFFIX`), so *path* never names a
+    The format and write path: the module docstring.  The archive is
+    built under a ``.partial`` sibling and renamed into place once
+    complete (:func:`write_archive`), so *path* never names a
     half-written snapshot and an interrupted save leaves the previous
-    one intact.
-
-    On a multi-device mesh the state is first resharded onto the I/O
-    layout (:func:`_to_io_layout`) so those ranges are contiguous;
-    the caller's array is left untouched (no buffer donation -- the
-    solver keeps stepping the state it has snapshotted).
+    one intact.  On a multi-device mesh the state is first resharded
+    onto the I/O layout (:func:`_to_io_layout`); the caller's array is
+    left untouched (no buffer donation -- the solver keeps stepping the
+    state it has snapshotted).
 
     Parameters
     ----------
@@ -1816,9 +1773,8 @@ def save_snapshot(
             "carries its 'pressure' entry (the reader's key to it)."
         )
 
-    # One reshard per member, then every device writes contiguous byte
-    # ranges.  Collective, so it is issued by every process alike,
-    # before the serial write mode's rank-ordered section.
+    # One reshard per member: collective, so issued by every process
+    # alike, before the serial write mode's rank-ordered section.
     members = [("state", _to_io_layout(state, *modes))]
     if n_carry:
         members.append(("carry", _to_io_layout(carry, *modes)))
@@ -1852,10 +1808,9 @@ def load_snapshot(
 
     Each current device reads a contiguous slab of the file's
     *slowest* axis (the I/O layout, :func:`_io_spec`) and the
-    assembled array is then resharded back to the solver layout, so a
-    snapshot can be resumed at any ``(np0, np1)`` configuration.  No
-    full-array inverse transpose is performed: the reshard is an
-    exchange of whole planes, not a reordering of bytes.
+    assembled array is resharded back to the solver layout -- an
+    exchange of whole planes, not a transpose -- so a snapshot can be
+    resumed at any ``(np0, np1)`` configuration.
 
     Parameters
     ----------
@@ -1867,7 +1822,11 @@ def load_snapshot(
     state:
         Spectral state, shape ``(n_components, *spec_shape)``, in the
         solver layout: the stored field of :func:`save_snapshot`, the
-        perturbation velocity or the total field by flow.
+        perturbation velocity or the total field by flow.  The Fourier
+        axes are regridded to the current resolution; a wall-bounded
+        leading axis keeps the stored length, for
+        ``__main__._interpolate_if_needed`` (module docstring,
+        "Resolution changes at load").
     t:
         Simulation time at snapshot.
     it:
@@ -1875,18 +1834,17 @@ def load_snapshot(
     """
     path = Path(path)
     meta = read_metadata(path)
-    # The stored chunk shape -- the snapshot's own, which the read must
-    # match byte for byte.  Any of the three axes may differ from the
-    # current run's: the leading one because ``res.ny`` changed, the two
-    # mode axes because ``res.nx`` / ``res.nz`` did.
+    # The stored chunk shape, which the read must match byte for byte.
+    # Any of the three axes may differ from the current run's: the
+    # leading one because ``res.ny`` changed, the two mode axes because
+    # ``res.nx`` / ``res.nz`` did.
     comp_shape = tuple(meta["native_shape"][1:])
     a_src, kz_src, kx_src = comp_shape
     dtype = _np_dtype(meta["dtype"])
 
     # The leading axis: a Fourier axis for the periodic family (regridded
-    # below, like the other two), the FD wall-normal one otherwise --
-    # kept at the stored length here and interpolated onto the current
-    # grid afterwards by ``__main__._interpolate_if_needed``.
+    # below, like the other two), else the FD wall-normal one, kept at
+    # the stored length (the docstring).
     ky_dst = params.res.ny - 1 if _is_periodic() else None
     a_out = a_src if ky_dst is None else ky_dst
 
@@ -1928,12 +1886,12 @@ def load_snapshot_carry(path: str | Path) -> Array | None:
     r"""The snapshot's solver-carried fields, or ``None``.
 
     ``None`` when the archive has no ``carry/`` member, and when any
-    axis differs from the current run's -- the stored fields were
-    evolved on the old grid, so a re-gridded resume re-derives them
-    instead (the module docstring; ``__main__`` additionally declines
-    them on any trajectory-defining change).  Otherwise the fields in the
-    solver layout, ``(n_carried, *spec_shape)``, through the same
-    engines and reshard as :func:`load_snapshot`.
+    axis differs from the current run's: the stored fields were evolved
+    on the old grid, so a re-gridded resume re-derives them instead (the
+    module docstring; ``__main__`` also declines them on any
+    trajectory-defining change).  Otherwise the fields in the solver
+    layout, ``(n_carried, *spec_shape)``, through the same engines and
+    reshard as :func:`load_snapshot`.
     """
     path = Path(path)
     offsets = snapshot_carry_offsets(path)
@@ -1985,18 +1943,17 @@ def validate_snapshot_params(
     critical mismatches: precision, flow system, or a component count
     the flow spec does not give.  Neither the device count nor the
     **resolution** is a reason: every spectral axis is auto-padded to
-    divide the mesh (``round_up_padded``), which is what makes resume
-    np-agnostic in the first place, and every axis is re-gridded at
-    load -- the Fourier ones by :func:`_from_io_layout_core`
-    (zero-padding or truncating modes), the wall-normal one by
-    ``__main__._interpolate_if_needed``.  A changed resolution is still
-    *trajectory-defining*, so it starts a new trajectory unless
-    ``init.force_resume`` -- a decision that belongs to
-    :func:`dnsjax.parameters.trajectory_defining_changes`, not to this
-    function.  Prints warnings for non-critical differences, one info
-    line per re-gridded axis, and one when the device count differs.
-    Stored metadata records the *public* field names; comparisons run
-    in internal space
+    divide the mesh (``round_up_padded``), which makes resume
+    np-agnostic, and every axis is re-gridded at load -- the Fourier
+    ones by :func:`_from_io_layout_core` (zero-padding or truncating
+    modes), the wall-normal one by ``__main__._interpolate_if_needed``.
+    A changed resolution is still *trajectory-defining*, so it starts a
+    new trajectory unless ``init.force_resume`` -- a decision that
+    belongs to :func:`dnsjax.parameters.trajectory_defining_changes`,
+    not to this function.  Prints warnings for non-critical
+    differences, one info line per re-gridded axis, and one when the
+    device count differs.  Stored metadata records the *public* field
+    names; comparisons run in internal space
     (:func:`dnsjax.flows.registry.internalize_stored`) and messages
     name the public alias.
 
@@ -2020,9 +1977,7 @@ def validate_snapshot_params(
     def _public(section: str, key: str) -> str:
         return spec.alias(section, key)
 
-    # Critical: must match exactly.  The resolution labels are
-    # axis-neutral: the message names the flow's public field (e.g.
-    # internal ``res.nx`` is the axial ``nz`` on the annular flows).
+    # Critical: must match exactly.
     critical = {
         ("res", "double_precision"): "precision",
         ("phys", "system"): "flow system",
@@ -2048,9 +2003,11 @@ def validate_snapshot_params(
         )
 
     # Resolution changes are re-gridded at load, each axis by its own
-    # mechanism; report which.  ``ny`` is the FD wall-normal axis for
-    # wall-bounded flows and the third Fourier axis for the periodic
-    # ones, so its message depends on the family.
+    # mechanism; report which, under the flow's public field (internal
+    # ``res.nx`` is the axial ``nz`` on the annular flows).  ``ny`` is
+    # the FD wall-normal axis for wall-bounded flows and the third
+    # Fourier axis for the periodic ones, so its message depends on the
+    # family.
     def _resolution_note(key: str, fourier: bool) -> None:
         snap_val = snap_params.get("res", {}).get(key)
         curr_val = current.get("res", {}).get(key)

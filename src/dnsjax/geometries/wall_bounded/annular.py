@@ -1,12 +1,15 @@
 r"""Annular geometry: Fourier class, norms, IMM, and solvers.
 
-Provides all geometry-general infrastructure for wall-bounded flow in
-the annulus between two concentric cylinders (the Taylor-Couette
-geometry): the ``Fourier`` wavenumber class, the ``AnnularFlow`` base
-dataclass (radial grid on `$[r_1, r_2]$`, finite-difference matrices,
-influence-matrix operators), spectral solvers (influence-matrix method,
-predictor-corrector time stepping), and diagnostic helpers (norms,
-perturbation energy).
+The geometry-general infrastructure of wall-bounded flow in the annulus
+between two concentric cylinders (the Taylor-Couette geometry): the
+``Fourier`` wavenumber class, the ``AnnularFlow`` base dataclass
+(radial grid on `$[r_1, r_2]$`, finite-difference matrices,
+influence-matrix operators), the spectral solvers (influence-matrix
+method, predictor-corrector time stepping) and the diagnostic helpers
+(norms, perturbation energy).  A flow module (e.g.
+``flows.wall_bounded.taylor_couette``) subclasses ``AnnularFlow``, sets
+the base flow and/or ``force_theta``, and calls
+``build_annular_stepper`` for its time-stepping functions.
 
 This geometry is a synthesis of the two existing wall-bounded families:
 
@@ -26,38 +29,24 @@ the grid `$[r_1, r_2]$`, applied identically to all azimuthal modes.
 
 Decoupled velocity formulation
 ------------------------------
-The cylindrical Navier-Stokes vector Laplacian couples `$u_r$` and
-`$u_\theta$` through `$1/r^2$` terms.  Following openpipeflow
-(Willis 2017), we decouple them via
+As in the pipe (the ``cylindrical.py`` module docstring, following
+openpipeflow, Willis 2017), `$u_\pm = u_r \pm i\,u_\theta$` reduce the
+vector Laplacian, whose `$1/r^2$` terms couple `$u_r$` and
+`$u_\theta$`, to three scalar Helmholtz equations with the radial
+operator `$\partial_r^2 + (1/r)\partial_r - m_{\mathrm{eff}}^2/r^2$`
+and the effective azimuthal modes `$m_{\mathrm{eff}} = m \pm 1$` for
+`$u_\pm$` and `$m_{\mathrm{eff}} = m$` for `$u_z$` (and for the legacy
+scheme's pressure Poisson operator).
 
-.. math::
-    u_+ = u_r + i\,u_\theta, \qquad
-    u_- = u_r - i\,u_\theta,
-
-reducing the vector problem to three scalar Helmholtz equations with
-**effective azimuthal modes**:
-
-.. math::
-    m_{\mathrm{eff}} = m + 1 \;\text{for } u_+, \qquad
-    m_{\mathrm{eff}} = m - 1 \;\text{for } u_-, \qquad
-    m_{\mathrm{eff}} = m     \;\text{for } u_z.
-
-The radial operator for each component is
-`$\partial_r^2 + (1/r)\partial_r - m_{\mathrm{eff}}^2/r^2$`.  The
-legacy scheme's pressure Poisson operator uses
-`$m_{\mathrm{eff}} = m$`.
-
-As in cylindrical, this is the solver's **working** basis -- the
-carried state, the RHS, the corrector iterates and every operator
-below -- while everything outside the time stepper (snapshots,
-diagnostics, extension streams, initial conditions, the analysis
-package) works
-in the physical triad `$(u_z, u_r, u_\theta)$`, a given state
-crossing between the two at most once (``to_pm_basis`` /
-``from_pm_basis`` in ``_base.py``).  :func:`_get_rhs_core` and
-:func:`_l_bf` convert internally because the real FFT needs
-individually Hermitian-symmetric components, which `$u_\pm$` are not;
-see the ``cylindrical.py`` module docstring.
+This is the solver's **working** basis -- the carried state, the RHS,
+the corrector iterates and every operator below -- while everything
+outside the time stepper (snapshots, diagnostics, extension streams,
+initial conditions, the analysis package) works in the physical triad
+`$(u_z, u_r, u_\theta)$`, a given state crossing between the two at
+most once (``to_pm_basis`` / ``from_pm_basis`` in ``_base.py``).
+:func:`_get_rhs_core` and :func:`_l_bf` convert internally because the
+real FFT needs individually Hermitian-symmetric components, which
+`$u_\pm$` are not (the ``cylindrical.py`` module docstring).
 
 Component-order convention (the annular exception)
 --------------------------------------------------
@@ -90,39 +79,32 @@ Driving: shear-driven and force-driven flows
 The geometry supports two driving modes via the same infrastructure:
 
 - **Shear-driven** (Taylor-Couette, or any other parameterization of
-  the circular-Couette flow): the rotating
-  walls set an azimuthal base flow `$U_\theta(r) = A_0 r + B_0/r$` and
-  the perturbation `$\mathbf{u}'$` is integrated.  The base coupling enters
-  only through the rotational-form nonlinear term (see ``rhs.py``) via
-  ``base_flow`` and ``curl_base_flow`` -- no hand-coded coupling terms.
-- **Force-driven** (a flow a plugin builds): both walls are
-  stationary and the
-  **total** velocity is integrated (``base_flow = curl_base_flow = 0``,
-  so the rotational term computes the full `$(\nabla\times\mathbf{u})
-  \times\mathbf{u}$`).  An azimuthally-/axially-uniform, radius-dependent
-  azimuthal body force `$-\Pi_\theta$` is supplied through
-  ``AnnularFlow.force_theta`` (a radial profile holding that force,
-  zero by default) and added at the mean mode by
-  :func:`_get_rhs_core`.
+  the circular-Couette flow): the rotating walls set an azimuthal base
+  flow `$U_\theta(r) = A_0 r + B_0/r$` and the perturbation
+  `$\mathbf{u}'$` is integrated.  The base coupling enters only through
+  the rotational-form nonlinear term (see ``rhs.py``) via ``base_flow``
+  and ``curl_base_flow`` -- no hand-coded coupling terms.
+- **Force-driven** (a flow a plugin builds): both walls are stationary
+  and the **total** velocity is integrated
+  (``base_flow = curl_base_flow = 0``, so the rotational term computes
+  the full `$(\nabla\times\mathbf{u}) \times\mathbf{u}$`).  An
+  azimuthally-/axially-uniform, radius-dependent azimuthal body force
+  `$-\Pi_\theta$` is supplied through ``AnnularFlow.force_theta`` (a
+  radial profile holding that force, zero by default) and added at the
+  mean mode by :func:`_get_rhs_core`.
 
 A plugin may build further flows on the same infrastructure, carrying
-more components than the velocity.
-
-An optional ``block_mean_spanwise_velocity`` zeroes the mean **axial**
-velocity (the undriven homogeneous direction); the azimuthal mean
-evolves freely.
-
-Flow modules (e.g. ``flows.wall_bounded.taylor_couette``) subclass
-``AnnularFlow``, set the base flow and/or ``force_theta``, then call
-``build_annular_stepper`` to obtain ready-to-use time-stepping
-functions.
+more components than the velocity.  An optional
+``block_mean_spanwise_velocity`` zeroes the mean **axial** velocity
+(the undriven homogeneous direction); the azimuthal mean evolves
+freely.
 
 Design notes
 ------------
 **Decoupling the pair.**  The `$u_\pm$` trick diagonalizes the spin block only
 *within* one vector field's transverse pair.  This pair mixes two fields --
 `$u_r$` (velocity, whose fourth-order pressure-eliminated dynamics is exactly
-what makes the scheme stable: the ``cartesian`` Design notes, route 4) and
+what makes the scheme stable: the ``cartesian`` Design notes, route 5) and
 `$\omega_r$` -- whose diffusion couples to `$u_\theta$` and `$\omega_\theta$`,
 outside every linear combination of the pair; closing it through the solenoidal
 constraint reimports composed `$D_1 \mathrm{diag} D_1$` operators, i.e. the
@@ -266,38 +248,15 @@ from_solver_basis = jax.jit(from_pm_basis)
 class Fourier:
     r"""Wavenumber grids for the annular geometry.
 
-    Identical to the cylindrical ``Fourier`` class but **without**
-    ``m_is_even``: the annulus needs no parity selection (`$r_1 > 0$`).
-    Broadcasting shapes match the spectral layout
-    ``(Nr, Nm, Nkz)`` = ``(ny, nz-1, nx//2)``:
-
-    - ``kz``: shape ``(1, 1, nx//2)`` -- axial wavenumber (real FFT on
-      the streamwise ``x`` parameter direction, period ``geo.lx``).
-    - ``m``: shape ``(1, nz-1, 1)`` -- azimuthal mode number (complex
-      FFT on the ``z`` parameter direction with `$l_z = 2\pi/m_0$`);
-      the resolved modes are the integer multiples `$m = m_0 j$` of the
-      wedge fundamental `$m_0$` (``geo.m0``; `$m_0 = 1$` full circle).
-
-    The coordinate mapping is:
-
-    =============  ===========  ============  =============
-    Physical       Parameter    Transform     Wavenumber
-    =============  ===========  ============  =============
-    `$z_{axial}$`  ``x`` (rfft) real FFT      `$k_z$`
-    `$\theta$`     ``z`` (cfft) complex FFT   `$m$` (int)
-    `$r$`          ``y`` (FD)   none          grid points
-    =============  ===========  ============  =============
-
-    ``k_metric`` is 2 for `$k_z > 0$` and 1 for `$k_z = 0$`, accounting
-    for the Hermitian symmetry of the real FFT.  ``mean_mask`` is True
-    only at the mean mode `$(m, k_z) = (0, 0)$` -- the unique
-    `$m^2 + k_z^2 = 0$` mode (padding slots carry nonzero placeholder
-    wavenumbers; see ``pad_harmonics`` in :mod:`dnsjax.operators`).
-
-    The wavenumber arrays are global multi-device arrays: host-side
-    consumers recompute them from the JAX-free
-    :mod:`dnsjax.harmonics` sequences (`$\times\,2\pi/L$`, azimuthal
-    `$\times\,m_0$`), never ``np.asarray`` on these fields.
+    Identical to the cylindrical ``Fourier`` class -- the spectral
+    layout ``(Nr, Nm, Nkz)`` = ``(ny, nz-1, nx//2)``, the coordinate
+    mapping, ``k_metric``, the padding slots, ``mean_mask`` and the
+    global-array rule -- but **without** ``m_is_even``: the annulus
+    needs no parity selection (`$r_1 > 0$`).  ``kz`` is the axial
+    wavenumber (period ``geo.lx``); ``m`` the azimuthal mode number over
+    the wedge `$l_z = 2\pi/m_0$`, whose resolved modes are the integer
+    multiples `$m = m_0 j$` of the wedge fundamental `$m_0$`
+    (``geo.m0``; `$m_0 = 1$` is the full circle).
     """
 
     kz: Array = field(init=False)
@@ -308,10 +267,8 @@ class Fourier:
     mean_mask: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        # The wavenumber vectors start as the ``operators`` wrappers'
-        # arrays, replicated on the mesh, so ``device_put`` reshards
-        # them on the devices; the arrays built in NumPy (the metric
-        # and the mean mask) are placed by ``sharding.distribute``.
+        # Placement as in ``cartesian.Fourier``: ``device_put`` for the
+        # mesh-replicated wrapper arrays, ``distribute`` for NumPy ones.
         a0, a1 = sharding.a0, sharding.a1
         kz = (
             (
@@ -328,9 +285,7 @@ class Fourier:
             .astype(sharding.float_type)
         )
 
-        # Azimuthal wavenumbers m = m0 * harmonic over the wedge
-        # l_z = 2*pi/m0 (m0 = 1 is the full circle).  The integer
-        # multiply is exact and keeps the padding placeholders nonzero.
+        # m = m0 * harmonic over the wedge, as in ``cylindrical.Fourier``.
         m = (
             (
                 pad_harmonics(
@@ -371,10 +326,8 @@ def get_norm2_annular(
 ) -> Array:
     r"""Annular squared L2 norm for `$(u_z, u_r, u_\theta)$`.
 
-    The component axis is a pointwise orthonormal physical triad, so
-    this is the plain component sum of the shared :func:`get_norm2`;
-    kept as a named wrapper for signature symmetry with the other
-    geometry norms (the radial Jacobian `$r$` lives in *y_weights*).
+    As :func:`.cylindrical.get_norm2_cyl`: the plain component sum of
+    the shared :func:`get_norm2`, kept as a named wrapper.
 
     Parameters
     ----------
@@ -402,20 +355,10 @@ def get_enstrophy_annular(
 
     Geometry-general: the *state* may be a perturbation `$\mathbf{u}'$`
     (shear-driven Taylor-Couette) or the total field `$\mathbf{u}$`
-    (a force-driven flow).  Uses the identity split into
-    radial-derivative, azimuthal, and axial terms; the azimuthal term
-    is the covariant azimuthal gradient in `$(u_z, u_r, u_\theta)$`
-    components,
-
-    .. math::
-        \frac{|im\,u_z|^2 + |im\,u_r - u_\theta|^2
-        + |im\,u_\theta + u_r|^2}{r^2},
-
-    pointwise equal to the `$m_{\mathrm{eff}}$`-diagonal form of the
-    solver-interior decoupled basis (`$|m u_z|^2 +
-    \tfrac{1}{2}|(m{+}1)u_+|^2 + \tfrac{1}{2}|(m{-}1)u_-|^2$`).
-    Unlike the cylindrical version the radial derivative uses a
-    single `$D_1$` (no parity / ghost correction).
+    (a force-driven flow).  The split of
+    :func:`.cylindrical.get_pert_enstrophy_cyl` -- radial-derivative,
+    covariant azimuthal and axial terms -- except that the radial
+    derivative uses a single `$D_1$` (no parity / ghost correction).
 
     Parameters
     ----------
@@ -548,14 +491,11 @@ def build_annular_grid(
 
     inv_r = 1.0 / rs
     if is_cgl:
-        # The default annular grid is a CGL grid affinely mapped to
-        # [r1, r2], so Clenshaw-Curtis quadrature applies: with
-        # dr = half * dxi,  int_{r1}^{r2} f r dr = half * int_{-1}^1
-        # f(r(xi)) r(xi) dxi.  Fold the affine scale and the Jacobian
-        # r_j into the CC weights.  Spectral for smooth integrands
+        # CGL affinely mapped to [r1, r2]: with dr = half * dxi,
+        # int_{r1}^{r2} f r dr = half * int_{-1}^1 f(r(xi)) r(xi) dxi,
+        # so the CC weights take the affine scale and the Jacobian r_j
         # (exact for the smooth base / mean profiles: flow rate,
-        # bulk-velocity response) -- there is no axis, so no parity
-        # subtlety.
+        # bulk-velocity response; no axis, so no parity subtlety).
         y_weights = (
             jnp.asarray(
                 half * clenshaw_curtis_weights(ny), dtype=sharding.float_type
@@ -563,9 +503,8 @@ def build_annular_grid(
             * rs
         )
     else:
-        # Custom / tanh grids are not CGL: the composite rule times the
-        # Jacobian, at the highest order up to fd_order whose weights
-        # are all positive.
+        # Custom / tanh grids: the composite rule (docstring) times the
+        # Jacobian.
         rs_np = np.asarray(rs)
         w = quadrature_weights(
             lambda q: build_integration_weights(rs_np, q),
@@ -746,12 +685,8 @@ class AnnularFlow:
     The velocity state is carried through the solver in decoupled form
     `$(u_z, u_+, u_-)$` with `$u_\pm = u_r \pm i\,u_\theta$`, and in
     the physical triad everywhere outside it (the module docstring;
-    ``to_pm_basis``/``from_pm_basis``).  The default scheme builds the
-    two-slot `$(\Phi, \omega_r)$` Helmholtz pair and the `$u_r$`
-    recovery operator; the legacy one three Helmholtz operators
-    (`$m_{\mathrm{eff}} = m+1, m-1, m$` for `$u_+, u_-, u_z$`) and a
-    pressure Poisson operator (`$m_{\mathrm{eff}} = m$`) -- ``Lk_op``
-    and ``Hk_op`` below.
+    ``to_pm_basis``/``from_pm_basis``).  Each scheme's operators:
+    ``Lk_op`` and ``Hk_op`` below.
 
     Attributes
     ----------
@@ -771,11 +706,12 @@ class AnnularFlow:
         `$D_2 + \mathrm{diag}(1/r)\,D_1$`, shape ``(Nr, Nr)``.
     Lk_op, Hk_op:
         Factored per-mode operators.  Flag-off: the Neumann pressure
-        Poisson `$L_k$` and the stacked `$(+,-,z)$` Helmholtz group.
-        Under ``res.consistent_imm``: the Dirichlet `$u_r$` recovery
-        `$L_{v,\mathrm{mod}}$` (:func:`_build_Lv_dir_band_gpu`,
-        ``dt``-free) and the 2-slot `$(\Phi, \omega_r)$` Helmholtz
-        pair (:func:`_hk_vw_bands`).
+        Poisson `$L_k$` (`$m_{\mathrm{eff}} = m$`) and the stacked
+        `$(+,-,z)$` Helmholtz group (`$m_{\mathrm{eff}} = m+1, m-1, m$`
+        for `$u_+, u_-, u_z$`).  Under ``res.consistent_imm``: the
+        Dirichlet `$u_r$` recovery `$L_{v,\mathrm{mod}}$`
+        (:func:`_build_Lv_dir_band_gpu`, ``dt``-free) and the 2-slot
+        `$(\Phi, \omega_r)$` Helmholtz pair (:func:`_hk_vw_bands`).
     v_plus_i, v_minus_i, q_z_i:
         Homogeneous `$u_\pm$` velocity and axial potential responses to
         a unit pressure at wall ``i`` (``1`` = inner, ``2`` = outer).
@@ -849,10 +785,8 @@ class AnnularFlow:
         ]
 
         # Inverse local advection length scales for the CFL diagnostic,
-        # per physical component (u_z, u_r, u_theta), zero in the
-        # ny_y_pad rows.  Axial uses the spectral spacing L/n; radial the
-        # local grid spacing; azimuthal the arc length r*dtheta with
-        # dtheta = lz/nz (theta period lz = 2*pi/m0 over the wedge).
+        # as in ``CylindricalFlow.__post_init__`` (azimuthal: the arc
+        # length r*dtheta, dtheta = lz/nz over the wedge).
         inv_sp = np.zeros(
             (3, Nr + sharding.ny_y_pad), dtype=sharding.float_type
         )
@@ -881,16 +815,14 @@ class AnnularFlow:
         self.inv_r2 = jax.device_put(self.inv_r2, sharding.no_shard)
         self.y_weights = jax.device_put(self.y_weights, sharding.no_shard)
 
-        # Mean-mode azimuthal body force on the radial grid, zero by
-        # default.  Force-driven subclasses overwrite it;
-        # applied at the mean mode by ``_get_rhs_core``.
+        # Zero unless a force-driven subclass overwrites it (class
+        # docstring).
         self.force_theta = jnp.zeros(
             Nr, dtype=sharding.float_type, out_sharding=sharding.no_shard
         )
 
-        # Banded half-width: measured, not assumed (see the Cartesian
-        # ``__post_init__`` note).  Both wall rows are overwritten with
-        # BC rows, so their own stencil width need not fit.
+        # Banded half-width: measured, not assumed, both wall rows
+        # excluded (see the Cartesian ``__post_init__`` note).
         fd_p = matrix_half_bandwidth(np.asarray(self.A_base.dense), (0, -1))
         dt = params.step.dt
 
@@ -906,10 +838,8 @@ class AnnularFlow:
         m_sq = m_s**2
 
         if params.solver.backend == "pallas":
-            # Pallas backend: one-program-per-mode banded sweep.
-            # Operators are assembled directly in banded storage (no
-            # (Nr, Nr) per mode) and factored by the setup-checked
-            # no-pivot banded LU (_build_pallas_operator).
+            # Pallas backend: banded assembly and the setup-checked
+            # no-pivot LU, as in ``CylindricalFlow.__post_init__``.
             if params.res.consistent_imm:
                 # vw scheme: the dt-free Dirichlet u_r recovery
                 # operator lives in the Lk_op slot (there is no
@@ -986,8 +916,7 @@ class AnnularFlow:
             self.Lk_op = DenseJAXSolver(Lk_dense)
             del Lk_dense
 
-            # Combined Hk: the default (Phi, omega_r) pair, or the
-            # legacy (plus, minus, z) triple.
+            # Combined Hk: the same group as in the banded branch.
             if params.res.consistent_imm:
                 self.Hk_op = _hk_vw_dense_op(dt, fourier, self)
             else:
@@ -995,11 +924,9 @@ class AnnularFlow:
 
                 self.Hk_op = prim._hk_dense_op(dt, fourier, self)
 
-        # The influence-matrix columns and the bulk response, as one
-        # compiled program taking this flow -- still under construction
-        # -- as its argument; run eagerly, every operation and every
-        # ``.solve``'s ``shard_map`` body compiles on its own.  A fresh
-        # ``jit`` per build, since the traced body reads ``params``.
+        # The influence-matrix columns and the bulk response in one
+        # fresh jit over the flow under construction, as in (and for
+        # the reasons of) ``CartesianFlow.__post_init__``.
         leaves = jax.jit(lambda f, fl: _imm_leaves(f, fl))(fourier, self)
         for name, leaf in leaves.items():
             setattr(self, name, leaf)
@@ -1263,7 +1190,7 @@ def _build_dt_leaves(
     else:
         new.Hk_op = hk_dense_fn(dt, fourier_, new)
     # Lk_op (= the dt-free recovery under the vw scheme) is deliberately
-    # absent -- see test_adaptive's leaf dicts.
+    # absent -- see the leaf tables of ``tests/_adaptive.py``.
     leaves = {"dt": new.dt, "Hk_op": new.Hk_op}
     leaves |= _imm_leaves(fourier_, new)
     return leaves
@@ -1345,46 +1272,34 @@ def _l_bf(
 ) -> Array:
     r"""Linear base-flow coupling (FFT-free), in `$(u_z, u_+, u_-)$`.
 
-    As in cylindrical: convert to the `$(u_z, u_r, u_\theta)$` triad and
-    evaluate only the two *linear* base-flow cross-product terms
-    (:func:`base_flow_coupling`) with the spectral :func:`_curl_fn` --
-    no Fourier transform.  For shear-driven Taylor-Couette (rotating
-    walls) the azimuthal base flow makes `$U_\theta\,\partial_r u'$`
-    stiff on the wall-clustered grid, so the CN/AB2 scheme advances this
-    term implicitly while the self-advection `$\mathbf{u}' \times
-    \boldsymbol{\omega}' = \text{get\_rhs} - \text{\_l\_bf}$` stays
-    explicit (a force-driven flow's constant body force
-    ``force_theta`` is not part of this coupling; it rides in the
-    explicit term).
+    As the pipe's :func:`._cylindrical_stepping._l_bf`, with this
+    geometry's :func:`_curl_fn`.  For shear-driven Taylor-Couette
+    (rotating walls) the azimuthal base flow makes
+    `$U_\theta\,\partial_r u'$` stiff on the wall-clustered grid, which
+    is why the CN/AB2 scheme advances this term implicitly (a
+    force-driven flow's constant body force ``force_theta`` is not part
+    of this coupling; it rides in the explicit term).
 
-    With ``params.step.implicit_mean_coupling`` (default on) the
-    *instantaneous mean-flow* coupling is folded in by adding the
-    `$m = k_z = 0$` mean profiles of the `$(u_z, u_r, u_\theta)$`
-    state and of `$\boldsymbol{\omega}'$` onto the base-flow profiles
-    -- FFT-free; see the Cartesian ``_l_bf``.  For a force-driven flow
-    (total field, ``base_flow = 0``) this is the *only* coupling:
-    without it ``_l_bf`` is identically zero in the default laboratory frame
-    (a moving frame adds its diagonal term), i.e. the entire evolving
-    mean profile -- laminar included -- would ride the explicit AB2
-    term; with it the mean-flow advection is implicit, as ``L_bf`` is
-    for the perturbation-form flows.  See ``step_cnab2`` in
-    :mod:`dnsjax.timestep`.
+    For a force-driven flow (total field, ``base_flow = 0``) the
+    mean-flow coupling that ``params.step.implicit_mean_coupling``
+    (default on) folds in is the *only* coupling: without it ``_l_bf``
+    is identically zero in the default laboratory frame (a moving frame
+    adds its diagonal term), i.e. the entire evolving mean profile --
+    laminar included -- would ride the explicit AB2 term; with it the
+    mean-flow advection is implicit, as ``L_bf`` is for the
+    perturbation-form flows.
     """
     state_rthz = from_pm_basis(state)
     omega = _curl_fn(state_rthz, fourier_, flow_)
     base = flow_.base_flow
     curl_base = flow_.curl_base_flow
     if params.step.implicit_mean_coupling:
-        # One collective for the pair: this runs once per corrector
-        # iteration under cnab2 / the split corrector, and the psum is
-        # latency-bound (:func:`extract_mean_modes`).
+        # One collective for the pair, as in ``cartesian._l_bf``.
         mean_u, mean_om = extract_mean_modes(state_rthz, omega)
         base = base + mean_u[:, :, None, None]
         curl_base = curl_base + mean_om[:, :, None, None]
     l_bf = to_pm_basis(base_flow_coupling(state_rthz, omega, base, curl_base))
-    # Moving frame: the convective frame term (the same expression
-    # ``_get_rhs_core`` adds, diagonal in the solver basis) belongs
-    # to the linear coupling, so CN/AB2 integrates it implicitly.
+    # Moving frame: the convective frame term, as in the pipe's ``_l_bf``.
     u_grid = derived_params.u_grid
     if u_grid == 0:
         return l_bf
@@ -1430,10 +1345,8 @@ def _get_rhs_core(
     if measure_fn is not None:
         nonlin, measurements = nonlin
 
-    # Mean-mode azimuthal body force (force-driven flows), applied at the
-    # mean mode (m, k_z) = (0, 0); zero for shear-driven Taylor-Couette.
-    # get_nonlin returns the +u x omega rotational term, so the force
-    # enters the RHS with a + sign (and into NL_+/- via NL_theta).
+    # Step 3: get_nonlin returns the +u x omega rotational term, so the
+    # force enters the RHS with a + sign (and into NL_+/- via NL_theta).
     rhs = to_pm_basis(
         nonlin.at[2].add(
             jnp.where(
@@ -1441,11 +1354,8 @@ def _get_rhs_core(
             )
         )
     )
-    # Moving frame: convective-form frame term
-    # `$+ i k_z U_{grid} \mathbf{u}'$` -- the axial derivative is
-    # component-diagonal in the `$(u_z, u_+, u_-)$` basis, so it is
-    # added on the solver-basis state (mode-diagonal,
-    # divergence-free; see ``pad_base_flow``).
+    # Moving frame: the convective-form frame term, added on the
+    # solver-basis state as in the pipe's ``_get_rhs_core``.
     u_grid = derived_params.u_grid
     if u_grid != 0:
         rhs = rhs + (1j * u_grid) * fourier_.kz * state
@@ -1513,9 +1423,9 @@ def mean_driving(state: Array, flow_: AnnularFlow) -> dict[str, Array]:
 
     **Newtonian only.**  It uses the viscosity alone, so it does not
     close the balance for a flow whose extra stress carries its own
-    axial wall traction -- such a flow does not export it (its
-    ``t = t0`` row is written as zero instead of a wrong number; see
-    :mod:`dnsjax.__main__`).
+    axial wall traction -- such a flow's ``get_driving`` reports zero
+    for the ``t = t0`` row instead of this inference (the contract:
+    :class:`~dnsjax.flow_spec.FlowSpec`).
     """
     if not params.phys.block_mean_spanwise_velocity:
         return {}
@@ -1534,25 +1444,13 @@ def _apply_bulk_correction(
 ) -> tuple[Array, dict[str, Array]]:
     r"""Axial bulk blocking, shared by both IMM schemes.
 
-    Under ``phys.block_mean_spanwise_velocity`` (the annulus' undriven
-    homogeneous direction is the axial one) adds a uniform body force
-    `$-\Pi_z$` to the mean-mode `$u_z$` Helmholtz RHS so the
-    perturbation bulk axial velocity is zero, in the equivalent
-    post-solve form `$u_z \mathrel{+}= -\Pi_z\,h$` with `$h$` from
-    :meth:`AnnularFlow._precompute_bulk_response`.  Like every
-    mean-plane write it is confined to `$k^2 = 0$`, the one plane the
-    reconstruction never touches.
-
-    *uz_src* is where the bulk is **read**, *uz_new* what the correction
-    is **added to**; they differ only on the legacy primitive path,
-    whose `$u_z$` carries an extra `$-ik_z q$` term that vanishes at the
-    mean mode, so reading from the uncorrected ``uz_arb`` fuses the two
-    corrections.
-
-    Returns the corrected field and the applied `$-\Pi_z$` as the
-    corrector's *aux* diagnostics -- the correction's own prefactor, so
-    the reported number is by construction the applied one.  Empty, and
-    a trace-time no-op, when the knob is off (the default).
+    The pipe's :func:`._cylindrical_stepping._apply_bulk_correction` (the
+    post-solve body force `$-\Pi_z$` confined to `$k^2 = 0$`, the
+    *uz_src* / *uz_new* split and the *aux* return), under
+    ``phys.block_mean_spanwise_velocity`` -- the annulus' undriven
+    homogeneous direction is the axial one -- with `$h$` from
+    :meth:`AnnularFlow._precompute_bulk_response`.  Empty, and a
+    trace-time no-op, when the knob is off (the default).
     """
     if not params.phys.block_mean_spanwise_velocity:
         return uz_new, {}
@@ -1673,7 +1571,7 @@ def _imm_iteration_vw(
     correction is a real, `$dt$`-free, band-preserving addition, so the
     recovery costs exactly what a plain `$L_v$` solve would and is
     **exact per pass** -- no iterated operand, hence no `$O(\Delta t)$`
-    bias bolted onto a definitional identity.
+    bias on a definitional identity.
 
     What *is* lagged is the pair's own spin partners
     `$(\Delta\mathbf{u})_\theta$` and `$\omega_\theta$`, evaluated at
@@ -1683,8 +1581,8 @@ def _imm_iteration_vw(
     `$\rho \le 0.02$` over the production corner -- against `$0.25$`
     with the naive recovery, which is why the exact one is not an
     optimization but the reason the loop is comfortable.  (The pipe's
-    axis makes the same lag diverge; ``cylindrical.py`` evolves the
-    spin quad instead.)
+    axis makes the same lag diverge, so the pipe evolves the spin quad
+    instead: ``_cylindrical_stepping._imm_iteration_vw``.)
 
     **That `$0.02$` is a measurement over a corner, not a bound.**  The
     lagged partners enter multiplied by `$2m/r^2$` (``spin`` below)
@@ -1699,12 +1597,11 @@ def _imm_iteration_vw(
     selecting ``res.consistent_imm = False`` is a reasonable answer**
     rather than a compatibility choice (the ``consistent_imm`` field
     comment in :mod:`dnsjax.parameters` points here for exactly that).
-    The important structural point is that the lag sits **inside** the
-    corrector: degradation surfaces as an iteration count and
-    ultimately as a *reported* non-convergence, never as the silent
-    across-step growth the pipe's rejected wall-data lag produced.  A
-    wide-gap run at low `$\mathrm{Re}$` should watch
-    ``corrector.dat``.
+    The lag sits **inside** the corrector, so degradation surfaces as
+    an iteration count and ultimately as a *reported* non-convergence,
+    never as the silent across-step growth the pipe's rejected
+    wall-data lag produced.  A wide-gap run at low `$\mathrm{Re}$`
+    should watch ``corrector.dat``.
 
     Retired route: decoupling the pair
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1731,27 +1628,25 @@ def _imm_iteration_vw(
     are a live diagnostic of influence-matrix health.
 
     `$\Phi$` is **not** carried between steps: the state stays
-    `$(u_z, u_+, u_-)$` -- the basis the RHS and everything stepping
-    the state share -- and stage 2 recomputes
-    `$\Phi^n$` from it on full rows.  The wall rows of that
-    recomputation are therefore the discrete
-    `$(\Delta\mathbf{u})_r$` rather than the influence matrix's own
-    `$\alpha$` from the previous step, and they reach the answer only
-    through the explicit half's near-wall `$D_2$` stencil (the solve's
-    own wall rows are overwritten in stage 4).  All three geometries
-    make that trade -- ``cartesian._imm_iteration_vw`` carries the
+    `$(u_z, u_+, u_-)$`, the basis the RHS and everything stepping the
+    state share, and stage 2 recomputes `$\Phi^n$` from it on full
+    rows.  Its wall rows are therefore the discrete
+    `$(\Delta\mathbf{u})_r$`, not the previous step's influence
+    `$\alpha$`, and reach the answer only through the explicit half's
+    near-wall `$D_2$` stencil (stage 4 overwrites the solve's own wall
+    rows).  All three geometries make that trade, and in all three it
+    is the only wall quantity taken from `$t^n$` (the lagged spin
+    partners above and the pipe's surplus wall differences ride the
+    corrector iterate): ``cartesian._imm_iteration_vw`` carries the
     shared argument and the measurement (one-step spectral radius
-    `$\le 1$`) -- and in all three it is the only wall quantity taken
-    from `$t^n$`: the lagged spin partners above and the pipe's
-    surplus wall differences both ride the corrector iterate.
-    Carrying `$\Phi$` would mean a third representation of the state,
-    which costs more than two rows are worth (the ``cartesian`` Design
-    notes, "A second solver basis (rejected)").  (The pipe does carry
-    its quad's two *difference* halves, for another reason -- the
-    velocity does not determine them, and re-deriving them makes it
-    first order in time at coarse radial resolution -- and still
-    resets their wall data to the accepted state's:
-    ``_cylindrical_stepping._imm_iteration_vw``.)
+    `$\le 1$`).  Carrying `$\Phi$` would mean a third representation of
+    the state, which costs more than two rows are worth (the
+    ``cartesian`` Design notes, "A second solver basis (rejected)").
+    The pipe does carry its quad's two *difference* halves, for another
+    reason -- the velocity does not determine them, and re-deriving
+    them makes it first order in time at coarse radial resolution --
+    and still resets their wall data to the accepted state's
+    (``_cylindrical_stepping._imm_iteration_vw``).
 
     Mean mode and padding
     ~~~~~~~~~~~~~~~~~~~~~
@@ -1938,18 +1833,13 @@ def _imm_iteration(
 
     Why there are two, and why the second one is *this* one, is
     derived once for all three geometries in the Cartesian dispatcher
-    :func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`:
-    the primitive scheme's stepped state carries a truncation-level
-    discrete-divergence residual (a pressure-operator mismatch, a
-    `$[D_1, D_2]$` commutator and a boundary term, the last two
-    boundary-amplified by `$D_1[1,0] \sim N_y^2$`), and of the five
-    repairs measured only the wall-normal velocity/vorticity
-    reformulation both removes it by construction and survives
-    nonlinear integration.  Here that record applies verbatim with one
+    :func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`
+    (the primitive residual's three terms, and the five repairs
+    measured).  Here that record applies verbatim with one
     cylindrical amendment: route 1's operator-side identity
     (`$D_2 := D_1 D_1$` plus a `$4 \times 4$` Kleiser-Schumann
     closure) reaches only `$d \sim 7\times10^{-5}$` on this
-    geometry -- five orders short of the Cartesian result, because
+    geometry -- far short of the Cartesian `$d \sim 10^{-14}$`, because
     `$D_2 := D_1 D_1$` cannot also make the *metric* commutator
     `$[D_1, 1/r]$` vanish.  The reconstruction has
     no such floor: it needs no operator identity at all, so the
@@ -2006,12 +1896,9 @@ def _norm(
 ) -> Array:
     r"""L2 convergence norm of a solver-basis correction.
 
-    Corrections live in the decoupled `$(u_z, u_+, u_-)$` basis, so
-    the 1/2 weight on the pair makes this the *physical* norm of the
-    corresponding correction
-    (`$|u_r|^2 + |u_\theta|^2 = (|u_+|^2 + |u_-|^2)/2$`) -- the same
-    scalar :func:`get_norm2_annular` reports for a physical-basis
-    array.
+    As the pipe's :func:`._cylindrical_stepping._norm`: the *physical*
+    norm of the correction, the scalar :func:`get_norm2_annular` reports
+    for a physical-basis array.
     """
     pm2 = get_norm2(correction[1:], fourier_.k_metric, flow_.y_weights)
     uz2 = get_norm2(correction[:1], fourier_.k_metric, flow_.y_weights)

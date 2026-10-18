@@ -46,12 +46,9 @@ def _fused_nonlinear(
 ) -> Array:
     r"""Compute the three perturbation cross-product terms.
 
-    Fuses `$\mathbf{u}' \times \boldsymbol{\omega}'
-    + \mathbf{u}' \times \nabla \times \mathbf{U}
-    + \mathbf{U} \times \boldsymbol{\omega}'$`
-    into a single ``jnp.array`` expression per output
-    component, eliminating intermediate concatenation and
-    scatter kernels.
+    Fuses the three terms of `$\mathrm{NL}$` (module docstring) into a
+    single ``jnp.array`` expression per output component, eliminating
+    intermediate concatenation and scatter kernels.
 
     Parameters
     ----------
@@ -106,23 +103,20 @@ def get_nonlin(
     any *extra_spec_fn* fields) + 3 forward FFTs (nonlinear term
     components).
 
-    This is the single site where the physical-space fields
-    exist, so it also hosts the *measure_fn* hook for
-    physical-space measurements (see
-    :mod:`dnsjax.measurements`): diagnostics computed here
-    reuse the inverse FFTs already paid for by the nonlinear
-    term.
+    As the single site where the physical-space fields exist, it also
+    hosts the *measure_fn* hook for physical-space measurements
+    (:mod:`dnsjax.measurements`): diagnostics computed here reuse the
+    inverse FFTs already paid for by the nonlinear term.
 
     The 6-field batched inverse transform (plus its padded
-    intermediate stage buffers inside :mod:`dnsjax.fft`) sets the
-    transient memory peak of a Newtonian RHS evaluation.
-    ``solver.rhs_transform_chunks`` caps that transient by splitting
-    the batch (:func:`dnsjax.fft.chunked_transform`; the default 1
-    keeps the single fused batch), while the forward transform of the
-    3 outputs stays fused.  The knob matters most for a flow whose
-    batch carries several times the velocity's fields (a carried
-    tensor), where the batch dominates the step's peak; the trade-off
-    is documented in the :mod:`dnsjax.fft` memory note.
+    intermediate stage buffers) sets the transient memory peak of a
+    Newtonian RHS evaluation; ``solver.rhs_transform_chunks`` caps it
+    by splitting the batch (:func:`dnsjax.fft.chunked_transform`, the
+    trade-off in the :mod:`dnsjax.fft` memory note; the default 1 keeps
+    the single fused batch), while the forward transform of the 3
+    outputs stays fused.  The knob matters most for a flow whose batch
+    carries several times the velocity's fields (a carried tensor),
+    where the batch dominates the step's peak.
 
     Parameters
     ----------

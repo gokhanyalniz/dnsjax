@@ -66,11 +66,11 @@ Design notes
 communicator per device group, the first time a program runs a
 collective over that group, and refuse unless they are on the thread
 that initialized MPI: ``MPI: Communicator requested from a thread that
-is not the one MPI was initialized from``.  The error is fatal, and
-the run does not end: the failed ranks wait in the distributed
-runtime's shutdown, the others in the collective, until the job is
-killed.  The inline dispatch :func:`dnsjax.bootstrap._select_cpu_collectives`
-turns on keeps a program's launch on the calling thread, not every
+is not the one MPI was initialized from``.  The error is fatal and the
+run hangs: the failed ranks wait in the distributed runtime's
+shutdown, the others in the collective, until the job is killed.  The
+inline dispatch :func:`dnsjax.bootstrap._select_cpu_collectives` turns
+on keeps a program's launch on the calling thread, not every
 collective in it: a program whose input is still being written when it
 is dispatched runs on the runtime's own thread pool, and a program's
 collectives can run off the launching thread anyway.  The banded
@@ -160,13 +160,12 @@ _UNSET = _Unset()
 def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
     """Register a dataclass as a JAX pytree.
 
-    All fields except strings, ``None``, and callables become
-    tree children (traced / donated / transformed by JAX) --
-    including plain ``int`` / ``float`` fields, which are
-    therefore tracers inside ``jit`` and unusable for static
-    slicing (read an array's ``.shape`` instead).  String,
-    ``None``, and callable fields are stored as static
-    aux_data (embedded in the trace as constants).
+    All fields except strings, ``None``, and callables become tree
+    children (traced / donated / transformed by JAX) -- including plain
+    ``int`` / ``float`` fields, which are therefore tracers inside
+    ``jit`` and unusable for static slicing (read an array's ``.shape``
+    instead).  String, ``None``, and callable fields are stored as
+    static aux_data (embedded in the trace as constants).
 
     A field not assigned yet -- an object part-way through its
     ``__post_init__`` -- flattens to nothing and is left unassigned by
@@ -174,17 +173,18 @@ def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
     to a jitted step: the wall-bounded geometries run their
     influence-matrix setup as one program that way (each geometry's
     ``_imm_leaves``), where an eager pass compiles every operation
-    separately.  A built object flattens exactly as before, and reading
-    an unassigned field inside the step still raises
-    ``AttributeError``.
+    separately.  A fully built object is unaffected, and reading an
+    unassigned field inside the step still raises ``AttributeError``.
 
     Why every array-carrying object is one: a global (multi-device)
     array reaches a jitted function as an argument, never through a
     closure or ``static_argnames``.  A baked-in global is legal in one
-    process and fails at trace time in two, and an outer ``jit`` around
-    a function that hands module globals to an inner ``jit`` bakes them
-    in all the same.  Only a real multi-process run catches a slip: the
-    ``*-mpi-pad`` rows of ``tests/test_random_smoke.py``.
+    process and fails at trace time in two (``Closing over jax.Array
+    that spans non-addressable (non process local) devices``), and an
+    outer ``jit`` around a function that hands module globals to an
+    inner ``jit`` bakes them in all the same.  Only a real
+    multi-process run catches a slip: the ``*-mpi-pad`` rows of
+    ``tests/test_random_smoke.py``.
 
     Used by the geometry base dataclasses (``TriplyPeriodicFlow``,
     ``CartesianFlow``, ``CylindricalFlow``, ``AnnularFlow``), their
@@ -354,33 +354,30 @@ class Sharding:
     r"""Device mesh, precision, partition specs, and array shapes.
 
     All class-level attributes are computed eagerly at dataclass
-    definition time, so this acts as a module-level singleton
-    once ``sharding = Sharding()`` is executed.
+    definition time, so this acts as a module-level singleton once
+    ``sharding = Sharding()`` is executed.
 
     Auto-padding
     ~~~~~~~~~~~~
-    When the spectral mode count (``nz - 1`` for `$k_z$` or
-    ``nx // 2`` for `$k_x$`) is not evenly divisible by the
-    corresponding mesh axis (``np0`` or ``np1``), the dimension
-    is padded to the next multiple with zero-valued
-    (physics-neutral) padding modes.  The padding amount is
-    stored in ``nz_spec_pad``
-    and ``nx_spec_pad``; the total stored mode count in
-    ``nz_spec`` and ``nx_spec``.  Padding and stripping are
-    handled inside :mod:`dnsjax.fft`.
+    When the spectral mode count (``nz - 1`` for `$k_z$` or ``nx // 2``
+    for `$k_x$`) is not evenly divisible by the corresponding mesh axis
+    (``np0`` or ``np1``), the dimension is padded to the next multiple
+    with zero-valued (physics-neutral) padding modes.  The padding
+    amount is stored in ``nz_spec_pad`` and ``nx_spec_pad``; the total
+    stored mode count in ``nz_spec`` and ``nx_spec``.  Padding and
+    stripping are handled inside :mod:`dnsjax.fft`.
 
-    For the physical `$y$` axis (sharded by ``np0``): for
-    wall-bounded flows, ``ny_y_pad`` zero rows are appended
-    before the `$y \leftrightarrow k_z$` reshard and stripped
-    afterwards (analogous to spectral padding, handled in
-    :mod:`dnsjax.fft`).  The padded physical sizes --
-    ``nz_padded`` (sharded by ``np1``) and, for periodic
-    flows, ``ny_padded`` (sharded by ``np0``) -- are rounded
-    up for mesh divisibility by ``padded_res.apply_rounding``
-    (normally already done by ``set_padded_resolution``;
-    re-applied here for entry points that set ``params.dist``
-    late).  Every recorded adjustment is printed once on the
-    main process, so no padding is ever silent.
+    For the physical `$y$` axis (sharded by ``np0``): for wall-bounded
+    flows, ``ny_y_pad`` zero rows are appended before the
+    `$y \leftrightarrow k_z$` reshard and stripped afterwards
+    (analogous to spectral padding, handled in :mod:`dnsjax.fft`).  The
+    padded physical sizes -- ``nz_padded`` (sharded by ``np1``) and,
+    for periodic flows, ``ny_padded`` (sharded by ``np0``) -- are
+    rounded up for mesh divisibility by ``padded_res.apply_rounding``:
+    normally already done by ``set_padded_resolution``, re-applied here,
+    idempotently, for entry points that set ``params.dist`` after (or
+    without) calling it.  Every recorded adjustment is printed once on
+    the main process, so no padding is ever silent.
     """
 
     np0: int = params.dist.np0
@@ -436,9 +433,8 @@ class Sharding:
             flush=True,
         )
 
-    # Axis-name helpers: None when the axis has size 1,
-    # so that P(a0, ...) becomes P(None, ...) = replicated,
-    # avoiding any size-1 collective overhead.
+    # Axis-name helpers: None for a size-1 axis, so that P(a0, ...) becomes
+    # P(None, ...) = replicated, avoiding any size-1 collective overhead.
     a0: str | None = "np0" if np0 > 1 else None
     a1: str | None = "np1" if np1 > 1 else None
 
@@ -458,11 +454,7 @@ class Sharding:
             )
 
     # ── Padded physical sizes (divisibility rounding) ───────────
-    # ``set_padded_resolution`` already rounds ``nz_padded`` (and the
-    # periodic ``ny_padded``) for mesh divisibility; re-apply
-    # idempotently for entry points that set ``params.dist`` after
-    # (or without) calling it, then report every recorded adjustment
-    # once.
+    # Re-applied, then reported (the docstring, "Auto-padding").
     padded_res.apply_rounding(params)
     if main_device:
         for _note in padded_res.notes:

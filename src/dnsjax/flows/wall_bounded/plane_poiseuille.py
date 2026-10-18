@@ -1,21 +1,16 @@
 r"""Plane Poiseuille (channel) flow: pressure-driven flow between plates.
 
-This module defines the ``PlanePoiseuilleFlow`` dataclass, which holds
-the plane-Poiseuille base flow; the geometry (wall-normal grid, FD
-matrices, influence-matrix operators and iteration, solvers) is
-inherited from
-:class:`~dnsjax.geometries.wall_bounded.cartesian.CartesianFlow`.  The
-module exports the flow-module surface that
-:class:`~dnsjax.flow_spec.FlowSpec` lists under ``flow_module``, the
-optional ``get_driving``, and the transient-growth hook
-``frozen_profile_flow``.
+``PlanePoiseuilleFlow`` adds the base flow to
+:class:`~dnsjax.geometries.wall_bounded.cartesian.CartesianFlow`, which
+holds the geometry (wall-normal grid, FD matrices, influence-matrix
+operators and iteration, solvers).  The module exports the flow-module
+surface of :class:`~dnsjax.flow_spec.FlowSpec`, with the optional
+``get_driving`` and the transient-growth hook ``frozen_profile_flow``.
 
 Base flow
 ---------
-The laminar base flow is `$U_s(y) = 1 - y^2$` on `$y \in [-1, 1]$`,
-oriented in the streamwise direction
-`$(\cos\theta, 0, \sin\theta)$` where `$\theta$` is the tilt
-angle.  Its derived quantities:
+`$U_s(y) = 1 - y^2$` on `$y \in [-1, 1]$`, along the streamwise
+direction `$(\cos\theta, 0, \sin\theta)$` at tilt angle `$\theta$`:
 
 - `$dU_s/dy = -2y$`
 - `$\nabla \times \mathbf{U} = (-2y\sin\theta, 0, 2y\cos\theta)$`
@@ -25,34 +20,28 @@ angle.  Its derived quantities:
 Moving frame
 ------------
 ``phys.u_grid`` defaults to the laminar bulk velocity
-`$U_{b,\mathrm{lam}} = 2/3$` for plane-Poiseuille flow, so by default
-the run evolves in the frame translating in `$x$` at
-`$U_{grid} = 2/3$`: the convective frame term `$+ i k_x U_{grid}
-\mathbf{u}'$` is added in the Cartesian ``_get_rhs_core`` / ``_l_bf``
-and the CFL diagnostic advects with `$\mathbf{U} -
-U_{grid}\hat{\mathbf{x}}$` (see ``parameters.update_parameters`` and
-``geometries.wall_bounded._base.pad_base_flow``).  Set
-``--phys.u_grid 0`` for the laboratory frame.
+`$U_{b,\mathrm{lam}} = 2/3$`, so a run evolves in the frame translating
+in `$x$` at that speed (the frame term and the frame-relative CFL:
+:func:`~dnsjax.geometries.wall_bounded._base.pad_base_flow`).
+``--phys.u_grid 0`` selects the laboratory frame.
 
 Driving
 -------
 With ``driving = "constant_pressure_gradient"`` (default), a fixed
 mean pressure gradient maintains the base flow and the bulk velocity
-is free (``Ub'_s`` in ``stats.dat``).
-
-With ``driving = "constant_bulk_velocity"``, each IMM iteration
-adjusts the mean-mode streamwise velocity to hold the perturbation
-bulk velocity at zero, and the force it applies is the diagnostic
-(``-dPds'`` in ``stats.dat``).
+is free (``Ub'_s`` in ``stats.dat``).  With
+``driving = "constant_bulk_velocity"``, each IMM iteration adjusts the
+mean-mode streamwise velocity to hold the perturbation bulk velocity
+at zero, and the force it applies is the diagnostic (``-dPds'`` in
+``stats.dat``).
 
 Spanwise blocking
 -----------------
 With ``block_mean_spanwise_velocity = True``, each IMM iteration
 additionally zeroes the perturbation bulk velocity in the spanwise
-direction `$(-\sin\theta, 0, \cos\theta)$`, simulating the
-presence of sidewalls that prevent net spanwise momentum.  This
-option is independent of ``driving`` and uses the same Helmholtz
-response as the streamwise constant-bulk-velocity enforcement.
+direction `$(-\sin\theta, 0, \cos\theta)$`, as sidewalls preventing
+net spanwise momentum would, independently of ``driving``
+(:func:`~dnsjax.geometries.wall_bounded.cartesian._apply_bulk_corrections`).
 """
 
 from dataclasses import dataclass
@@ -130,11 +119,9 @@ flow: PlanePoiseuilleFlow = PlanePoiseuilleFlow()
     reset_ab2_kappa,
 ) = build_cartesian_stepper(flow)
 
-# No ``to_solver_basis``/``from_solver_basis`` here, under either
-# ``res.consistent_imm`` formulation: the Cartesian state is physical
-# `(u, v, w)` throughout, and the default scheme's evolved scalars
-# never leave ``cartesian._imm_iteration_vw``.  Every consumer of the
-# pair looks it up with ``getattr`` and falls back to the identity.
+# No basis pair (FlowSpec): the state is physical `(u, v, w)` under
+# either ``res.consistent_imm`` formulation, the default's evolved
+# scalars never leaving ``cartesian._imm_iteration_vw``.
 
 
 def frozen_profile_flow(us: Array) -> PlanePoiseuilleFlow:
@@ -196,28 +183,28 @@ def _get_stats_jit(
 
     Under ``constant_bulk_velocity`` the driving work is the whole of
     `$I - I_\mathrm{lam}$`.  The **exact** input rate is
-    `$-U_{b,\mathrm{lam}}\Pi$` with `$-\Pi$` the force the corrector applied
-    (``stats.dat``'s ``-dPds'``); this state-only function cannot see that, so
-    it estimates `$\Pi$` from the wall shear instead, low by
-    `$\mathrm{bulk}(\bar N_s)$` -- continuously zero, a wall-normal truncation
-    residual discretely, and convergent.
+    `$-U_{b,\mathrm{lam}}\Pi$`, with `$-\Pi$` the force the corrector
+    applied (``stats.dat``'s ``-dPds'``); this state-only function
+    cannot see that force, so it estimates `$\Pi$` from the wall shear,
+    low by `$\mathrm{bulk}(\bar N_s)$`: zero continuously, a wall-normal
+    truncation residual discretely, and convergent.
 
-    Substituting the exact value nonetheless makes `$dE/dt = I - D$` close
-    **worse** (measured), which is a statement about that two-term form rather
-    than about either estimate: it omits the discrete
-    `$\langle u\cdot N(u)\rangle$`, zero continuously, whose dominant part is
-    `$-U_b\,\mathrm{bulk}(\bar N_s)$`.  The estimate's error is that same
-    quantity with the opposite sign, so it absorbs the omission.  Read `$I$` as
-    the budget-consistent input rate, not as the applied power; they converge.
-    Measured table: ``tests/test_energy_budget.py``'s
-    ``_check_applied_vs_inferred``.
+    Substituting the exact value makes `$dE/dt = I - D$` close **worse**
+    (measured: ``tests/test_energy_budget.py``'s
+    ``_check_applied_vs_inferred``), because the two-term form omits the
+    discrete `$\langle u\cdot N(u)\rangle$`, zero continuously, whose
+    dominant part is `$-U_b\,\mathrm{bulk}(\bar N_s)$`; the estimate's
+    error is that quantity with the opposite sign, so it absorbs the
+    omission.  `$I$` is therefore the budget-consistent input rate, not
+    the applied power; the two converge.
 
-    All total-field quantities are computed algebraically from perturbation
-    norms and laminar constants, without constructing
-    `$\mathbf{u}' + \mathbf{U}$`.  For `$-\nabla^2 U = 2$` (constant), the
-    cross-enstrophy reduces to `$\langle \boldsymbol{\omega}_U \cdot
-    \boldsymbol{\omega}_{u'} \rangle = 2\,U'_{b,s}$` where `$U'_{b,s}$` is the
-    perturbation bulk streamwise velocity.
+    All total-field quantities are computed algebraically from
+    perturbation norms and laminar constants, without constructing
+    `$\mathbf{u}' + \mathbf{U}$`.  For `$-\nabla^2 U = 2$` (constant),
+    the cross-enstrophy reduces to
+    `$\langle \boldsymbol{\omega}_U \cdot \boldsymbol{\omega}_{u'}
+    \rangle = 2\,U'_{b,s}$`, with `$U'_{b,s}$` the perturbation bulk
+    streamwise velocity.
     """
     Re = params.phys.re
     perturbation_energy = _perturbation_energy(state, fourier_, flow_)
@@ -314,16 +301,7 @@ def _get_driving_jit(
 
 
 def get_driving(state: Array) -> dict[str, Array]:
-    r"""Applied mean-mode driving inferred from *state* alone.
-
-    The optional flow-module export ``__main__`` uses for the one
-    ``stats.dat`` row with no step behind it (``t = t0``); every other
-    row carries the value the corrector applied, threaded out
-    of the step.  Same keys and sign as that column (the applied
-    force `$-\Pi$`, :mod:`dnsjax.ic.mean_mode`), ``{}`` when no
-    driving knob is on.  Takes the **physical** view of *state*, like
-    :func:`get_stats`.
-    """
+    """Applied mean-mode driving (:class:`~dnsjax.flow_spec.FlowSpec`)."""
     return _get_driving_jit(state, flow)
 
 
