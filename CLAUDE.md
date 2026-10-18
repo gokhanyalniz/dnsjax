@@ -67,9 +67,9 @@ multi-process runs (a lone process needs none, even across GPUs).
   docstring, "Converging N_y").
 - A flow that decays is a matter of regime or time, not a solver bug.
   Sustained turbulence needs O(100) advective time units (smoke tests
-  reach `t = 1`), `Re` above sustainment (plane Couette: ~350-500) and a
-  finite-amplitude perturbation in a domain at least the minimal flow
-  unit, which is itself only transiently turbulent.
+  reach at most `t = 1`), `Re` above sustainment (plane Couette:
+  ~350-500) and a finite-amplitude perturbation in a domain at least the
+  minimal flow unit, which is itself only transiently turbulent.
 
 ## Test-run discipline
 
@@ -177,7 +177,8 @@ analysis/         snapshot API, transient_growth, snapshot_import
   nothing crosses. Do not read across families unless asked.
 - `params`, `derived_params`, `padded_res`, `sharding` and each
   geometry's `fourier` are module singletons built at import.
-  Configure JAX and finalize the parameters (`update_parameters()`)
+  Configure JAX and finalize the parameters (`update_parameters()`,
+  then `validate_parameters()` and `padded_res.set_padded_resolution`)
   before importing `sharding` or any geometry module. Every entry point
   (solver, scripts, tests) does that through `dnsjax.bootstrap`, whose
   module docstring is the contract; never inline `jax.config.update` /

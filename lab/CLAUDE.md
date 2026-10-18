@@ -76,9 +76,11 @@ benchmarks and diagnostics are fixed on purpose.
   benchmark on the flows its `SIZES` / `EXTRA_ENTRIES` tables list
   (`--cpu-smoke`).
 - `performance/node_benchmark.py`: JAX-free layout and strong-scaling
-  sweep of one problem, `mpirun` or `srun` over nodes, each row's
-  `stats.dat` checked against a reference (`--dry-run`, `--cpu-smoke`);
-  imports its sibling `solver_benchmark.py`.
+  sweep of one problem, `mpirun` or `srun` over nodes (`--target gpu`:
+  one process spanning every visible GPU), each row's `stats.dat`
+  checked against a reference when `--outs.it_stats` writes one
+  (`--dry-run`, `--cpu-smoke`); imports its sibling
+  `solver_benchmark.py`.
 - `performance/pallas_solve_profile.py`: GPU profile of the banded solve
   and its share of a step (`--cpu-smoke`).
 - `performance/memory_budget.py`: per-rank memory of the as-run step on
@@ -92,8 +94,9 @@ benchmarks and diagnostics are fixed on purpose.
   `docs/figures/*-scaling.csv`.
 - `diagnostics/grad_probe.py`: forward/reverse differentiability matrix
   with a finite-difference check.
-- `diagnostics/pallas_tiling_diagnostic.py`: GPU harness for the Triton
-  partial-tile miscompile.
+- `diagnostics/pallas_tiling_diagnostic.py`: GPU harness for, and
+  regression check of, the observed miscompile of the masked
+  partial-tile path.
 - `diagnostics/gds_probe.py`: cluster diagnostic for the snapshot GDS
   path (`--cpu-smoke`).
 - `refactor/verify.py`: the gate for a refactor that must change
@@ -126,24 +129,35 @@ benchmarks and diagnostics are fixed on purpose.
   docs resolves; its index serves `docs/check_snake.py`, the backticked
   snake_case tokens that name nothing.
 - `docs/check_docstrings.py`: raw-string, math-form, doubled-word and
-  tone-word checks over the tracked Python tree; `docs/lint_docs.py`,
-  the same for the given files plus summary lines and split roles.
+  tone-word checks over the tracked Python tree; `docs/lint_docs.py`:
+  banned words (`WORDS`), multi-line summaries and split roles in the
+  given files.
 - `docs/banned_words.py`: `TONE` and `WORDS`, the banned-word patterns
   the prose checks share.
 - `docs/check_commit_message.py`: a commit message against the commit
   rules (prek's commit-msg hook); `--commits <revs>`, recorded ones.
 - `docs/check_returns.py`: return arity and documented parameters
-  against each signature.
+  against each signature (and a public `Parameters` section omitting
+  one).
 - `docs/docs_only.py`: proves a diff against a base ref changes
-  docstrings, comments and `description=` strings only.
+  docstrings, comments and `description=` strings only;
+  `docs/prose_only.py`, the same per file and stricter (tokens,
+  directives, runtime-read docstrings, TOML/YAML/shell/notebook).
+- `docs/prose_atoms.py`: the numbers, code spans, math and qualifiers a
+  docs change drops, each traced to where it now lives (`--tree`).
+- `docs/doc_pointers.py`: removed headings, titles, banners or
+  numbering with their remaining references; `--inbound <files>`.
+- `docs/dup_prose.py`: repeated prose passages across the tree.
+- `docs/md_lint.py`: added Markdown lines against the prose rules.
 - `docs/parse_cmds.py`: parse-validates one documented command line
   (solver, twin or a TOML), JAX-free.
 - `docs/check_render.py`: renders Markdown through GitHub's API (a POST
   per file) and compares its math with the source.
-- `docs/oxford.py` (`--dry`), `docs/reflow.py`, `docs/underline.py`:
-  mechanical rewrites of documentation ranges (`docs/doc_ranges.py`):
-  Oxford spelling, one reflowed paragraph, section underlines.
-- `docs/doc_inventory.py`: per-file docstring and comment dumps and the
-  missing public docstrings, written under the cwd.
+- `docs/oxford.py` (`--dry`; its ranges: `docs/doc_ranges.py`),
+  `docs/reflow.py`, `docs/underline.py`: mechanical rewrites of
+  documentation: Oxford spelling, one reflowed paragraph, section
+  underlines.
+- `docs/doc_inventory.py`: per-file docstring and comment dumps (under
+  `OUT_DIR`, default `./dump`) and the missing docstrings (printed).
 - `docs/crossref.py`: bibliographic metadata of a DOI or a query from
   Crossref.

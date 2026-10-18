@@ -6,7 +6,8 @@ Each module's docstring is its manual. `_base.py` is the shared layer
 `cartesian.py`, `cylindrical.py` and `annular.py` are the geometries.
 The pipe's stepping is `_cylindrical_stepping.py`, shared with the
 lab's curved and viscoelastic pipes; `_*_primitive_imm.py` hold the
-legacy `(v, p)` path (`res.consistent_imm = False`). The lab's
+legacy primitive (velocity, pressure) path
+(`res.consistent_imm = False`). The lab's
 geometry modules (`lab/src/dnsjax_lab/geometries/wall_bounded/`):
 `cylindrical_curved.py` adds the toroidal metric (its docstring is the
 worked example of a new metric); `_viscoelastic_*.py` and
@@ -56,8 +57,10 @@ guard: `test_no_cross_geometry_import` in `lab/tests/`).
   `_cylindrical_stepping._imm_iteration_vw` (the pipe's additions).
   Guards: `test_imm_continuity.py`, `test_random_smoke.py`,
   `test_temporal_order.py`.
-- A legacy module is imported lazily, inside flag-off branches only: it
-  imports back from its geometry module.
+- Import a legacy module lazily, never at module scope: it imports back
+  from its geometry module. Keep it off the default step; the Neumann
+  builders `cartesian.build_poisson_operator` takes from it under either
+  flag are the one exception (the `_cartesian_primitive_imm` docstring).
 - Setup computes the IMM columns and bulk response in one `jit` that
   takes the flow under construction (each geometry's `_imm_leaves`,
   shared with `_build_dt_leaves`). That relies on
@@ -90,8 +93,8 @@ guard: `test_no_cross_geometry_import` in `lab/tests/`).
 - `geo.m0` (every cylindrical/annular surface but the curved pipe's):
   the pipe's parity `m_is_even` follows the physical `m = m0·h`, and
   `analysis/_core.radial_derivative` must use exactly that selector
-  (guards: the `m0 = 2` rows of `test_snapshot_export.py`,
-  `test_wedge.py`, `test_transient_growth.py`).
+  (guards: the `m0 = 2` pipe row of `test_snapshot_export.py` and
+  `test_wedge.py`'s `wedge_cylindrical`).
 
 ## Optimization patterns
 

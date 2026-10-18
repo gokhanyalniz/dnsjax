@@ -37,9 +37,10 @@ paths:
   `res.ntheta` are internally `geo.lx`, `res.nx`, `res.ny`, `res.nz`.
   The `[lowres]` targets take the same names (the family specs'
   `FieldSpec` aliases).
-- Per-flow `FieldSpec` defaults (`geo.grid_type`, `phys.u_grid`, the
-  rheology values, ...) are re-materialized on every
-  `update_parameters()` unless a layer set them. Scripts and tests set
+- Per-flow defaults (`FieldSpec` defaults such as `phys.u_grid` and the
+  rheology values; `FlowSpec.grid_type_default` for `geo.grid_type`) are
+  re-materialized on every `update_parameters()` unless a layer set
+  them. Scripts and tests set
   such a field through `update_parameters(Parameters(...))`; a direct
   `params.<section>.<field> = ...` is silently overwritten on the next
   pass (the `update_parameters` docstring).
