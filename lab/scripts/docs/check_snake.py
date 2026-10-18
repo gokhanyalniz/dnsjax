@@ -1,14 +1,14 @@
 """List backticked snake_case tokens that name nothing in the tree.
 
 A ``snake_case`` word in backticks reads as an identifier; one that
-matches no top-level name, no class member and no parameter field in
-the tree is a stale name or a misspelling.  Scans the docstrings and
-comments of every tracked ``.py`` file and every tracked ``.md`` file
-but the agent notes and this directory, through the index
-:mod:`check_refs` builds at import, and prints
-``file:line: token (xN)`` with each token's count.
-Review by hand: a local variable or a shell/TOML key is a legitimate
-hit.
+names no function, class, variable, attribute or argument of the
+tree's Python (``check_refs.all_names``), no top-level name or import
+of its own file (``check_refs.top``) and no parameter field is a stale
+name or a misspelling.  Scans the prose :mod:`check_refs` scans,
+through the index it builds at import, and prints
+``file:line: token (xN)`` with each token's count.  Review by hand: a
+module, an external library's name or a shell/TOML key is a
+legitimate hit.
 
 Usage::
 

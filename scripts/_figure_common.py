@@ -1,10 +1,9 @@
 r"""Snapshot-figure helpers (JAX-free).
 
-The friction Reynolds number of the snapshot being drawn, and the wall
-units that follow from it -- what ``snapshot_figure.py`` labels a plane
-with.  It sits here rather than in that script because it is the one
-piece of per-flow physics a figure needs, and a second figure script
-would want it too.
+The friction Reynolds number of the snapshot being drawn and the wall
+units that follow from it, which ``snapshot_figure.py`` labels a plane
+with: the one piece of per-flow physics a figure needs, kept here for a
+second figure script to share.
 
 Sibling import: the scripts are run as ``python scripts/<name>.py``,
 which puts ``scripts/`` on ``sys.path``, so ``from _figure_common

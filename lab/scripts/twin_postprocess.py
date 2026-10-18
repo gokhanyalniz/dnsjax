@@ -3,9 +3,9 @@ r"""Rebuild the twin difference-field streams from snapshot pairs.
 
 ``dnsjax-twin`` writes its diagnostics *online*, so a member directory
 recorded before a stream existed carries no trace of it -- and the
-trajectory cannot be re-run, since it **is** the data.  What such a
-directory does still hold is everything the diagnostics are computed
-from: the lockstep snapshot pairs ``state{isnap}.tar`` (reference) +
+trajectory cannot be re-run, since it **is** the data.  Such a
+directory still holds everything the diagnostics are computed from:
+the lockstep snapshot pairs ``state{isnap}.tar`` (reference) +
 ``state{isnap}_twin.tar`` (partner), written at identical
 `$(t, \mathrm{it})$`.
 
@@ -24,11 +24,10 @@ Nothing is reimplemented: the same jitted diagnostics, the same
 :class:`~dnsjax_lab.twin.pressure.DifferencePressure`, the same
 :class:`~dnsjax_lab.twin._binstream.BinStream` writers and the same
 ``.dat`` machinery the live driver uses, so a rebuilt record is the
-number the run would have written, bit for bit -- every stored value
-of every stream, with the single documented exception of the
-``stats*.dat`` driving columns below.  Bit for bit on the run's own
-device layout, that is: another mesh reorders the reductions, which
-moves a value by machine epsilon and no more.
+number the run would have written, bit for bit on the run's own device
+layout (another mesh reorders the reductions, which moves a value by
+machine epsilon and no more) -- every stored value of every stream but
+the ``stats*.dat`` driving columns (below).
 
 Why this needs JAX (and cannot live in :mod:`dnsjax.analysis`):
 :func:`~dnsjax_lab.twin.diagnostics._marginals_replicated` is a
@@ -54,26 +53,26 @@ they would a live one.
 
 **The ``stats*.dat`` driving columns are inferred, not applied.**
 Under an active mean-mode driving constraint the live streams' last
-columns carry the force the corrector applied -- a *step*
-quantity, and no row here has a step behind it.  What a state alone
-supports is the wall-shear inference ``get_driving``, which is exactly
-what the live stream itself writes for its one stepless row
-(``t = t0``); the rebuilt file uses that convention for
-**every** row, under the same column names.  The two agree only at a
-converged wall-normal resolution, and their gap is the usable
-under-resolution diagnostic documented at the ``__main__`` read site.
-``twin_postprocess.json`` records this as ``stats_driving``.  Every
-other stored value, in every stream, is bit for bit what the run
-would have written.
+columns carry the force the corrector applied -- a *step* quantity,
+and no row here has a step behind it.  What a state alone supports is
+the wall-shear inference ``get_driving``, which is exactly what the
+live stream itself writes for its one stepless row (``t = t0``; the
+:mod:`dnsjax.__main__` module docstring, "Diagnostic streams"); the
+rebuilt file uses that convention for **every** row, under the same
+column names.  The two agree only at a converged wall-normal
+resolution, and their gap is a usable under-resolution diagnostic
+(measured in ``tests/test_driving.py``).  ``twin_postprocess.json``
+records this as ``stats_driving``.
 
 Parameters, and why the grid is pinned
 --------------------------------------
 Parameters come from a snapshot in the folder (the first complete
 pair, or ``--init.snapshot`` to choose another) through the ordinary
-layering, with the ``parameters.toml`` layer switched off -- a member's
-own TOML carries ``[twin]`` keys, which do not ride this script's
-surface.  ``res.double_precision`` is taken from the snapshot, the only
-value :func:`~dnsjax.snapshot.validate_snapshot_params` accepts.
+layering, with the ``parameters.toml`` layer switched off: a member's
+own TOML carries ``[twin]`` keys, which are not on this script's
+surface and would be a hard error.  ``res.double_precision`` is taken
+from the snapshot, the only value
+:func:`~dnsjax.snapshot.validate_snapshot_params` accepts.
 
 No layer may change what the snapshots were written with: a
 ``phys`` / ``geo`` / ``res`` override would rebuild a member's
@@ -132,17 +131,16 @@ from dnsjax.snapshot_meta import git_hash, read_snapshot_meta
 _PROG = "python lab/scripts/twin_postprocess.py"
 
 #: ``twin_postprocess.json`` schema version.  A provenance record on
-#: the ``ensemble_setup.py`` ``members.json`` model -- nothing reads it
-#: back, so it carries no reader floor (unlike the stream sidecars);
-#: the number is here so a record describes which fields to expect.
-#: 2 added ``stats_driving`` alongside the two ``stats*.dat`` streams;
-#: 3 added ``x0_planes``; 4 lists the streams written, the
-#: reference spectra now being one of their own.
+#: the ``ensemble_setup.py`` ``members.json`` model: nothing reads it
+#: back, so it carries no reader floor (unlike the stream sidecars),
+#: and the number tells which fields a record holds.  2 added
+#: ``stats_driving`` alongside the two ``stats*.dat`` streams, 3
+#: ``x0_planes``, 4 the list of streams written, the reference spectra
+#: a stream of their own from version 4 on.
 PROVENANCE_VERSION: int = 4
 
 #: The output files this script owns; an existing one is refused rather
-#: than appended to (both writer families append silently on a matching
-#: sidecar, and ``_ScalarStream`` re-writes no header).
+#: than appended to (why: ``dnsjax_lab.twin.driver._STREAM_FILES``).
 _OUTPUTS: tuple[str, ...] = (
     "twin.dat",
     "twin_yspectra.bin",
@@ -320,12 +318,11 @@ def discover_pairs(directory: Path) -> tuple[list[Pair], list[Path]]:
     Returns ``(pairs, orphans)``: the references whose partner is
     missing are reported rather than guessed at.  ``*_twin.tar`` files
     are never treated as references (the ``ensemble_setup.py harvest``
-    rule -- a partner is a perturbed copy at the same ``t``, not a
-    sample of its own), and an interrupted save is skipped for free by
-    the ``*.tar`` glob (``snapshot.py`` commits by renaming a
-    ``.partial`` sibling).  A pair whose two halves disagree on
-    ``(t, it)`` raises: it is a crash between the driver's two writes,
-    and differencing across times would return plausible noise.
+    rule), and an interrupted save is skipped for free by the
+    ``*.tar`` glob (``snapshot.py`` commits by renaming a ``.partial``
+    sibling).  A pair whose two halves disagree on ``(t, it)`` raises:
+    it is a crash between the driver's two writes, and differencing
+    across times would return plausible noise.
     """
     pairs: list[Pair] = []
     orphans: list[Path] = []
@@ -488,10 +485,10 @@ def twin_values(
     comes off its ``twin.json`` (*source*).  A key the record predates
     takes the driver's own legacy back-fill
     (``_TWIN_LEGACY_DEFAULTS``); with no record at all each of them is
-    unknown and written ``null``, as ``seed`` and ``e0`` always were --
-    never the current default, which a member recorded under another one
-    did not run with.  Hence ``model_construct``: ``None`` is no valid
-    shape *setting*, only a faithful record of an unknown one.
+    unknown and written ``null``, like ``seed`` and ``e0``, never the
+    current default, which a member recorded under another one did not
+    run with.  Hence ``model_construct``: ``None`` is no valid shape
+    *setting*, only a faithful record of an unknown one.
     """
     from dnsjax_lab.twin.driver import TwinParams, _legacy_default
 
@@ -515,10 +512,10 @@ def twin_values(
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
-    # ``_scan_flag`` is bootstrap's own raw pre-parse (the one
-    # ``peek_run_context`` uses to find the flow before any model
-    # exists); the run directory has to be known one step earlier
-    # still, since it supplies the snapshot the parameters come from.
+    # The run directory supplies the snapshot the parameters come from,
+    # so it is read before them, by bootstrap's raw pre-parse
+    # (:func:`dnsjax.bootstrap._scan_flag`, which ``peek_run_context``
+    # uses to find the flow before any model exists).
     from dnsjax.bootstrap import _scan_flag, resolve_parameters
     from dnsjax.parameters import params
 
@@ -547,9 +544,7 @@ def main(argv: list[str] | None = None) -> int:
     if _scan_flag(argv, "--init.snapshot") is None:
         argv = [*argv, "--init.snapshot", str(pairs[0].reference)]
 
-    # Snapshot + CLI layers only: an ensemble member's own
-    # parameters.toml carries [twin] keys, which are not on this
-    # surface and would be a hard error.
+    # Snapshot + CLI layers only (module docstring).
     resolve_parameters(
         argv,
         toml_path=False,
@@ -574,9 +569,8 @@ def main(argv: list[str] | None = None) -> int:
     check_one_grid(kept, param_pair)
     # An override would leave the loaded states as they were written
     # while every derived object follows params: a resolution change
-    # mismatches the arrays outright, a phys / geo one (Re, the box,
-    # the wall-normal grid) silently rebuilds the streams of another
-    # flow.  The resume rule of dnsjax-twin itself.
+    # mismatches the arrays outright, a phys / geo one silently
+    # rebuilds the streams of another flow (module docstring).
     changes = trajectory_defining_changes(
         read_snapshot_meta(param_pair.reference)["params"]
     )
@@ -693,10 +687,8 @@ def main(argv: list[str] | None = None) -> int:
     def _stats_of(state):
         """``(stats, driving)`` for one state -- a live row's pair.
 
-        The driving is the wall-shear inference, not the applied
-        force: no row here has a corrector step behind it, so every
-        row takes the convention the live stream reserves for its own
-        ``t = t0`` row (see the module docstring).
+        The driving is the wall-shear inference, not the applied force
+        (module docstring).
         """
         return (
             get_stats(state),

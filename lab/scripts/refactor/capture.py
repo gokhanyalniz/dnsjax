@@ -376,7 +376,7 @@ def wave2_runs(out: Path) -> list[dict]:
 
 
 def _ccf(re1: float, re2: float, eta: float) -> tuple[float, float]:
-    """Circular-Couette A0, B0 (copied from tests/test_transient_growth)."""
+    """Circular-Couette A0, B0 (a copy of ``tests/_transient_growth.ccf``)."""
     re_ref = re1 if re1 > 0 else re2
     a0 = (re2 - eta * re1) / ((1 + eta) * re_ref)
     b0 = eta * (re1 - eta * re2) / ((1 + eta) * (1 - eta) ** 2 * re_ref)

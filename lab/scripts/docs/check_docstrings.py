@@ -1,11 +1,10 @@
-"""Mechanical docstring checks over the tracked Python tree, bar this
-directory.
+"""Mechanical prose checks over the tracked Python tree, bar this directory.
 
 A. docstrings with a backslash that are not raw (escape corruption);
 B. inline math in docstrings not in the `$...$`-in-backticks form, and
-   `$$` / other display forms;
-C. doubled words, spaced-hyphen dashes, TODO-like markers, dates;
-D. banned / tone words.
+   `$$` display math;
+C. doubled words, TODO-like markers and dates, on every line;
+D. tone words (`banned_words.TONE`) in docstrings and comments.
 """
 
 import ast
@@ -77,7 +76,6 @@ for f in files:
             w = m.group(1)
             if w.lower() in {"that", "had"} or w.isdigit():
                 continue
-            # skip code-ish lines
             doubled.append((f, i, line.strip()[:100]))
         if re.search(r"\b(TODO|FIXME|XXX|HACK)\b", line):
             markers.append((f, i, line.strip()[:100]))

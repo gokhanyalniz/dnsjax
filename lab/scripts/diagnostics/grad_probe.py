@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 r"""Probe which dnsjax stepping configurations differentiate.
 
-Answers one question per configuration: does a time step admit forward
-mode (:func:`jax.jvp`), and does it admit reverse mode
-(:func:`jax.grad`)?  The quantity differentiated is the perturbation
-kinetic energy after a few steps, with respect to the initial spectral
-state -- the shape every adjoint-based use starts from (optimal
-perturbations, sensitivity, control).  Each reverse-mode result is
-cross-checked against a central difference along a random direction,
-because "``jax.grad`` returned an array" is not the same claim as
-"``jax.grad`` returned the derivative".
+Per configuration: does a time step admit forward mode
+(:func:`jax.jvp`) and reverse mode (:func:`jax.grad`)?  The quantity
+differentiated is the perturbation kinetic energy after a few steps,
+with respect to the initial spectral state -- the shape every
+adjoint-based use starts from (optimal perturbations, sensitivity,
+control).  Each reverse-mode result is cross-checked against a central
+difference along a random direction, because ``jax.grad`` can return
+an array that is not the derivative.
 
 **Reading the table.**  ``jax.grad`` fails on any configuration whose
 corrector iterates to a tolerance: a dynamic trip count
@@ -20,11 +19,10 @@ triply-periodic ``cnab2``, whose explicit-AB2 step runs no corrector at
 all and so differentiates unconditionally.  See
 ``docs/differentiability.md``.
 
-**One subprocess per configuration.**  The parameter singletons and the
-jitted steppers capture their configuration at import and trace time,
-so a sweep cannot run in one process; the script re-executes itself
-with ``--child`` per row and parses one ``@@RESULT`` line back, the
-same idiom as ``lab/scripts/performance/solver_benchmark.py``.  It
+**One subprocess per configuration.**  A sweep cannot run in one
+process (why: ``tests/test_autodiff.py``), so the script re-executes
+itself with ``--child`` per row and parses one ``@@RESULT`` line back,
+the same idiom as ``lab/scripts/performance/solver_benchmark.py``.  It
 imports nothing from ``tests/``.
 
 Usage::
@@ -34,12 +32,12 @@ Usage::
     uv run python lab/scripts/diagnostics/grad_probe.py \
         --dist.platform cuda
 
-The default is CPU in double precision.  ``--dist.platform cuda`` is
-the run a machine without a GPU cannot do: it exercises the real Triton
-lowering of the transposed banded sweep that backs the kernel's
-``custom_vjp`` (``solvers._pallas_banded_solve_t``), which interpret
-mode and a CUDA lowering check between them do not cover -- the same
-footing the forward kernel shipped on.
+The default is CPU in double precision.  ``--dist.platform cuda`` needs
+a GPU: it exercises the real Triton lowering of the transposed banded
+sweep that backs the kernel's ``custom_vjp``
+(``solvers._pallas_banded_solve_t``), which interpret mode and a CUDA
+lowering check between them do not cover -- the same footing the
+forward kernel shipped on.
 """
 
 from __future__ import annotations
@@ -56,9 +54,10 @@ SELF = Path(__file__).resolve()
 RESULT_TAG = "@@RESULT "
 
 #: ``(system, scheme, corrector_iterations, backend, pallas_kernel)``.
-#: ``backend``/``pallas_kernel`` are ``None`` where the flow's surface
-#: does not carry them (the triply-periodic family has no ``[solver]``
-#: fields: its implicit step is diagonal in spectral space).
+#: A ``None`` field is left unset (``pallas_kernel``: the automatic
+#: choice); ``backend`` and ``pallas_kernel`` are both ``None`` on the
+#: triply-periodic rows, whose surface carries neither (the implicit
+#: step is diagonal in spectral space).
 _Row = tuple[str, str, int, str | None, bool | None]
 
 #: The curated default: every axis covered at least once, 12 rows.
@@ -89,6 +88,9 @@ FLOW_MODULES = {
 NX, NY, NZ = 8, 17, 8
 NY_PERIODIC = 16
 N_STEPS = 2
+#: The random IC's seed.  Fixed on purpose, like every seed in the
+#: benchmarks and diagnostics (``init.random_seed`` itself defaults to
+#: drawing one).
 SEED = 1
 
 
@@ -177,9 +179,8 @@ def run_child(a: argparse.Namespace) -> None:
 
     s0 = generate_random_state(0.1, 0.4, 0.4, 0.14, SEED)
 
-    # Physical in, physical out, crossing the basis where ``__main__``
-    # does: the steppers take the solver state (a pipe's also carries
-    # its pass's two spin-quad differences past the velocity).
+    # Physical in, physical out: the basis crossing of
+    # ``tests/test_autodiff.py``'s ``_energy_after_steps`` (its comment).
     to_solver = getattr(mod, "to_solver_basis", lambda x: x)
     from_solver = getattr(mod, "from_solver_basis", lambda x: x)
 
@@ -218,9 +219,8 @@ def run_child(a: argparse.Namespace) -> None:
         fd = float(
             energy(s0 + eps * direction) - energy(s0 - eps * direction)
         ) / (2 * eps)
-        # jax.grad of a real function of a complex input returns the
-        # conjugate cotangent, so the directional derivative is
-        # Re<conj(g), d>.
+        # The directional derivative Re<conj(g), d> (why the conjugate:
+        # ``tests/test_autodiff.py``, ``_check_grad``).
         ad = float(jnp.real(jnp.sum(jnp.conj(g) * direction)))
         rec["grad"] = "ok"
         rec["fd"], rec["ad"] = fd, ad
@@ -241,8 +241,8 @@ def _reason(message: str) -> str:
     """A table-width reason from a failure message.
 
     Reverse mode's refusal names the primitive it could not transpose,
-    which is the whole content of the cell; the rest of JAX's message
-    is a paragraph of advice that would wreck the table.
+    the cell's whole content; the rest of JAX's message is a paragraph
+    of advice, too long for the table.
     """
     if "while_loop" in message:
         return "refused: `lax.while_loop`"

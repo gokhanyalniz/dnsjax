@@ -1,20 +1,18 @@
 r"""Inject a single-mode perturbation into an existing dnsjax snapshot.
 
-Offline CLI + library (the
-:mod:`dnsjax.analysis.snapshot_import` counterpart for *existing*
-dnsjax snapshots): loads a snapshot, adds a scaled
-``(C, Ny)`` complex wall-normal profile at one global spectral mode
-``(i2, i3)`` -- with the real-FFT conjugate partner handled by
+Offline CLI + library (the :mod:`dnsjax.analysis.snapshot_import`
+counterpart for *existing* dnsjax snapshots): loads a snapshot, adds a
+scaled ``(C, Ny)`` complex wall-normal profile at one global spectral
+mode ``(i2, i3)`` -- with the real-FFT conjugate partner handled by
 :func:`dnsjax.analysis.transient_growth.single_mode_state` -- and
 writes a new snapshot.  The parent's ``t``/``it`` are kept, so a run
 resumed from the output continues the parent trajectory's clock with
-the perturbation applied -- provided the resuming run's own
-trajectory-defining parameters match the ones the parent recorded.
-``res.consistent_imm`` is one of them and, like every ``[res]`` field,
-is inherited from the snapshot: a parent written before it defaulted
-on continues on the legacy scheme, and only a resuming run that
-overrides it starts a **new** trajectory (unless
-``--init.force_resume``).  The
+the perturbation applied, provided its own trajectory-defining
+parameters match the ones the parent recorded; otherwise it starts a
+**new** trajectory unless ``--init.force_resume``.  One of them,
+``res.consistent_imm``, is inherited from the snapshot: a parent
+written before it defaulted on continues on the legacy scheme (the
+field's description, :class:`dnsjax.parameters.Resolution`).  The
 primary use is seeding perturbed ensemble members from harvested
 turbulent snapshots.
 
@@ -54,12 +52,11 @@ Perturbation sources (exactly one):
 Amplitude (exactly one):
 
 - ``--perturb.amplitude_energy E0``: scale the injected single-mode
-  field (conjugate partner included) so its solver-measure
-  perturbation energy is ``E0`` -- the same convention as the
-  transient-growth ``--tg.export_amplitude`` seed, evaluated with
-  the solver's own ``get_norm2*``
-  (:func:`~dnsjax.analysis.transient_growth.mode_state_energy`), so
-  the injected ``E'`` matches the solver's diagnostic exactly.
+  field (conjugate partner included) to the solver-measure
+  perturbation energy ``E0``, the transient-growth
+  ``--tg.export_amplitude`` convention
+  (:func:`~dnsjax.analysis.transient_growth.mode_state_energy`: the
+  injected ``E'`` matches the solver's diagnostic exactly).
 - ``--perturb.amplitude_scale S``: a raw multiplier.
 
 Choosing ``E0``: small enough for a *linear* response (the check:
@@ -74,18 +71,17 @@ usable window considerably.
 
 The injected profile need not be discretely divergence-free: the
 influence-matrix step of the resumed run removes any residual
-divergence on its first corrector pass.  Transient-growth
-optimals and controllability modes are divergence-free by
-construction.  The mean mode ``(0, 0)`` is a valid target on the
-Cartesian flows only, and the profile is **checked, not reshaped** --
-this script's caller owns what it injects, so an incompatible profile
-is refused with its measured residuals rather than silently projected.
-It must be real (the mean of a real field), have no wall-normal
-component (continuity with no-slip forces ``<v> = 0``), satisfy
-no-slip, and satisfy the mean-mode conservation laws of each tilted
-direction (:mod:`dnsjax.ic.mean_mode`, which also documents the
-tolerance) -- including an unchanged bulk velocity in a direction
-whose mean the driving holds.
+divergence on its first corrector pass.  Transient-growth optimals and
+controllability modes are divergence-free by construction.  The mean
+mode ``(0, 0)`` is a valid target on the Cartesian flows only, and the
+profile is **checked, not reshaped**: this script's caller owns what it
+injects, so an incompatible profile is refused with its measured
+residuals rather than silently projected.  It must be real (the mean of
+a real field), have no wall-normal component (continuity with no-slip
+forces ``<v> = 0``), satisfy no-slip, and satisfy each tilted
+direction's mean-mode conservation laws
+(:func:`dnsjax.ic.mean_mode.check_cartesian_mean_profile`; the laws and
+their tolerance: :mod:`dnsjax.ic.mean_mode`).
 
 Usage::
 
@@ -130,11 +126,9 @@ _PROG = "python scripts/snapshot_perturb.py"
 class PerturbParams(BaseModel):
     r"""Injection knobs: the ``[perturb]`` extension section.
 
-    Parsed as ``--perturb.<field>`` CLI flags on the shared per-flow
-    surface (:func:`dnsjax.bootstrap.resolve_parameters`; snapshot +
-    CLI only, no TOML).  Source and amplitude selections are
-    exactly-one-of groups (:func:`_validate_perturb`); knob guidance:
-    the module docstring.
+    Parsed as ``--perturb.<field>`` CLI flags (the module docstring,
+    which also guides the knobs).  Source and amplitude selections are
+    exactly-one-of groups (:func:`_validate_perturb`).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -197,8 +191,11 @@ class PerturbParams(BaseModel):
 
 def _validate_perturb(values: PerturbParams, params) -> None:
     # Structural checks on the configured section: exactly one source,
-    # exactly one amplitude, a supported system, and a single in-range
-    # mode.  File-content checks stay with the profile loaders.
+    # exactly one amplitude, a supported system, a single in-range mode,
+    # and the (0, 0) mode only on the Cartesian flows; an unconfigured
+    # section returns early (``dnsjax.extensions.validate_extensions``
+    # runs every hook).  File-content checks stay with the profile
+    # loaders.
     probed = (
         values.out,
         values.mode,
@@ -295,9 +292,10 @@ def configure_from_snapshot(
     Once per process, before any other dnsjax work: layers the
     snapshot's embedded parameters (single device), matches the
     snapshot's **stored precision** (so untouched modes round-trip
-    bit-identically; the resume path is precision-agnostic, an
-    offline injection must not be), then imports the flow / geometry
-    modules.  Returns ``(fmod, gmod, family)``.
+    bit-identically; a resume instead keeps the run's own and refuses
+    a mismatch: :func:`dnsjax.snapshot.validate_snapshot_params`),
+    then imports the flow / geometry modules.  Returns
+    ``(fmod, gmod, family)``.
     """
     from dnsjax.bootstrap import configure_jax_platform
     from dnsjax.parameters import (
@@ -489,10 +487,8 @@ def main(argv: list[str] | None = None) -> int:
     from dnsjax.parameters import params
     from dnsjax.snapshot_meta import is_snapshot_file, read_snapshot_meta
 
-    # Snapshot + CLI layers only (toml_path=False): the [perturb]
-    # section and the shared surface (--init.snapshot,
-    # --dist.platform) parse together; validate_parameters runs the
-    # structural checks (_validate_perturb).
+    # Snapshot + CLI layers only (module docstring); validate_parameters
+    # runs the structural checks (_validate_perturb).
     resolve_parameters(
         argv,
         toml_path=False,
@@ -539,11 +535,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         vec = load_profile_npy(p.npy)
 
-    # A mean-mode profile is not free: reality, no wall-normal
-    # component, no-slip, and each tilted direction's conservation
-    # laws (module docstring).  Refused, not reshaped -- the caller
-    # owns the profile it injects.  (_validate_perturb has already
-    # restricted (0,0) to the Cartesian flows.)
+    # Checked, not reshaped (module docstring); _validate_perturb has
+    # already restricted (0,0) to the Cartesian flows.
     if (i2, i3) == (0, 0):
         bad = check_cartesian_mean_profile(
             vec,

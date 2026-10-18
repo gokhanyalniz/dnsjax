@@ -1,17 +1,16 @@
 # Offline tools
 
-Standalone programs that meet the solver through its snapshots and
-streams, or launch it as a subprocess; none of them changes how a
-simulation runs. Each script's module docstring is its manual. The
-figure script needs the `plots` dependency group:
+Standalone programs that read or write the solver's snapshots, or size
+its grids; none of them changes how a simulation runs. Each script's
+module docstring is its manual. The figure script needs the `plots`
+dependency group:
 
 ```bash
 uv run --group plots python scripts/snapshot_figure.py ...
 ```
 
-These are the tools for working with a simulation; the ensemble,
-post-processing, performance and diagnostic tools of the repository's
-lab are listed with it ([the lab](../README.md#the-lab)).
+The ensemble, post-processing, performance and diagnostic tools of the
+repository's lab are listed with it ([the lab](../README.md#the-lab)).
 
 ## Figures
 

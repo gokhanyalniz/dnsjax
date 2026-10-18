@@ -3,7 +3,8 @@
 -ise/-isation -> -ize/-ization (exempt words keep -ise), modeling ->
 modelling, artifact -> artefact.  Only comments, docstrings and
 description=/help= strings change (see doc_ranges.py).  Prints a count
-per file; ``--dry`` prints the planned replacements instead.
+per file; ``--dry`` also prints each planned replacement and writes
+nothing.
 """
 
 import re

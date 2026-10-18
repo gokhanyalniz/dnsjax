@@ -4,14 +4,6 @@ Measures the production (``pallas``) solver backend against the
 ``dense`` reference on real hardware, and validates multi-GPU
 execution:
 
-Every number is reported for the configured ``res.consistent_imm``
-formulation: the two build different operator groups (the legacy
-primitive one carries a pressure Poisson ``Lk`` and, in the cylindrical
-geometries, a third ``Hk`` family) and run a different per-mode solve
-count.  The default is the shipped reconstruction scheme;
-``--legacy-imm`` benchmarks the retired primitive `$(v, p)$` one, in
-the children and the ``mpirun`` runs alike.
-
 A.  **Single-device matrix** (one subprocess per config x backend --
     the singletons capture the backend at import): per operator group
     (:data:`OP_GROUPS`) the operator class built, exact persistent
@@ -21,40 +13,45 @@ A.  **Single-device matrix** (one subprocess per config x backend --
     a fixed-seed parity scalar (perturbation energy + ``get_stats``
     after a few steps) compared across backends.  Every child also
     runs the split-vs-unsplit iterative-cn corrector A/B
-    (``step.split_corrector`` forced on vs off, via an in-child
-    stepper rebuild on the same operators and IC, so the comparison is
-    independent of the default -- which is off, an opt-in; see
-    ``_split_core`` in ``timestep.py``), reported per row and as a
-    verdict section.  At the bench ``dt`` the entries pin the
-    no-regression claim (the corrector converges in ~1 iteration
-    either way -- a count the ``res.consistent_imm`` formulation
-    moves, so read it against the formulation the row was run with);
-    the split's FFT-refresh savings show only where ``dt`` drives the
-    unsplit corrector towards its cap, which the coupling-stressed
-    ``dean-split-stress`` entry does: total-field Dean at ``nz = 64``,
-    ``dt = 0.15``, the regime of the :mod:`dnsjax.parameters` Design
-    notes ("The split corrector stays opt-in"), where the corrector
-    cost is dominated by the instantaneous mean-flow coupling
-    (``l_bf == L_mf``).
+    (``step.split_corrector`` forced on vs off by an in-child stepper
+    rebuild on the same operators and IC, so the comparison is
+    independent of the default -- off, an opt-in; see ``_split_core``
+    in ``timestep.py``), reported per row and as a verdict section.  At
+    the bench ``dt`` the entries pin the no-regression claim (the
+    corrector converges in ~1 iteration either way, a count the
+    ``res.consistent_imm`` formulation moves); the split's FFT-refresh
+    savings show only where ``dt`` drives the unsplit corrector towards
+    its cap, as the coupling-stressed ``dean-split-stress`` entry does:
+    total-field Dean at ``nz = 64``, ``dt = 0.15``, the regime of the
+    :mod:`dnsjax.parameters` Design notes
+    ("The split corrector stays opt-in"), where the corrector cost is
+    dominated by the instantaneous mean-flow coupling (``l_bf == L_mf``).
 B.  **Multi-GPU section** (``mpirun ... -m dnsjax`` production runs
     from scratch dirs): multi-GPU execution of the Pallas Triton
     kernel -- correctness via JAX-free ``dnsjax.analysis`` snapshot
     diffs across device counts and vs the dense reference (including a
     padding-inducing ``nx = 34`` plane, a ``2 x 2`` mesh, and a
     ``1 x 4`` case), and production-size timing runs parsed from the
-    ``__main__`` benchmark summary.
-    A preflight ladder bisects the launch stack first (task launch,
-    distributed init, collectives, Explicit-mesh reshard, then real
-    micro-runs over launch topology / scheme / NCCL env; see
-    :func:`_preflight_launcher`) and locks the first working
-    configuration -- including a single-process multi-GPU fallback
-    (``--launch-mode sp``) when multi-process launches hang **or**
-    when the allocation cannot host multi-task steps at all (a
-    1-task-per-node allocation runs the multi-GPU sections
-    single-process instead of skipping them).
+    ``__main__`` benchmark summary.  A preflight ladder
+    (:func:`_preflight_launcher`) bisects the launch stack first (task
+    launch, distributed init, collectives, Explicit-mesh reshard, then
+    real micro-runs over launch topology / scheme / NCCL env) and locks
+    the first working configuration -- including a single-process
+    multi-GPU fallback (``--launch-mode sp``) when multi-process
+    launches hang **or** when the allocation cannot host multi-task
+    steps at all (a 1-task-per-node allocation runs the multi-GPU
+    sections single-process instead of skipping them).
 C.  **CPU bench** (``--cpu-bench``): the same child measurements with
     ``JAX_PLATFORMS=cpu`` on a reduced matrix -- what CPU production
     pays per backend (the pallas pure-JAX sweep vs dense).
+
+Every number is reported for the configured ``res.consistent_imm``
+formulation: the two build different operator groups (the legacy
+primitive one carries a pressure Poisson ``Lk`` and, in the cylindrical
+geometries, a third ``Hk`` family) and run a different per-mode solve
+count.  The default is the shipped reconstruction scheme;
+``--legacy-imm`` benchmarks the retired primitive `$(v, p)$` one, in
+the children and the ``mpirun`` runs alike.
 
 The driver is JAX-free (children own the devices); every child /
 mpirun stdout is logged under ``{workdir}/logs``, results stream as
@@ -77,14 +74,14 @@ request e.g. ``--mem 64G`` or more.  Save the full stdout (e.g.
     .venv/bin/python lab/scripts/performance/solver_benchmark.py \
         --skip-mpi-timing
 
-The driver is a **single process**: do not fan it out
-(``srun -n 4 python ...`` runs four interleaved drivers fighting over
-the same GPU; surplus SLURM tasks exit at startup).  The
-multi-process ``-m dnsjax`` runs are launched via ``--launcher``
-(default ``auto``: ``mpirun`` when on PATH, else ``srun -n N
---overlap`` job steps inside the surrounding allocation;
-site-specific step flags go through ``--srun-args``, e.g.
-``--srun-args "--gpus-per-task=1"``).
+The driver is a **single process** (one task, or a plain process
+inside the allocation): do not fan it out (``srun -n 4 python ...``
+runs four interleaved drivers fighting over the same GPU and host
+memory; surplus SLURM tasks exit at startup).  The multi-process
+``-m dnsjax`` runs are launched via ``--launcher`` (default ``auto``:
+``mpirun`` when on PATH, else ``srun -n N --overlap`` job steps inside
+the surrounding allocation; site-specific step flags go through
+``--srun-args``, e.g. ``--srun-args "--gpus-per-task=1"``).
 
 On a CPU node::
 
@@ -119,11 +116,11 @@ PY = REPO / ".venv" / "bin" / "python"
 SELF = Path(__file__).resolve()
 RESULT_TAG = "@@RESULT "
 
-# Per-system physics (the test-suite-standard values from
-# tests/test_random_smoke.py) as dotted internal parameter paths: the
-# child's parameter layer takes them as they are, and the multi-process
-# command lines translate them to each flow's public names
-# (:func:`_public_flag`; the pipe's axial ``geo.lx`` is ``--geo.lz``).
+# Per-system physics (the random-smoke values of tests/test_random_smoke.py
+# and its lab half, for every system but plane-poiseuille, which those
+# tables leave out) as dotted internal parameter paths: the child's
+# parameter layer takes them as they are, and the multi-process command
+# lines translate them to each flow's public names (:func:`_public_flag`).
 SYS_ARGS: dict[str, dict[str, float]] = {
     "plane-couette": {"phys.re": 330.0, "geo.lx": 5.0, "geo.lz": 5.0},
     "plane-poiseuille": {"phys.re": 660.0, "geo.lx": 5.0, "geo.lz": 5.0},
@@ -308,8 +305,8 @@ def _to_text(x: str | bytes | None) -> str:
 def _echo_tail(name: str, stdout: str, stderr: str) -> None:
     """Inline the end of a failed run's output into the driver stdout.
 
-    The workdir often sits on a node-local /tmp that vanishes with the
-    job, so the saved log must carry its own diagnosis.
+    A workdir on a node-local /tmp vanishes with the job, so the saved
+    driver stdout must carry its own diagnosis.
     """
     # Separate windows per stream: a chatty stderr (jax/XLA INFO) must
     # not crowd the stdout breadcrumbs out of the tail.
@@ -433,22 +430,15 @@ def run_child(a: argparse.Namespace) -> None:
         validate_parameters,
     )
 
-    # Every field goes through one layering call, never a direct
-    # ``params.<section>.<field> = ...`` assignment: ``update_parameters``
-    # re-materializes each per-flow default (the backend, a flow's
-    # rheology and box) for any field no layer set, so a direct
-    # assignment is silently overwritten.
+    # Every field goes through one layering call: a direct assignment
+    # of a per-flow default (a flow's rheology and box) is silently
+    # overwritten by the next ``update_parameters`` (its docstring).
     layer: dict[str, dict] = {"phys": {"system": a.system}}
     for dotted, v in SYS_ARGS[a.system].items():
         section, key = dotted.split(".")
         layer.setdefault(section, {})[key] = v
-    # The two ``res.consistent_imm`` formulations build different
-    # operator groups (the legacy primitive one carries a pressure
-    # Poisson ``Lk`` and, in the cylindrical geometries, a third ``Hk``
-    # family) and run a different per-mode solve count, so every number
-    # below -- the operator classes, the factor-byte table, the
-    # isolated solve times, the per-step times and the corrector counts
-    # -- is per-formulation.  Default: the shipped scheme.
+    # Every number below is per ``res.consistent_imm`` formulation (the
+    # module docstring).
     layer.setdefault("res", {}).update(
         nx=a.nx,
         ny=a.ny,
@@ -467,10 +457,9 @@ def run_child(a: argparse.Namespace) -> None:
     update_parameters(Parameters(**layer))
     padded_res.set_padded_resolution(params)
     validate_parameters()
-    # Select the backend explicitly (the driver passes --dist.platform;
-    # CUDA_VISIBLE_DEVICES / JAX_PLATFORMS in the child env still pin the
-    # concrete device) so the child's sharding banner and
-    # params.dist.platform match the hardware it runs on.
+    # Configure the driver's --dist.platform (:func:`_spawn_child`; the
+    # child env still pins the concrete device) so the child's sharding
+    # banner and params.dist.platform match the hardware it runs on.
     configure_jax_platform(a.platform)
 
     t0 = time.perf_counter()
@@ -587,12 +576,11 @@ def run_child(a: argparse.Namespace) -> None:
     )
     t_cnab2 = _bench_step_cnab2(jax, jnp, m.step_cnab2, state, a.steps)
 
-    # Split-corrector A/B: ``t_icn`` above ran the *default* corrector
-    # (``step.split_corrector`` is off by default, so that is normally
-    # the unsplit corrector).  Rebuild and time the *opposite* gate
-    # value on the same IC, then label both by gate, so the [3] verdict
-    # always compares split vs unsplit regardless of the default (the
-    # corrector counts show where the FFT-refresh savings come from).
+    # Split-corrector A/B (the module docstring, A): ``t_icn`` above ran
+    # the *default* gate value; rebuild and time the *opposite* one on
+    # the same IC and label both by gate, so verdict [3] compares split
+    # vs unsplit whatever the default (the corrector counts show where
+    # the FFT-refresh savings come from).
     default_split = params.step.split_corrector
     params.step.split_corrector = not default_split
     try:
@@ -853,8 +841,8 @@ GPU_MODES = ("pinned", "pinned-nocumem", "all-visible")
 # first-step behaviour.  With JAX_LOG_COMPILES the big step *compiles*
 # (~3.3 s per rank) and hangs in its first execution, identically
 # under every variant below, so the preflight bisects constructs
-# (reshard probe, launch topology, scheme, backend, NCCL env) instead
-# of XLA flags.
+# (reshard probe, launch topology, scheme, NCCL env) instead of XLA
+# flags.
 XLA_VARIANTS = (
     ("default", ""),
     ("no-command-buffer", "--xla_gpu_enable_command_buffer="),
@@ -905,12 +893,10 @@ def _task_wrapper(n: int, port: int) -> list[str]:
     the step task count is forced to the known *n* (a job-level
     ``SLURM_NTASKS`` leaking into the tasks would make each rank wait
     for the wrong world size -- a silent barrier hang), and the
-    coordinator address is set explicitly to this (single-node)
-    host on a fresh per-run *port* (``JAX_COORDINATOR_ADDRESS``,
-    read before any cluster detection; JAX's SLURM default is one
-    job-wide port shared by every step of the job).  Rank identity
-    stays per-task from ``SLURM_PROCID`` and is echoed for
-    verification.
+    coordinator address is set explicitly to the step's first node on
+    a fresh per-run *port* (``JAX_COORDINATOR_ADDRESS``, read before
+    any cluster detection; :func:`_next_port`).  Rank identity stays
+    per-task from ``SLURM_PROCID`` and is echoed for verification.
     """
     script = (
         f"export SLURM_NTASKS={n}; "
@@ -971,7 +957,7 @@ def _launch_prefix(
     ``srun`` starts an ``n``-task job step inside the surrounding SLURM
     allocation; ``--overlap`` lets the step share the allocation with
     the driver's own step when the driver itself was launched via srun.
-    ``mpirun`` is the plain OpenMPI path (``--oversubscribe`` on CPU /
+    ``mpirun`` is the plain Open MPI path (``--oversubscribe`` on CPU /
     when requested).  Site-specific step flags (GPU binding, gres) go
     through ``--srun-args``.
     """
@@ -990,12 +976,13 @@ def _launch_prefix(
 
 
 # dnsjax's exact JAX-side startup pattern, without dnsjax: x64 +
-# platform configured *before* initialize (the ``__main__`` order), an
-# Explicit-axis-type mesh via make_mesh/set_mesh (``sharding.py``), a
-# device allocation sharded with ``out_sharding``, and a host ``float``
-# read of a reduction over the sharded axis -- the replicated-result
-# collective that is dnsjax's first cross-GPU operation (the
-# ``[pallas]`` setup-residual read during geometry import).
+# platform configured *before* initialize (the order of
+# ``bootstrap.configure_jax_runtime``), an Explicit-axis-type mesh via
+# make_mesh/set_mesh (``sharding.py``), a device allocation sharded
+# with ``out_sharding``, and a host ``float`` read of a reduction over
+# the sharded axis -- the replicated-result collective that is dnsjax's
+# first cross-GPU operation (the ``[pallas]`` setup-residual read
+# during geometry import).
 _EXPLICIT_MESH_PROBE = (
     "import jax\n"
     "jax.config.update('jax_enable_x64', True)\n"
@@ -1108,8 +1095,8 @@ _RESHARD_PROBE = (
 # feature that the small passing collectives may not touch (P2P
 # send/recv transport, cuMem buffer registration -- the mechanism
 # whose import can hard-fail under pinned per-task visibility -- and
-# the low-latency protocols).  The first variant
-# whose retry completes is locked into every subsequent run.
+# the low-latency protocols).  The first variant whose retry completes
+# is locked into every subsequent run.
 NCCL_VARIANTS: tuple[tuple[str, dict[str, str]], ...] = (
     ("nccl-p2p-off", {"NCCL_P2P_DISABLE": "1"}),
     ("nccl-cumem-off", {"NCCL_CUMEM_ENABLE": "0"}),
@@ -1146,10 +1133,8 @@ def _preflight_launcher(
     """Fail fast when a multi-task launch cannot work.
 
     On cuda, also pick a working GPU launch mode via an escalating probe
-    ladder.
-
-    Each rung runs with a short timeout and, on failure, echoes its
-    output tail immediately -- localizing a multi-rank bootstrap
+    ladder.  Each rung runs with a short timeout and, on failure, echoes
+    its output tail immediately -- localizing a multi-rank bootstrap
     failure to a layer within minutes instead of one ``--mpi-timeout``
     per hung run:
 
@@ -1226,8 +1211,7 @@ def _preflight_launcher(
         base_env["JAX_LOGGING_LEVEL"] = "INFO"
 
         # L5 micro-run + leg helper, defined before the rung loop so a
-        # failed L1 (an allocation that cannot host multi-task steps
-        # at all) can still probe the single-process leg below.
+        # failed L1 can still probe the single-process leg below.
         micro = {
             "system": "plane-couette",
             "backend": "pallas",
@@ -1241,9 +1225,7 @@ def _preflight_launcher(
             "snapshots": False,
             "timeout": 180,
             # Legs are expected to hang: trace collective launches
-            # into per-rank nccl.*.log files (tails echoed on
-            # failure) -- the last enqueued collective before silence
-            # names the hung one.
+            # into per-rank nccl.*.log files (:func:`_echo_nccl_logs`).
             "env": {
                 "NCCL_DEBUG": "INFO",
                 "NCCL_DEBUG_SUBSYS": "INIT,COLL",
@@ -1268,10 +1250,8 @@ def _preflight_launcher(
             return rec is not None and rec["status"] == "ok"
 
         def _sp_leg() -> dict:
-            # Single-process multi-GPU: 1 task whose PJRT client
-            # addresses both devices (the offline-test topology on
-            # real GPUs).  Identical global mesh / partitioning /
-            # outputs; no cross-process NCCL transport.
+            # Single-process multi-GPU: 1 task addressing both devices
+            # (:func:`_sp_ify`).
             return _leg(
                 "sp-icn-pallas",
                 tasks=1,
@@ -1323,11 +1303,8 @@ def _preflight_launcher(
                 mode_ok = False
                 break
         if not mode_ok:
-            # A failed L1 means this allocation cannot host multi-task
-            # steps at all (e.g. one restricted to one task per node)
-            # -- every multi-process rung is then moot, but the
-            # single-process multi-GPU topology needs only one task:
-            # probe it directly before giving up on the mode.
+            # A failed L1: probe the single-process leg before giving
+            # up on the mode (the docstring, ``L1-tasks``).
             if (
                 rung == "L1-tasks"
                 and args.launch_mode in ("auto", "sp")
@@ -1342,12 +1319,8 @@ def _preflight_launcher(
                 return True, ""
             continue
 
-        # L4.6: the construct the ladder has never exercised and the
-        # first big step executes (Explicit-mesh reshard in
-        # complex128, incl. the while_loop corrector skeleton).  A
-        # hang here is a 15-line repro; the NCCL variants are then
-        # bisected on it, and a working variant is locked into every
-        # subsequent run.
+        # L4.6 (:data:`_RESHARD_PROBE`); on a hang, the NCCL variants
+        # are bisected on it (:data:`NCCL_VARIANTS`).
         cmd = (
             prefix
             + _task_wrapper(2, _next_port())
@@ -1380,11 +1353,10 @@ def _preflight_launcher(
                     break
                 fails.append((f"{mode}/L4.6-explicit-reshard[{vname}]", why))
 
-        # L5: real dnsjax micro-runs, bisecting launch topology /
-        # scheme / backend (each ~1 min healthy, 180 s hung; the hang
-        # under bisection sits in the first *execution* of the big
-        # jitted step -- it compiles fine, and every small-program
-        # collective incl. L4.6 tells its own story above).
+        # L5 (the docstring): each leg ~1 min healthy, 180 s hung.  The
+        # hang under bisection sits in the first *execution* of the big
+        # jitted step, which compiles fine; the small-program
+        # collectives, L4.6 included, are diagnosed above.
         want = args.launch_mode
         a_rec = None
         if want in ("auto", "mp"):
@@ -1497,8 +1469,7 @@ def _run_mpi(
     timeout = run.get("timeout", args.mpi_timeout)
     cmd = _launch_prefix(tasks, args, platform)
     if args.launcher == "srun":
-        # Detection-proof bootstrap: forced step task count + explicit
-        # fresh-port coordinator address + per-task launch echo.
+        # The detection-proof bootstrap (:func:`_task_wrapper`).
         cmd += _task_wrapper(tasks, _next_port())
     if args.launcher == "srun" and platform == "cuda":
         # Arm a per-rank Python stack dump shortly before the driver's
@@ -1883,13 +1854,13 @@ def _mpi_runs(args: argparse.Namespace, platform: str) -> list[dict]:
             )
     if args.max_gpus >= 4 and platform == "cuda":
         # 2x2 mesh (wall-normal + spanwise split) on each geometry's
-        # own default CGL grid -- no tanh: plane-couette (full-CGL)
-        # and pipe (rigged-CGL), each diffed against its 1x1 pallas
-        # reference from the main loop above.  ny=48 splits cleanly
-        # over np0=2 (and the sharding layer auto-pads the y-axis
+        # own default CGL grid, no tanh: plane-couette (full CGL) and
+        # pipe (half CGL; rigged under cnab2), each diffed against its
+        # 1x1 pallas reference from the main loop above.  ny=48 splits
+        # cleanly over np0=2 (the sharding layer auto-pads the y-axis
         # otherwise), so the default grid needs no divisibility
-        # workaround -- the pipe np2x2/np1x4 runs already validate
-        # wall-normal splitting on their default grid.
+        # workaround: the pipe np2x2 run validates wall-normal splitting
+        # on its default grid.
         if "plane-couette" in systems:
             runs.append(
                 {
@@ -1961,9 +1932,9 @@ def _mpi_correctness_section(
     recs: dict[str, dict] = {}
     # Two consecutive multi-rank timeouts mean the launch mode is
     # systematically broken for real runs despite the preflight (each
-    # timeout burns --mpi-timeout): stop feeding it and skip the
-    # remaining n > 1 runs so the job still delivers the single-rank
-    # results, diffs, and the echoed hang tails.
+    # one costs the run's full timeout): skip the remaining n > 1
+    # runs so the job still delivers the single-rank results, diffs,
+    # and the echoed hang tails.
     multirank_timeouts = 0
     for i, run in enumerate(runs, 1):
         n = run["np0"] * run["np1"]
@@ -2367,7 +2338,7 @@ def _plan_only(args: argparse.Namespace) -> None:
 
 
 def _cpu_smoke(args: argparse.Namespace, workdir: Path) -> int:
-    """Laptop harness self-check: exercises every driver code path."""
+    """Laptop harness self-check of the child, launch and diff paths."""
     print("\n--cpu-smoke: harness self-check (tiny CPU configs)")
     ok, msg = _preflight_launcher(args, "cpu", workdir)
     if not ok:
@@ -2389,8 +2360,8 @@ def _cpu_smoke(args: argparse.Namespace, workdir: Path) -> int:
         # A small (1, 4) tile for the tiny smoke plane: at nx = 8 the
         # default (2, 32) tile pads the 28-mode plane to 256 slots and
         # the padding, not the banded storage, dominates the factor
-        # bytes (the documented small-plane caveat) -- the
-        # pallas-smaller-than-dense check needs the true plane.
+        # bytes (the small-plane caveat at ``solver.pallas_block_m0``)
+        # -- the pallas-smaller-than-dense check needs the true plane.
         rec = _spawn_child(
             entry,
             backend,
@@ -2557,8 +2528,7 @@ def main() -> None:
     # child flags
     ap.add_argument("--system", choices=sorted(SYS_ARGS))
     ap.add_argument("--backend", choices=BACKENDS, default="pallas")
-    # Child JAX backend, set by the driver from the section's env
-    # (JAX_PLATFORMS=cpu for the CPU sections, cuda otherwise).
+    # Child JAX platform, set by the driver (:func:`_spawn_child`).
     ap.add_argument(
         "--dist.platform",
         dest="platform",
@@ -2716,12 +2686,8 @@ def main() -> None:
         run_child(a)
         return
 
-    # Duplicate-driver guard: `srun -n N python .../solver_benchmark.py`
-    # would run N full drivers in parallel (interleaved output, N x
-    # children contending for the same GPU and host memory -- the
-    # observed cluster failure).  Only SLURM task 0 proceeds; launch the
-    # driver as a single task (or a plain process inside the
-    # allocation).  Children/steps are unaffected: subprocess children
+    # Duplicate-driver guard (the module docstring): only SLURM task 0
+    # proceeds.  Children and steps are unaffected: subprocess children
     # inherit task 0's id, and srun steps get fresh per-step ids.
     slurm_procid = os.environ.get("SLURM_PROCID")
     if slurm_procid not in (None, "0"):

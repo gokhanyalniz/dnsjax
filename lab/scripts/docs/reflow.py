@@ -4,9 +4,9 @@ Usage: python reflow.py FILE START_SUBSTR END_SUBSTR [WIDTH]
 
 The paragraph runs from the line containing START_SUBSTR to the line
 containing END_SUBSTR (inclusive).  Keeps the first line's indentation
-(and a leading '# ' comment marker), keeps the original separator width
-(one or two spaces) between tokens, and never breaks inside ``...`` or
-`$...$` spans.
+(and a leading '# ' comment marker) and the original separator width
+(one or two spaces) between tokens, and breaks inside a ``...`` or
+`$...$` span only when the span alone is wider than the line.
 """
 
 import re
@@ -61,9 +61,9 @@ def main():
             if line.startswith(indent)
             else line.strip().lstrip("#").strip()
         )
-    # Rebuild the text with original separators: join lines with a
-    # single space unless the line ended a sentence with two spaces
-    # convention (approximate: a line ending in '.' gets two).
+    # Join the lines with one space, or two after a line that ends a
+    # sentence (approximately: in '.', '!' or '?', perhaps followed by
+    # ')' or a quote).
     text = ""
     for k, b in enumerate(body):
         if k:

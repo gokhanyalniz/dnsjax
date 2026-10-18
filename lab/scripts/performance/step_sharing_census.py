@@ -34,9 +34,8 @@ core geometry's (a lab flow's, e.g.
 
 Measured at that default resolution: plane Couette shares 2 of the 6
 GEMMs of a pass, the pipe 7 of 17, Taylor-Couette and Dean 2 of 7, and
-the sPTT Dean pass (``--stepping`` as above) 3 of 8.  A GEMM that
-batches a step-invariant column with a varying one shares neither: the
-``annular`` Design notes, "Step-invariant GEMMs".
+the sPTT Dean pass (``--stepping`` as above) 3 of 8; the annular
+geometry's split: the ``annular`` Design notes, "Step-invariant GEMMs".
 """
 
 from __future__ import annotations

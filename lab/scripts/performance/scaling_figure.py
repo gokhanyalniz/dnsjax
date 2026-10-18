@@ -156,11 +156,7 @@ def scaling_table(fams: dict, t1: float) -> str:
 
 
 def per_rank_table(runs: list[dict], fams: dict, t1: float) -> str:
-    """The reduced one-node runs against their ``N``-node counterparts.
-
-    One-node runs at a reduced ``nx``, each against the ``N``-node runs
-    whose per-rank block it holds, for the first family.
-    """
+    """The first family's reduced one-node runs against the ``N``-node ones."""
     nx_full = max(r["nx"] for r in runs)
     key = next(iter(fams))
     np0, k = key

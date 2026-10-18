@@ -1,52 +1,49 @@
 r"""Cluster diagnostic: is the snapshot GDS path live, and is it starved?
 
-Two questions, both of which need real hardware and a real
-filesystem to answer:
+Two questions, both needing real hardware and a real filesystem:
 
-**Engagement -- is the GDS path even taken?**  Everything
-:func:`dnsjax.snapshot._gds_available` requires must hold at once:
-the ``nvidia-fs`` kernel driver is loaded, ``kvikio.defaults`` binds
-(it is a submodule, not an attribute of the package), cupy imports,
-and the compat mode is not ``ON``.  Part A replicates that check step
-by step, and goes further: it diffs the ``nvidia-fs`` kernel counters
-across a real transfer, which is the only way to tell an engaged GDS
-path from a silent POSIX fallback.
+**Engagement -- is the GDS path even taken?**  Part A replicates the
+check of :func:`dnsjax.snapshot._gds_available` (its docstring lists
+the four conditions) step by step and goes further: it diffs the
+``nvidia-fs`` kernel counters across a real transfer, the only way to
+tell an engaged GDS path from a silent POSIX fallback.
 
-**Starvation -- what limits the snapshot's transfer rate?**  Not
-queue depth (one *blocking* ``CuFile`` call per span, ~1e5 of them
-per device): measured on BeeGFS, ``pwrite`` futures are within 4 % of
-blocking on writes at every span size and *worse* on reads.  What
-costs is **transfer size** -- one contiguous call moves the same
-97.7 MiB 30-90x faster than 200 k spans do, and strided small
-*writes* are punished hardest (512 B at stride 4 is 90x the stride-1
-write, while the same reads are only 3x worse).  That measurement is
-why ``snapshot.py`` reshards onto an I/O layout that cuts the file's
-*slowest* axis before writing, so a device's bytes are one contiguous
-range per component.  Part C reports the resulting span census next
-to the timings; Part B prices the span pattern itself, engine by
-engine, and is the evidence for both conclusions.
+**Starvation -- what limits the snapshot's transfer rate?**  Not queue
+depth (one *blocking* ``CuFile`` call per span, ~1e5 of them per device
+in the solver layout): measured on BeeGFS, ``pwrite`` futures are within
+4 % of blocking on writes at every span size and *worse* on reads.  What
+costs is **transfer size** -- one contiguous call moves the same 97.7 MiB
+30-90x faster than 200 k spans do, and strided small *writes* are
+punished hardest (512 B at stride 4 is 90x the stride-1 write, while the
+same reads are only 3x worse).  That measurement is why ``snapshot.py``
+reshards onto an I/O layout that cuts the file's *slowest* axis before
+writing, so a device's bytes are one contiguous range per component.
+Part C reports the resulting span census next to the timings; Part B
+prices the span pattern itself, engine by engine, and is the evidence
+for both conclusions.
 
 Part A  environment + the engagement verdict (kvikIO, cupy,
         nvidia-fs counters, the target filesystem, ``KVIKIO_*``).
-Part B  the span-pattern benchmark: the real ownership pattern of a
-        sharded snapshot (``nspans`` spans of ``span_bytes``, every
-        ``stride``-th block -- ``stride`` is ``np1``) written and read
-        by each engine.  Engines: ``blocking`` (what ships),
-        ``pwrite:D`` (queued pwrite at queue depth D), ``contig``
-        (one whole-buffer call -- the bandwidth ceiling this layout
-        cannot reach), ``host`` (device->host copy per span + POSIX
-        pwrite, i.e. the no-GDS engine that ships as the host
-        fallback) and ``posix`` (POSIX from an
-        already-host buffer -- the storage-only reference).  Every
-        read is verified against the written pattern, so a fast wrong
-        answer cannot pass.
+Part B  the span-pattern benchmark: the solver layout's ownership
+        pattern, which the I/O layout replaces (``nspans`` spans of
+        ``span_bytes``, every ``stride``-th block -- ``stride`` is
+        ``np1``), written and read by each engine.  Engines:
+        ``blocking`` (what ships), ``pwrite:D`` (queued pwrite at
+        queue depth D), ``contig`` (one whole-buffer call -- the
+        bandwidth ceiling this layout cannot reach), ``host``
+        (device->host copy per span + POSIX pwrite: the no-GDS host
+        fallback's staging), ``buffered`` (the host fallback's
+        buffered ``seek`` + ``write``, from a host buffer) and
+        ``posix`` (POSIX from an already-host buffer -- the
+        storage-only reference).  Every read is verified against the
+        written pattern, so a fast wrong answer cannot pass.
 Part C  ``--end-to-end``: the real ``save_snapshot`` /
         ``load_snapshot`` at a real resolution and mesh, plus the slab
         census of the I/O layout and the write engine timed on its own
         (so the save splits into "layout work" and "bytes to disk").
         Run it on both one-dimensional grids -- ``--np1 4`` and
         ``--np0 4`` -- and on ``--np0 2 --np1 2``: the same state
-        through all three is the check that the mesh no longer decides
+        through all three is the check that the mesh does not decide
         the cost.  Only the reshard should differ (one exchange or
         two); the slab census is the same on every grid.
         ``--end-to-end-only`` runs Part C alone: Part B's span sweep
@@ -69,9 +66,10 @@ the driver::
     .venv/bin/python lab/scripts/diagnostics/gds_probe.py --env-only
 
 ``--cpu-smoke`` runs Part B's POSIX engines and Part C on CPU at a tiny
-resolution (up to the engine A/B, which needs GDS), so the harness can
-be validated on a machine with no GPU, no cupy and no kvikIO.  Save the
-full stdout (e.g. ``| tee run.log``); it is the report.
+resolution (all but the reshard comparison, which needs two devices),
+so the harness can be validated on a machine with no GPU, no cupy and
+no kvikIO.  Save the full stdout (e.g. ``| tee run.log``); it is the
+report.
 """
 
 from __future__ import annotations
@@ -188,9 +186,9 @@ def _part_a(outdir: Path) -> dict:
 
     have = {"kvikio": False, "cupy": False}
     # Read *before* anything imports the submodule: ``import a.b``
-    # binds ``b`` as an attribute of ``a``, so asking afterwards can
-    # only ever answer True and the engagement probe below would report a
-    # bug that had already been papered over by its own import.
+    # binds ``b`` as an attribute of ``a``, so asked afterwards this
+    # could only answer True, the probe's own import hiding the unbound
+    # attribute it reports.
     via_attr = False
     try:
         import kvikio
@@ -222,9 +220,7 @@ def _part_a(outdir: Path) -> dict:
 
     # (1) the submodule bind: kvikio.defaults is a submodule, not an
     # attribute of the package, so a bare ``import kvikio`` does not
-    # bind it.  ``via_attr`` was sampled above, on that bare import --
-    # sampling it here instead would always say True, because the
-    # import on the next line is itself what binds the attribute.
+    # bind it (``via_attr``: sampled above, on that bare import).
     try:
         import kvikio.defaults as kvikio_defaults
     except ImportError as exc:
@@ -233,8 +229,7 @@ def _part_a(outdir: Path) -> dict:
     print("    import kvikio.defaults as _   OK")
     print(f"    kvikio.defaults as attribute  {via_attr}")
 
-    # (2) the driver gate.  Without nvidia-fs, kvikIO still answers
-    # every call -- through its compat shim, which is not GDS.
+    # (2) the driver gate.
     driver = NVFS_STATS.exists()
     print(f"    nvidia-fs driver loaded       {driver}")
 
@@ -277,11 +272,7 @@ def _part_a(outdir: Path) -> dict:
 
 
 def _gds_engaged(path: Path, nbytes: int = 1 << 20) -> None:
-    """Write once through kvikIO and diff the nvidia-fs counters.
-
-    The only local evidence that separates a real GDS transfer from a
-    compat-mode POSIX write dressed up as one.
-    """
+    """Diff the nvidia-fs counters across one kvikIO write and read."""
     print("\n  GDS engagement probe (nvidia-fs counter diff)")
     try:
         import cupy as cp
@@ -648,11 +639,10 @@ def _part_b(outdir: Path, args, have: dict) -> None:
 def _span_census(comp_shape) -> str:
     """How many spans, and how big, the I/O layout gives this mesh.
 
-    The whole point of the reshard is this line: it should read a
-    handful of tens-of-MiB slabs, not ~1e5 spans of 512 B.  The count
-    is ``n_components * ndev`` on every mesh -- the reshard trims the
-    divisibility padding, so nothing about the grid can fragment a
-    slab -- and only the *size* still varies with the grid.
+    The line should read a handful of tens-of-MiB slabs, not ~1e5 spans
+    of 512 B: ``n_components * ndev`` on every mesh (the ``snapshot``
+    module docstring, "I/O granularity and memory"), only their *size*
+    varying with the grid.
     """
     from dnsjax import snapshot as snap
 
@@ -684,12 +674,12 @@ def _reshard_bench(state, reps: int = 3) -> None:
 
     - the shipped path -- one jitted program, one mesh axis per leg;
     - the same two moves **eagerly** (a ``jax.device_put`` per leg),
-      which is what shipped before: the runtime redistributes piece by
-      piece instead of emitting a collective, and measured 230 ms
-      where the jitted form took 0.68 ms;
+      which the runtime redistributes piece by piece instead of
+      emitting a collective (measured: the ``snapshot`` Design notes,
+      "One jitted reshard");
     - a **raw device->device copy** of one shard, i.e. what the fabric
-      can do.  If the shipped path is near it, there is
-      nothing left to win here.
+      can do.  If the shipped path is near it, there is nothing left
+      to win here.
     """
     import jax
     from jax import numpy as jnp
@@ -801,8 +791,8 @@ def _part_c(args, outdir: Path) -> None:
     # The reshard's *first* call, on its own: XLA compiles the
     # collective program and the runtime brings up its communicators.
     # Both are once per process, and a real run pays the second at its
-    # first time step -- long before any snapshot -- so keeping it out
-    # of the cold-save number below is the fair split.
+    # first time step -- long before any snapshot -- so the cold-save
+    # number below excludes it.
     t0 = time.perf_counter()
     jax.block_until_ready(snap._to_io_layout(state))
     t_first_reshard = time.perf_counter() - t0
@@ -842,8 +832,7 @@ def _part_c(args, outdir: Path) -> None:
     )
 
     # The write engine alone, without the tar skeleton, the offset
-    # re-read or the reshard -- so the save line above can be split
-    # into "layout work" and "bytes to disk".
+    # re-read or the reshard (the module docstring's split).
     comp_shape = snap._true_spec_shape()
     itemsize = snap._np_dtype(snap._zarr3_dtype_name()).itemsize
     offsets = snapshot_component_offsets(path)
@@ -1053,10 +1042,9 @@ def main() -> None:
     if args.cpu_smoke:
         args.spans, args.strides, args.total_mb = "512,65536", "1,4", 4
         args.reps, args.max_spans = 2, 2000
-        # Part C too, on CPU at a tiny resolution: it stops at the
-        # engine A/B (no GDS), but everything before that -- the params
-        # layering, the real save/load and the round-trip check -- is
-        # exercised.
+        # Part C too, on CPU at a tiny resolution: all of it, the params
+        # layering included, but the reshard comparison, which needs two
+        # devices.
         args.end_to_end, args.platform = True, "cpu"
         args.ny, args.nx, args.nz = 17, 8, 8
 

@@ -2,8 +2,8 @@
 
 ``doc_ranges(src)`` returns sorted ``(start, end, kind)`` offsets into
 *src* for every comment, every docstring (module, class, function) and
-every string constant inside a ``description=`` / ``help=`` keyword.
-Only text inside these ranges may be rewritten by the mechanical pass.
+every string constant inside a ``description=`` / ``help=`` keyword:
+the only text ``oxford.py`` rewrites.
 """
 
 import ast

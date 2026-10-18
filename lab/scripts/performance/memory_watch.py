@@ -15,24 +15,23 @@ per sample, so the record survives the kill it explains:
   an out-of-memory kill is decided on;
 - the solver processes on the node -- the ``dnsjax`` console script,
   any ``dnsjax-*`` one a plugin installs, and ``python -m dnsjax...``
-  -- with the sum and maximum
-  of their resident set, and the sum of their proportional set
-  (``Pss``, shared pages split between their users, read every
-  ``--pss-every`` samples since it costs more).
+  -- with the sum and maximum of their resident set, and the sum of
+  their proportional set (``Pss``, shared pages split between their
+  users, read every ``--pss-every`` samples since it costs more).
 
 ``summary`` reads the files back: per node, the peak and when it
-happened, the idle baseline before the solver started, and the typical
-use -- the median over the samples taken while the node ran its usual
-(most common) count of solver processes, the plateau a long run holds,
-which start-up and shutdown barely move; with more than one node, the
-largest of each column over the nodes.  With ``--rows`` (the CSV
+happened, the idle baseline (the least used while no solver ran), and
+the typical use -- the median over the samples taken while the node ran
+its usual (most common) count of solver processes, the plateau a long
+run holds, which start-up and shutdown barely move; with more than one
+node, the largest of each column over the nodes.  With ``--rows`` (the CSV
 ``node_benchmark.py --csv`` writes, which records each run's start and
 end time) it adds the peak within each run, so an out-of-memory failure
 is placed against its layout and, through the solver's own start-up
 timestamps, its phase.
 
 ``sample`` ignores ``SIGUSR1``: that is the solver's stop request, and
-a scheduler that signals every step of a job (SLURM's ``--signal``)
+a scheduler that signals every step of a job (Slurm's ``--signal``)
 sends it to the sampler as well.  ``examples/slurm/cpu.slurm`` runs the
 sampler beside every production job.
 

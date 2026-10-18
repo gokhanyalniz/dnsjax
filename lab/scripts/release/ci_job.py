@@ -23,9 +23,9 @@ failing step, and the exit status is that step's.  The clone and the
 runner directory are removed afterwards (with *WORK*, if this run made
 it) unless ``--keep``.
 
-The point is a release check before anything is pushed: the
-``core-only`` job is what proves the stripped package builds, holds no
-lab or agent file, installs alone and runs the solver.
+It checks a release before anything is pushed: the ``core-only`` job
+proves that the stripped package builds, holds no lab or agent file,
+installs alone and runs the solver.
 """
 
 from __future__ import annotations

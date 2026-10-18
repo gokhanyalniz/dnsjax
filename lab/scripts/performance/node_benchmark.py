@@ -16,7 +16,8 @@ Targets
 -------
 ``--target cpu`` (a many-core node or several, e.g. 2 x 64-core AMD
 EPYC 7742 per node): one rank per core, each pinned to one XLA thread
-(the solver's own ``NPROC=1`` default).  Two launchers:
+(the solver's default: :func:`dnsjax.bootstrap.configure_jax_runtime`).
+Two launchers:
 
 ``--launcher mpirun`` (the default; one node)
     ``mpirun -np N --map-by core --bind-to core`` (Open MPI;
@@ -27,10 +28,10 @@ EPYC 7742 per node): one rank per core, each pinned to one XLA thread
     --hint=nomultithread --distribution --kill-on-bad-exit=1``.
     Sweeps the node count (``--nodes``), the ranks per node
     (``--tasks-per-node``), the cores per rank (``--cpus-per-task``,
-    default the node's cores divided evenly, which is how an
-    underpopulated node keeps its ranks spread over every memory
-    channel) and the task placement (``--distribution``).  The run
-    directories must be on a filesystem every node sees
+    default the node's cores, ``--cores-per-node``, divided evenly,
+    which is how an underpopulated node keeps its ranks spread over
+    every memory channel) and the task placement (``--distribution``).
+    The run directories must be on a filesystem every node sees
     (``--workdir``): a rank on another node cannot enter the driver
     node's ``/tmp``.
 
@@ -108,12 +109,12 @@ nodes takes more steps in the same time.
 
 Agreement
 ---------
-Every row of a sweep runs one problem, so every row should compute one
-run: the layouts, the ``--exe`` checkouts and any ``--variant`` that
-changes no result (``--solver.wall_normal_matvec dense``, say) agree
-to round-off.  Each row's ``stats.dat`` is compared with a reference
--- the file ``--stats-reference`` names, else the first row that ran
--- over the times both carry: the row's ``dev`` is the largest
+Every row of a sweep runs one problem, so the layouts, the ``--exe``
+checkouts and any ``--variant`` that changes no result
+(``--solver.wall_normal_matvec dense``, say) agree to round-off.  Each
+row's ``stats.dat`` is compared with a reference -- the file
+``--stats-reference`` names, else the stream of the first row that ran
+``ok`` -- over the times both carry: the row's ``dev`` is the largest
 difference in any column, in units of the reference's largest
 magnitude (one scale for all columns, since some columns hold only
 round-off; ``_deviation``), a non-finite value counting as infinite.
@@ -123,13 +124,13 @@ broken layout or a single-precision slip shows at 1e-8 or more.  With
 one that shares no time with the reference past the first (the
 initial state, which every run of the problem shares) as
 ``unchecked``, so a broken layout or arm fails the sweep instead of
-merely timing well.  A first row that becomes the reference is not
-compared with anything: its ``dev`` reads ``ref`` (empty in the CSV,
-whose ``stats_reference`` column names each row's reference), and
-with ``--stats-tolerance`` it is ``unchecked`` unless another row
-agreed with it.  A sweep of one row and no ``--stats-reference``
-therefore checks nothing, and says so, where a ``dev`` of 0 would
-read as a pass.
+merely timing well.  The row that becomes the reference is compared
+with nothing: its ``dev`` reads ``ref`` (empty in the CSV, whose
+``stats_reference`` column names each row's reference), and with
+``--stats-tolerance`` it is ``unchecked`` unless another row agreed
+with it.  A sweep of one row and no ``--stats-reference`` therefore
+checks nothing, and says so, where a ``dev`` of 0 would read as a
+pass.
 The check needs the stream (``--outs.it_stats``, unset by default),
 and two more conditions make it sharp: ``--outs.stats_precision 17``,
 or the nine printed digits dominate the round-off; and a
@@ -573,8 +574,8 @@ def _run(row: Row, a: argparse.Namespace, index: int) -> dict:
         t0 = time.time()
         try:
             # errors="replace": thousands of ranks share one pipe, and a
-            # byte that is not UTF-8 there made the strict decode raise
-            # and lose the whole row's output.
+            # byte that is not UTF-8 there would make the strict decode
+            # raise and lose the whole row's output.
             proc = subprocess.run(
                 row.cmd,
                 cwd=wd,

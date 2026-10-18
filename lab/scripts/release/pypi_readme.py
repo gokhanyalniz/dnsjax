@@ -18,16 +18,13 @@ README, inline math a code span in plain symbols, the
 GitHub-only "Contents" line left out, and the sections
 :data:`DROPPED_SECTIONS` names left out and :data:`LAB_LEAD` put after
 the opening paragraph, as a release's ``README.md`` has them
-(:func:`published_readme`, which ``prepare_release.py`` applies too):
-a published copy says that the package is the solver core and what the
-repository holds beyond it, with a link.  The repository URL comes
-from ``pyproject.toml`` (``[project.urls] Repository``).
+(:func:`published_readme`, which ``prepare_release.py`` applies too).
+The repository URL is ``pyproject.toml``'s ``[project.urls] Repository``.
 
 A LaTeX command the conversion table (:data:`LATEX`) does not know is
 an error, so new README math is converted on purpose, not silently.
 ``--check`` exits 1 when the tracked copy differs from what it would
-write: CI's lint job runs it, which keeps the copy a faithful duplicate
-of the README.
+write; CI's lint job runs it, so the copy stays current.
 """
 
 from __future__ import annotations
@@ -144,8 +141,7 @@ def published_readme(readme: str, url: str) -> str:
 
 
 def _outside(text: str, fn, spans: bool) -> str:
-    """Apply *fn* to the parts of *text* outside fenced code blocks, and
-    outside inline code spans too when *spans*."""
+    """Apply *fn* to *text* outside code fences (and code spans if *spans*)."""
     code = r"(```.*?```|`[^`\n]*`)" if spans else r"(```.*?```)"
     parts = re.split(code, text, flags=re.DOTALL)
     return "".join(p if i % 2 else fn(p) for i, p in enumerate(parts))

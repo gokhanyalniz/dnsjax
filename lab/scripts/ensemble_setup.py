@@ -2,18 +2,18 @@ r"""Set up ensemble response experiments (harvest + member run trees).
 
 JAX-free orchestration (stdlib + the JAX-free ``dnsjax`` leaves
 ``snapshot_meta``/``harmonics``/``seeding``, and for ``build-twin``
-the ``dnsjax-twin`` parameter model, which is JAX-free at import) for
-ensemble-averaged response experiments: run a perturbed copy of many
-statistically independent snapshots, record the perturbed mode with
-the probe stream, and average -- the ensemble mean isolates the
-coherent (impulse) response while the incoherent turbulence cancels.
-Residual noise in the mean decays as `$1/\sqrt{N}$` in the member
-count, so ``--n`` trades compute for a cleaner response (antithetic
-pairing lowers the prefactor, not the rate).  Aggregation /
-identification of the resulting probe streams:
+``parameters`` and the ``dnsjax-twin`` parameter model, which is
+JAX-free at import) for ensemble-averaged response experiments: run a
+perturbed copy of many statistically independent snapshots, record the
+perturbed mode with the probe stream, and average -- the ensemble mean
+isolates the coherent (impulse) response while the incoherent
+turbulence cancels.  Residual noise in the mean decays as
+`$1/\sqrt{N}$` in the member count, so ``--n`` trades compute for a
+cleaner response (antithetic pairing lowers the prefactor, not the
+rate).  Aggregation / identification of the resulting probe streams:
 :mod:`dnsjax_lab.analysis.response.ensemble`.
 
-Two subcommands:
+Three subcommands:
 
 ``harvest``
     Select statistically independent snapshots from a completed run
@@ -24,7 +24,7 @@ Two subcommands:
     ``dnsjax-twin`` run directory holds partner snapshots beside its
     reference trajectory, and a partner is a *perturbed copy* of the
     reference at the same ``t``, not an independent sample.  Writes a
-    JSON manifest consumed by ``build``.
+    JSON manifest consumed by ``build`` and ``build-twin``.
 
 ``build``
     Materialize the member run tree from a manifest: per parent
@@ -33,7 +33,8 @@ Two subcommands:
     subprocess each -- sources and the ``--amplitude-energy``
     convention are its own) and a generated ``parameters.toml`` (the
     seed inherits the physics; the TOML layer sets only the stop
-    horizon and the probe stream).  Pairing (``--pairing``):
+    horizon, with ``check_laminarization`` off, the probe stream, and
+    no initial or final snapshot).  Pairing (``--pairing``):
 
     - ``antithetic`` (default): members ``mNNNN_p`` / ``mNNNN_m``
       seeded with ``+eps`` / ``-eps`` from the *same* parent.  The
@@ -60,47 +61,48 @@ Two subcommands:
     Materialize a **twin-run** member tree from a manifest: one
     directory per member, each launched with ``dnsjax-twin``
     (:mod:`dnsjax_lab.twin.driver`) against its parent snapshot.  No seed
-    subprocesses -- the driver perturbs in-process at start (the
-    random divergence-free field of exactly ``--e0``), so a member
-    directory holds only a generated ``parameters.toml`` ([init]
-    snapshot, [stop] horizon, the [twin] section with the member's
-    seed and perturbation shape, and an [outs] section for whichever
-    cadences were asked for).  The shape -- ``--smoothness``,
-    ``--wall-smoothness``, ``--wall-confinement``, ``--mean-flow`` --
-    is written into every member whether given or not, an unset one at
-    the driver's default of the moment: like the seed, it is what a
-    member *is*, so a tree has to mean the same thing whichever code
-    version launches or resumes it, and the defaults do move.  The
-    driver records ``stats.dat`` / ``steps.dat`` / ``corrector.dat``
-    for **both** states of the pair, the partner's under the ``_twin``
-    suffix, but each stream is gated on its own ``[outs]`` cadence:
-    without ``--it-stats`` / ``--it-steps`` / ``--it-corrector`` a
-    member records none of them.  Seeds are ``--seed-base + k`` over
-    the flat member index (``--members-per-snapshot`` fans several
-    seeds out of one parent).  ``check_laminarization`` is forced off
-    so every member runs the full horizon and the streams aggregate on
-    one shared time grid (a relaminarized member is visible offline in
-    its ``E_ref`` column).  Emits ``run_commands.txt`` and a
-    ``members.json`` with ``kind: "twin"``, the index
+    subprocesses -- the driver perturbs in-process at start (its
+    "Initial perturbation"), so a member directory holds only a
+    generated ``parameters.toml``: [init] snapshot, [stop] horizon
+    (relative to the parent, so every member integrates the same span),
+    the [twin] section (the member's seed, perturbation shape and
+    cadences), and [outs] and [lowres] sections when asked for.  The
+    shape -- ``--smoothness``, ``--wall-smoothness``,
+    ``--wall-confinement``, ``--mean-flow`` -- is written into every
+    member whether given or not, an unset one at the driver's default
+    of the moment: like the seed, it is what a member *is*, so a tree
+    has to mean the same thing whichever code version launches or
+    resumes it, and the defaults do move.  The per-state solver streams
+    the driver writes for both states (its "Diagnostic streams") are
+    each gated on its own ``[outs]`` cadence: without ``--it-stats`` /
+    ``--it-steps`` / ``--it-corrector`` a member records none of them.
+    Seeds are ``--seed-base + k`` over the flat member index (an unset
+    base is drawn and printed, so two ensembles off the same parents
+    are independent; ``--members-per-snapshot`` fans several seeds out
+    of one parent).
+    ``check_laminarization`` is forced off so every member runs the full
+    horizon and the streams aggregate on one shared time grid (a
+    relaminarized member is visible offline in its ``E_ref`` column).
+    Emits ``run_commands.txt`` and a ``members.json`` with
+    ``kind: "twin"``, the index
     :func:`dnsjax_lab.analysis.twin.ensemble.aggregate_members` consumes.
 
 The injected mode is auto-appended to ``--probe-modes`` when missing
 (the response could otherwise never be recorded).  Injecting the
 ``(0,0)`` mean mode is allowed on the Cartesian flows, where
 ``scripts/snapshot_perturb.py`` checks the profile against the
-mean-mode conservation laws (:mod:`dnsjax.ic.mean_mode`) -- but note
-what it identifies: under a held mean the mean-mode block is *affine*,
-not the clean linear block ``analysis.response`` fits, so read such an
-ensemble as a response measurement rather than an operator
-identification.  Pick ``--horizon`` to cover the response
-feature to be measured or fitted -- e.g. past the transient-growth
-peak `$t_\mathrm{opt}$` of the injected mode (the TG summary) -- and
-no longer: member cost is linear in it, and identification horizons
-must lie inside it.  It should also be a whole number of probe
-intervals (``it_probes * dt``) so every member records the
-cadence-aligned final sample; ``build`` checks this against the
-parent snapshot's ``step.dt`` and warns otherwise (``build-twin``
-makes the same check against ``it_energy * dt``).
+mean-mode conservation laws (:mod:`dnsjax.ic.mean_mode`); under a held
+mean, though, the mean-mode block is *affine*, not the clean linear
+block ``analysis.response`` fits, so read such an ensemble as a
+response measurement rather than an operator identification.  Pick
+``--horizon`` to cover the response feature to be measured or fitted
+-- e.g. past the transient-growth peak `$t_\mathrm{opt}$` of the
+injected mode (the TG summary) -- and no longer: member cost is linear
+in it, and identification horizons must lie inside it.  It should also
+be a whole number of probe intervals (``it_probes * dt``) so every
+member records the cadence-aligned final sample; ``build`` checks this
+against the parent snapshot's ``step.dt`` and warns otherwise
+(``build-twin`` makes the same check against ``it_energy * dt``).
 
 Usage::
 
@@ -156,11 +158,9 @@ def harvest(args: argparse.Namespace) -> int:
     candidates = []
     for path in sorted(run_dir.glob("*.tar")):
         if path.stem.endswith("_twin"):
-            # A ``dnsjax-twin`` partner (the suffix that driver's
-            # ``_partner_path`` owns): a valid snapshot, at the same
-            # ``t`` as its reference, but a perturbed copy of it --
-            # harvesting both would seed the ensemble with a
-            # statistically dependent pair.
+            # A ``dnsjax-twin`` partner (the suffix the driver's
+            # ``_partner_path`` owns): not an independent sample (the
+            # module docstring's ``harvest``).
             continue
         if not is_snapshot_file(path):
             continue
@@ -395,11 +395,10 @@ def build(args: argparse.Namespace) -> int:
         # ``--dist.np0`` as well as ``mpirun -np``: the mesh size is a
         # *parameter*, and a run whose visible device count does not
         # equal ``np0 * np1`` exits 1 at startup (``sharding.py``), so a
-        # line with ``-np N`` alone could not run for any N > 1.  np0 is
-        # the wall-normal / k_z axis, the 1-D split the solver's own
-        # launch recipes use: its exchange moves 2/3 of the bytes np1's
-        # does.  A member whose ``ny`` / ``nr`` does not divide N is
-        # auto-padded, not rejected, and says so at startup.
+        # line with ``-np N`` alone could not run for any N > 1.  np0
+        # (the wall-normal / k_z axis) is the default 1-D split, and an
+        # ``ny`` / ``nr`` it does not divide is auto-padded, not
+        # rejected (both: ``dnsjax.parameters.Distribution``).
         dist = f" --dist.np0 {args.np}" if args.np > 1 else ""
         run_lines.append(
             f"cd {mdir.resolve()} && mpirun -np {args.np} {dnsjax_bin}{dist}"
@@ -529,9 +528,8 @@ def _twin_member_toml(mem: dict, args: argparse.Namespace, shape: dict) -> str:
         "check_laminarization = false",
         "",
     ]
-    # ``dnsjax-twin`` writes stats/steps/corrector for *both* states
-    # (``stats.dat`` + ``stats_twin.dat``, ...), each gated on its own
-    # ``[outs]`` cadence; unset, the member records none of them.
+    # The per-state streams, each gated on its own ``[outs]`` cadence
+    # (module docstring).
     outs = [
         (name, getattr(args, name))
         for name in ("it_snapshot", "it_stats", "it_steps", "it_corrector")
@@ -839,9 +837,7 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="member run length past the parent snapshot time",
     )
-    # The perturbation shape.  Unset means the driver's default, which
-    # is resolved here and written into every member all the same
-    # (:func:`_twin_shape`).
+    # The perturbation shape, pinned per member (:func:`_twin_shape`).
     pt.add_argument(
         "--smoothness",
         type=float,

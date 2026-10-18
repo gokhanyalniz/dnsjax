@@ -2,37 +2,37 @@
 r"""Per-rank memory of one production run on candidate layouts, offline.
 
 Before a run is submitted, the questions are how much memory each rank
-needs on a given ``(np0, np1)`` grid, and whether a node full of such
-ranks fits.  This script answers the data part with XLA's own buffer
-assignment: the run's time step is lowered **as the run calls it**
-(the ``fourier`` and ``flow`` singletons passed as arguments; a ``jit``
-of the bound step would bake them in as constants instead and measure
-a different program), compiled, and read through
-``memory_analysis()``.  Nothing executes, so the figures are
-deterministic: no hardware, no timing noise.
+needs on a given ``(np0, np1)`` grid and whether a node full of such
+ranks fits.  XLA's own buffer assignment answers the data part: the
+run's time step is
+lowered **as the run calls it** (the ``fourier`` and ``flow``
+singletons passed as arguments; a ``jit`` of the bound step would bake
+them in as constants and measure a different program), compiled, and
+read through ``memory_analysis()``.  Nothing executes, so the figures
+are deterministic: no hardware, no timing noise.
 
 A production problem does not fit on the machine that sizes it, so each
 layout is compiled at a **reduced** problem, on that layout's own grid
 of forced host devices, and extrapolated.  Every per-device array has
-exactly one streamwise extent -- the stored ``kx`` modes in spectral
+at most one streamwise extent -- the stored ``kx`` modes in spectral
 space, the oversampled ``x`` points in physical space -- and both are
-proportional to ``nx``, so a per-device byte count is
-``c + k * nx`` along ``nx``, with ``c`` the arrays that have no
-streamwise axis (the dense wall-normal matrices, the wavenumber
-vectors).  Each row therefore compiles **two** reduced problems, at one
-and two ``kx`` modes per device (``nx = 2 np1`` and ``4 np1``; 16 and
-32 when ``np1 = 1``), fits ``c`` and ``k``, and evaluates the fit at the
-production ``nx``.  Scaling a single reduced problem instead would
-scale ``c`` too, and overstate a layout with many ``kx`` modes per
-device several-fold.
+proportional to ``nx``, so a per-device byte count is ``c + k * nx``
+along ``nx``, with ``c`` the arrays that have no streamwise axis (the
+dense wall-normal matrices, the wavenumber vectors).  Each row
+therefore compiles **two** reduced problems, at one and two ``kx``
+modes per device (``nx = 2 np1`` and ``4 np1``; 16 and 32 when
+``np1 = 1``), fits ``c`` and ``k``, and evaluates the fit at the
+production ``nx``, its ``x`` pads included (:func:`_production_nx`).
+Scaling a single reduced problem instead would scale ``c`` too, and
+overstate a layout with many ``kx`` modes per device several-fold.
 
-Every axis the grid splits keeps its production size, so every
-divisibility pad and every FFT-friendly rounding is the production one
--- with one exception.  The reduced problems stay inside a memory
-budget (``--child-field-mib``, the size of one reduced field; a few
-GiB of peak per child at the default), and a layout with many ``kx``
-modes per device exceeds it at the production wall-normal size.  Such a
-layout is also reduced in ``ny`` (wall-bounded flows; to a multiple of
+Every axis but ``x`` keeps its production size, so its divisibility
+pads and FFT-friendly roundings are the production ones -- with one
+exception.  The reduced problems stay inside a memory budget
+(``--child-field-mib``, the size of one reduced field; a few GiB of
+peak per child at the default), which a layout with many ``kx`` modes
+per device exceeds at the production wall-normal size.  Such a layout
+is also reduced in ``ny`` (wall-bounded flows; to a multiple of
 ``np0``, so the reduced problem carries no wall-normal padding), and
 scaled back by the larger of the two per-device ratios: physical rows,
 padding included, and spectral rows.  The printed ``y`` column shows

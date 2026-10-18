@@ -41,11 +41,10 @@ Zenodo reserved for the release's deposit, it also records that DOI
 sdist, the wheel's description and the archive all carry it.  The
 repository's commit hooks run on that commit as on any other; the
 message check's ``uv run`` syncs an environment of the release's lock
-inside the worktree, which goes with it.  The commit is reachable from
-the tag alone: ``main`` is untouched, and pushing the tag (``git push
-origin vVERSION``, the author's step) is what starts
-``.github/workflows/release.yml``.  ``--dry-run`` prints the changes
-and leaves no commit or tag.
+inside the worktree, removed with it.  The commit is reachable from the
+tag alone: ``main`` is untouched, and pushing the tag (``git push
+origin vVERSION``, the author's step) starts ``.github/workflows/release.yml``.
+``--dry-run`` prints the changes and leaves no commit or tag.
 
 ``strip`` applies the ``pyproject.toml`` part in place, for a CI job or
 a release rehearsal that builds from ``main``.
@@ -343,8 +342,8 @@ def agent_file(path: str) -> bool:
     """Whether *path* (a repository path) is written for coding agents.
 
     The ``CLAUDE.md`` notes anywhere and everything under ``.claude/``:
-    the files ``.gitattributes`` keeps out of every release archive
-    that the with-lab asset keeps out too.
+    of the files ``.gitattributes`` keeps out of every release archive,
+    the ones the with-lab asset leaves out too.
     """
     return (
         PurePosixPath(path).name == "CLAUDE.md"
@@ -491,7 +490,7 @@ def _cut(version: str, date: str, doi: str | None, dry_run: bool) -> int:
                 print("dry run: no commit, no tag")
                 return 0
             _git("add", "-A", cwd=tree)
-            # The commit-msg hook wraps the body at 72 columns.
+            # The commit-msg hook refuses a body line over 72 columns.
             doi_part = ", the release's DOI recorded" if doi else ""
             body = textwrap.fill(
                 "The release's own commit (prepare_release.py): the lab "

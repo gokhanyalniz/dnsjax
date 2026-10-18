@@ -1,48 +1,46 @@
 #!/usr/bin/env python3
 r"""Render a snapshot as a publication-style field figure.
 
-It turns one snapshot into a single PNG of a velocity plane, for a
-README, a talk, or a quick look at what a run is doing.  It reads the
-snapshot through :func:`dnsjax.analysis.read_state` alone -- NumPy and
-the standard library, **no JAX and no solver runtime** -- so it runs
+It turns one snapshot into a single PNG of a velocity plane, reading it
+through :func:`dnsjax.analysis.read_state` alone -- NumPy and the
+standard library, **no JAX and no solver runtime** -- so it runs
 anywhere the snapshot does, at any resolution, without a device.
 
 Two views, chosen from the snapshot's own geometry:
 
 - **cylindrical / annular** -- the meridional `$(z, r)$` plane, the
   `$\theta = 0$` and `$\theta = \pi$` half-planes stacked into a full
-  diameter.  This is the view a localized structure (a puff, a slug)
-  reads in: the axial extent is the long axis, so the figure comes out
-  as a wide strip.  ``--window`` crops it to a span centred on the
-  largest `$|u|$`, which is what keeps a puff legible inside a
-  100-diameter pipe.
+  diameter: the view a localized structure (a puff, a slug) reads in,
+  with the axial extent as the long axis, so the figure comes out as a
+  wide strip.  ``--window`` crops it to a span centred on the largest
+  `$|u|$`, which keeps a puff legible inside a 100-diameter pipe.
 - **Cartesian / triply-periodic** -- a wall-parallel `$(x, z)$` plane
-  at ``--y``, the view streaks read in.  Which `$y$` that is depends on
-  the flow: the near-wall cycle lives at `$y^+ \approx 15$`, i.e.
+  at ``--y``, the view streaks read in.  Which `$y$` depends on the
+  flow: the near-wall cycle lives at `$y^+ \approx 15$`, i.e.
   `$y = -1 + y^+/Re_\tau$`, so a channel at `$Re_\tau \approx 180$`
-  wants `$-0.92$` while a low-`$Re$` Couette box wants far less.
+  wants `$-0.92$` and a low-`$Re$` Couette box far less.
   Recover `$Re_\tau = \sqrt{Re\,|\mathrm{d}U/\mathrm{d}y|_w}$` from
   the run's own wall shear -- the laminar value plus the ``tau'_s,*``
   columns of ``stats.dat`` (or the snapshot's embedded stats).  The
   ``--y`` default of `$-0.9$` is a near-wall plane at production
   channel Reynolds numbers, not a universal one.
 
-The quantity is the **stored** field, which is the perturbation `$u'$`
-about the laminar profile for the base-flow systems and the total field
-for the total-field ones (:data:`TOTAL_FIELD_SYSTEMS`,
+The quantity is the **stored** field: the perturbation `$u'$` about
+the laminar profile for the base-flow systems, the total field for the
+total-field ones (:data:`TOTAL_FIELD_SYSTEMS`,
 ``FlowSpec.total_field``); the colourbar label says which, and no base
 flow is ever added or removed here.
 
 The colour scale is diverging and pinned symmetric about zero
-(``vmin = -vmax``), so the neutral midpoint *is* zero -- an asymmetric
+(``vmin = -vmax``), so the neutral midpoint *is* zero: an asymmetric
 range would paint zero as a signed colour and invent a mean the field
 does not have.
 
 Cells are drawn on explicit **edges** rather than on the sample points,
-which matters twice in the meridional view: the wall cells then end at
-the wall instead of half a cell short of it, and an annulus's core --
-which holds no fluid -- is one masked cell rather than the inner wall's
-no-slip value smeared across the axis.  A pipe has no such core: its two
+which matters twice in the meridional view: the wall cells end at the
+wall instead of half a cell short of it, and an annulus's core, which
+holds no fluid, is one masked cell rather than the inner wall's no-slip
+value smeared across the axis.  A pipe has no such core: its two
 innermost cells meet at `$r = 0$`, which is what the parity closure
 across the axis means (``geometries/wall_bounded/cylindrical.py``).
 
@@ -81,9 +79,8 @@ and the second, further down, is the near-wall plane on its own::
         --out docs/figures/channel-streaks.webp
 
 ``--lab-frame`` matters for anything animated out of a run with
-``phys.u_grid`` set.  That frame is a change of coordinate, so undoing
-it is a pure translation, and without it the picture is confusing
-rather than wrong: this run integrates in a frame moving at the bulk
+``phys.u_grid`` set: without it the picture is confusing rather than
+wrong, since this run integrates in a frame moving at the bulk
 velocity, which outruns the near-wall fluid but is itself outrun by the
 centreline, so the planes would drift in *opposite* directions.
 
@@ -350,10 +347,12 @@ def _refine(plane: np.ndarray, factor: int) -> np.ndarray:
     is **exact** trigonometric interpolation -- the same operation the
     solver's own 3/2 dealiasing pad performs, not invented detail.
 
-    It is needed because ``plot_surface`` shades each cell flat: magnify
-    a `$192\times160$` plane to 1800 px and the quads are ~9 px across,
-    so the mesh itself becomes visible as a diagonal weave.  Refining
-    the data puts the cells back below the pixel scale.
+    It is needed because both renderers shade each cell flat
+    (``pcolormesh`` in the plane view, ``plot_surface`` in the stack):
+    magnify a `$192\times160$` plane to 1800 px and the quads are ~9 px
+    across, so the mesh itself becomes visible (blockiness, or a
+    diagonal weave in the stack).  Refining the data puts the cells
+    back below the pixel scale.
 
     The Nyquist row and column are dropped rather than split, which is
     exact here: dnsjax stores no Nyquist mode on any axis, so the field
@@ -552,18 +551,15 @@ def _plane_frame(plane, norm, cmap, width, aspect, refine):
 def _animate(args, info) -> int:
     r"""Animate one wall-parallel plane, or a stack of them, over time.
 
-    Every frame shares one colour scale -- otherwise the animation
-    pulses as each frame renormalizes itself -- taken from ``--clim`` or
-    from the given percentile over **all** frames, so the bounds suit
-    the whole sequence rather than any one of it.  Only the requested
-    component and the requested wall-normal slabs are read from each
+    Every frame shares one colour scale (module docstring), from
+    ``--clim`` or the ``--clip`` percentile over **all** frames.  Only
+    the requested component and wall-normal slabs are read from each
     snapshot, so the cost is a few slabs per file rather than a field.
 
-    A single ``--y`` maps the plane straight through the colormap: the
-    frames are then pixel-identical in size by construction, which
-    ``bbox_inches="tight"`` around a matplotlib figure cannot promise.
-    Several ``--y`` render the 3D stack instead, and the crop box of the
-    first frame is reused for the rest for the same reason.
+    A single ``--y`` maps the plane straight through the colormap
+    (:func:`_plane_frame`, which says why); several ``--y`` render the
+    3D stack, reusing the first frame's crop box for the rest so every
+    frame comes out the same size.
     """
     import tempfile
 
@@ -818,7 +814,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Read one snapshot and write one figure."""
+    """Write one figure from one snapshot, or an animation from several."""
     args = build_parser().parse_args(argv)
     if args.clim is not None and args.clim <= 0.0:
         build_parser().error("--clim must be positive")

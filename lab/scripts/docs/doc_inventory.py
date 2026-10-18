@@ -4,8 +4,9 @@ Usage: python doc_inventory.py [OUT_DIR]
 
 Writes one text dump per file (docstrings + comments with line numbers)
 under OUT_DIR (default ``./dump``, in the current directory: run it from
-a scratch directory, not the repository), plus a summary of volumes and
-missing docstrings.
+a scratch directory, not the repository), and prints the volumes per
+file and the missing docstrings (every module's; public functions' and
+classes' outside ``tests/``).
 """
 
 import ast
@@ -77,7 +78,6 @@ for f in files:
     tot_com += nc
     tot_lines += len(lines)
     rows.append((nd + nc, nd, nc, len(lines), f))
-    # dump
     with open(OUT / (f.replace("/", "__") + ".txt"), "w") as fh:
         merged = sorted(
             [(ln, "D", name, text) for ln, k, name, text in entries]

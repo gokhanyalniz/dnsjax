@@ -38,8 +38,8 @@ The script fits `$\mu$` from the ensemble it was given and reports
 `$\Delta t$` against the recorded members' own `$A(0)$`, so the
 answer is in advective time units rather than in an abstract overlap.
 It is printed as ``shape lead`` and not ``head start`` on purpose: it
-is how much sooner this field would *look* settled, which is not the
-same as how much sooner it grows -- see the next paragraph.
+is how much sooner this field would *look* settled, not how much sooner
+it grows (below: "A(0) is a shape score, not a growth predictor").
 
 **Reading the output.**  A bare run reports one configuration --
 whatever the surface resolved, which with no overrides is the
@@ -47,30 +47,28 @@ whatever the surface resolved, which with no overrides is the
 twin partner's: ``twin.smoothness`` defaults far lower
 (:class:`dnsjax_lab.twin.driver.TwinParams`), so score a twin seed by
 passing its value as ``--init.random_smoothness``.
-``--calib.sweep_smoothness`` and its two siblings take
-comma-separated lists and report their outer product, one line each,
-rebuilding the field per entry (a per-mode host loop: seconds at a
-production resolution, so a dozen entries take minutes).
-The seed is ``init.random_seed`` as usual (unset: drawn, and printed
-with its source), and `$A$` is nearly seed-independent -- it
-averages over every resolved mode, and moves by under 0.005 across
-seeds at a production box -- so a sweep needs one seed, not an
-ensemble.
+``--calib.sweep_smoothness`` and its two siblings take comma-separated
+lists and report their outer product, one line each, rebuilding the
+field per entry (a per-mode host loop: seconds at a production
+resolution, so a dozen entries take minutes).  The seed is
+``init.random_seed`` as usual (unset: drawn, and printed with its
+source), and `$A$` is nearly seed-independent -- it averages over every
+resolved mode, and moves by under 0.005 across seeds at a production
+box -- so a sweep needs one seed, not an ensemble.
 
-**A(0) is a shape score, not a growth predictor.**  This is the caveat that
-decides how the output should be used, and it is measured rather than hedged.
-At the Hamilton-Kim-Waleffe minimal plane-Couette box (`$Re = 400$`,
-`$Re_\tau \approx 34$`) the score peaks at ``random_smoothness``
-`$\approx 0.15$` and calls it worth thirteen time units -- while the difference
-energy measured over 60 advective units goes 2.07 decades at `$s = 0.4$`, 1.15
-at `$0.15$` and 0.09 at `$0.04$`, decaying outright for the first five units at
-the last (two seeds, both).  The reason is physical: an attractor's small-scale
-content is sustained by transfer from larger scales, so seeding it directly
-feeds `$k^2/Re$` rather than the instability.  Read `$A(0)$` as "how much of
-this field is in the wrong part of `$(y, k)$`", and confirm any change of
-``random_smoothness`` with a growth run before adopting it.
-``random_wall_confinement``, whose optimum this tool also reports, was adopted
-on the strength of being *neutral* in that same growth measurement.
+**A(0) is a shape score, not a growth predictor.**  At the
+Hamilton-Kim-Waleffe minimal plane-Couette box (`$Re = 400$`) the score
+peaks at ``random_smoothness`` `$\approx 0.15$` and calls it worth
+thirteen time units, yet the difference energy grows less there than at
+the default 0.4, and at `$s = 0.04$` decays outright for the first five
+units (two seeds, both; the decades measured and the reason:
+:mod:`dnsjax.ic.random_field`, Design notes "Shape is not growth").
+Read `$A(0)$` as "how much of this field is in the wrong part of
+`$(y, k)$`", and confirm any change of ``random_smoothness`` with a
+growth run before adopting it.  ``random_wall_confinement``, whose
+optimum this tool also reports, is the default on the strength of being
+*neutral* in that same growth measurement (the same Design notes, "The
+scale-dependent window, measured").
 
 **Scope.**  Cartesian wall-bounded flows, like ``dnsjax-twin`` itself:
 the target has to come from a recorded twin stream, and those exist
@@ -280,12 +278,11 @@ def _member_shapes(
 
     *shapes* is ``(n_t, n_y, n_k)``, component-summed, the `$(0, 0)$`
     mode removed, each record normalized to unit total -- the shape
-    alone.  Read through a memory map, which touches only the two
-    fields used of every record (the target window and the
-    `$\mu$` fit read them all), where the eager reader would load every
-    field: a gigabyte per member
-    (:func:`dnsjax_lab.analysis.twin.yspectra.record_dtype` exists for
-    exactly this).
+    alone.  Read through a memory map, which touches only the two fields
+    used of every record (the target window and the `$\mu$` fit read
+    them all), where the eager reader would load every field: a gigabyte
+    per member (:func:`dnsjax_lab.analysis.twin.yspectra.record_dtype`
+    exists for exactly this).
     """
     from dnsjax_lab.analysis.twin.yspectra import (
         mean_free_spectrum,
@@ -408,8 +405,7 @@ def ic_shape(marginal: str) -> tuple[np.ndarray, np.ndarray]:
     r"""``(y_weights, shape)`` of the perturbation the ``init`` knobs build.
 
     Marginalized by :func:`dnsjax_lab.twin.diagnostics.twin_yspectra`
-    against a zero reference, so the map is the stream's own `$t = 0$`
-    record and not a re-derivation of it.
+    against a zero reference (module docstring, "What it computes").
     """
     import jax.numpy as jnp
     from dnsjax_lab.twin.diagnostics import flow, twin_yspectra

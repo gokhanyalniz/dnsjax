@@ -3,22 +3,14 @@ r"""GPU diagnostic: bisect the mode-tiled Pallas banded-kernel miscompile.
 ``_pallas_banded_solve`` (``solvers.py``) is correct in Pallas interpret
 mode and lowers cleanly for ``cuda``, but without padding it returns
 wrong/NaN results on a **real GPU** for ``pallas_block_m1 > 1`` -- even
-with the cross-pass ``debug_barrier`` in place. This script isolates the
-cause: an observed miscompile of masked partial tiles on GPU (the
-**masked partial-tile path**).  In a grid with a partial boundary tile
-it corrupts results **across the grid (even full-tile programs)**,
-**nondeterministically** (warp-scheduling dependent), for any
-nontrivial kernel -- masked double-index band loads (``l_ref[i, d]``) *and*
-a single-index window-carry sweep (``window_carry``).  Only trivial
-copy/round-trip kernels survive; full tiles (no partial boundary anywhere)
-are always correct at ``(2, 32)``.
-
-The kernel therefore **pads the mode plane up to whole tiles** so it only
-ever runs the correct full-tile path.  This script is the regression
-check: the ``full`` probe (the real solve, which pads) passes on
-partial planes, while the un-padded construct micro-kernels still XFAIL on
-partial planes -- the observed miscompile they isolate (see the verdict
-legend at the end of the run).
+with the cross-pass ``debug_barrier`` in place.  This script isolates
+the cause, an observed miscompile of the **masked partial-tile path**;
+what it found, and why the kernel therefore pads the mode plane up to
+whole tiles: the ``solvers`` Design notes, "The partial-tile
+miscompile".  It is the regression check: the ``full`` probe (the real
+solve, which pads) passes on partial planes, while the un-padded
+construct micro-kernels still XFAIL there -- the miscompile they
+isolate (see the verdict legend at the end of the run).
 
 It runs a ladder of minimal ``pallas_call(interpret=False)`` probes -- each
 exercising one construct the real kernel uses, plus alternative
@@ -37,8 +29,10 @@ to cpu, so name the GPU)::
 
 On the CPU (the default platform) it falls back to a **lowering-only**
 check (``lower(lowering_platforms=("cuda",))``) so the probes can be
-validated before a GPU run.  A regression exits with status 1.  Save
-the full stdout (e.g. ``| tee run.log``); it is the report.
+validated before a GPU run; it prints each failure but no verdict, and
+exits 0.  A run that executes the probes (a GPU, or ``--interpret``)
+exits with status 1 on a regression.  Save the full stdout (e.g.
+``| tee run.log``); it is the report.
 
 Probes (ladder; ``b`` is per-mode-scaled so cross-lane contamination is
 visible):
@@ -88,8 +82,8 @@ from dnsjax.parameters import (
 # Select the JAX backend from --dist.platform (default cpu) before
 # importing any dnsjax module that captures it (sharding / solvers), so
 # ``... --dist.platform cuda`` executes the probes on a real GPU and the
-# device banner is unambiguous.  It is parsed early here (before this
-# script's own argparse) and re-declared in ``main`` for --help.
+# device banner is unambiguous.  Parsed here, ahead of this script's
+# argparse; ``main`` re-declares it for --help.
 configure_jax_platform(platform_from_argv())
 
 # Mutate the global params singleton before importing any dnsjax module
@@ -118,14 +112,12 @@ from dnsjax.solvers import (  # noqa: E402
 F64 = jnp.float64
 TOL = 1e-9
 
-# JAX >= 0.11: a Triton ``pallas_call`` resolves the target GPU's compute
-# capability from the mesh context's abstract device, so the GPU-less
-# ``lower(lowering_platforms=("cuda",))`` compile-check below must run
-# under an abstract GPU mesh or it raises "No supported GPU devices
-# found".  The ``NVIDIA H100`` device_kind selects ``sm_90`` (the cluster
-# target); it is used *only* for the lowering branch, never around the
-# real-GPU execute path (which must read the actual hardware).  Twin of
-# ``_abstract_gpu_mesh`` in ``tests/test_banded_solver.py``.
+# The abstract H100 mesh the GPU-less
+# ``lower(lowering_platforms=("cuda",))`` compile-check below runs
+# under: the twin of ``_abstract_gpu_mesh`` in
+# ``tests/test_banded_solver.py``, whose comment says why.  Used *only*
+# for the lowering branch, never around the real-GPU execute path
+# (which must read the actual hardware).
 _ABSTRACT_GPU_MESH = jax.sharding.AbstractMesh(
     (1,),
     ("x",),
@@ -196,10 +188,10 @@ def _build_inputs(N, p, k, Nkz, Nkx, seed=0):
     # at the **true** mode plane: the micro-probes' partial tiles must
     # come from the probe grid itself (that is what they demonstrate),
     # and their NumPy references broadcast against the true-plane ``b``
-    # (construction-padded factors here raised shape errors in the
+    # (construction-padded factors here would raise shape errors in the
     # ``bcast_*`` references on partial planes).  ``Lp``/``Up`` add the
     # whole-``(bm0, bm1)``-tile zero pad -- the stored-factor form the
-    # real solve keeps -- for the ``full`` probe.
+    # real solve keeps -- for the two ``full*`` probes.
     Lo, Uo = _banded_factor(band)
     Li = jnp.moveaxis(Lo, (-2, -1), (0, 1))
     Ui = jnp.moveaxis(Uo, (-2, -1), (0, 1))
@@ -261,14 +253,11 @@ def _build_probe(name, dims, bm0, bm1, interpret=False):
     """
     N, p, k, Nkz, Nkx = dims
     if name in ("full", "full_vmap_shared"):
-        # Set the probe's tile *before* building the inputs:
-        # ``from_banded_factors`` pads the stored factors to the
-        # ``params`` tile, so setting it only afterwards left the
-        # factors padded for the *previous* config's tile (a smaller
-        # runtime tile then drove the solve's fallback factor pad
-        # negative -- the ``full (1, 1)`` partial-plane crash on the
-        # cluster; the solve now also grows such factors instead of
-        # raising, see ``_pallas_banded_solve``).
+        # Set the probe's tile *before* building the inputs, so the
+        # ``Lp``/``Up`` that ``_build_inputs`` pads to the ``params``
+        # tile (as ``from_banded_factors`` pads the stored factors) are
+        # this config's production form.  The previous config's would
+        # still solve: ``solvers._tile_pad_planes`` grows them.
         params.solver.pallas_block_m0 = bm0
         params.solver.pallas_block_m1 = bm1
     d = _build_inputs(N, p, k, Nkz, Nkx)
@@ -391,9 +380,8 @@ def _build_probe(name, dims, bm0, bm1, interpret=False):
         return fn, inputs, _scaled(y, d["scale"])
 
     if name == "full":
-        # The params tile was set before ``_build_inputs`` (above), so
-        # the stored padded factors match this config; pass them (the
-        # production form) rather than the true-plane slices.
+        # Pass the padded factors (this config's production form,
+        # above), not the true-plane slices.
         def fn(L_, U_, b_):
             return _pallas_banded_solve(L_, U_, b_, p, interpret=interpret)
 
@@ -401,15 +389,13 @@ def _build_probe(name, dims, bm0, bm1, interpret=False):
         return fn, (d["Lp"], d["Up"], b), _scaled(x, d["scale"])
 
     if name == "full_vmap_shared":
-        # The Cartesian shared-``Hk`` dispatch: one operator vmapped
-        # over the RHS component axis (``.solve``'s
-        # ``in_axes=(None, None, 0)`` branch) -- the only production
-        # pattern that batches ``pallas_call`` with **unmapped** factor
-        # refs.  Stacked geometries (pipe/annular) map the factors too,
-        # so on a padded partial plane this composition runs nowhere
-        # else on real Triton; it is the prime suspect for a
-        # Cartesian-only cross-backend divergence at ``nx = 34``
-        # (``Nkx = 17 -> 32``).
+        # ``.solve``'s ``in_axes=(None, None, 0)`` branch (module
+        # docstring), the only production pattern that batches
+        # ``pallas_call`` with **unmapped** factor refs.  Stacked
+        # geometries (pipe/annular) map the factors too, so on a padded
+        # partial plane this composition runs nowhere else on real
+        # Triton; it is the prime suspect for a Cartesian-only
+        # cross-backend divergence at ``nx = 34`` (``Nkx = 17 -> 32``).
         def fn(L_, U_, b3_):
             return jax.vmap(
                 lambda bb: _pallas_banded_solve(
@@ -469,11 +455,9 @@ MUST_PASS = frozenset(
         "full_vmap_shared",
     }
 )
-# Probes that exercise the observed partial-tile miscompile without
-# padding, so they are *expected* to fail (XFAIL) on `partial` planes --
-# nondeterministically, and corrupting even full-tile programs in a grid
-# with a partial boundary.
-# They must still PASS on `full` planes (no partial boundary anywhere).
+# Probes that exercise the partial-tile miscompile without padding: they
+# are *expected* to fail (XFAIL) on `partial` planes, nondeterministically,
+# and must still PASS on `full` planes (no partial boundary anywhere).
 BUG_DEMO = frozenset(
     {"bcast_none", "bcast_auto", "window_carry", "forward_only"}
 )
@@ -498,7 +482,8 @@ TILES = [
     (2, 32),
 ]
 TILES_QUICK = [(1, 1), (1, 32), (2, 32)]
-# (label, Nkz, Nkx): full tiles vs partial boundary tiles.
+# (label, Nkz, Nkx).  Every tile divides `full`; only the ``bm1 = 32``
+# tiles leave `partial` a partial boundary tile.
 MODES = [("full", 4, 64), ("partial", 5, 40)]
 MODES_QUICK = [("partial", 5, 40)]
 N_FIXED, P_FIXED, K_FIXED = 17, 4, 2
@@ -610,7 +595,6 @@ def main() -> None:
                             f"@ (n,k,kz,kx)={loc}"
                         )
                         if _expected_fail(probe, mlabel):
-                            # Expected: the observed partial-tile miscompile.
                             xfails[probe] += 1
                             print(f"{tag} -> XFAIL {detail}")
                         else:
@@ -622,8 +606,6 @@ def main() -> None:
                                 _dump(probe, got, ref)
                                 dumped = True
                     else:
-                        # Abstract GPU mesh so Triton can resolve the
-                        # target without a GPU (JAX >= 0.11).
                         with jax.sharding.use_abstract_mesh(
                             _ABSTRACT_GPU_MESH
                         ):
@@ -634,10 +616,10 @@ def main() -> None:
                 except Exception as e:
                     kind = "RUNTIME_ERROR" if execute else "LOWERING_ERROR"
                     msg = str(e).replace("\n", " ")[:160]
-                    # A crash is an acceptable manifestation of the raw
-                    # partial-tile bug for a bug-demo probe (XFAIL);
-                    # anywhere else it is a regression -- errors must
-                    # not silently drop out of the verdict tally.
+                    # A crash counts as the miscompile too for a bug-demo
+                    # probe executing on a partial plane (XFAIL); anywhere
+                    # else it is a regression, so no error drops out of
+                    # the verdict tally.
                     if execute and _expected_fail(probe, mlabel):
                         xfails[probe] += 1
                         print(
@@ -703,10 +685,6 @@ def _summary(xfails, regs, runs, first_reg, results, modes, tiles) -> int:
     else:
         print(f"\nfirst regression: {first_reg}")
 
-    # Interpretation legend.  The real solve (`full`, calling
-    # `_pallas_banded_solve`) pads the mode plane to whole tiles, so it is
-    # correct on partial planes; the construct micro-kernels below it do
-    # not pad, so they still expose the miscompile they isolate.
     print("\nInterpretation (pad-to-full-tiles fix in _pallas_banded_solve):")
     print(
         "  * 'full' PASS on partial planes -> dnsjax solve correct "

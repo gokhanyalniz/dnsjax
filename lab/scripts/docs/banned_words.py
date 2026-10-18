@@ -3,10 +3,11 @@
 `TONE` is the tone and filler vocabulary `check_docstrings.py` counts
 over the tracked tree's docstrings and comments; `WORDS` the filler,
 temporal and marker words `lint_docs.py` flags in named files.
-`check_commit_message.py` applies both to commit messages, outside
-backticked code spans: a banned word is allowed only where it is the
-name of the code it describes, as an argument's name can be. Each
-pattern has one capturing group, the matched word.
+`check_commit_message.py` applies both to commit messages and
+`md_lint.py` to the Markdown lines a change adds, outside backticked
+code spans: a banned word is allowed only as the name of the code it
+describes, such as an argument's name. Each pattern has one capturing
+group, the matched word.
 """
 
 import re

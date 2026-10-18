@@ -24,18 +24,16 @@ method's own resolving power is likewise well below its point count
 (`$\approx 2N/\pi$` for Chebyshev).
 
 Both operators are each method's *natural* choice: dnsjax's `$D_2$`
-is a direct Fornberg fit (never `$D_1 D_1$`; why that route was
-retired: the ``cartesian`` Design notes),
-while the Chebyshev reference squares its differentiation matrix, as
-a Chebyshev code would.
+is a direct Fornberg fit (never `$D_1 D_1$`: the ``cartesian`` Design
+notes, "Routes tried and retired"), while the Chebyshev reference
+squares its differentiation matrix, as a Chebyshev code would.
 
 What it measured
 ----------------
 For the default ``fd_order = 8`` on the CGL grid, **FD needs 1.5--1.9x the
 point count of a Chebyshev expansion**: ``ny = 49`` matches 33 Chebyshev
 polynomials at the 1 % criterion, ``ny = 63`` matches it at the stricter 0.1 %
-criterion and exceeds it at 1 % (23 modes vs 18).  Two corollaries worth
-knowing before turning knobs:
+criterion and exceeds it at 1 % (23 modes vs 18).  Two corollaries:
 
 - ``fd_order`` is a weak lever, ``ny`` a strong one.  At ``ny = 63``,
   order 8 -> 12 buys 4 modes (+17 %) and widens every banded
@@ -50,10 +48,10 @@ knowing before turning knobs:
   quadrature drops from spectral Clenshaw-Curtis to the ``fd_order``
   composite rule, and a grid change is trajectory-defining.
 
-The sign of the FD error is also worth knowing: the Fornberg
-`$D_2$` *under*-estimates damping at every mode (Chebyshev crosses
-over to over-damping at high `$m$`), so an under-resolved FD grid
-biases towards **sustaining** fluctuations, not towards decay.
+The FD error has a sign: the Fornberg `$D_2$` *under*-estimates
+damping at every mode (Chebyshev crosses over to over-damping at high
+`$m$`), so an under-resolved FD grid biases towards **sustaining**
+fluctuations, not towards decay.
 
 Scope
 -----
@@ -128,10 +126,9 @@ def cgl_grid(ny: int) -> ndarray:
     r"""Chebyshev-Gauss-Lobatto grid `$y_j = -\cos(j\pi/(N-1))$`.
 
     Mirrors the ``"cgl"`` branch of ``build_cartesian_grid``
-    (``geometries/wall_bounded/cartesian.py``), which is the
-    authority; it is one line and reproduced here so this script
-    stays JAX-free (importing the geometry module would build the
-    singletons and pull in JAX).
+    (``geometries/wall_bounded/cartesian.py``, the authority), one
+    line reproduced so this script stays JAX-free: importing the
+    geometry module would build the singletons and pull in JAX.
     """
     return -np.cos(np.arange(ny) * np.pi / (ny - 1))
 

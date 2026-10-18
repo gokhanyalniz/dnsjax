@@ -5,15 +5,13 @@ up the GPU solve?  This script measures the answer, testing two
 hypotheses for the ``pallas`` backend on real hardware:
 
   H1  Is the per-solve time dominated by the **unavoidable** complex ->
-      real split/recombine around the Triton kernel (which the contract
-      change did **not** remove), rather than the layout transpose
-      (which it did)?  The split is mandatory: the f64 Triton kernel
-      cannot ingest ``c128`` (JAX has no zero-copy complex<->real
-      bitcast), so every solve must materialize a real buffer and
-      recombine.  If the split/recombine is a large share of the solve,
-      no transpose removal could ever help -- the transpose was fused
-      *into* that mandatory copy (same bytes), which is exactly why
-      removing it changed nothing.
+      real split/recombine around the Triton kernel, which the contract
+      keeps, rather than the layout transpose it removes?  The split is
+      mandatory (the ``solvers`` Design notes, "No split-real hoist"):
+      every solve materializes a real buffer and recombines.  If it is
+      a large share of the solve, no transpose removal can help: the
+      transpose fuses *into* that mandatory copy (same bytes), which is
+      why removing it gains nothing.
 
   H2  Is the banded solve even the bottleneck of a corrector step, or do
       the FFTs / FD matvecs / influence-matrix apply dominate?  If the
@@ -34,11 +32,11 @@ Part A2 the **split-real hoist**: Part A sizes the plumbing inside one
         complex/real crossing census printed by Part C.
 Part B  full ``predict_and_fully_correct`` step time vs the isolated
         ``Lk`` and ``Hk`` solve times -- the solve's share of the step.
-        Then (Cartesian) a **stage-level ``_imm_iteration`` breakdown**
-        that sizes the influence-matrix boundary correction against
-        the rest of the implicit CN update (assembly GEMMs + banded
-        solves), which runs every corrector iteration too, and the
-        corrected **cnab2 composition** (wall-bounded cnab2 still runs a
+        Then a **stage-level ``_imm_iteration`` breakdown**, per
+        geometry, that sizes the influence-matrix boundary correction
+        against the rest of the implicit CN update (assembly GEMMs +
+        banded solves), which runs every corrector iteration too, and
+        the **cnab2 composition** (wall-bounded cnab2 still runs a
         ``2 + c``-apply FFT-free IMM corrector, so its ``FFT RHS`` count
         drops ``2 + c -> 1`` but its IMM count does not).
 Part C  optimized-HLO op census around the Triton custom call (static
@@ -47,9 +45,9 @@ Part C  optimized-HLO op census around the Triton custom call (static
 
 Every number below is reported for the configured
 ``res.consistent_imm`` formulation.  The default is the shipped
-reconstruction scheme; ``--legacy-imm`` profiles the retired primitive
+reconstruction scheme; ``--legacy-imm`` profiles the legacy primitive
 `$(v, p)$` one instead, which has a different operator set, a different
-per-mode solve count and its own stage transcription.
+per-mode solve count and its own stage transcription (Cartesian only).
 
 Run **on a GPU** (single device, no mpirun; ``--dist.platform`` defaults
 to cpu, so name the GPU)::
@@ -87,12 +85,12 @@ A full run also ends with a ``SUMMARY`` line (adds ``imm``/``step``/
 
 On the CPU (the default platform) it profiles the CPU solve path, the
 pure-JAX sweep, through Parts A, B, A2 and C: numbers for that path,
-not stand-ins for the Triton kernel's.  ``--cpu-smoke`` runs them once
-at tiny resolution (numerics only) to validate the harness end-to-end.
-``--steps-only N`` runs ``N`` steps and exits, skipping Parts A/B/C:
-a clean driver to wrap in an external profiler (e.g.
-``nsys profile --stats=true``).
-Save the full stdout (e.g. ``| tee run.log``); it is the report.
+not stand-ins for the Triton kernel's.  ``--cpu-smoke`` runs Parts B,
+A2 and C and the solve-only timing once at tiny resolution (numerics
+only) to validate the harness end-to-end.  ``--steps-only N`` runs
+``N`` steps and exits, skipping every part: a clean driver to wrap in
+an external profiler (e.g. ``nsys profile --stats=true``).  Save the
+full stdout (e.g. ``| tee run.log``); it is the report.
 """
 
 from __future__ import annotations
@@ -161,23 +159,22 @@ def _configure_system(
 ):
     """Set the global ``params`` for *system* and derive singletons.
 
-    Mutates ``params`` directly (the ``pallas`` backend, f64, the given
-    resolution), then triggers the derived-parameter recompute with an
-    empty :class:`Parameters` merge (the ``test_*`` / tiling-diagnostic
-    idiom).  A system's further required fields (:data:`SYS_ARGS`) take
-    the test-suite-standard values; the physics is irrelevant to timing.
+    Mutates ``params`` directly (f64, the given resolution; the
+    ``test_*`` / tiling-diagnostic idiom), then sets the ``pallas``
+    backend through one :func:`update_parameters` layering call, which
+    also recomputes the derived parameters.  A system's further
+    required fields (:data:`SYS_ARGS`) take the test-suite-standard
+    values; the physics is irrelevant to timing.
 
-    *solver_overrides* merges extra ``[solver]`` fields into the same
-    layering call -- the Pallas kernel-tile knobs (``pallas_block_m0``
-    / ``pallas_block_m1``) are baked into the operator at construction
+    *solver_overrides* merges extra ``[solver]`` fields into that call:
+    the Pallas kernel-tile knobs (``pallas_block_m0`` /
+    ``pallas_block_m1``), baked into the operator at construction
     (geometry import), so a knob sweep needs a subprocess per value
     (the ``test_*`` subprocess-per-config idiom).
 
-    *legacy_imm* selects the retired primitive `$(v, p)$` scheme
+    *legacy_imm* selects the legacy primitive `$(v, p)$` scheme
     (``res.consistent_imm = False``) instead of the shipped
-    reconstruction one; it changes the operator set, the per-mode solve
-    count and therefore every number this script reports, so it is an
-    explicit opt-in (``--legacy-imm``).
+    reconstruction one (``--legacy-imm``; module docstring).
     """
     params.phys.system = system
     params.phys.re = 400.0
@@ -190,16 +187,13 @@ def _configure_system(
     for dotted, value in SYS_ARGS.get(system, {}).items():
         section, name = dotted.split(".")
         setattr(getattr(params, section), name, value)
-    # Through the layering call (not a direct assignment), so the
-    # per-family backend re-resolution in ``update_parameters`` cannot
-    # overwrite it.
     solver = {"backend": "pallas"}
     if solver_overrides:
         solver.update(solver_overrides)
     update_parameters(Parameters(solver=solver))
-    # Recompute the 3/2-rule padded sizes for the FFT dealiasing (the
-    # step path needs these; ``update_parameters`` does not set them --
-    # ``__main__`` calls this separately).
+    # The 3/2-rule padded sizes for the FFT dealiasing, which the step
+    # path needs and ``update_parameters`` does not set (the
+    # ``bootstrap`` module docstring, step 1).
     padded_res.set_padded_resolution(params)
     validate_parameters()
 
@@ -212,7 +206,7 @@ def _geom_module(system: str):
 
 
 def _import_flow(system: str):
-    """Import the flow module for *system* and return its singletons.
+    """Import the flow module for *system* and return it.
 
     The import builds the geometry ``fourier`` / ``flow`` singletons and
     the jitted stepper, exactly as ``__main__`` does.
@@ -224,7 +218,7 @@ def _import_flow(system: str):
 
 
 def _bench(fn, args_list, warmup: int = 3) -> float:
-    """Median-ish throughput: queue all calls, block on the last.
+    """Mean per-call time: queue all calls, block on the last.
 
     *args_list* must hold **distinct** operands so XLA cannot CSE the
     repeated calls; the per-call wall time is the total drained-stream
@@ -248,8 +242,8 @@ def _bench_step(step, state, n: int, warmup: int = 3):
     import jax.numpy as jnp
 
     s = jnp.copy(state)
-    # The step returns (state, error, num_c, aux); only the first three
-    # are timed here.
+    # The step returns (state, error, num_c, aux); the state and num_c
+    # are read here.
     for _ in range(warmup):
         s, _err, _c, *_ = step(s)
     jax.block_until_ready(s)
@@ -276,8 +270,8 @@ def _bench_step_cnab2(step_cnab2, state, n: int, warmup: int = 3):
 
     s = jnp.copy(state)
     # seed rhs_prev = N(u^0); step_cnab2 returns (state, carry,
-    # error, num_c).  RHS-shaped: the flow's physical components, not
-    # a pipe state's trailing carried slots.
+    # error, num_c, aux).  RHS-shaped: the flow's physical components,
+    # not a pipe state's trailing carried slots.
     n_phys = spec_for(params.phys.system).n_components
     _, rp, *_ = step_cnab2(jnp.copy(s), jnp.zeros_like(s[:n_phys]))
     for _ in range(warmup):
@@ -383,13 +377,13 @@ def _part_a_cpu(op, sharding, reps: int) -> None:
     -- each pays a round trip it does not pay when fused -- so the
     true figure for anything fused into the solve is ``full - sweep``.
 
-    **The factors are passed as jit arguments, not closed over.**  That
-    is not a detail: the real stepper takes ``flow`` as an argument
+    **The factors are passed as jit arguments, not closed over.**  The
+    real stepper takes ``flow`` as an argument
     (``_base.build_wall_bounded_stepper`` calls
     ``_predict_and_fully_correct_jit(state, fourier, flow)``), so the
-    factor arrays are runtime parameters.  Closing over the operator
-    instead makes them compile-time constants, which XLA may fold work
-    around, and the solve then measures something no run executes.
+    factor arrays are runtime parameters.  Closed over, they become
+    compile-time constants XLA may fold work around, and the solve
+    measures something no run executes.
     """
     import jax.numpy as jnp
     from jax import lax
@@ -515,10 +509,9 @@ def _part_a(flow, sharding, reps: int, hbm: tuple[float | None, str]) -> None:
         for z in zs
     ]
 
-    # Factors as jit *arguments*, not closed over: the stepper passes
-    # ``flow`` in, so the factors are runtime parameters there.  Closing
-    # over them bakes them in as constants, which is a different
-    # placement (and, on the CPU arm, folds an entire stage away).
+    # Factors as jit *arguments*, not closed over (``_part_a_cpu``):
+    # baked-in constants are a different placement and, on the CPU arm,
+    # fold an entire stage away.
     def _full(L_, U_, z):
         return type(op)(L=L_, U=U_).solve(z)
 
@@ -619,9 +612,8 @@ def _part_a(flow, sharding, reps: int, hbm: tuple[float | None, str]) -> None:
 
 # Word-boundary patterns: the optimized HLO writes an op application as
 # ``real(f64[...] %x)``, while instruction *names* (``%real.3 = ...``)
-# and identifiers containing the word must not be counted.  This is why
-# ``_hlo_census``'s ``str.count`` is not reused here -- it matches
-# ``real`` inside ``all-reduce``-style names and inside ``%real.3``.
+# and identifiers containing the word must not be counted, as
+# ``_hlo_census``'s bare ``str.count`` would.
 _CROSSINGS = {
     "complex(": r"\bcomplex\(",
     "real(": r"\breal\(",
@@ -638,9 +630,7 @@ def _crossing_census(label: str, jitted, args) -> dict[str, int]:
     FD matvec (GEMM or, on CPU, stencil) brackets itself with a split
     (``real``/``imag``) and a recombine (``complex``); the stencil also
     adds one ``concatenate`` per call (its edge rows).  Some are
-    redundant *between* consumers -- ``Hk_op.solve`` recombines, the
-    caller only indexes the result, and ``Lk_op.solve`` splits it
-    straight back apart.
+    redundant *between* consumers (:func:`_part_a2`).
 
     This counts them **after** optimization, so it reports what
     survives XLA's simplifier rather than what the source writes.  A
@@ -733,9 +723,10 @@ def _part_a2(system, flow, sharding, reps, t_step, n) -> None:
     :func:`_part_a_cpu`), and are timed as one jit region each.  The
     hoisted arm is one ``shard_map`` region built from the solver's own
     :func:`_banded_solve_mode_inner` / :func:`_pallas_banded_solve`, so it
-    cannot drift from the shipped body, and its output is asserted
-    **bit-identical** -- a representation change that moves a value is
-    a bug, and the assertion is also what pins the arm's fidelity.
+    cannot drift from the shipped body, and its output must match the
+    shipped arm's to ``rtol = 1e-12`` (not bit for bit: the fidelity
+    gate below) -- a representation change that moves a value beyond
+    rounding is a bug, and the assertion also pins the arm's fidelity.
 
     Reported: the fused chain margin, and its extrapolation to the step
     (chains per IMM apply x ``n = 2 + c`` applies per step).  The
@@ -877,7 +868,7 @@ def _part_a2(system, flow, sharding, reps, t_step, n) -> None:
 def _imm_stage_breakdown(
     geom, flow, fourier, nonlin, state, reps, t_imm, t_lk, t_hk, t_step, n
 ) -> None:
-    r"""Cartesian: split one ``_imm_iteration`` into its stages.
+    r"""Split one ``_imm_iteration`` into its stages, per geometry.
 
     Sizes the **influence-matrix boundary correction** against the
     rest of the implicit Crank-Nicolson update (assembly ``D1``/``D2``
@@ -886,20 +877,18 @@ def _imm_stage_breakdown(
 
     The two ``res.consistent_imm`` formulations are different
     algorithms with different stages, so each has its own transcription
-    and this function dispatches:
-    :func:`_stages_vw` for the shipped reconstruction scheme,
-    :func:`_stages_vp` for the legacy primitive one (``--legacy-imm``).
-    Both mirror their ``cartesian.py`` counterpart stage for stage; the
+    and this function dispatches: :func:`_stages_vw` for the shipped
+    reconstruction scheme, :func:`_stages_vp` for the legacy primitive
+    one (``--legacy-imm``), each mirroring its pass stage for stage; the
     constant-bulk / block-spanwise branch is compiled out for the
     default plane-Couette driving and omitted from both.
 
     All three geometries have an arm under the default scheme
     (:func:`_stages_vw` Cartesian, :func:`_stages_vw_ann` annular,
-    :func:`_stages_vw_cyl` cylindrical), which is what makes the
-    pipe's measured ~2x ``_imm_iteration`` attributable: the annulus
-    shares every curvilinear cost but has neither the spin quad nor
-    the parity reduction, so it separates the two explanations.  The
-    legacy primitive scheme keeps its Cartesian-only transcription.
+    :func:`_stages_vw_cyl` cylindrical); the annular one is the control
+    that attributes the pipe's measured ~2x ``_imm_iteration``
+    (:func:`_stages_vw_ann`).  The legacy primitive scheme keeps its
+    Cartesian-only transcription.
     """
     geometry = spec_for(params.phys.system).geometry
     if not params.res.consistent_imm:
@@ -1758,8 +1747,7 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
     print("-" * 72)
 
     fourier = m.fourier
-    # ICs are physical; the steppers work in the geometry's solver
-    # basis (the same single crossing ``__main__`` performs).
+    # The IC into the solver basis, as in ``tests/_cnab2.py``'s ``worker``.
     to_solver = getattr(m, "to_solver_basis", lambda x: x)
     state = to_solver(
         generate_random_state(
@@ -1851,12 +1839,11 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
         "the target for a faster step."
     )
 
-    # Stage-level IMM breakdown: where the non-solve part of
-    # _imm_iteration goes, per geometry.  Cartesian additionally sizes
-    # the influence-matrix correction against the implicit CN update;
-    # the curvilinear arms exist to
-    # attribute the pipe's ~2x _imm_iteration at equal solve cost --
-    # see _imm_stage_breakdown.
+    # Stage-level IMM breakdown, where the non-solve part goes, per
+    # geometry (_imm_stage_breakdown): Cartesian additionally sizes the
+    # influence-matrix correction against the implicit CN update; the
+    # curvilinear arms attribute the pipe's ~2x _imm_iteration at equal
+    # solve cost.
     if t_lk is not None:
         _imm_stage_breakdown(
             geom,
@@ -1880,10 +1867,9 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
     # ``_imm_iteration``, plus a (2 + c) FFT-free ``_l_bf`` re-eval.  So
     # cnab2 cuts the FFT-RHS count 2+c -> 1 but pays the same IMM count
     # as iterative-cn; with IMM ~ FFT on the GPU, that is why the step
-    # speedup is modest, not ~3x.  The IMM cost per apply is
-    # ``res.consistent_imm``-dependent (the default runs one banded
-    # solve fewer per mode on this geometry), so this ratio is reported
-    # for whichever formulation is configured.
+    # speedup is modest, not ~3x.  The IMM cost per apply depends on
+    # ``res.consistent_imm`` (the default runs one banded solve fewer
+    # per mode on this geometry; module docstring).
     if hasattr(m, "step_cnab2"):
         t_cnab2, cc, _ = _bench_step_cnab2(m.step_cnab2, state, steps)
         n_cn = 2 + cc  # IMM applies and _l_bf evals per cnab2 step
@@ -1979,13 +1965,11 @@ def _summary_line(system: str, args, flow, times: dict) -> None:
 def _solve_sweep(system: str, args, flow, sharding, reps: int) -> None:
     r"""Time only the isolated ``Lk``/``Hk`` banded solves.
 
-    The tile choice affects *only* the solve (the step is FFT-bound and
-    tile-independent), and the full FFT/step is expensive at large mode
-    planes, so this skips Parts A/C and the full step/cnab2: it builds
-    the operators (cheap, `$O(N_y\,p\,\text{modes})$`) and times the two
-    solves the IMM runs.  Cheap at arbitrarily large ``nx``/``nz`` --
-    the driver for a resolution x tile sweep deciding sensible tile
-    defaults.  Emits a ``SUMMARY`` line.
+    Builds the operators (cheap, `$O(N_y\,p\,\text{modes})$`) and times
+    the two solves the IMM runs, skipping Parts A/A2/C and the full
+    step/cnab2, so it stays cheap at arbitrarily large ``nx``/``nz``:
+    the driver of the resolution x tile sweep (why the solve alone: the
+    module docstring, ``--solve-only``).  Emits a ``SUMMARY`` line.
     """
     from dnsjax.solvers import PerModeBandedPallasOperator
 
@@ -2102,9 +2086,7 @@ def _part_c(geom, flow, m, sharding, trace_dir, hlo_out) -> None:
         )
 
     # Complex <-> real crossing census, per region (Part A2's static
-    # half): how many split/recombine pairs survive optimization, and
-    # which region owns them.  A count is not a cost -- Part A2's timed
-    # arm is what says whether removing one is worth anything.
+    # half; ``_crossing_census``).
     print(
         "\n  complex <-> real crossings in the optimized HLO (the "
         "split-real\n  hoist's target; JAX has no zero-copy bitcast, so "
@@ -2296,9 +2278,9 @@ def main() -> None:
     _print_env()
 
     if args.cpu_smoke:
-        # Exercise the full Part B (incl. the IMM stage breakdown and
-        # cnab2 composition) and Part C on CPU so the added code is
-        # validated without a GPU.  Timings are meaningless.
+        # Part B in full (the IMM stage breakdown and cnab2 composition
+        # included), A2, C and the solve-only timing, validating the
+        # harness without a GPU; the timings are meaningless.
         print(
             "\n--cpu-smoke: exercising Parts B/C + solve-only on CPU at "
             f"ny={args.ny} nx={args.nx} nz={args.nz} "
@@ -2320,10 +2302,8 @@ def main() -> None:
         return
 
     if args.solve_only:
-        # CPU is a first-class target here: it takes a *different* solve
-        # path (the pure-JAX sweep -- ``pallas_call`` is never reached),
-        # so its timings answer their own question rather than standing
-        # in for the GPU's.  Part A prints the CPU decomposition.
+        # On CPU this times the CPU's own solve path, the pure-JAX sweep
+        # (module docstring); a full run's Part A decomposes it.
         _solve_sweep(args.system, args, flow, sharding, args.reps)
         return
 
@@ -2334,12 +2314,11 @@ def main() -> None:
         from dnsjax.ic.random_field import generate_random_state
 
         # ICs are physical; the steppers work in the geometry's solver
-        # basis (the single crossing ``__main__`` performs, and the one
-        # Parts B/C above already do).  Without it the cylindrical
-        # geometries step a state the solver reads as ``u_+``/``u_-``:
-        # no error, but a different corrector count and a trajectory
-        # that can blow up -- so the captured profile would not be the
-        # one a real run produces.
+        # basis (the single crossing ``__main__`` performs, as Parts B/C
+        # do).  Without it the cylindrical geometries step a state the
+        # solver reads as ``u_+``/``u_-``: no error, but a different
+        # corrector count and a trajectory that can blow up, so the
+        # capture would not be a real run's profile.
         s = getattr(m, "to_solver_basis", lambda x: x)(
             generate_random_state(
                 params.init.random_amplitude,
@@ -2364,10 +2343,6 @@ def main() -> None:
 
     gpu = jax.default_backend() == "gpu"
     if not gpu:
-        # Not a degraded GPU run: the CPU takes its own solve path (the
-        # pure-JAX sweep), so these timings are the answer for that path.
-        # What is *not* transferable is the reverse -- CPU numbers say
-        # nothing about the Triton kernel.
         print(
             "CPU backend: profiling the CPU solve path (the pure-JAX "
             "sweep;\n``pallas_call`` is never reached here).  These "
