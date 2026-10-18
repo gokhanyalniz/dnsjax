@@ -1,22 +1,20 @@
 r"""Readers for the twin driver's scalar streams (JAX-free).
 
-The ``.dat`` streams are the whitespace-aligned text format of
-``dnsjax.__main__`` (``#``-commented header row of column names, one row per
-sample, column order = the writer dict's *sorted* keys): parse by **name**,
-never by position.  Because the header is a comment, the rows load under a
-default-flag :func:`numpy.loadtxt`.  A resumed member's stream duplicates one
-sample per resume seam (the parent segment's final row and the child's ``t0``
-row hold the same state at the same ``t``); :func:`read_twin` drops the
-duplicates, keeping the first occurrence.
+The ``.dat`` streams are read by **name** with the core's
+:func:`dnsjax.analysis.read_dat`, re-exported here (its docstring has the
+format).  A resumed member's stream duplicates one sample per resume seam (the
+parent segment's final row and the child's ``t0`` row hold the same state at
+the same ``t``); :func:`read_twin` drops the duplicates, keeping the first
+occurrence.
 
 **Off-grid rows.**  Two kinds of row do *not* sit on the
 ``twin.it_energy`` sampling grid, and at ``it_energy > 1`` both are
 routine: the driver's unconditional final row (written whatever the
 cadence, so the end-of-run state is never lost), and, when
 ``outs.it_snapshot`` is not a multiple of ``it_energy``, a resumed
-segment's ``t0`` row.  They are kept -- ``t`` disambiguates them and
-they are real samples -- so any consumer that needs a *uniform* grid
-(a centred difference, an across-member stack) selects it with
+segment's ``t0`` row.  They are real samples, told apart by ``t``, and
+kept, so any consumer that needs a *uniform* grid (a centred
+difference, an across-member stack) selects it with
 :func:`uniform_grid` rather than assuming the raw stream is one.
 
 ``twin.json`` is the member record the driver writes at the fresh
@@ -30,10 +28,10 @@ resolved parameter dump); its ``format_version`` floor here is
 carries a per-member offset of up to half a unit in that last digit:
 `$5\times10^{-7}$` at `$t \sim 10^3$`, `$5\times10^{-6}$` at
 `$10^4$`.  Members harvested at different times differ by that much,
-which is far above any tolerance an across-member stack can afford.
-Every driver sample sits a whole number of steps after the
-perturbation, though, so :func:`relative_time` rounds to that number
-and returns it times ``dt``: exact whatever the column's precision.
+far above any tolerance an across-member stack can afford.  Every
+driver sample sits a whole number of steps after the perturbation,
+though, so :func:`relative_time` rounds to that number and returns it
+times ``dt``: exact whatever the column's precision.
 """
 
 from __future__ import annotations
@@ -336,10 +334,7 @@ def closure_residuals(series: TwinSeries) -> ClosureResiduals:
             f"columns, found {len(p_all)} and {len(t_all)}"
         )
 
-    # Restrict the energies to their own cadence grid *first*
-    # (:func:`uniform_grid`): the driver writes an unconditional final
-    # row, and a resume seam can add an interior one, and neither is a
-    # usable centred-difference neighbour.
+    # The energies on their own cadence grid *first* (docstring).
     t_rel = series.t_rel
     dt, on_energy_grid = uniform_grid(t_rel)
     t_e = t_rel[on_energy_grid]
@@ -351,9 +346,8 @@ def closure_residuals(series: TwinSeries) -> ClosureResiduals:
     # unconditional final row, which can fall off a cadence.  Locate
     # each by *value* -- not by a grid index, which a gap in the energy
     # samples would offset -- and keep only those whose two immediate
-    # neighbours are `$\mp\Delta t$` away, since that is what
-    # the centred difference below consumes.  Anything else is skipped
-    # rather than mis-paired.
+    # neighbours are `$\mp\Delta t$` away, as the centred difference
+    # below needs; anything else is skipped rather than mis-paired.
     idx = np.clip(
         np.searchsorted(t_e, t_b - 0.5 * dt), 0, t_e.size - 1
     ).astype(int)

@@ -12,9 +12,9 @@ file per sample, ``<kind>/<kind>_{it:010d}.tar``:
 ``e`` / ``r`` are the difference field's and the reference state's
 componentwise energy densities, the budget terms the convective
 ``twin_ybudget`` terms (:mod:`dnsjax_lab.twin.diagnostics`, "Spectral
-budget") -- every term the budget figures are drawn from, and not
-their sum.  Each is computed at the run's full resolution, then folded
-and subsampled (:func:`dnsjax_lab.twin.diagnostics.cube_selection`):
+budget"): every term the budget figures are drawn from, not their sum.
+Each is computed at the run's full resolution, then folded and
+subsampled (:func:`dnsjax_lab.twin.diagnostics.cube_selection`):
 
 - `$y$` folded about the centreline, the **mean** of the two halves at
   each wall distance (``twin_spectral_maps.py --half mean``), stored
@@ -35,11 +35,10 @@ With no subsampling, summing a cube over `$k_x$` (`$|k_z|$`) gives the
 
 The container
 -------------
-The snapshot format (:mod:`dnsjax.snapshot`), written by its own
-:func:`~dnsjax.snapshot.write_archive`: an uncompressed tar of
-``_dnsjax_meta.json`` and one zarr3 ``state/`` array of real
+The snapshot container (:mod:`dnsjax.snapshot`, written by
+:func:`~dnsjax.snapshot.write_archive`), its ``state/`` array of real
 (``float64`` / ``float32``) chunks, one per field, **y-major**
-``(field, y, k_z, k_x)`` like every snapshot -- so a reader pulls single
+``(field, y, k_z, k_x)`` like every snapshot, so a reader pulls single
 wall distances as contiguous slabs.  The metadata ``kind`` keeps these
 apart from states: the field readers and a resume refuse them
 (:func:`dnsjax.snapshot_meta.checkpoint_refusal`), and
@@ -52,11 +51,11 @@ provenance.
 ``cube_version`` is the schema's version, checked against the reader's
 floor; bump both when a stored meaning changes.
 
-A file is written atomically and replaces one of the same name, so a
-resume rewrites its first sample.  A resumed member's files must agree
-with the configured run on the keys in :data:`_MATCH_KEYS` -- checked
-against the newest file already in the directory -- or the resume is
-refused rather than mixing samples.
+A file replaces one of the same name, atomically, so a resume
+rewrites its first sample.  A resumed member's files must agree with
+the configured run on the keys in :data:`_MATCH_KEYS`, checked against
+the newest file in the directory, or the resume is refused rather
+than mixing samples.
 """
 
 from __future__ import annotations

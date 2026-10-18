@@ -8,8 +8,8 @@ the ``twin.dat`` (+ optional ``twin_budget.dat``) streams of one
 on the shared relative-time grid `$t - t_\mathrm{parent}$` (members
 start from different parent snapshots, so absolute times differ) and
 returns per-column stacks with ensemble mean and standard deviation
-(``ddof = 0``, the member spread -- see :func:`aggregate_members` for
-the standard-error conversion) -- the inputs of the paper's figures
+(``ddof = 0``, the member spread; the standard error:
+:func:`aggregate_members`), the inputs of the paper's figures
 (Egerique-de-la-Concha & Hwang, *J. Fluid Mech.* **1036**, A52, 2026).
 Each member is restricted to its own cadence grid first, so a resumed
 member stacks against a fresh one (:func:`_grid_mask`).
@@ -64,13 +64,11 @@ _T_ATOL = 1e-9
 def _grid_mask(t: np.ndarray) -> np.ndarray:
     """One member's on-cadence rows (everything, when too short).
 
-    A stream carries a few rows off its own cadence grid -- the
-    driver's unconditional final row always, a resume seam's ``t0``
-    row when the snapshot cadence is not a multiple of the sample one
-    (:mod:`dnsjax_lab.analysis.twin.series`).  Which of them a member has
-    depends on whether and where it was resumed, so members that are
-    otherwise identical would not stack; selecting each member's grid
-    first is what makes them comparable again.
+    A stream carries a few rows off its own cadence grid
+    (:mod:`dnsjax_lab.analysis.twin.series`, "Off-grid rows"), and which
+    of them a member has depends on whether and where it was resumed,
+    so otherwise identical members stack only once each is restricted
+    to its own grid.
     """
     try:
         return uniform_grid(t)[1]

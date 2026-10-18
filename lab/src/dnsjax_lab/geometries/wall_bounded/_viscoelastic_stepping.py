@@ -1,23 +1,24 @@
 r"""Geometry-parametrized time stepping shared by the sPTT flows.
 
-The sPTT extension exists in two wall-bounded geometries -- the annulus
-(:mod:`~dnsjax_lab.geometries.wall_bounded.annular_viscoelastic`) and the
-pipe (:mod:`~dnsjax_lab.geometries.wall_bounded.cylindrical_viscoelastic`).
-:mod:`._viscoelastic_common` holds what is *coordinate-level* identical
-between them (the spin `$\leftrightarrow$` physical algebra, the
-pointwise physical-space kernel, the `$\nabla\cdot c$` curvature
-assembly).  This module holds the layer above it: the **stepping
-functions themselves** -- the fused pseudo-spectral RHS, the FFT-free
-CN/AB2 coupling, the conformation Crank-Nicolson update, the
-predictor / corrector / norm, the `$H_c$` builders and the stepper
+The layer above :mod:`._viscoelastic_common` (the coordinate-level
+algebra of the annulus,
+:mod:`~dnsjax_lab.geometries.wall_bounded.annular_viscoelastic`, and the
+pipe, :mod:`~dnsjax_lab.geometries.wall_bounded.cylindrical_viscoelastic`):
+the **stepping functions themselves** -- the fused pseudo-spectral RHS,
+the FFT-free CN/AB2 coupling, the conformation Crank-Nicolson update,
+the predictor / corrector / norm, the `$H_c$` builders and the stepper
 factory -- written once against a small per-geometry adapter surface.
+Both schemes run on them: ``iterative-cn`` (the default) and ``cnab2``,
+which makes :func:`_l_bf` implicit and advances the remainder
+explicitly at ~1 FFT per step against ~4, reproducing ``iterative-cn``
+to `$O(\Delta t^2)$`.
 
-Everything that genuinely differs between the two geometries is a
-**method on the flow dataclass**, resolved once at trace time by
-attribute lookup (a flow is a jit *argument*, rebuilt by
+Everything that differs between the two geometries is a **method on
+the flow dataclass**, resolved once at trace time by attribute lookup
+(a flow is a jit *argument*, rebuilt by
 :func:`~dnsjax.sharding.register_dataclass_pytree`'s unflatten with the
-concrete class), so the dispatch costs nothing at run time.  Methods
-are not ``dataclasses.fields``, so they add no pytree leaf and no
+concrete class), so the dispatch costs nothing at run time; that
+registration visits fields only, so methods add no pytree leaf and no
 memory either.
 
 Adapter surface
@@ -31,9 +32,9 @@ functions below read directly (``inv_r``, ``inv_r2``, ``inv_r_padded``,
 member                           what it owns
 ===============================  ====================================
 ``cfl_names``                    the CFL column labels (a
-                                 ``ClassVar`` -- as an annotated
-                                 *field* it would become two pytree
-                                 leaves)
+                                 ``ClassVar``: as a *field* its
+                                 strings would be pytree leaves,
+                                 which ``jit`` cannot trace)
 ``rhs_radial_derivatives``       the fused 9-field `$\partial_r$`
                                  batch of :func:`_get_rhs_core`
 ``div_c_radial_derivatives``     the 3-field `$\partial_r$` batch of
@@ -246,12 +247,8 @@ def _build_hc_operator(
     `$s \bmod 2$` parity band) are built and stacked into the
     6-component order `$(c_{zz}, c_{z+}, c_{z-}, c_{+-}, c_{++},
     c_{--})$`, so the `$s = 0$` operator serves both `$c_{zz}$` and
-    `$c_{+-}$`.
-
-    The stacked storage **duplicates** that shared operator's factors
-    (slot 0 and slot 3 hold the same data), because the uniform stacked
-    ``.solve`` contract pairs component ``i`` of the RHS with operator
-    ``i`` (Design notes: "The duplicated `$s = 0$` slot").
+    `$c_{+-}$`, its factors stored in both slots
+    (Design notes: "The duplicated `$s = 0$` slot").
 
     *label* selects the pallas factorization path: a string runs the
     setup-checked :func:`solvers._build_pallas_operator` under that
@@ -269,13 +266,11 @@ def _build_hc_operator(
     walls = flow_.hc_wall_rows()
 
     if params.solver.backend == "pallas":
-        # Half-width read back from the already-factored, dt-independent
-        # Lk, exactly as each geometry's ``_hk_bands`` does: a static
-        # shape, so it works inside the jitted ``set_dt`` rebuild, and
-        # it is *measured* rather than assumed to be ``fd_order`` -- an
-        # under-sized band truncates entries silently
-        # (``fd.matrix_half_bandwidth``).  The dense backend's
-        # ``Lk_op`` carries no band, hence the read sits here.
+        # Half-width read back from the factored Lk, as each geometry's
+        # ``_hk_bands`` does (a static shape inside the jitted
+        # ``set_dt`` rebuild; measured, not assumed:
+        # ``fd.matrix_half_bandwidth``).  The dense backend's ``Lk_op``
+        # carries no band, hence the read sits here.
         p = flow_.Lk_op.L.shape[1]
         # The narrow BC row spans offset ``fd_order`` from its wall
         # (``_viscoelastic_common.narrow_abase_wall_row``) and
@@ -425,7 +420,7 @@ def _get_rhs_core(
     (:func:`._viscoelastic_common.pointwise_rhs`), one batched forward
     transform of the 9 outputs.  The viscous / diffusive Laplacians are
     added implicitly by the predictor/corrector, so they are absent
-    here.  See the two geometry module docstrings.
+    here.
 
     The nine radial derivatives (3 velocity + 6 conformation combos)
     are one batched GEMM (``flow.rhs_radial_derivatives``; a
@@ -439,11 +434,9 @@ def _get_rhs_core(
     36-field inverse transform dominates a viscoelastic step's peak
     memory -- not the held physical outputs themselves, but the
     transform's padded intermediate stage buffers (~2 complex copies
-    of the whole batch at the dealiased size; see :mod:`dnsjax.fft`).
-    The shared :func:`dnsjax.fft.chunked_transform` applies the knob:
-    ``k`` balanced groups cut that transient by ~``k`` at the cost of
-    ``k``x the FFT dispatches (and ``k`` smaller reshard rounds per
-    stage on multi-device runs); the results are identical.
+    of the whole batch at the dealiased size; :mod:`dnsjax.fft`,
+    "Memory").  The knob splits it through
+    :func:`dnsjax.fft.chunked_transform`, which states the trade.
 
     Interleaving the transforms with the pointwise accumulation would
     cut the held fields further but cost throughput everywhere, so it is
@@ -807,12 +800,8 @@ def build_viscoelastic_stepper(flow: ViscoelasticFlow, fourier: Fourier):
     Returns the same 7-tuple as
     :func:`~dnsjax.geometries.wall_bounded._base.build_wall_bounded_stepper`
     (incl. the adaptive-dt ``set_dt`` / ``reset_ab2_kappa``, backed by
-    this module's ``_build_dt_leaves``).  :func:`_l_bf` (the FFT-free
-    linear/mean coupling: velocity mean-flow coupling + polymer-stress
-    divergence, conformation mean advection / stretching / linear
-    relaxation) is passed so the CN/AB2 scheme treats it implicitly and
-    the explicit AB2 remainder stays pure fluctuation-fluctuation
-    nonlinearity.
+    this module's ``_build_dt_leaves``).  :func:`_l_bf` is passed for
+    the CN/AB2 scheme to treat implicitly.
 
     *fourier* is the geometry's own singleton: this module never
     imports either geometry (that would build both families' grids on

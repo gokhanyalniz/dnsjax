@@ -494,8 +494,8 @@ class CurvedCylindricalFlow(CylindricalFlow):
     def chi_mul(self, field_: Array) -> Array:
         r"""Multiply a spectral field by `$\chi = r\cos\theta$`.
 
-        `$\chi$` is all of `$h - 1$` over `$\kappa$`, and the one
-        genuinely new spectral primitive the curved pipe needs:
+        `$\chi$` is all of `$h - 1$` over `$\kappa$`, and the one new
+        spectral primitive the curved pipe needs:
 
         .. math::
             \widehat{(\chi f)}_m = \frac{r}{2}

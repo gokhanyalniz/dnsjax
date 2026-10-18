@@ -1,14 +1,11 @@
 r"""Readers for the twin ``(k_z, k_x)`` spectra streams (JAX-free).
 
 Format and conventions: the :mod:`dnsjax_lab.twin.spectra` writer
-docstring.  ``twin_spectra.bin`` holds the difference field's per-mode
-energy `$E_\Delta(k_z, k_x)$` on the true (unpadded) mode grid --
-summing over modes reproduces ``twin.dat``'s ``E_d`` -- and, under
-``twin.spectra_ref`` (the default), the reference state's own spectrum
-`$E^{(1)}(k_z, k_x)$` is recorded too: in ``twin_spectra_ref.bin``, on
-its own cadence (by default the same steps), or -- for a member
-recorded before that split -- inside ``twin_spectra.bin`` itself
-(``includes_ref``).
+docstring, which has the two layouts of the reference spectrum
+`$E^{(1)}(k_z, k_x)$` (its own ``twin_spectra_ref.bin``, or inside a
+pre-split member's ``twin_spectra.bin``, ``includes_ref``).  Summing
+``twin_spectra.bin``'s `$E_\Delta(k_z, k_x)$` over its true
+(unpadded) modes reproduces ``twin.dat``'s ``E_d``.
 
 :func:`read_twin_spectra` returns either layout the same way: its
 ``e_ref`` is taken from whichever stream holds the reference, placed

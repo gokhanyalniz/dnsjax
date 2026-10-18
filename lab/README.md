@@ -5,8 +5,9 @@ development alongside the [`dnsjax`](../README.md) solver.
 
 The lab plugs into the solver through the same entry points any
 package would use ([`docs/extending.md`](../docs/extending.md)): its
-flows through `dnsjax.flows` and their parameter fields through
-`dnsjax.parameters`. The solver never imports the lab, and
+flows through `dnsjax.flows`, their parameter fields through
+`dnsjax.parameters`, and its `[probes]` and `[force]` sections through
+`dnsjax.extensions`. The solver never imports the lab, and
 `tests/test_layering.py` fails on any solver file that names it.
 
 ## Install and run
@@ -43,7 +44,7 @@ of them changes how a simulation runs:
 | Script | What it does |
 |---|---|
 | `solver_benchmark.py` | the Pallas banded backend against the dense reference solver on the flows its `SIZES` and `EXTRA_ENTRIES` tables list: validation and timing |
-| `node_benchmark.py` | a layout and strong-scaling sweep of one production problem under `mpirun` or `srun`, each row's `stats.dat` checked against a reference; JAX-free driver |
+| `node_benchmark.py` | a layout and strong-scaling sweep of one production problem — CPU ranks under `mpirun` or `srun`, or one process over a node's GPUs — each row's `stats.dat`, when recorded, checked against a reference; JAX-free driver |
 | `pallas_solve_profile.py` | GPU profile of the banded solve and its share of a step |
 | `memory_budget.py` | per-rank memory of the step as run, on any layout, from XLA's buffer assignment, offline |
 | `memory_watch.py` | per-node memory sampler for multi-process runs, with a summary of each node's peak and typical use, JAX-free |
@@ -55,16 +56,15 @@ Functionality checks, in [`scripts/diagnostics/`](scripts/diagnostics/):
 | Script | What it does |
 |---|---|
 | `grad_probe.py` | which stepping configurations differentiate in forward and reverse mode, each gradient checked against a finite difference ([`docs/differentiability.md`](../docs/differentiability.md)) |
-| `pallas_tiling_diagnostic.py` | GPU harness that bisects the partial-tile Triton miscompile the kernel's whole-tile padding avoids |
-| `gds_probe.py` | cluster diagnostic for the snapshot write path through GPUDirect Storage |
+| `pallas_tiling_diagnostic.py` | GPU harness that bisects the observed miscompile of the Pallas banded kernel's masked partial-tile path, which the kernel's whole-tile padding avoids, and checks that the padded solve passes |
+| `gds_probe.py` | cluster diagnostic for the snapshot's GPUDirect Storage path: whether it engages, and what limits its transfer rate |
 
 ## Tests
 
 36 standalone scripts in [`tests/`](tests/), laid out like the
-solver's ([`tests/README.md`](../tests/README.md)): one `uv run pytest`
-at the repository root runs both suites. A script covering both the
-solver's flows and the lab's is split in two of the same name, one in
-each suite, sharing a runner in the solver's `tests/`.
+solver's, one `uv run pytest` at the repository root running both
+suites. The conventions, and the split of a script covering both the
+solver's flows and the lab's: [`tests/README.md`](../tests/README.md).
 
 ## Limitations
 

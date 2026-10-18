@@ -3,21 +3,19 @@ r"""Twin-run difference-field diagnostics (Cartesian wall-bounded).
 Online diagnostics of the difference field
 `$\Delta\mathbf{u} = \mathbf{u}^{(2)} - \mathbf{u}^{(1)}$` between the
 two DNS states the ``dnsjax-twin`` driver (:mod:`dnsjax_lab.twin.driver`)
-steps
-in lockstep, following the methodology of Egerique-de-la-Concha &
-Hwang, *J. Fluid Mech.* **1036**, A52 (2026).  Both states store the
+steps in lockstep, following the methodology of Egerique-de-la-Concha
+& Hwang, *J. Fluid Mech.* **1036**, A52 (2026).  Both states store the
 spectral perturbation about the *same* laminar base flow, so
-``state2 - state1`` is exactly the spectral `$\Delta\mathbf{u}$` --
-the base flow cancels identically and every solver-measure norm
-helper (:func:`~dnsjax.geometries.wall_bounded._base.get_norm2`)
-applies to it unchanged.
+``state2 - state1`` is exactly the spectral `$\Delta\mathbf{u}$`: the
+base flow cancels identically and every solver-measure norm helper
+(:func:`~dnsjax.geometries.wall_bounded._base.get_norm2`) applies to it
+unchanged.
 
 State preconditions
 -------------------
 Everything here takes the two states to be what the solver produces:
-divergence-free, with no-slip at both walls.  One consequence is used
-throughout and is worth stating once, because it is what several terms
-below are entitled to omit rather than evaluate --
+divergence-free, with no-slip at both walls.  One consequence lets
+several terms below omit what they would otherwise evaluate:
 `$\Delta\hat v_{00} \equiv 0$`, the mean mode's wall-normal
 component.  Continuity at `$k^2 = 0$` reads
 `$\partial_y \hat v_{00} = 0$` and no-slip pins
@@ -38,12 +36,10 @@ FFT-free, and with no `$P_y\,\partial_y$` half to form.  The sites
 that rely on it: ``term_b_mean`` in :func:`_twin_budget_jit`,
 ``mean_advect`` in :func:`_convective_sources`, the two-component
 form of :func:`_driving_density`, and the mean-mode gauge argument
-of :mod:`dnsjax_lab.twin.pressure` (where
-`$\Delta\hat v_{00} \equiv 0$` is what makes the fluctuating
-pressure do no work at `$(0,0)$`).  A state that violated it would not
-be an admissible incompressible no-slip field in the first place, and
-the whole `$(y, k)$` half of this module would be wrong for it, not
-only those terms.
+of :mod:`dnsjax_lab.twin.pressure` (no work by the fluctuating
+pressure at `$(0,0)$`).  A state that violated it would not be an
+admissible incompressible no-slip field, and the whole `$(y, k)$` half
+of this module would be wrong for it, not only those terms.
 
 Component decomposition
 -----------------------
@@ -52,18 +48,17 @@ three components of the reference (mean / streak / streamwise-varying
 triad):
 
 - mean `$\Delta U$`: the `$(k_z, k_x) = (0, 0)$` mode
-  (``fourier.mean_mask``, one-hot by the padding-slot invariant --
-  see :func:`dnsjax.operators.pad_harmonics`);
+  (``fourier.mean_mask``, one-hot by the padding-slot invariant of
+  :func:`dnsjax.operators.pad_harmonics`);
 - streaks `$\Delta u_1$`: `$k_x = 0$`, `$k_z \ne 0$` (the
   streamwise-averaged fluctuation);
 - streamwise-varying `$\Delta u_2$`: `$k_x \ne 0$`.
 
-The three masks partition the whole mode grid: spectral padding
-slots carry nonzero placeholder wavenumbers
-(:func:`dnsjax.operators.pad_harmonics`), so `$k_x$` padding lands in
-the `$\Delta u_2$` mask and `$k_z$` padding (at `$k_x = 0$`) in the
-`$\Delta u_1$` mask -- both weight identically-zero state entries and
-are inert.  Consequently
+The three masks partition the whole mode grid, padding included: the
+placeholder wavenumbers are nonzero, so `$k_x$` padding lands in the
+`$\Delta u_2$` mask and `$k_z$` padding (at `$k_x = 0$`) in the
+`$\Delta u_1$` mask, where both weight identically-zero state entries.
+Consequently
 
 .. math::
     E_{\Delta U} + E_{\Delta u_1} + E_{\Delta u_2} = E_\Delta
@@ -143,24 +138,21 @@ Dissipation form
 ----------------
 `$\epsilon_{\Delta X}$` is evaluated in the discrete-Laplacian
 (operator) form `$-\langle \Delta X \cdot (\nabla_h^2 + D_2) \Delta
-X\rangle / Re$` -- the operator the solver's implicit viscous update
-applies -- rather than the positive-definite quadratic form
+X\rangle / Re$`, the operator the solver's implicit viscous update
+applies, rather than the positive-definite quadratic form
 `$\langle |\nabla \Delta X|^2 \rangle / Re$` of
 :func:`~dnsjax.geometries.wall_bounded._base.get_pert_enstrophy`
-(which ``get_stats`` keeps).  Continuously the two coincide; the
-discrete pair is not summation-by-parts in the quadrature inner
-product, so they differ by
-`$\Delta X^{T}(D_1^{T} W D_1 + W D_2)\,\Delta X$`.  That defect is a
-truncation error *of the resolved part only*, and a difference field
-is the adverse case: it re-populates the grid scale as the grid
+(which ``get_stats`` keeps).  The two coincide continuously and differ
+discretely by the wall-normal integration-by-parts defect
+`$\Delta X^{T}(D_1^{T} W D_1 + W D_2)\,\Delta X$` (that function's
+Notes), a truncation error *of the resolved part only*.  A difference
+field is the adverse case: it re-populates the grid scale as the grid
 refines, so the defect does not converge away (Design notes: "The
-dissipation defect, measured").  Only the operator form -- the one
-the implicit viscous update applies -- therefore closes the discrete
-budget `$\partial_t E_X = P_X + T_X - \epsilon_X$` against the
-stepped states.  The price is positivity: unlike the quadratic form
-this one is not positive-definite (the symmetric part of `$-W D_2$`
-has genuinely negative eigenvalues), which is why ``get_stats``
-keeps the other.
+dissipation defect, measured"), and only the operator form closes the
+discrete budget `$\partial_t E_X = P_X + T_X - \epsilon_X$` against
+the stepped states.  The price is positivity: the operator form is
+not positive-definite (the symmetric part of `$-W D_2$` has genuinely
+negative eigenvalues), which is why ``get_stats`` keeps the other.
 
 Wall-normal-resolved spectra
 ----------------------------
@@ -207,20 +199,13 @@ the three-bin split comes back resolved in `$k_z$`:
 -- the three numbers of the old binning, per `$k_z$`.  The
 `$\pm k_z$` fold this requires is not cosmetic: :func:`_fold_kz`.
 
-Only `$E^{xz00}$` is stored unconditionally.  The plane it comes from
-is **opt-in** (``twin.x0_planes``, default off): it is a third of
-every record and a third of the sample's collective, and the two
-marginals are what a `$(y, k)$` reading wants.  With it off
-the three numbers still come back, because the first column of the
-`$k_x$` marginal is the whole plane summed over `$k_z$`:
-
-.. math::
-    E_{\Delta u_1} = \textstyle\int \sum_\alpha
-        \bigl(E^{z}_\alpha(y, 0) - E^{xz00}_\alpha\bigr) ,
-    \qquad
-    E_{\Delta u_2} = \int \sum_\alpha \sum_{k_x > 0} E^{z}_\alpha ,
-
-which is what :func:`~dnsjax_lab.analysis.twin.bin_energies` evaluates.
+Of the plane, only `$E^{xz00}$` is stored unconditionally; the plane
+itself is **opt-in** (``twin.x0_planes``, default off): it is a third
+of every record and a third of the sample's collective, and the two
+marginals are what a `$(y, k)$` reading wants.  With it off the three
+numbers still come back, because the first column of the `$k_x$`
+marginal is the whole plane summed over `$k_z$`
+(:func:`~dnsjax_lab.analysis.twin.bin_energies` has the formulas).
 So with or without the plane the stored marginals are a strict
 refinement of the three-bin split rather than a replacement, which is
 why ``twin.bins`` can stay off.  What goes with the plane is only the
@@ -232,11 +217,12 @@ subtracts.
 Spectral budget
 ---------------
 Contracting the difference momentum equation with
-`$\sigma_{k_x}\Delta\hat{\mathbf{u}}^*$` at each mode gives one
-production, one transfer, one viscous and one pressure term per
-`$(y, k)$` -- and the paper's (2.7)-(2.9) are `$k$`-set sums of them,
-so the 12 + 12 expansions of (2.11)-(2.16) have nothing left to say
-and are not reproduced.  :func:`ybudget_terms`, default
+`$\sigma_{k_x}\Delta\hat{\mathbf{u}}^*$` at each mode (`$\sigma_{k_x}$`
+the conjugate-pair weight ``k_metric``: 1 at `$k_x = 0$`, 2 elsewhere)
+gives one production, one transfer, one viscous and one pressure term
+per `$(y, k)$` -- and the paper's (2.7)-(2.9) are `$k$`-set sums of
+them, so the 12 + 12 expansions of (2.11)-(2.16) have nothing left to
+say and are not reproduced.  :func:`ybudget_terms`, default
 (**convective**) form:
 
 - ``P_U``: production against the reference mean profile,
@@ -252,10 +238,10 @@ and are not reproduced.  :func:`ybudget_terms`, default
   pseudo-dissipation `$\nu|\nabla\Delta\mathbf{u}|^2$`.  Their
   difference is the wall-normal diffusion flux;
 - ``Wp``: the work done by the pressure *gradient*, from
-  :mod:`dnsjax_lab.twin.pressure`.  Not the mean-mode driving --
+  :mod:`dnsjax_lab.twin.pressure`.  Not the mean-mode driving,
   although at `$(0,0)$`, where the fluctuating pressure does no work,
   it is exactly that (:func:`_driving_density`; "Mean-mode driving"
-  below fixes the sign convention).
+  below).
 
 `$\sum_k \int$` of ``P_U + P_r`` and of ``-V`` reproduce
 ``twin_budget.dat``'s ``P_tot`` and ``eps_tot`` to rounding --
@@ -275,12 +261,11 @@ first place (measured on the ladder in ``lab/tests/test_twin_budget.py``).
 the turbulent transport of difference energy -- carried by the
 **perturbed** member, because `$\Delta\mathbf{u}$` is advected by
 `$\mathbf{u}^{(1)} + \Delta\mathbf{u}$` and the two halves above are
-exactly ``T_ref`` and ``T_self``.  Dropping the second would be
-dropping one of the two terms.  A genuine wall-normal flux, zero only
-after integrating in `$y$` (`$v^{(2)}$` vanishes at both walls too).
-It is *not* a quantity that should vanish pointwise, and a build in
-which it did would have lost that transport.  What does vanish, up to
-truncation, is the `$y$`-integral.
+exactly ``T_ref`` and ``T_self``.  A genuine wall-normal flux, zero
+only after integrating in `$y$` (`$v^{(2)}$` vanishes at both walls
+too): it does *not* vanish pointwise, and a build in which it did
+would have lost that transport.  What does vanish, up to truncation,
+is the `$y$`-integral.
 
 The `$k$`-resolved budget is **cheaper** than the three-bin one: 33
 field transforms against 69 (:func:`_convective_sources`), because
@@ -335,15 +320,15 @@ V, eps, Wp, P_lift``:
 What the form buys: those two exact identities, and
 `$\hat{\mathcal{N}}$` becoming the solver's own RHS difference -- so
 the recovered pressure is the Bernoulli pressure the influence matrix
-closes on, and the whole term is *checkable* against the
-solver instead of argued (``lab/tests/test_twin_unit.py``).  It is also
-cheaper: 21 field transforms against 33, and a measured peak of 29
-padded components against 33 (Design notes: "Memory").  What it costs:
-``P_r``, ``T_vort`` and ``T_self`` no longer map onto the paper's
-terms at all, so `$\sum_k\int(P_U + P_r)$` is
-``P_tot + T_tot`` up to truncation rather than ``P_tot`` exactly, and
-the fluctuation half of the production has no convective counterpart
-in the stream.  That is why the convective form is the default.
+closes on, and the whole term is *checkable* against the solver
+instead of argued (``lab/tests/test_twin_unit.py``).  It is also
+cheaper: 21 field transforms against 33, and a lower measured peak
+(Design notes: "Memory").  What it costs: ``P_r``, ``T_vort`` and
+``T_self`` no longer map onto the paper's terms at all, so
+`$\sum_k\int(P_U + P_r)$` is ``P_tot + T_tot`` up to truncation
+rather than ``P_tot`` exactly, and the fluctuation half of the
+production has no convective counterpart in the stream.  That is why
+the convective form is the default.
 
 Reference halves and 3-D cubes
 ------------------------------
@@ -353,26 +338,17 @@ streams on separate cadences: ``twin.it_spectra_ref``,
 ``it_yspectra_ref`` and ``it_spectra3d_ref``, each defaulting to its
 difference cadence.  Both halves are static flags of one program, so a
 half that is not due is never traced, and at the default cadences one
-program computes both, as before the split.  :mod:`dnsjax_lab.twin.driver`
-says how a member recorded before the split goes on.
+program computes both.  :mod:`dnsjax_lab.twin.driver` says how a
+member recorded before the split goes on.
 
-The cubes keep the third axis that the `$(y, k)$` streams sum over.
-They hold the same per-mode densities, folded and subsampled
-(:func:`cube_selection`, :func:`_cube_replicated`):
-
-- `$y$` is folded about the centreline (the mean of the two halves);
-- `$k_z$` is folded onto `$|k_z|$`, summing each pair as
-  :func:`_fold_kz` does;
-- each axis is then thinned to points spaced uniformly in the
-  logarithm of the wall distance or of the wavenumber.
-
-Every density is computed at full resolution before any of this, so
-the kept entries are exact.  With no thinning, summing a cube over
-`$k_x$` (or `$|k_z|$`) gives the `$y$`-folded ``*_x`` (or ``*_z``)
-marginal of the matching stream (``lab/tests/test_twin_unit.py``).  The
-budget cube holds the convective terms only, and shares the 2-D
-budget's density pass when both are due.  The file layout is in
-:mod:`dnsjax_lab.twin.cubes`.
+The cubes keep the third axis that the `$(y, k)$` streams sum over:
+the same per-mode densities, computed at full resolution, then folded
+and subsampled (:func:`cube_selection`, :func:`_cube_replicated`).
+The budget cube, convective only, shares the 2-D budget's density
+pass when both are due.  The folds, the thinning, what each entry
+means and the file layout: :mod:`dnsjax_lab.twin.cubes`;
+``lab/tests/test_twin_unit.py`` pins the full-sampling sums against
+the matching marginals.
 
 Frame invariance
 ----------------
@@ -400,10 +376,10 @@ The **pressure** is the exception, and it is why both source builders
 add the frame term to `$\hat{\mathcal N}$` explicitly rather than
 relying on the argument above.  The `$U^{(1)}$` profile does *not*
 enter every term through `$\partial_y$`: ``mean_advect`` reads the
-profile itself.  (Rotationally the requirement is sharper still --
+profile itself.  (Rotationally the requirement is sharper still:
 `$\hat{\mathcal N}$` has to equal the solver's own RHS difference
-term for term, which the frame term is part of, and the profiles read
-are the lab-frame ones ``get_nonlin`` uses rather than the shifted
+term for term, the frame term included, and the profiles read are
+the lab-frame ones ``get_nonlin`` uses rather than the shifted
 ``base_flow_adv_padded``; see ``_base.pad_base_flow``.)  The error
 from omitting it in `$\widehat{\nabla\cdot\mathcal N}$` would be
 `$\mathrm{i}k_x U_{grid}\,\nabla\!\cdot\!\Delta\mathbf{u}$` and
@@ -415,17 +391,15 @@ only under the default ``res.consistent_imm``, whose discrete
 continuity holds everywhere: the legacy flag's states carry a
 truncation-level interior divergence, converging under refinement
 (:mod:`dnsjax.parameters` Design notes, "Consistent influence
-matrix").  Carrying the term costs one
-mode-diagonal multiply and makes :mod:`dnsjax_lab.twin.pressure`'s "right
-under either ``res.consistent_imm``" claim unconditional.
+matrix").  Carrying the term costs one mode-diagonal multiply and
+makes the "right under either ``res.consistent_imm``" claim of
+:mod:`dnsjax.geometries.wall_bounded._cartesian_pressure`
+unconditional.
 
 Mean-mode driving
 -----------------
-**Sign convention** (:mod:`dnsjax.ic.mean_mode` derives it, and it
-holds codebase-wide): `$\Pi_s$` is the `$(0,0)$` mode of
-`$\partial p/\partial s$` -- the mean pressure gradient -- so the
-applied *force* is `$-\Pi_s$`, positive when it accelerates the flow,
-which is what ``stats.dat``'s ``-dPds'`` column carries.
+**Sign convention**: :mod:`dnsjax.ic.mean_mode`'s, codebase-wide (the
+applied force is `$-\Pi$`).
 
 There is deliberately **no forcing column** in the budget, for either
 driving knob.  ``_apply_bulk_corrections``
@@ -440,10 +414,10 @@ setting annihilates one of the two factors, by a different mechanism:
 
 - **force free** (``constant_pressure_gradient``, and plane-Couette,
   which carries no ``driving`` field at all): the applied force is the
-  same constant in both runs, so `$\Delta\Pi = 0$`.  Note this says
-  nothing about `$\mathrm{bulk}(\Delta u)$`, which is genuinely
-  non-zero here -- an undriven direction acquires a bulk velocity
-  spontaneously, plane-Couette's streamwise one included.
+  same constant in both runs, so `$\Delta\Pi = 0$`, while
+  `$\mathrm{bulk}(\Delta u)$` is genuinely non-zero: an undriven
+  direction acquires a bulk velocity spontaneously, plane-Couette's
+  streamwise one included.
 - **bulk held**: both runs hold the *same* bulk value, so
   `$\mathrm{bulk}(\Delta u) = 0$` -- exactly, because the correction is
   a rank-1 algebraic projection satisfied at every corrector iterate,
@@ -454,9 +428,10 @@ The cancellation is *exact* rather than approximate only because the
 same quadrature ``flow.y_weights`` defines the bulk in all three
 places that matter: the corrector's constraint, the held-mean
 constraint row of the partner's `$(0,0)$` initial perturbation
-(:mod:`dnsjax.ic.mean_mode`), and :func:`get_inprod` here.  Guard --
-measuring both factors, so neither leg can pass vacuously:
-``lab/tests/test_twin_budget.py``.
+(:mod:`dnsjax.ic.mean_mode`), and :func:`get_inprod` here.  Guard:
+``lab/tests/test_twin_budget.py``'s closure under both knobs, which
+a force doing work on the difference field would break; it does not
+measure the two factors separately.
 
 Contrast the *total* field, whose budget does carry the term
 (``I`` in each flow's ``get_stats``): there the held streamwise bulk
@@ -499,10 +474,8 @@ field):
   them a peak.
 
 Every program is lowered as the run calls it, the singletons passed as
-arguments.  The figures are **CPU** ones.  With the singletons baked in
-as constants XLA folds more of the work, so a ``jit`` of the bound step
-measures 20 / 18 and 21 / 19.  A GPU schedule differs again, so on a
-GPU the other programs may sit further above the step.
+arguments; with the singletons baked in as constants XLA folds more of the
+work, so a ``jit`` of the bound step measures 20 / 18 and 21 / 19.
 
 So either budget, when enabled, is the run's high-water mark, since the device
 allocator's pool grows to the maximum over every program; without one, the
@@ -513,9 +486,12 @@ transient per field in flight on top of its output (a 3-field
 operands around it.  The two optimization barriers
 (:func:`_convective_sources`, :func:`_twin_budget_jit`) are worth 47 `$\to$` 37
 and 61 `$\to$` 43 of these, for the same numbers to rounding and no measurable
-CPU time.  A GPU schedule is its own: size a job against the driver's closing
-``Peak device memory`` line (``Peak host memory`` on CPU, which also counts the
-process's own runtime), not this list.
+CPU time (measured with dense wall-normal GEMMs and a CPU banded solve that
+copied its factors, which held the y-budget about four fields above the list).
+The figures are **CPU** ones.  A GPU schedule is its own, and may
+put the other programs further above the step: size a job against the
+driver's closing ``Peak device memory`` line (``Peak host memory`` on CPU,
+which also counts the process's own runtime), not this list.
 
 **Cost of a budget sample.**  A three-bin budget sample costs
 `$\sim\!0.9$` of a twin step (both states), measured on CPU at
@@ -549,8 +525,8 @@ throughput, and the budget is a cadenced diagnostic):
   transient inside one :func:`dnsjax.fft.chunked_transform` call
   (the padded intermediates of a 9-field batch), for the same
   69 single-field transforms in more, smaller dispatches.  It
-  leaves the ~21 live fields alone; measured, it takes the peak
-  from 43 to 37.
+  leaves the ~21 live fields alone; measured with the barrier
+  figures of "Memory", it takes the peak from 43 to 37.
 - Moving the advector transform *inside* the pair loop is what
   cuts those: the 9 cached `$\mathbf{b}$` fields become 3 live
   ones, 21 `$\to$` 15 live fields, for 84 transforms instead of
@@ -565,17 +541,15 @@ physical sets `$\mathbf{b}$`, `$\nabla\mathbf{c}^{(1)}$` and
 despite half the transforms.  So :func:`_convective_sources` forms the two
 gradient sets one at a time, the reference's consumer `$q_p$` between them: 6 +
 9 + 3.  Statement order does not get that on its own -- XLA formed both sets
-together -- so an optimization barrier holds it there.  What the program then
-peaks at is measured rather than counted in "Memory" above: about twice the
-live-field count, the rest being transform-pipeline transient and spectral
-operands.
+together -- so an optimization barrier holds it there.  The program's measured
+peak is about twice the live-field count ("Memory" above).
 
-**The dissipation defect, measured.**  At ``fd_order = 8`` the
-operator-form defect is `$<10^{-4}$` for a decaying wall-normal
-spectrum but `$\sim 40\,\%$` for content at half the grid scale.  A
-difference field stays flat at `$\sim 3\,\%$` from `$N_y = 17$` to
-`$257$`, against `$6\times10^{-3} \to 5\times10^{-10}$` for a fixed
-smooth field.
+**The dissipation defect, measured.**  At ``fd_order = 8`` (its size
+for a decaying wall-normal spectrum and for content at half the grid
+scale: :func:`~dnsjax.geometries.wall_bounded._base.get_pert_enstrophy`)
+the operator-form defect of a difference field stays flat at
+`$\sim 3\,\%$` from `$N_y = 17$` to `$257$`, against
+`$6\times10^{-3} \to 5\times10^{-10}$` for a fixed smooth field.
 """
 
 import importlib
@@ -879,7 +853,7 @@ def _twin_budget_jit(
                     )
         # One gradient set live at a time.  The four are independent
         # of one another, so without this XLA forms them together
-        # (module docstring, "Budget terms").
+        # (Design notes: "Footprint knobs").
         out, b_phys, full = lax.optimization_barrier((out, b_phys, full))
 
     # Mean-slot terms (FFT-free classes; priority c > b > a keeps the
@@ -920,26 +894,25 @@ def _mode_energy_replicated(field: Array, w: Array, k_metric: Array) -> Array:
 
     `$E(k_z, k_x) = \tfrac{1}{2}\,\mathrm{metric}\,
     \int |\hat{u}|^2\, w\, \mathrm{d}y \,/\, V$` summed over the
-    velocity components -- so summing the returned array over the
-    true modes reproduces the total energy exactly (the twin.dat
+    velocity components, so summing the returned array over the true
+    modes reproduces the total energy exactly (the twin.dat
     convention).  Each device reduces its own ``(k_z, k_x)`` tile and
     scatters it into a zero global-shape array at its mesh position;
     a ``psum`` over both mesh axes assembles the **replicated**
     global spectrum (the disjoint-tile analogue of
-    ``extract_mean_mode``) -- required because the writer's rank-0
-    host transfer needs a fully-addressable array under multi-process
-    launches.  Shape ``(N_{k_z}, N_{k_x})`` *padded* sizes; the
-    padding rows/columns weight zero data and are stripped by the
-    caller.
+    ``extract_mean_mode``), which the writer's rank-0 host transfer
+    needs to be fully addressable under multi-process launches.
+    Shape ``(N_{k_z}, N_{k_x})`` *padded* sizes; the padding
+    rows/columns weight zero data and are stripped by the caller.
 
-    Called twice per sample (difference and reference), i.e. two
-    ``psum``\ s where one stacked call would do.  Deliberately left
-    alone: the collective carries one mode plane
-    (`$\sim$`1 MB at a `$1024\times257\times256$` target) against the
-    `$\sim$`3 GB *spectral field* each call streams through the
-    einsum, so merging them would save `$\sim$`0.03 % of a diagnostic
-    that already runs on a cadence.  The cost here is the field pass,
-    and there is only one of those per state either way.
+    Called twice on a sample due for both halves, two ``psum``\ s
+    where one stacked call would do, and deliberately left so: the
+    collective carries one mode plane (`$\sim$`1 MB at a
+    `$1024\times257\times256$` target) against the `$\sim$`3 GB
+    *spectral field* each call streams through the einsum, so merging
+    them would save `$\sim$`0.03 % of a diagnostic that already runs
+    on a cadence.  The cost is the field pass, one per state either
+    way.
     """
     nz_spec, nx_spec = sharding.spec_shape[1], sharding.spec_shape[2]
     vf = derived_params.volume_fac
@@ -992,13 +965,10 @@ def _twin_spectra_jit(
     reproduces ``twin.dat``'s ``E_d`` to rounding (a
     ``lab/tests/test_twin_unit.py`` guard).
 
-    *ref* and *delta* are **static**, like ``bins`` on
-    :func:`_twin_energies_jit`: a half that is off is never traced,
-    field pass and ``psum`` alike.  The two halves go to two streams,
-    each on its own cadence (``twin.it_spectra`` /
-    ``twin.it_spectra_ref``, the second defaulting to the first), so a
-    sample asks for whichever are due; at the default cadences that is
-    both, in one program.
+    *ref* and *delta* are **static** (module docstring,
+    "Reference halves and 3-D cubes"): a half that is off is never
+    traced, field pass and ``psum`` alike.  A sample asks for the
+    halves due on ``twin.it_spectra`` / ``twin.it_spectra_ref``.
     """
     n2 = params.res.nz - 1
     n3 = params.res.nx // 2
@@ -1037,10 +1007,9 @@ def marginal_bin_counts() -> tuple[int, int]:
     Refuses an odd ``res.nz``, where the stored `$k_z$` band would be
     asymmetric and :func:`_fold_kz` would have no slot for the
     outermost negative mode.  ``parameters.validate_parameters``
-    refuses an odd Fourier count outright, for the same reason and
-    everywhere, so this is unreachable through any entry point; it
-    keeps the invariant with the function whose contract states it
-    rather than only with the parameter layer.
+    refuses an odd Fourier count everywhere, for the same reason, so
+    this is unreachable through any entry point; the check keeps the
+    invariant with the function whose contract states it.
     """
     if params.res.nz % 2:
         raise ValueError(
@@ -1087,8 +1056,8 @@ def marginal_suffixes(x0: bool) -> tuple[str, ...]:
     ``x`` / ``z`` are the two marginals and ``xz00`` the `$(0, 0)$`
     mode; ``x0``, the full `$k_x = 0$` plane, joins them under
     ``twin.x0_planes``.  This is the order
-    :func:`_marginals_replicated` returns and the order both writers
-    (:mod:`dnsjax_lab.twin.yspectra`) lay a record out in, so the two
+    :func:`_marginals_replicated` returns and the order the writers of
+    :mod:`dnsjax_lab.twin.yspectra` lay a record out in, so the two
     cannot drift apart.
     """
     return ("x", "z", "x0", "xz00") if x0 else ("x", "z", "xz00")
@@ -1126,14 +1095,12 @@ def _marginals_replicated(density: Array, *, x0: bool) -> dict[str, Array]:
 
     Each device reduces its own `$(k_z, k_x)$` tile, scatters its
     blocks into zero global-shape arrays at its mesh position, and one
-    ``psum`` over both mesh axes assembles the replicated result --
-    the pattern of :func:`_mode_energy_replicated`, and required for
-    the same reason (the writer's rank-0 host transfer needs a
-    fully-addressable array).  The blocks share one collective:
-    unlike the two `$(k_z, k_x)$` planes there, they are reductions of
-    the *same* field pass, so there is nothing to gain by splitting
-    them.  The fold runs **after** the ``psum``: the `$\pm k_z$`
-    partners live on different ``np0`` devices.
+    ``psum`` over both mesh axes assembles the replicated result, as
+    in :func:`_mode_energy_replicated` and for the same reason.  The
+    blocks share one collective: unlike the two `$(k_z, k_x)$` planes
+    there, they are reductions of the *same* field pass, so splitting
+    them gains nothing.  The fold runs **after** the ``psum``: the
+    `$\pm k_z$` partners live on different ``np0`` devices.
 
     What *x0* costs is therefore not a field pass but a third of the
     payload -- one more `$(C, N_y, N_{k_z}^{\mathrm{spec}})$` block in
@@ -1229,16 +1196,15 @@ def _twin_yspectra_jit(
     the stream's sidecar) to get the per-`$k$` energy, and sum over
     `$k$` for ``twin.dat``'s ``E_d``.
 
-    *ref*, *delta* and *x0* are all **static**, like ``bins`` on
-    :func:`_twin_energies_jit`.  The two halves -- each a full real
-    `$(3, N_y, N_{k_z}, N_{k_x})$` density **and** a ``psum`` -- go to
-    two streams on their own cadences (``twin.it_yspectra`` /
-    ``twin.it_yspectra_ref``, the second defaulting to the first), and
-    a half that is not due is never traced.  *x0*
-    (``twin.x0_planes``) is a third of each collective rather than a
-    field pass, and with it off nothing about the `$k_x = 0$` plane is
-    traced at all.  The writers pin *x0* in each stream's sidecar
-    (``suffixes``), so a resume cannot flip it mid-stream.
+    *ref*, *delta* and *x0* are **static** (module docstring,
+    "Reference halves and 3-D cubes"): a half not due on
+    ``twin.it_yspectra`` / ``twin.it_yspectra_ref`` is never traced,
+    its full real `$(3, N_y, N_{k_z}, N_{k_x})$` density **and** its
+    ``psum`` alike.  *x0* (``twin.x0_planes``) is a third of each
+    collective rather than a field pass, and with it off nothing of
+    the `$k_x = 0$` plane is traced; the writers pin it in each
+    stream's sidecar (``suffixes``), so a resume cannot flip it
+    mid-stream.
     """
     out: dict[str, Array] = {}
     halves = []
@@ -1321,7 +1287,7 @@ def cube_selection(
     n_kz: int | None,
     n_kx: int | None,
 ) -> CubeSelection:
-    r"""The cubes' rows and modes for this run (module docstring).
+    r"""The cubes' rows and modes for this run (:mod:`dnsjax_lab.twin.cubes`).
 
     *y* is the run's ascending wall-normal grid.  The `$y$` fold pairs
     row `$j$` with `$n_y - 1 - j$`, so the grid must be symmetric about
@@ -1419,12 +1385,10 @@ def _twin_spectra3d_jit(
     r"""The 3-D componentwise energy cubes (module docstring).
 
     ``e`` is the difference field's `$(3, n_y, n_{k_z}, n_{k_x})$`
-    cube and ``r`` the reference state's, each traced only when asked
-    for: they go to two directories on two cadences
-    (``twin.it_spectra3d`` / ``twin.it_spectra3d_ref``, the second
-    defaulting to the first).  Same density as :func:`twin_yspectra`,
-    so the full-sampling cube summed over either wavenumber is that
-    stream's marginal, folded in `$y$`.
+    cube and ``r`` the reference state's, each traced only when due
+    (``twin.it_spectra3d`` / ``twin.it_spectra3d_ref``).  Same density
+    as :func:`twin_yspectra`, so the full-sampling cube summed over
+    either wavenumber is that stream's marginal, folded in `$y$`.
     """
     out: dict[str, Array] = {}
     if delta:
@@ -1453,17 +1417,11 @@ def twin_spectra3d(
 # ── Wall-normal-resolved spectral budget ─────────────────────────────
 
 #: ``twin_ybudget`` term names, in stored order, one set per budget
-#: form (module docstring, "Two budget forms").  The **convective**
-#: set is the default, and its sums over the three bins' `$k$`-sets
-#: return the paper's (2.7)-(2.9) (the 12 + 12 terms of (2.11)-(2.16)
-#: dissolve into it); the **rotational** set is
-#: ``twin.rotational_ybudget``.  In both, ``V`` is the viscous term in
-#: the operator (discrete-Laplacian) form -- the one that makes the
-#: budget close, matching ``twin_budget``'s ``eps_*`` -- and ``eps``
-#: its positive-definite pseudo-dissipation companion; the two differ
-#: by the wall-normal diffusion flux.  ``Wp`` is the work done by the
-#: pressure *gradient*, not the mean-mode driving -- though at
-#: `$(0,0)$` it is exactly that (:func:`_driving_density`).
+#: form: the **convective** set, the default, and the **rotational**
+#: set of ``twin.rotational_ybudget`` (module docstring,
+#: "Spectral budget" and "Two budget forms").  In both, ``V`` is the
+#: viscous term in the operator form, matching ``twin_budget``'s
+#: ``eps_*``.
 CONVECTIVE_TERMS: tuple[str, ...] = (
     "P_U",
     "P_r",
@@ -1564,19 +1522,17 @@ def _convective_sources(
     r"""The convective nonlinear term (the default form).
 
     Twenty-four ``spec_to_phys`` (the two advectors and the two
-    gradient sets) and nine back -- fewer than the 69 the three-bin
-    :func:`twin_budget` needs, because binning no longer forces a
-    separate physical product per bin pair.  The two gradient sets are
-    formed **one at a time** -- the reference's only consumer is
-    `$q_p$`, and an optimization barrier keeps XLA to that order -- so
-    the live padded physical set is 6 + 9 + 3 with the product being
-    formed, not 6 + 9 + 9 + 3; the module's Design notes, "Memory",
-    have what the program measures.
+    gradient sets) and nine back, against the 69 of the three-bin
+    :func:`twin_budget` (module docstring, "Spectral budget").  The two
+    gradient sets are formed **one at a time**, the reference's only
+    consumer `$q_p$` between them, an optimization barrier holding XLA
+    to that order (Design notes: "The y-budget's transient"; "Memory"
+    has what the program measures).
 
     Three exact simplifications, all of them of the same mean-mode
-    kind (`$U^{(1)}_y = \Delta U_y = 0$` by continuity plus no-slip,
-    so a mean profile advects with `$\mathrm{i}(k_xP_x + k_zP_z)$`
-    alone -- mode-diagonal, and therefore free of any transform):
+    kind (`$U^{(1)}_y = \Delta U_y = 0$`, so a mean profile advects
+    mode-diagonally and transform-free: module docstring,
+    "State preconditions"):
 
     - **The advectors are mean-free.**  The mean part of either
       advector contributes `$\mathrm{i}(k_xU_x + k_zU_z)|\Delta\hat
@@ -1648,11 +1604,10 @@ def _convective_sources(
     # `$(\Delta\mathbf{u}\cdot\nabla)\mathbf{u}'^{(1)}$`, split so the
     # advector is the mean-free half (docstring).
     q_p = advect(adv[3:6], grad_ref) + mean_advect(prof_dU, ref_f, kx, kz)
-    # Statement order alone does not get that order: ``grad_del``
+    # Statement order alone does not hold that order: ``grad_del``
     # depends on nothing ``q_p`` does, and XLA schedules the two
     # nine-field transforms together.  The barrier makes the second
-    # wait for ``q_p`` -- a fifth off this program's peak, and the
-    # same numbers (docstring).
+    # wait for ``q_p`` (Design notes: "Memory").
     q_p, adv, delta = lax.optimization_barrier((q_p, adv, delta))
 
     grad_del = chunked_transform(spec_to_phys, grad_spec(delta))
@@ -1744,8 +1699,7 @@ def _rotational_sources(
     which lets `$\boldsymbol{\omega}_f^{(1)}$` and
     `$\Delta\mathbf{u}$` go before `$\mathbf{u}_f^{(1)}$` arrives.
     That is a count of live fields, not the program's peak, which its
-    one nine-field transform sets: 29 padded components measured,
-    against the convective 33 (Design notes: "Memory").
+    one nine-field transform sets (Design notes: "Memory").
     """
     kx, kz = fourier_.kx, fourier_.kz
     d1 = flow_.D1
@@ -1870,26 +1824,23 @@ def _driving_density(prof_dU: Array, flow_: object) -> Array:
     The `$(0,0)$` mode's pressure term is not the fluctuating pressure
     (which does no work there: `$\Delta\hat v_{00}\equiv 0$` and the
     horizontal gradients vanish) but the applied driving.  With
-    `$\Pi$` the mean pressure gradient (the module docstring's
-    "Mean-mode driving" fixes the sign) the force is `$-\Pi$`, so the
-    density is
-    `$-\Delta\Pi_s \Delta U_s(y) - \Delta\Pi_n \Delta U_n(y)$` -- and
-    what ``mean_driving_from_profile`` returns is `$-\Delta\Pi$`
+    `$\Pi$` the mean pressure gradient (sign convention:
+    :mod:`dnsjax.ic.mean_mode`) the force is `$-\Pi$`, so the density
+    is `$-\Delta\Pi_s \Delta U_s(y) - \Delta\Pi_n \Delta U_n(y)$` --
+    and what ``mean_driving_from_profile`` returns is `$-\Delta\Pi$`
     already, keyed ``-dPds'`` / ``-dPdn'``, so the code below adds it
     with a plus.  Its wall-normal average (the stored density's
     `$y$`-integral, ``volume_fac`` being divided out) is
-    `$-\Delta\Pi \cdot U_\text{bulk}(\Delta u) = 0$`
-    exactly -- at constant flow rate both members hold the same bulk,
-    at fixed pressure gradient `$\Delta\Pi = 0$`.  Under a held bulk
-    its *density* is not zero, so a `$y$`-resolved budget needs it;
-    at a fixed gradient the density vanishes identically too, and
-    this returns exact zeros.
+    `$-\Delta\Pi \cdot U_\text{bulk}(\Delta u) = 0$` exactly (module
+    docstring, "Mean-mode driving").  Under a held bulk its *density*
+    is not zero, so a `$y$`-resolved budget needs it; at a fixed
+    gradient, with no driving constraint active, the density vanishes
+    identically and this returns exact zeros.
 
     `$-\Delta\Pi$` is the **wall-shear inference** of the two members'
-    driving, differenced; that is deliberately the better budget
-    partner than the corrector's applied value (the `$t = t_0$`
-    reasoning in :mod:`dnsjax.__main__`).  Returns exact zeros when no
-    driving constraint is active.
+    driving, differenced, deliberately the better budget partner than
+    the corrector's applied value (the `$t = t_0$` reasoning in
+    :mod:`dnsjax.__main__`).
 
     Taken from the **difference mean profile alone**, not from the two
     states: the inference is linear, so the difference of the two
@@ -1900,10 +1851,9 @@ def _driving_density(prof_dU: Array, flow_: object) -> Array:
     extracted.  Calling ``mean_driving`` on each state instead costs two
     further ``extract_mean_mode`` collectives per sample, on top of the
     one already spent on the same two mean modes (separate
-    ``shard_map`` regions, so XLA cannot merge them) -- a third of this
-    sample's collectives for nothing, and the ``psum`` is
-    latency-bound:
-    :func:`~dnsjax.geometries.wall_bounded._base.extract_mean_modes`.
+    ``shard_map`` regions, so XLA cannot merge them): a third of this
+    sample's collectives for nothing, each ``psum`` latency-bound
+    (:func:`~dnsjax.geometries.wall_bounded._base.extract_mean_modes`).
     """
     drive = mean_driving_from_profile(prof_dU, flow_)
     cos_t, sin_t = derived_params.cos_tilt, derived_params.sin_tilt
@@ -1941,11 +1891,9 @@ def _twin_ybudget_jit(
     per-`$k$` rate, and sum over `$k$` for the corresponding
     volume-averaged rate.
 
-    *rotational* and *x0* are both **static**, like ``bins`` on
-    :func:`_twin_energies_jit` and ``ref`` on
-    :func:`_twin_yspectra_jit`.  *rotational* selects the budget form,
-    so only one of the two source builders is ever traced, and the
-    term list it names is what the stream's records are shaped by;
+    *rotational* and *x0* are **static**.  *rotational* selects the
+    budget form, so only one of the two source builders is ever
+    traced, and the term list it names shapes the stream's records;
     *x0* (``twin.x0_planes``) selects the suffix list, and with it off
     the `$k_x = 0$` plane is never formed.
 
@@ -2044,7 +1992,7 @@ def _twin_pressure_check_jit(
     r"""Residuals of the difference-pressure solve.
 
     Built from the *same* :func:`_difference_sources` the budget uses,
-    so nothing here can drift from what ``Pi`` was computed with.
+    so nothing here can drift from what ``Wp`` is computed from.
     Returns:
 
     - ``poisson``: the interior Poisson residual
@@ -2054,10 +2002,11 @@ def _twin_pressure_check_jit(
       condition that *was* imposed -- machine zero at every mode but
       `$(0,0)$`, where the influence matrix is structurally singular
       and `$\Delta\hat v \equiv 0$` makes it vacuous;
-    - ``neumann``: `$(D_1\Delta\hat p - \hat{\mathcal N}_y
-      - Re^{-1}D_2\Delta\hat v)|_w$`, the analytic condition the IMM
-      closure declines to impose -- a wall-normal truncation
-      diagnostic that must shrink with ``res.ny``, not an error;
+    - ``neumann``: the analytic condition the IMM closure declines to
+      impose
+      (:meth:`~dnsjax_lab.twin.pressure.DifferencePressure.neumann_residual`),
+      a wall-normal truncation diagnostic that must shrink with
+      ``res.ny``, not an error;
     - ``n_hat``, ``div_n``, ``dy_dtv``: the nonlinear term, the
       Poisson source and `$\partial_y\,\partial_t\Delta\hat v$` --
       what the residuals above are measured *against*, returned so a

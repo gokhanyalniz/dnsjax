@@ -1,12 +1,11 @@
 r"""The curved pipe's toroidal metric, for the snapshot analysis (JAX-free).
 
-The curved pipe's streamwise direction is the centreline arclength
-`$s$` of a pipe bent into a torus of curvature `$\kappa$`: its scale
-factors along `$(r, \theta, s)$` are `$(1, r, h)$`, with
-`$h = 1 + \kappa r\cos\theta$`.  The curved-pipe spec names
-:func:`metric` as its ``analysis_metric``, so :mod:`dnsjax.analysis`
-applies :class:`ToroidalMetric` as the snapshot's axial scale factor
-(:class:`dnsjax.analysis.AxialMetric`):
+The curved pipe's scale factors along `$(r, \theta, s)$` are
+`$(1, r, h)$`, `$h = 1 + \kappa r\cos\theta$` (the coordinates:
+:mod:`dnsjax_lab.geometries.wall_bounded.cylindrical_curved`).  The
+curved-pipe spec names :func:`metric` as its ``analysis_metric``, so
+:mod:`dnsjax.analysis` applies :class:`ToroidalMetric` as the
+snapshot's axial scale factor (:class:`dnsjax.analysis.AxialMetric`):
 
 - the divergence it forms, `$h^{-2}\,[h\,\nabla_0\cdot(u_s, h u_r,
   h u_\theta)]$`, is the solver's continuity row

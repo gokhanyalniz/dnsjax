@@ -46,11 +46,8 @@ def _derive(params, derived, user_set) -> None:
 
 
 def _validate(params, derived) -> None:
-    # Startup summary: derived Re_o, shear Reynolds number Re_s,
-    # rotation ratio mu = Omega_o/Omega_i, and the local exponent
-    # q(r) = -d ln Omega / d ln r = 2 B0 / (A0 r^2 + B0) at the walls
-    # (q in (0, 2) on the quasi-Keplerian half-line, bracketing the
-    # Keplerian value 3/2).
+    # Startup summary: Re_o, Re_s, mu and q(r) at the walls, each
+    # defined in the quasi_keplerian flow module's docstring.
     eta = params.geo.eta
     re_i, re_o = params.phys.re1, params.phys.re2
     re_s = 2 * abs(eta * re_o - re_i) / (1 + eta)

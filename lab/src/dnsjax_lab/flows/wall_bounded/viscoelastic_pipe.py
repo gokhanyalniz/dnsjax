@@ -7,10 +7,11 @@ pipe, driven by a uniform axial body force
 `$-\Pi_z = 4/\mathrm{Re}$`, i.e. a constant mean pressure gradient
 `$\Pi_z = \partial p/\partial z = -4/\mathrm{Re}$`.  The velocity is
 coupled to a symmetric conformation tensor `$\mathbf{c}$` via the
-polymer-stress divergence; see the module docstring of
-:mod:`~dnsjax_lab.geometries.wall_bounded.cylindrical_viscoelastic` for the
-governing equations, the 9-component state layout, the axis parity of
-the tensor, and the spin diagonalization of its Laplacian.
+polymer-stress divergence: the governing equations, the 9-component
+state layout and the spin diagonalization of the tensor Laplacian in
+:mod:`~dnsjax_lab.geometries.wall_bounded._viscoelastic_common`, the
+tensor's axis parity in
+:mod:`~dnsjax_lab.geometries.wall_bounded.cylindrical_viscoelastic`.
 
 Total-field formulation
 -----------------------
@@ -62,23 +63,21 @@ instead.
 
 ``res.consistent_imm``
 ----------------------
-The default reconstruction scheme is supported here, as for every other
-wall-bounded flow, and needs nothing viscoelastic: the polymer stress
-reaches the velocity solve only as one more source term, which either
-influence-matrix formulation projects unchanged.  Guards: the
-``viscoelastic-pipe`` entry in ``lab/tests/test_random_smoke.py`` for the
-default and ``viscoelastic-pipe-legacy-imm`` for the legacy path (both
-nonlinear gates -- the laminar smoke is linear and blind to either
-formulation's nonlinear path, and a fixed-resolution entry cannot see
+The default reconstruction scheme is supported, as for every other
+wall-bounded flow, and needs nothing viscoelastic (the geometry
+docstring's "Time integration").  Guards: the ``viscoelastic-pipe``
+entry in ``lab/tests/test_random_smoke.py`` for the default and
+``viscoelastic-pipe-legacy-imm`` for the legacy path (both nonlinear
+gates -- the laminar smoke is linear and blind to either formulation's
+nonlinear path, and a fixed-resolution entry cannot see
 refinement-crossed thresholds).
 
 Moving frame
 ------------
+As for the Newtonian pipe (:mod:`~dnsjax.flows.wall_bounded.pipe`):
 ``phys.u_grid`` defaults to the laminar bulk velocity
-`$U_{b,\mathrm{lam}} = 1/2$`, so by default the run evolves in the
-frame translating axially at `$U_{grid} = 1/2$`; the convective frame
-term is mode-diagonal on all 9 components.  Set ``--phys.u_grid 0`` for
-the lab frame.
+`$U_{b,\mathrm{lam}} = 1/2$` (``--phys.u_grid 0`` for the lab frame),
+with the convective frame term mode-diagonal on all 9 components.
 
 Design notes
 ------------
@@ -228,22 +227,13 @@ def _build_laminar_profile() -> Array:
     )
 
 
-#: The laminar reference, kept as its mean-mode column rather than the
-#: field it spans: the full ``(C, N_r, N_m, N_{k_z})`` array would hold
-#: a whole state's worth of device memory for the run to carry
-#: ``C N_r`` nonzero values.  :func:`_laminar_field` rebuilds the field
-#: where it is needed -- inside the jitted diagnostics, fused into the
-#: subtraction -- and ``init_state`` builds it on demand.  Physical
-#: basis: ``init_state`` hands it to ``__main__``, which converts the
-#: initial state once, so the deviations below are physical too.
+#: The laminar reference as its mean-mode column, in the physical
+#: basis (the comment on ``dean._laminar_profile`` says why).
 _laminar_profile: Array = _build_laminar_profile()
 
 
 def _laminar_field(profile: Array, fourier_: Fourier) -> Array:
-    """The spectral field that is *profile* ``(C, N_r)`` on the mean mode.
-
-    Zero on every other mode, padding included.
-    """
+    """*profile* ``(C, N_r)`` on the mean mode; zero elsewhere, padding too."""
     return jnp.where(fourier_.mean_mask[None], profile[:, :, None, None], 0.0)
 
 
@@ -272,12 +262,9 @@ def _perturbation_energy(
 def init_state() -> Array:
     """The ``start_from_laminar`` 9-component state.
 
-    Returns the analytical laminar velocity/conformation pair (this
-    flow integrates the **total** field).  Snapshot resume and the
-    in-process random / localized-rolls modes
-    (:mod:`dnsjax.ic.random_field` / :mod:`dnsjax.ic.localized_rolls`)
-    are dispatched in ``__main__``; this is called only for the
-    laminar start.
+    The analytical laminar velocity/conformation pair (this flow
+    integrates the **total** field), called for the laminar start only
+    (:func:`~dnsjax.geometries.wall_bounded._base.init_state`).
     """
     return _laminar_field(_laminar_profile, fourier)
 
@@ -298,7 +285,7 @@ def _get_stats_jit(
     `$(u_z, u_r, u_\theta, c_{zz}, c_{rz}, c_{\theta z}, c_{rr},
     c_{\theta\theta}, c_{r\theta})$` -- diagnostics sit outside the
     solver, whose working basis is the `$u_\pm$`/spin one (the
-    ``cylindrical_viscoelastic.py`` module docstring).
+    ``_viscoelastic_common.py`` module docstring).
 
     - `$E$`: total kinetic energy; `$E'$`: velocity-only deviation from
       the laminar profile (laminarization quantity).
@@ -434,7 +421,7 @@ def get_perturbation_energy(state: Array) -> Array:
 
 
 def add_viscoelastic_pipe_laminar(vel_state: Array) -> Array:
-    r"""The pipe counterpart of :func:`add_viscoelastic_laminar`.
+    r"""Turn a velocity perturbation into a viscoelastic pipe total state.
 
     Adds the Hagen-Poiseuille laminar velocity to *vel_state* and
     appends the laminar sPTT-equilibrium conformation (both at the mean
@@ -447,12 +434,11 @@ def add_viscoelastic_pipe_laminar(vel_state: Array) -> Array:
     return jnp.concatenate([vel_state + laminar[:3], laminar[3:]])
 
 
-# Viscoelastic conformation noise: every physical tensor
-# component (c_zz, c_rz, c_theta_z, c_rr, c_theta_theta, c_r_theta) is
-# the transform of a real field, so its draws use the same
-# per-component machinery as the velocity -- with a trailing ``1`` in
-# the PRNG key (the ``stream`` argument) to keep the conformation
-# stream distinct from the velocity draw at the same mode.
+# Viscoelastic conformation noise: each physical tensor component
+# (c_zz, c_rz, c_theta_z, c_rr, c_theta_theta, c_r_theta) is the
+# transform of a real field, drawn by the velocity's per-component
+# machinery and keyed apart from the velocity draw at the same mode by
+# ``stream=(1,)`` (``random_field.column_draw``).
 
 
 def generate_viscoelastic_pipe(
@@ -534,11 +520,11 @@ def generate_viscoelastic_pipe(
             for lj in range(n_kz):
                 g3 = kz_start + lj
                 if g2 == 0 and g3 == 0:
-                    # Mean mode: zero in both fields (the (0, 0)
-                    # conservation laws are only established for the
-                    # Cartesian flows, ``dnsjax.ic.mean_mode``; the
-                    # laminar pair is added below); ``buf`` starts at
-                    # zero.
+                    # Mean mode: zero in both fields, ``buf``'s initial
+                    # value (the (0, 0) conservation laws are only
+                    # established for the Cartesian flows,
+                    # ``dnsjax.ic.mean_mode``); the laminar pair is added
+                    # below.
                     continue
                 kz_val = kz_np[g3]
                 envelope = decay ** (abs(kz_val) + abs(m_val))

@@ -4,8 +4,8 @@ r"""Twin-run ``(k_z, k_x)`` energy-spectra streams: ``twin_spectra*.bin``.
 spectrum `$E_\Delta(k_z, k_x)$` every ``twin.it_spectra`` steps of a
 ``dnsjax-twin`` run (:mod:`dnsjax_lab.twin.driver`), and, under
 ``twin.spectra_ref`` (the default), ``twin_spectra_ref.bin`` the
-reference state's own spectrum every ``twin.it_spectra_ref`` steps --
-by default the same steps.  The pair's ratio `$E_\Delta / 2E^{(1)}$`
+reference state's own spectrum every ``twin.it_spectra_ref`` steps
+(by default the same steps).  The pair's ratio `$E_\Delta / 2E^{(1)}$`
 is the scale-by-scale decorrelation measure.  Both come from
 :func:`dnsjax_lab.twin.diagnostics.twin_spectra_2d`.  The stream is the
 high-Reynolds-number replacement for the scalar `$u_1/u_2$` split:
@@ -13,14 +13,13 @@ it resolves *which scales* have decorrelated at each time.
 
 The reference spectrum is a stream of its own so that it can run on
 its own cadence.  A member recorded before the split stored it inside
-``twin_spectra.bin`` (``includes_ref: true``, the ``e_ref`` field);
-such a member is resumed in that combined layout
-(:class:`TwinSpectraStream`'s *includes_ref*), and the readers take
-the reference from whichever layout a run holds
+``twin_spectra.bin`` (``includes_ref: true``, the ``e_ref`` field) and is
+resumed in that combined layout (:class:`TwinSpectraStream`'s
+*includes_ref*); the readers take either layout
 (:func:`dnsjax_lab.analysis.twin.spectra.read_twin_spectra_ref`).
 
 Why a stream: the spectrum is `$O(N_{k_z} N_{k_x})$` values per
-sample -- far beyond the scalar ``.dat`` streams, three orders of
+sample, far beyond the scalar ``.dat`` streams and three orders of
 magnitude below a snapshot.  FFT-free (a masked reduction of data
 already in spectral space), so any cadence is cheap.
 
@@ -54,11 +53,8 @@ with it.
 Buffering, resume-by-append, sidecar matching (:data:`_MATCH_KEYS`)
 and the post-write non-finite scan are
 :class:`dnsjax_lab.twin._binstream.BinStream`'s, shared with the
-wall-normal-resolved streams; only :data:`FORMAT_VERSION`, the field
-table and the sidecar are this stream's own.  The buffer depth
-(:data:`_NBUFFER`) is fixed and small: a record is `$\sim$`MB at
-production sizes, so the ``outs.nbuffer`` default would hold
-hundreds of MB on device.
+wall-normal-resolved streams; the buffer depth is this stream's own,
+fixed and small (:data:`_NBUFFER`).
 """
 
 from pathlib import Path
@@ -77,9 +73,10 @@ FORMAT_VERSION: int = 1
 #: ``analysis.twin.spectra.MIN_REF_FORMAT_VERSION``).
 REF_FORMAT_VERSION: int = 1
 
-#: Records buffered on device between flushes (deliberately small and
-#: fixed: a production-size record is ~1-2 MB, so ``outs.nbuffer``
-#: would pin an outsized replicated buffer).
+#: Records buffered on device between flushes, small and fixed on
+#: purpose: a production-size record is ~1-2 MB, so the
+#: ``outs.nbuffer`` default would pin hundreds of MB of replicated
+#: buffer.
 _NBUFFER: int = 8
 
 #: Sidecar keys that must match for an append (resume) to proceed.
@@ -141,11 +138,9 @@ def _common_sidecar(twin_values) -> dict:
 class TwinSpectraStream(BinStream):
     """Buffered binary writer for the difference spectrum stream.
 
-    A :class:`~dnsjax_lab.twin._binstream.BinStream` carrying `$(N_2, N_3)$`
-    fields; everything about buffering, the sidecar match, the
-    ``fsync``-ed append and the non-finite scan lives in the base
-    class.  Construct once, :meth:`record` each ``twin_spectra_2d``
-    sample.
+    A :class:`~dnsjax_lab.twin._binstream.BinStream` carrying
+    `$(N_2, N_3)$` fields.  Construct once, :meth:`record` each
+    ``twin_spectra_2d`` sample.
 
     *includes_ref* is the pre-split layout, ``e_ref`` in the same
     record: only a paired resume of a member recorded in it asks for
@@ -162,11 +157,10 @@ class TwinSpectraStream(BinStream):
         """Open (or append to) the stream for a run's ``[twin]`` values.
 
         *twin_values* is the resolved ``[twin]`` section (the driver's
-        ``twin_params`` singleton), passed in rather than imported: the
-        ``[twin]`` extension is registered by :mod:`dnsjax_lab.twin.driver`
-        alone, and taking the values as an argument keeps this writer
-        importable and testable without pulling in the driver and its
-        import-time registration.
+        ``twin_params`` singleton), passed in rather than imported:
+        :mod:`dnsjax_lab.twin.driver` alone registers the ``[twin]``
+        extension, at import, and an argument keeps this writer
+        importable and testable without it.
         """
         self.includes_ref = includes_ref
         sidecar = _common_sidecar(twin_values) | {

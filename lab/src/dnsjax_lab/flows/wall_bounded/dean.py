@@ -11,31 +11,30 @@ azimuthal pressure gradient `$\Pi_\theta$`, whose force is
     \hat{\boldsymbol{\theta}}, \qquad \eta = r_1/r_2,
 
 with no-slip walls (all velocity components vanish at `$r_1$` and
-`$r_2$`).  The geometry (radial grid on `$[r_1, r_2]$`, FD matrices,
-the `$2 \times 2$` influence-matrix operators and iteration, solvers) is
-inherited from :class:`~dnsjax.geometries.wall_bounded.annular.AnnularFlow`.
+`$r_2$`).  The geometry is
+:class:`~dnsjax.geometries.wall_bounded.annular.AnnularFlow`'s.  The
+module exports the flow-module surface of
+:class:`~dnsjax.flow_spec.FlowSpec`, with the optional ``get_driving``
+and the basis pair ``to_solver_basis`` / ``from_solver_basis``.
 
 Total-field formulation
 -----------------------
 Like the curved pipe and the two viscoelastic flows, and unlike the
 base-flow systems, Dean flow time-integrates the **total** velocity
-field, not a perturbation around a base flow.  This is realized with **no
-special stepper**: the flow sets ``base_flow = curl_base_flow = 0`` so
-the rotational-form nonlinear term (:func:`dnsjax.rhs.get_nonlin`)
-evaluates the full `$\mathbf{u}\times\boldsymbol{\omega}$` of the
-total field, and the
-azimuthal body force is supplied through ``AnnularFlow.force_theta``
-(applied at the mean mode inside ``annular._get_rhs_core``).  Because
-there is no base flow, the reported perturbation kinetic energy `$E'$`
-is the energy of the **deviation** from the analytical laminar Dean
-profile, `$\|\mathbf{u} - \mathbf{U}_{\mathrm{lam}}\|^2 / 2$`;
-``get_stats`` also reports total quantities (`$E$`, `$I$`, `$D$`, and
-the wall stresses).
+field, not a perturbation around a base flow, with **no special
+stepper**: it is the annular geometry's force-driven mode (the
+:mod:`~dnsjax.geometries.wall_bounded.annular` module docstring,
+"Driving: shear-driven and force-driven flows"), its body force set
+on ``force_theta``.  Because there is no base flow, the reported
+perturbation kinetic energy `$E'$` is the energy of the **deviation**
+from the analytical laminar Dean profile,
+`$\|\mathbf{u} - \mathbf{U}_{\mathrm{lam}}\|^2 / 2$`; ``get_stats``
+also reports total quantities (`$E$`, `$I$`, `$D$`, and the wall
+stresses).
 
 Like the (shear-driven) Taylor-Couette flow, the "streamwise" direction
 is azimuthal; the optional ``block_mean_spanwise_velocity`` zeroes the
-mean **axial** velocity (the undriven homogeneous direction), inherited
-unchanged from ``AnnularFlow``.
+mean **axial** velocity, inherited unchanged from ``AnnularFlow``.
 
 Laminar state
 -------------
@@ -45,11 +44,6 @@ profile `$U_\theta(r) = -(C/2) r\ln r + \alpha r + \beta/r$` (see
 It is the steady solution of the *continuous* equations; on the FD grid
 it is preserved up to truncation (the mean-mode centripetal term is
 balanced by pressure and `$u_\theta$` by the viscous + forcing balance).
-
-The module exports the flow-module surface that
-:class:`~dnsjax.flow_spec.FlowSpec` lists under ``flow_module``, the
-optional ``get_driving``, and the basis pair ``to_solver_basis`` /
-``from_solver_basis``.
 """
 
 from dataclasses import dataclass
@@ -104,9 +98,7 @@ class DeanFlow(AnnularFlow):
         C = 2.0 * (eta + 1.0) / (1.0 - eta)
         self.force_theta = C / (self.rs * Re)
 
-        # Total-field formulation: there is no base flow to subtract, so
-        # the rotational term computes the full (curl u) x u of the total
-        # field.
+        # Total-field formulation: no base flow to subtract.
         self.base_flow = jnp.zeros(
             (3, params.res.ny),
             dtype=sharding.float_type,
@@ -134,8 +126,7 @@ def dean_laminar_u_theta(rs: Array, eta: float) -> Array:
 
     Thin wrapper over
     :func:`~dnsjax_lab.geometries.wall_bounded._annular_forced.annular_forced_laminar_u_theta`
-    for the
-    Newtonian Dean body force
+    for the Newtonian Dean body force
     `$-\Pi_\theta = (2\eta + 2)/(r\,\mathrm{Re}\,(1 - \eta))$`, i.e.
     `$C = 2(\eta + 1)/(1 - \eta) = 2(r_1 + r_2)$` on the gap-1 radii
     `$r_1 = \eta/(1-\eta)$`, `$r_2 = 1/(1-\eta)$`.
@@ -177,10 +168,7 @@ _laminar_profile: Array = _build_laminar_profile()
 
 
 def _laminar_field(profile: Array, fourier_: Fourier) -> Array:
-    """The spectral field that is *profile* ``(C, N_r)`` on the mean mode.
-
-    Zero on every other mode, padding included.
-    """
+    """*profile* ``(C, N_r)`` on the mean mode; zero elsewhere, padding too."""
     return jnp.where(fourier_.mean_mask[None], profile[:, :, None, None], 0.0)
 
 
@@ -192,13 +180,10 @@ def _perturbation_energy(
 ) -> Array:
     r"""Kinetic energy of the deviation from the laminar Dean profile.
 
-    `$E' = \|\mathbf{u} - \mathbf{U}_{\mathrm{lam}}\|^2 / 2$`: Dean
-    integrates the total field, so the perturbation is the deviation
-    from the analytical laminar profile.
-
-    The single definition, shared by :func:`get_stats` (which reports
-    it as ``E'``) and the laminarization read
-    :func:`get_perturbation_energy`.
+    `$E' = \|\mathbf{u} - \mathbf{U}_{\mathrm{lam}}\|^2 / 2$` (the
+    module docstring says why).  The single definition, shared by
+    :func:`get_stats` (which reports it as ``E'``) and the
+    laminarization read :func:`get_perturbation_energy`.
     """
     return (
         get_norm2_annular(
@@ -213,10 +198,9 @@ def _perturbation_energy(
 def init_state() -> Array:
     """The ``start_from_laminar`` state: the laminar Dean profile.
 
-    Dean integrates the **total** field, so the laminar start is the
-    closed-form profile rather than a zero array.  Snapshot resume and
-    the in-process random / localized-rolls modes are dispatched in
-    ``__main__``; this is called only for the laminar start.
+    Not a zero array, since Dean integrates the **total** field; called
+    for the laminar start only
+    (:func:`~dnsjax.geometries.wall_bounded._base.init_state`).
     """
     return _laminar_field(_laminar_profile, fourier)
 
@@ -340,15 +324,10 @@ def _get_driving_jit(state: Array, flow_: DeanFlow) -> dict[str, Array]:
 
 
 def get_driving(state: Array) -> dict[str, Array]:
-    r"""Applied mean-mode driving inferred from *state* alone.
+    r"""Applied mean-mode driving (:class:`~dnsjax.flow_spec.FlowSpec`).
 
-    The optional flow-module export ``__main__`` uses for the one
-    ``stats.dat`` row with no step behind it (``t = t0``); every other
-    row carries the value the corrector applied, threaded out
-    of the step.  Same keys and sign as that column (the applied
-    force `$-\Pi$` along `$z$`, ``-dPdz'``), ``{}`` when no driving
-    knob is on.  Takes the **physical** view of *state*, like
-    :func:`get_stats`.
+    The axial ``-dPdz'`` column; empty unless
+    ``phys.block_mean_spanwise_velocity`` is on.
     """
     return _get_driving_jit(state, flow)
 

@@ -12,11 +12,9 @@ The physics, operators, and base flow are **identical** to
 :mod:`~dnsjax.flows.wall_bounded.taylor_couette` (both are the
 circular-Couette base flow `$U_\theta = A_0 r + B_0/r$` on the annular
 geometry) and both bind the shared implementation in
-:mod:`~dnsjax.flows.wall_bounded._circular_couette`; this module differs
-only in the *control-parameter interface* and its documented conventions.
-The geometry (radial grid, FD matrices, the `$2 \times 2$` influence-matrix
-operators and iteration, solvers) is inherited from
-:class:`~dnsjax.geometries.wall_bounded.annular.AnnularFlow`.
+:mod:`~dnsjax.flows.wall_bounded._circular_couette`, exporting the same
+flow-module surface; this module differs only in the
+*control-parameter interface* and its documented conventions.
 
 Control parameters and the quasi-Keplerian regime
 -------------------------------------------------
@@ -94,19 +92,9 @@ docstring): `$m_0 > 1$` restricts the simulation to the
 
 Base flow and laminar constants
 -------------------------------
-Identical to Taylor-Couette (see that module's docstring and
-:mod:`~dnsjax.flows.wall_bounded._circular_couette`): the base flow is
-`$\mathbf{U} = (0, 0, U_\theta)$` in `$(u_z, u_r, u_\theta)$` with
-uniform axial vorticity `$\omega_z = 2 A_0$` and
-`$\nabla^2\mathbf{U} = 0$`, so the energy budget uses
-`$I_{\mathrm{lam}} = D_{\mathrm{lam}} = 4 B_0^2/(\mathrm{Re}\,r_1^2
-r_2^2)$` and `$E_{\mathrm{lam}} = \tfrac12\langle U_\theta^2\rangle$`.
-
-The module exports the flow-module surface that
-:class:`~dnsjax.flow_spec.FlowSpec` lists under ``flow_module``, the
-optional ``get_driving``, the transient-growth hook
-``frozen_profile_flow``, and the basis pair ``to_solver_basis`` /
-``from_solver_basis``.
+Identical to Taylor-Couette, with `$\mathrm{Re} = \mathrm{Re}_i$`: that
+module's docstring (and
+:mod:`~dnsjax.flows.wall_bounded._circular_couette`).
 """
 
 from jax import Array
@@ -157,12 +145,9 @@ def get_stats(state: Array) -> dict[str, Array]:
 
 
 def get_driving(state: Array) -> dict[str, Array]:
-    r"""Applied mean-mode driving inferred from *state* alone.
+    """Applied mean-mode driving (:class:`~dnsjax.flow_spec.FlowSpec`).
 
-    The optional flow-module export ``__main__`` uses for the one
-    ``stats.dat`` row with no step behind it (``t = t0``); every other
-    row carries the value the corrector applied.  Empty unless
-    ``phys.block_mean_spanwise_velocity`` is on.
+    Empty unless ``phys.block_mean_spanwise_velocity`` is on.
     """
     return _get_driving_jit(state, flow)
 

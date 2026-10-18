@@ -25,14 +25,18 @@ inner product is the Lyapunov solution of `$(A, I)$`
 
 JAX and SciPy
 -------------
-The dense time sweeps (:func:`growth_curve`, :func:`input_response_curve`) run
-batched ``expm`` + SVD on the JAX default device -- GPU-capable; enable float64
-first, through
-``bootstrap.configure_jax_platform(..., double_precision=True)``; both raise
-otherwise.  JAX is imported inside those functions only, so importing this
-module (and the Gramian path, which is NumPy/SciPy) stays JAX-free.  SciPy is a
-core dependency but is likewise imported lazily; the Lyapunov solve keeps an
-eigendecomposition closed form as a fallback.
+The dense time sweeps (:func:`growth_curve`,
+:func:`projected_growth_curve`, :func:`input_response_curve`) run
+batched ``expm`` + SVD on the JAX default device -- GPU-capable; enable
+float64 first, through
+``bootstrap.configure_jax_platform(..., double_precision=True)``, or
+they raise.  JAX is imported inside those functions only, so importing
+this module (and the Gramian path, which is NumPy/SciPy) stays
+JAX-free.  SciPy, a dependency of the lab (and of JAX), is likewise
+imported lazily; the eigendecomposition closed forms of the Lyapunov
+solves (:func:`_gramian_eig_closed_form`, the ``ssi`` module's
+``_discrete_lyapunov_eig``) are the tests' independent checks of
+SciPy's.
 
 CLI
 ---
@@ -261,9 +265,8 @@ def controllability_gramian(a: np.ndarray) -> np.ndarray:
     controllability Gramian and the steady forced covariance -- the
     stochastic-forcing analysis of shear flows in Farrell & Ioannou, *Phys.
     Fluids A* **5**, 2600 (1993), and *J. Atmos. Sci.* **53**, 2025 (1996).
-    Requires a stable `$A$`.  Uses SciPy's Bartels-Stewart solver when
-    available, else the eigendecomposition closed form; the result is
-    Hermitian-symmetrized.
+    Requires a stable `$A$`.  Solved by SciPy's Bartels-Stewart solver;
+    the result is Hermitian-symmetrized.
     """
     a = np.asarray(a)
     abscissa = float(np.max(np.linalg.eigvals(a).real))
@@ -328,8 +331,9 @@ def load_modes_npz(
 
     Returns the ``profiles_{i2}_{i3}`` array (``(m, C, Ny)``
     full-state profiles), truncated to the leading *n* when given.
-    Shared loader for every consumer of an injection basis (the
-    ensemble / LIM / SSI identification and the runtime forcing).
+    Shared by the ensemble, LIM and SSI identifications; the runtime
+    forcing reads and checks the bundle itself
+    (:meth:`dnsjax_lab.extensions.forcing.StochasticForcer._load_profiles`).
     """
     path = Path(path)
     key = f"profiles_{i2}_{i3}"

@@ -2,19 +2,21 @@ r"""Spectral-mode probe stream: per-step `$\hat{u}(y)$` time series.
 
 Records the complex wall-normal profiles of a small set of global
 spectral modes -- ``probes.modes`` (the ``probes`` extension section;
-:mod:`dnsjax.extensions`), an ``"i2,i3;..."`` list in the
-stored-layout index convention (axis 2 = complex slot, axis 3 =
-real-FFT slot; :func:`dnsjax.harmonics.parse_mode_pairs`) -- every
+:mod:`dnsjax.extensions`), an ``"i2,i3;..."`` list of stored-layout
+indices (axis 2 = complex slot, axis 3 = real-FFT slot: the
+transient-growth CLI's ``--tg.modes`` convention;
+:func:`dnsjax.harmonics.parse_mode_pairs`) -- every
 ``probes.it_probes`` steps into a binary ``probes.bin`` next to the
 ``.dat`` diagnostic streams.  Wall-bounded systems only (the state
 layout is ``(C, N_y, N_{k_2}, N_{k_3})``); on ``curved-pipe`` the
 component-0 column is the carried `$w_s = h\,u_s$`, not `$u_s$`
-(:class:`dnsjax_lab.extensions.ProbesParams`).  Unlike the transient-growth
-CLI, the mean mode ``(0,0)`` **is** allowed: its record is the
-instantaneous mean profile of the stored field -- the perturbation on a
-base-flow system, whose closed-form laminar profile gives the total
-(the reader's ``mean_profile`` adds it for plane Couette and plane
-Poiseuille), and the total itself on a force-driven one.
+(:class:`dnsjax_lab.extensions.ProbesParams`).  Unlike the
+transient-growth CLI, the mean mode ``(0,0)`` **is** allowed: its
+record is the instantaneous mean profile of the stored field -- the
+perturbation on a base-flow system, whose closed-form laminar profile
+gives the total (the reader's ``mean_profile`` adds it for plane
+Couette and plane Poiseuille), and the total itself on a force-driven
+one.
 
 Why a fourth stream: a mode time series at `$O(10^5)$` to `$O(10^6)$` samples
 is far beyond what per-snapshot output can carry (a snapshot per sample
@@ -47,16 +49,19 @@ layout), and raise the reader's ``MIN_FORMAT_VERSION`` with it.
 
 Resume semantics: an existing ``probes.bin``/``probes.json`` pair is
 appended to iff the sidecar matches the current run (same modes **and
-the wavenumbers they denote**, grid, components, precision, system, and
-cadence) -- anything else is a hard error asking the user to move the
-old pair away.  The wavenumbers matter because a resume may change
-``res.nx`` / ``res.nz`` (the Fourier axes are regridded at load), and
-on the wrap-ordered `$k_z$` axis a stored *index* in the negative block
-then means a different mode.  A clean continuation
-duplicates one sample per seam (the parent's cadence-aligned final
-record and the child's t0 record hold the same state at the same
-``t``); the reader drops these and flags genuinely non-monotonic
-timestamps (a re-run trajectory segment).
+the wavenumbers they denote**, grid, components, precision, system,
+cadence, and ``dt``: :data:`_MATCH_KEYS`) -- anything else is a hard
+error asking the user to move the old pair away.  The wavenumbers
+matter because a resume may change ``res.nx`` / ``res.nz`` (the Fourier
+axes are regridded at load, ``snapshot._from_io_layout_core``), and on
+the wrap-ordered `$k_z$` axis a stored *index* in the negative block
+then means a different mode; matching the wavenumbers refuses exactly
+that, and still appends across a resolution change that leaves every
+probed mode where it was.  A clean continuation duplicates one sample
+per seam (the parent's cadence-aligned final record and the child's t0
+record hold the same state at the same ``t``); the reader drops these
+and flags genuinely non-monotonic timestamps (a re-run trajectory
+segment).
 
 Sharded gather
 --------------
@@ -64,21 +69,22 @@ The state's mode axes are sharded (`$k_2$` by ``np0``, `$k_3$` by
 ``np1``), and slicing a sharded axis of the global array is not
 supported under explicit sharding; :func:`build_mode_extractor`
 instead gathers inside a ``shard_map`` -- the owning device is
-computed from the *local* shard shape and every device contributes
-either the column or zeros to a ``psum`` (the
-``extract_mean_mode`` pattern of
+computed at trace time from the *local* shard shape (the indices are
+static), and every device contributes either the column or zeros to a
+``psum`` over both mesh axes (the ``extract_mean_mode`` pattern of
 :mod:`dnsjax.geometries.wall_bounded._base`, generalized to arbitrary
 static mode indices).  Probed indices always address *true* modes
 (``validate_parameters`` bounds them by the unpadded mode counts), so
 spectral padding slots are never read.
 
 Buffering matches the ``.dat`` streams: an on-device
-``(nbuffer, K, C, N_y)`` complex buffer plus a host timestamp list,
-flushed (appended + ``fsync``-ed) by the main process when full, at
-shutdown, before every snapshot, and on a termination signal
-(``flush_all_buffers`` in :mod:`dnsjax.__main__`); flushed records are
-scanned for non-finite values and a hit aborts the run through the
-same FATAL / exit-3 path as the other diagnostics.
+``(nbuffer, K, C, N_y)`` complex buffer plus a host timestamp list and
+index, reset on all ranks in lockstep, and flushed (appended +
+``fsync``-ed) by the main process when full and at every
+``flush_all_buffers`` site of :mod:`dnsjax.__main__` -- after the first
+step, before every snapshot, at shutdown and on a termination signal;
+flushed records are scanned for non-finite values and a hit aborts the
+run through the same FATAL / exit-3 path as the other diagnostics.
 """
 
 import json
@@ -118,13 +124,8 @@ FORMAT_VERSION: int = 3
 _MATCH_KEYS: tuple[str, ...] = (
     "format_version",
     "modes",
-    # Not the indices alone: a resume may change ``res.nx`` /
-    # ``res.nz`` (the Fourier axes are regridded at load --
-    # ``snapshot._from_io_layout_core``), and on the wrap-ordered
-    # `$k_z$` axis a stored *index* in the negative block then denotes
-    # a different wavenumber.  Matching the wavenumbers is the right
-    # granularity: it refuses exactly that, and still appends across a
-    # resolution change that leaves every probed mode where it was.
+    # Not the indices alone: a resume may regrid the Fourier axes (the
+    # module docstring's resume semantics).
     "wavenumbers",
     "n_components",
     # The *counts* above are not enough: a resume at unchanged ``ny``
@@ -172,23 +173,23 @@ def build_mode_extractor(
     r"""Build a jitted gather of the probed modes' columns.
 
     Returns a function ``state -> (K, C, N_y)`` complex, replicated
-    across devices.  ``state`` has the wall-bounded spectral layout
+    across devices, for ``state`` in the wall-bounded spectral layout
     ``(C, N_y, N_{k_2}, N_{k_3})`` with axes 2/3 sharded by
-    ``np0``/``np1``; per probed mode the owning device is computed
-    from the local shard shape at trace time (the indices are static)
-    and contributes the column to a ``psum`` over both mesh axes.
+    ``np0``/``np1`` (the gather: the module docstring's "Sharded
+    gather").
 
-    Only the first *n_components* slots are gathered (every slot when ``None``)
-    -- the flow's physical ones; a pipe state's trailing carried slots are
-    solver internals (``_cylindrical_stepping``).  Where the state is carried
-    in a **solver** basis (cylindrical / annular `$u_\pm$`, the viscoelastic
-    spin tensor) it is converted to physical components -- the basis of
-    ``_component_labels`` and of the written stream -- *after* the gather, on a
-    ``(C, N_y)`` slice rather than the whole spectral field, so a sample costs
-    little and ``it_probes = 1`` is affordable.  (The map is
-    linear and maps zero to zero, so it commutes with the owner mask and the
-    ``psum``.)  Cartesian carries physical components under both
-    ``res.consistent_imm`` formulations and needs no conversion at all.
+    Only the first *n_components* slots are gathered (every slot when
+    ``None``) -- the flow's physical ones; a pipe state's trailing
+    carried slots are solver internals (``_cylindrical_stepping``).
+    Where the state is carried in a **solver** basis (cylindrical /
+    annular `$u_\pm$`, the viscoelastic spin tensor) it is converted to
+    physical components -- the basis of ``_component_labels`` and of
+    the written stream -- *after* the gather, on a ``(C, N_y)`` slice
+    rather than the whole spectral field, so a sample costs little and
+    ``it_probes = 1`` is affordable (the map is linear and maps zero to
+    zero, so it commutes with the owner mask and the ``psum``).
+    Cartesian carries physical components under both
+    ``res.consistent_imm`` formulations and needs no conversion.
     """
     pairs = tuple((int(i2), int(i3)) for i2, i3 in mode_pairs)
     if params.phys.system in cartesian_systems:
@@ -236,12 +237,11 @@ def build_mode_extractor(
 class ProbeStream:
     r"""Buffered binary writer for the spectral-mode probe stream.
 
-    Mirrors the ``.dat`` streams' state machine (on-device buffer +
-    host timestamps + index, all ranks reset in lockstep, disk I/O on
-    the main process only).  Construct once with the initial state
-    (shape source), then :meth:`record` each sample and let
-    :meth:`flush` run at the ``flush_all_buffers`` sites.  Both return
-    a non-finite diagnostic message (main process only) exactly like
+    Mirrors the ``.dat`` streams' state machine (the module docstring's
+    buffering paragraph).  Construct once with the initial state (shape
+    source), then :meth:`record` each sample and let :meth:`flush` run
+    at the ``flush_all_buffers`` sites.  Both return a non-finite
+    diagnostic message (main process only) exactly like
     ``_flush_stats``; the caller aborts on it.
     """
 
@@ -301,6 +301,7 @@ class ProbeStream:
     def _open_files(self) -> None:
         """Validate/append or create the ``probes.bin``/``.json`` pair.
 
+        Appends only against a sidecar matching on :data:`_MATCH_KEYS`.
         Validation runs identically on every rank (shared filesystem,
         as for snapshots) so a mismatch exits all ranks; only the main
         process writes the sidecar.
@@ -392,16 +393,16 @@ class ProbeHooks(RunHooks):
     r"""The ``[probes]`` section's part in the solver's run loop.
 
     The section's ``runtime`` factory
-    (:class:`~dnsjax.extensions.RunHooks`).  Records the initial state
-    (``start``), then every ``it_probes`` steps the pre-step state
-    (``sample``, which skips ``it == it0``, the start record's), and
-    the final state when the run ends on the cadence (``finish``): the
-    loop samples *before* each step, so the post-step final state is
-    never sampled there, and only a cadence-aligned final record (a
-    ``stop.max_sim_time`` horizon of a whole number of probe
-    intervals ends exactly on the grid) keeps the sample times uniform
-    for the readers.  A non-finite record, possible only when it fills
-    the buffer (``outs.nbuffer``), aborts the run.
+    (:class:`~dnsjax.extensions.RunHooks`, which times the hooks).
+    Records the initial state (``start``), every ``it_probes`` steps
+    the pre-step state (``sample``, which skips ``it == it0``, the start
+    record's), and the post-step final state when the run ends on the
+    cadence (``finish``): only a cadence-aligned final record (a
+    ``stop.max_sim_time`` horizon of a whole number of probe intervals
+    ends exactly on the grid) keeps the sample times uniform for the
+    readers.  A non-finite record aborts the run, through the hook that
+    records it when it fills the buffer (``outs.nbuffer``), else at the
+    next checked :meth:`flush`.
     """
 
     def __init__(self, state: Array, t: float) -> None:

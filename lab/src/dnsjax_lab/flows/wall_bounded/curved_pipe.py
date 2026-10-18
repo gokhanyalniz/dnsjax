@@ -33,14 +33,14 @@ Consequences for the diagnostics:
   transition indicator here, so
   ``stop.check_laminarization`` reads "relaminarized to 2D".
 
-The module exports the flow-module surface that
-:class:`~dnsjax.flow_spec.FlowSpec` lists under ``flow_module``, the
-optional ``get_driving``, ``CARRIED_FIELDS`` (the snapshot ``carry/``
-member) and the basis pair ``to_solver_basis`` / ``from_solver_basis``,
-which here carry the metric weight `$h$` as well as the `$u_\pm$`
-rotation.  ``toroidal_map`` serves both initial conditions, the random
-field through ``toroidal_perturbation`` (:mod:`dnsjax.ic.random_field`)
-and the localized rolls (:mod:`dnsjax.ic.localized_rolls`).
+The module exports the flow-module surface of
+:class:`~dnsjax.flow_spec.FlowSpec`, with the optional ``get_driving``,
+``CARRIED_FIELDS`` (the snapshot ``carry/`` member) and the basis pair
+``to_solver_basis`` / ``from_solver_basis``, which here carry the
+metric weight `$h$` as well as the `$u_\pm$` rotation.
+``toroidal_map`` serves both initial conditions, the random field
+through ``toroidal_perturbation`` (:mod:`dnsjax.ic.random_field`) and
+the localized rolls (:mod:`dnsjax.ic.localized_rolls`).
 
 Design notes
 ------------
@@ -456,13 +456,11 @@ def _get_driving_jit(
 
 
 def get_driving(state: Array) -> dict[str, Array]:
-    r"""Applied mean-mode driving, from *state* alone.
+    r"""Applied mean-mode driving (:class:`~dnsjax.flow_spec.FlowSpec`).
 
-    The optional flow-module export ``__main__`` uses for the one
-    ``stats.dat`` row with no step behind it (`$t = t_0$`); same key
-    and sign as the corrector's own column.  ``{}`` under a constant
-    pressure gradient, where the applied force is the known constant
-    `$4/\mathrm{Re}$` and no column is written.
+    Inferred by :func:`_applied_driving`, not from the wall shear alone;
+    ``{}`` under a constant pressure gradient, where the applied force
+    is the known constant `$4/\mathrm{Re}$` and no column is written.
     """
     return _get_driving_jit(state, fourier, flow)
 
@@ -473,17 +471,13 @@ def get_driving(state: Array) -> dict[str, Array]:
 def add_curved_pipe_laminar(state: Array) -> Array:
     r"""Add the straight-pipe profile to a curved-pipe perturbation.
 
-    The curved pipe integrates the **total** velocity, and has no
-    closed-form laminar state to start from -- its laminar solution is
-    the two-dimensional Dean-vortex flow, which is numerical.  The
-    start is therefore the `$\kappa = 0$` profile `$u_s = 1 - r^2$`,
-    at the mean mode, plus the random perturbation; the flow relaxes
-    from there on a viscous timescale.
-
-    The profile is axisymmetric, streamwise-invariant and vanishes at
-    the wall, so it is solenoidal in the toroidal metric too and keeps
-    no-slip; the perturbation it is added to, the random draw or the
-    localized rolls, has already been mapped onto toroidal continuity
+    The `$\kappa = 0$` profile `$u_s = 1 - r^2$` at the mean mode: the
+    flow has no closed-form laminar state to start from (the module
+    docstring).  The profile is axisymmetric, streamwise-invariant and
+    vanishes at the wall, so it is solenoidal in the toroidal metric
+    too and keeps no-slip; the perturbation it is added to, the random
+    draw or the localized rolls, has already been mapped onto toroidal
+    continuity
     (:func:`~dnsjax_lab.flows.wall_bounded.curved_pipe.toroidal_map`).
     The profile is :func:`init_state`'s.
     """

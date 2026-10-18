@@ -14,19 +14,18 @@ Mech.* **1036**, A52 (2026)
 the wall-normal-resolved spectra and budget refine them.
 
 Both states share every singleton — grid, operators, jitted steppers,
-`dt` — so their difference is purely dynamical.
+`dt` — so their difference is purely dynamical (the `twin/driver.py`
+and `twin/diagnostics.py` module docstrings).
 
 ## Scope
 
 **Cartesian wall-bounded flows only** (plane-Couette,
 plane-Poiseuille) at a **fixed time step**. `step.adaptive` and the
 `[force]` section are rejected: the streams assume uniform sampling,
-and a kick would have to be applied identically to both states.
-`stats.dat`, `steps.dat` and `corrector.dat` are recorded for **both**
-states — the partner's as `stats_twin.dat`, `steps_twin.dat` and
-`corrector_twin.dat` (see below). `[probes]` still records the
-reference alone; the corrector-convergence and non-finite guards watch
-both.
+and a kick would have to be applied identically to both states. The
+per-state solver streams are recorded for **both** states (below);
+`[probes]` records the reference alone; the corrector-convergence and
+non-finite guards watch both.
 
 ## Running one
 
@@ -55,7 +54,7 @@ final snapshot pair; see
 | `twin.seed` | unset | Perturbation RNG seed; vary per ensemble member. Unset draws one from the system entropy pool on a fresh start and takes the recorded one from `twin.json` on a resume |
 | `twin.smoothness` | `0.022` | Spectral envelope of the random perturbation over the periodic directions (`init.random_smoothness` convention). The default seeds below the minimal flow unit of plane Poiseuille at $Re_\tau = 178.6$ (below) |
 | `twin.wall_smoothness` | `0.4` | Its wall-normal envelope (`init.random_wall_smoothness` convention) |
-| `twin.wall_confinement` | `0.14` | Scale-dependent narrowing of its wall window (`init.random_wall_confinement` convention); `0` gives every mode the same window, which is what a member whose `twin.json` has no `wall_confinement` key ran with (it back-fills to `0`), and such a member resumes only with `--twin.wall_confinement 0` |
+| `twin.wall_confinement` | `0.14` | Scale-dependent narrowing of its wall window (`init.random_wall_confinement` convention); `0` gives every mode the same window. A member whose `twin.json` has no `wall_confinement` key ran with `0`, back-fills to it, and resumes only with `--twin.wall_confinement 0` |
 | `twin.mean_flow` | `true` | Perturb the $(k_x, k_z) = (0, 0)$ profile as well, conditioned on its conservation laws (below); `false` gives a mean-free partner |
 | `twin.bins` | `false` | Also record the $\Delta U$ / $\Delta u_1$ / $\Delta u_2$ three-bin energies in `twin.dat`; required by `it_budget` |
 | `twin.x0_planes` | `false` | Also store the $k_x = 0$ plane (the `_x0` fields) in both wall-normal-resolved streams: $E_{\Delta u_1}$, and with it $E_{\Delta u_2}$, resolved in $k_z$. The three-bin split does not need it; off, it is never traced |
@@ -72,58 +71,47 @@ final snapshot pair; see
 | `twin.it_spectra3d_ref` | `it_spectra3d` | Steps between `twin_spectra3d_ref/` files, the reference state's cube; `0` switches them alone off |
 | `twin.it_budget3d` | unset | Steps between `twin_budget3d/` files: the convective `twin_ybudget` terms on the same points |
 | `twin.n_y3d`, `n_kz3d`, `n_kx3d` | unset | Points the cubes keep per axis, spaced uniformly in the logarithm of the wall distance, $\lvert k_z \rvert$ and $k_x$; unset keeps every one |
-| `twin.it_lowres_delta` | unset | Steps between `lowres_delta/` reduced-resolution snapshots of the difference field and its pressure, at the `[lowres]` resolution |
+| `twin.it_lowres_delta` | unset | Steps between `lowres_delta/` reduced-resolution snapshots of the difference field (and, under `lowres.pressure`, its pressure), at the `[lowres]` resolution |
 
-Every optional cadence here is off when unset **or `0`**. A layer cannot
-unset a field, so `0` is how a command line switches off a cadence a
-member's `parameters.toml` sets (the root
-[configuration guide](../../../../docs/configuration.md)); it is recorded
-in `twin.json` as unset. `it_energy` has no off state.
+Every optional cadence here is off when unset **or `0`** (why both: the
+root [configuration guide](../../../../docs/configuration.md)), except
+the three reference cadences: unset, each takes its difference
+cadence, so only `0` switches one off. An off cadence is recorded in
+`twin.json` as unset. `it_energy` has no off state.
 
-`twin.bins` and `twin.x0_planes` are both off by default, and both
-for the same reason. The three-bin split is a three-bin partition of
-the $(k_x, k_z)$ plane, and Egerique-de-la-Concha & Hwang restrict it
-to minimal flow units; above that, `twin.it_yspectra` resolves the
-same information in $k$ and $y$. Turning the bins off drops a few percent
-of every step — the two masked full-state copies the split forces —
-and leaving `x0_planes` off drops a third of each wall-normal-resolved
-record and a third of its collective. What the streams always carry
-instead is the $y$-resolved $(0,0)$ mode `_xz00`, which is
-$E_{\Delta U}$ on its own. The first column of the $k_x$ marginal is
-the whole $k_x = 0$ plane summed over $k_z$, so the other two bins
-follow from it as well: `analysis.twin.bin_energies` reads all three
-off the default streams, and the plane adds only the $k_z$ resolution
-of $E_{\Delta u_1}$ and $E_{\Delta u_2}$ (without it $E_{\Delta u_2}$
-is resolved in $k_x$ alone).
+`twin.bins` and `twin.x0_planes` are both off by default, for one
+reason: the three-bin split is a partition of the $(k_x, k_z)$ plane
+that Egerique-de-la-Concha & Hwang restrict to minimal flow units, and
+the default $y$-resolved streams already return all three bins
+(`analysis.twin.bin_energies`), the plane adding only the $k_z$
+resolution of $E_{\Delta u_1}$ and $E_{\Delta u_2}$
+(`twin/diagnostics.py`, "Wall-normal-resolved spectra"). Off, the bins
+save a few percent of every step (two masked full-state copies) and the
+plane a third of each wall-normal-resolved record and of its
+collective.
 
-Three of these are not priced by cadence alone. `it_budget` sets the
-**run's peak memory**, not only its per-sample cost: the budget is a
-separate compiled program whose transient is the driver's global
-high-water mark, and the device allocator's pool grows to the maximum
-over every program. `it_ybudget` costs memory in two places — a
-resident second factored banded operator with its homogeneous columns
-(`twin/pressure.py`'s "Cost" section), and a per-sample transient that
-is the easy one to miss: measured on CPU at some 33 padded physical
-fields' worth, against 22 for the time step itself, so an enabled
-budget stream rather than the step sets the run's peak (the "Memory"
-entry of `twin/diagnostics.py`'s Design notes). `it_budget3d` is the
-same program and the same costs, and a sample due for both shares one
-density pass. `it_lowres_delta` under `lowres.pressure` holds the same
-resident operator, and its sample peaks at some 16 fields, below the
-step: a single pass of the pressure's source, without the budget's
-split of it. A GPU schedules its own; the driver's closing
-`Peak device memory` line (`Peak host memory` on CPU) is the number to
-size a job against. `spectra_ref`
-gates the reference half of **every** spectrum in compute as well as on
-disk: each half is a static flag on its jitted sampler, so with it off
-the reference reduction is never traced — saving a field pass and a
-collective on the $(k_z, k_x)$ stream, and about half the sample on the
-$y$-resolved one and the cubes. What it costs is the decorrelation
+Some knobs are not priced by cadence alone (`twin/driver.py`, Design
+notes, "What the [twin] cadences cost"). `it_budget` and `it_ybudget`
+set the **run's peak memory**: each sample is a separate program whose
+transient, measured on CPU, lies above the time step's, and
+`it_ybudget` also holds a second factored banded operator for the run
+(`twin/pressure.py`, "Cost"). `it_budget3d` is the y-budget's program
+with the same costs, and a sample due for both shares one density
+pass. `it_lowres_delta` under `lowres.pressure` holds the same resident
+operator, but its sample peaks below the step (the figures:
+`twin/diagnostics.py`, Design notes, "Memory"). A GPU schedules its
+own: size a job against the driver's closing `Peak device memory` line
+(`Peak host memory` on CPU). `spectra_ref` off skips the reference half
+of **every** spectrum in compute as well as on disk — a field pass and
+a collective on the $(k_z, k_x)$ stream, about half the sample on the
+$y$-resolved one and the cubes — at the cost of the decorrelation
 ratio.
 
-The two $y$-resolved streams and the cubes store $k_z$ folded onto
-$|k_z|$, which needs the even `res.nz` that every run has anyway: the
-solver refuses an odd Fourier count at parse.
+Both wavenumber axes of the two $y$-resolved streams and the cubes are
+one-sided, $k_z$ folded onto $|k_z|$ as a requirement, not a
+convenience (`_fold_kz` in `twin/diagnostics.py` says why); the fold
+needs the even `res.nz` that every run has anyway: the solver refuses
+an odd Fourier count at parse.
 
 The solver's own `[lowres]` section (the root
 [running guide](../../../../docs/running.md#reduced-resolution-snapshots))
@@ -135,25 +123,18 @@ snapshots of `twin.it_lowres_delta`.
 ## The initial perturbation
 
 $\delta$ is the divergence-free random field of
-`dnsjax.ic.random_field` — device-count independent, seeded per global
-mode — rescaled so that its solver-measure perturbation energy is
-*exactly* `twin.e0`:
+`dnsjax.ic.random_field`, rescaled to a solver-measure perturbation
+energy $E'(\delta) = \tfrac{1}{2}\lVert \delta \rVert^2$ of *exactly*
+`twin.e0` and applied once, at the fresh start: a resume can never
+re-perturb (`twin/driver.py`, "Initial perturbation").
 
-```math
-E'(\delta) = \tfrac{1}{2}\lVert \delta \rVert^2 = e_0 ,
-```
-
-the same convention as `snapshot_perturb --perturb.amplitude_energy`.
-It is applied once, at the fresh start; a resume can never re-perturb.
-
-Its scale is `twin.smoothness`. The envelope's energy per mode falls
-as $e^{-c(|k_x| + |k_z|)}$ with $c = -2\ln(1 - s)$, so the
-premultiplied one-dimensional spectra peak at the wavelength
-$\lambda^* = 4\pi |\ln(1 - s)| h$ (`dnsjax.ic.random_field`). The
-default puts that peak at $\lambda^{*+} = 50$, half the span of the
-minimal flow unit: the seed then sits mostly below the smallest
-perturbation of the laminar state that would trigger turbulence, and
-cannot carry a self-sustaining structure of its own. Inverted exactly,
+Its scale is `twin.smoothness`, $s$: the premultiplied spectra peak at
+$\lambda^* = 4\pi |\ln(1 - s)| h$ (`dnsjax.ic.random_field` derives
+it), and the default puts that peak at $\lambda^{*+} = 50$, half the
+span of the minimal flow unit, so the seed sits mostly below the
+smallest perturbation of the laminar state that would trigger
+turbulence and cannot carry a self-sustaining structure of its own.
+Inverted exactly,
 
 ```math
 s = 1 - \exp\left(-\frac{\lambda^{*+}}{4\pi\, Re_\tau}\right),
@@ -161,67 +142,59 @@ s = 1 - \exp\left(-\frac{\lambda^{*+}}{4\pi\, Re_\tau}\right),
 
 which is 0.022 for plane Poiseuille at $Re = 4200$ in the
 $4\pi \times 2 \times 2\pi$ box ($Re_\tau = 178.6$) and 0.0079 at
-$Re_\tau = 500$. A minimal flow unit has no room below itself, so a
-run in one (the plane-Couette box of Hamilton, Kim & Waleffe, *J. Fluid
+$Re_\tau = 500$ (`twin/driver.py`, Design notes, "The smoothness
+default"). A minimal flow unit has no room below itself, so a run in
+one (the plane-Couette box of Hamilton, Kim & Waleffe, *J. Fluid
 Mech.* **287**, 317–348, 1995) sets `--twin.smoothness 0.4`
 (`ensemble_setup.py build-twin --smoothness 0.4` for a member tree);
 members recorded with $s = 0.4$ resume only with that flag.
 
 Its $(k_x, k_z) = (0, 0)$ content follows `twin.mean_flow`, **on by
 default** (the driver's own knob, not the shared
-`init.random_mean_flow`, which every flow defaults off), and is
-conditioned on that mode's conservation laws. So the partner drives
-the flow at the reference's own mean pressure gradient — whatever the
-driving — and under a held bulk velocity carries its bulk exactly:
-the pair is one flow, driven identically, differing only in its
-initial state.
+`init.random_mean_flow`, which every flow defaults off), conditioned
+on that mode's conservation laws (`dnsjax.ic.mean_mode`, which says
+what the pair then shares).
 
 `twin.e0 = 0` makes the partner an exact copy stepped by the same
-jitted stepper, so every difference energy must be exactly zero. That
-is the bit-identity determinism guard for the whole lockstep loop, and
-the test suite pins it.
+jitted stepper, so every difference energy must be exactly zero and
+every partner stream byte-identical to the reference's: the
+bit-identity determinism guard for the whole lockstep loop, which the
+test suite pins.
 
 ## Diagnostic streams
 
 ### `twin.dat` — component energies
 
-Fields are split by their wall-parallel Fourier support into three
-components: the **mean** $\Delta U$ (the $(k_z, k_x) = (0,0)$ mode),
-the **streaks** $\Delta u_1$ ($k_x = 0$, $k_z \neq 0$ — the
-streamwise-averaged fluctuation), and the **streamwise-varying**
-$\Delta u_2$ ($k_x \neq 0$). The three masks partition the whole mode
-grid, so
-
-```math
-E_{\Delta U} + E_{\Delta u_1} + E_{\Delta u_2} = E_\Delta
-```
-
-holds to rounding — a deliberate redundancy, and a consistency guard.
-Columns are `E_d` and `E_ref` (the reference state's own energy)
-always; under `twin.bins`, additionally `E_dU`, `E_du1`, `E_du2` and
-the per-velocity-component split `E_du1_x` / `E_du1_y` / `E_du1_z`.
+Fields are split by their wall-parallel Fourier support into the
+**mean** $\Delta U$ (the $(k_z, k_x) = (0,0)$ mode), the **streaks**
+$\Delta u_1$ ($k_x = 0$, $k_z \neq 0$ — the streamwise-averaged
+fluctuation) and the **streamwise-varying** $\Delta u_2$
+($k_x \neq 0$), whose masks partition the mode grid, so
+$E_{\Delta U} + E_{\Delta u_1} + E_{\Delta u_2} = E_\Delta$ holds to
+rounding — a deliberate redundancy, and a consistency guard
+(`twin/diagnostics.py`, "Component decomposition"). Columns are `E_d`
+and `E_ref` (the reference state's own energy) always; under
+`twin.bins`, additionally `E_dU`, `E_du1`, `E_du2` and the
+per-velocity-component split `E_du1_x` / `E_du1_y` / `E_du1_z`.
 There is no driving column: the difference of a uniform mean-mode
-force does no work on any $y$-integrated budget term (each state's own
-applied forcing is in its `stats*.dat`, so the difference stays
-recoverable offline, and the $y$-*resolved* budget carries the density
-it does have — see `twin_ybudget.bin` below).
-Format, buffering, `fsync`, the non-finite guard and the flush sites are
-those of `stats.dat`, with a `t0` row at setup and a final row after the
-last step.
-
-At the default `it_energy = 1` this is one extra jitted call per step —
-the intended sampling rate for a growth-rate fit.
+force does no work on any $y$-integrated budget term
+(`twin/diagnostics.py`, "Mean-mode driving"). Each state's own applied
+forcing is in its `stats*.dat`, so the difference stays recoverable
+offline, and the $y$-*resolved* budget carries the density it does
+have. Format, buffering, `fsync`, the non-finite guard and the flush
+sites are those of `stats.dat`, with a `t0` row at setup and a final
+row after the last step. At the default `it_energy = 1` this is one
+extra jitted call per step, the intended sampling rate for a
+growth-rate fit.
 
 ### `twin_budget.dat` — the decomposed energy budget
 
 The volume-averaged budget of each component energy: **24 advective
 (production and transport) terms** plus **3 dissipations**, plus
 consistency sums that close against the stepped states to spatial
-truncation. The advective terms group by which field occupies the
-mean slot — 7 with a carrier profile, 2 advected by the mean
-difference, 6 at the $(0,0)$ mode, and 9 triple-fluctuating — and the
-transport terms cancel pairwise by parts, so their total is a further
-check rather than a free parameter.
+truncation. The transport terms cancel pairwise by parts, so their
+total is a further check rather than a free parameter (the term list
+and its evaluation: `twin/diagnostics.py`, "Budget terms").
 
 ### `twin_yspectra.bin` / `twin_ybudget.bin` — wall-normal-resolved
 
@@ -233,12 +206,11 @@ difference energy as a density in $y$, marginalized each way,
 E_\Delta^x[u,v,w](y, k_z), \qquad E_\Delta^z[u,v,w](y, k_x)
 ```
 
-— energy first, then the sum over the other wavenumber, which under
-the forward-norm convention *is* the average over that direction —
-plus the $(0,0)$ mode, $E_\Delta^{xz00}(y)$ per component, and under
-`twin.x0_planes` the whole $k_x = 0$ plane it comes from, which is the
-spectrum of the streamwise-averaged field. $E_{\Delta U}$,
-$E_{\Delta u_1}$ and $E_{\Delta u_2}$ come back exactly without it.
+— energy first, then the sum over the other wavenumber — plus the
+$(0,0)$ mode, $E_\Delta^{xz00}(y)$ per component, and under
+`twin.x0_planes` the whole $k_x = 0$ plane it comes from, the spectrum
+of the streamwise-averaged field (`twin/diagnostics.py`,
+"Wall-normal-resolved spectra"; the record layout: `twin/yspectra.py`).
 
 Which fields a record holds is the sidecar's `suffixes`, and the
 readers follow it rather than assume: a member written before `_xz00`
@@ -252,41 +224,24 @@ reference fluctuation (`T_ref`) and by the difference field's own
 advection (`T_self`), the viscous term in both forms (`V`, `eps`),
 and the work of the pressure gradient (`Wp`).
 `lab/scripts/twin_spectral_maps.py` draws them by default, regrouped as
-the terms of the difference-energy balance, each as its contribution
-to $\partial_t E_\Delta$ (`analysis.twin.balance_term`), in wall
-units and once more over the production's peak (the shape maps), and
-under
-`--moment-budget` splits the rates of the difference energy's
-log-coordinate moments over the same terms (`analysis.twin.moments`).
+the terms of the difference-energy balance
+(`analysis.twin.balance_term`), and under `--moment-budget` splits the
+rates of the difference energy's log-coordinate moments over the same
+terms (`analysis.twin.moments`); its docstring says what each figure
+shows.
 
 `twin.rotational_ybudget` (default **off**) writes the same budget
-with the *rotational* nonlinear term the solver integrates.
-Then the two transfer terms become exactly redistributive —
-$\Delta\mathbf{u}\cdot(\Delta\mathbf{u}\times\mathbf{b}) = 0$
-pointwise, so $\sum_k T = 0$ at every $y$ whatever the resolution —
-and the nonlinear term is checkable against the solver's own
-right-hand side. That is a different decomposition, not a repaired
-one: convectively $\sum_k T(y)$ *is* the turbulent transport of
-difference energy, and rotationally that transport is redistributed —
-its $\Delta v$ half into `Wp`, which becomes the Bernoulli-pressure
-work, and the rest into the production. The two forms differ
-by a gradient, so volume totals agree while the $y$-densities move
-between production, transfer and `Wp`. An eighth column, `P_lift`,
-carries the convective `P_U` unchanged and outside the sum. It is the
-classical density
-
-```math
--\sigma_{k_x}\,\mathrm{Re}\{\Delta\hat u_i^*\,\Delta\hat v\}\,
-  \partial_y U^{(1)}_i
-```
-
-($\sigma_{k_x}$ weights the stored half plane: 1 at $k_x = 0$, 2
-elsewhere), otherwise unrecoverable from what the streams hold, and the
-piece a channel-budget reader will look for.
-
-Both wavenumber axes are one-sided, with $|k_z|$ folded — a
-requirement, not a convenience: the stored half-plane's entries are
-conjugate-*pair* energies, whose partners sit at $-k_z$.
+with the *rotational* nonlinear term the solver integrates: the two
+transfer terms become exactly redistributive ($\sum_k T = 0$ at every
+$y$, whatever the resolution) and the nonlinear term is checkable
+against the solver's own right-hand side. That is a different
+decomposition, not a repaired one: the two forms differ by a gradient,
+so volume totals agree while the $y$-densities move between
+production, transfer and `Wp`. An eighth column, `P_lift`, carries the
+convective `P_U` unchanged and outside the sum: the classical
+production density a channel-budget reader looks for, otherwise
+unrecoverable from what the streams hold (`twin/diagnostics.py`,
+"Spectral budget" and "Two budget forms").
 
 Summing either marginal over its axis and integrating in $y$ returns
 `twin.dat`'s `E_d`; summing the budget's returns `twin_budget.dat`'s
@@ -301,39 +256,23 @@ The per-mode difference energy $E_\Delta(k_z, k_x)$, and in
 `twin_spectra_ref.bin` the reference state's own spectrum. Their ratio
 $E_\Delta / 2E^{(1)}$ is the scale-by-scale decorrelation measure —
 which scales have decorrelated at each time, rather than a single
-scalar. FFT-free (a masked reduction of data already in spectral
-space), so any cadence is cheap; the reason it is a binary stream is
-volume: $O(N_{k_z} N_{k_x})$ values per sample is far beyond the
-scalar `.dat` streams, and three orders of magnitude below a snapshot.
-
-```python
-numpy.dtype(
-    [("t", "<f8"), ("e_delta", VAL, (N2, N3))]
-    + ([("e_ref", VAL, (N2, N3))] if includes_ref else [])
-)
-```
-
-with `N2 = nz - 1` true complex modes and `N3 = nx // 2` true real-FFT
-modes — spectral padding is never stored — and `VAL` following
-`res.double_precision`. A `twin_spectra.json` sidecar carries the
-schema: mode counts, the integer harmonic lists of both axes, the
-domain lengths, the cadence, and the resolved parameter dump. Its
-`format_version` is enforced against the reader's floor, as for every
-other dnsjax stream.
+scalar. FFT-free, so any cadence is cheap. Why a binary stream, the
+record layout (true modes only, spectral padding never stored), the
+`twin_spectra.json` sidecar and its enforced `format_version`: the
+`twin/spectra.py` module docstring.
 
 ### `twin_spectra_ref.bin` / `twin_yspectra_ref.bin` — the reference
 
 The reference halves of the two spectra (`e_ref`, and the `r_*` set of
-the $y$-resolved stream), each a stream of its own on its own cadence.
-At the default cadences they sample the steps the difference streams
-do, in one program with them. A member recorded before they had streams
-of their own stored them inside the difference streams
-(`includes_ref: true` in the sidecar, the `e_ref` field above) and keeps
-writing that layout when resumed. The readers return the reference the
-same way from either layout — `read_twin_spectra` / `read_twin_yspectra`
-on the difference stream's sample times, `nan` where the reference has
-none, and the `*_ref` readers on its own — and so does
-`lab/scripts/twin_spectral_maps.py`, for mixed ensembles too.
+the $y$-resolved stream), each a stream of its own on its own cadence;
+at the default cadences one program samples them with the difference
+streams. A member recorded before they had streams of their own stored
+them inside the difference streams (`includes_ref: true` in the
+sidecar) and keeps writing that layout when resumed. The readers return
+the reference the same way from either layout — `read_twin_spectra` /
+`read_twin_yspectra` on the difference stream's sample times, `nan`
+where the reference has none, and the `*_ref` readers on its own — and
+so does `lab/scripts/twin_spectral_maps.py`, for mixed ensembles too.
 
 ### `twin_spectra3d/`, `twin_spectra3d_ref/`, `twin_budget3d/` — cubes
 
@@ -341,41 +280,34 @@ The densities of the $y$-resolved streams without the sum over the
 other wavenumber: the componentwise difference energy (`e_u`, `e_v`,
 `e_w`), the reference's (`r_*`) and every convective budget term
 (`P_U`, `P_r`, `T_ref`, `T_self`, `V`, `eps`, `Wp`; no sum of them) as
-$(y, k_z, k_x)$ cubes, one file per sample named by step. Each is
-computed at full resolution, then folded — $y$ about the centreline
-(the mean of the two halves), $k_z$ onto $|k_z|$ — and thinned to the
-`n_y3d` / `n_kz3d` / `n_kx3d` points nearest a uniform spacing in the
-logarithm of each coordinate, the wall row and $k = 0$ always kept.
-
-Each file is a dnsjax tar, the snapshot container: y-major
-`(field, y, k_z, k_x)`, real, with its kept points, units and
-provenance in the metadata. `analysis.twin.read_cube` reads one,
-optionally only some wall distances; `read_twin_spectra3d`,
+$(y, k_z, k_x)$ cubes, one dnsjax tar per sample named by step,
+computed at full resolution, then folded in $y$ and $k_z$ and thinned
+log-uniformly to the `n_y3d` / `n_kz3d` / `n_kx3d` points. The folds,
+the thinning, the y-major container, what a file carries to be read
+alone, and the resume check against the newest file: the
+`twin/cubes.py` module docstring. `analysis.twin.read_cube` reads one
+file, optionally only some wall distances; `read_twin_spectra3d`,
 `read_twin_spectra3d_ref` and `read_twin_budget3d` stack a directory.
-A resume checks the newest file against the run, and a different
-selection or cadence is refused.
 
 ### `lowres/`, `lowres_delta/` — reduced-resolution snapshots
 
 `lowres/` holds the reference state at `[lowres]`'s cadence, exactly
-as a plain solver run writes it. `lowres_delta/` holds the difference
+as a plain solver run writes it, and `lowres_delta/` the difference
 field $\Delta\mathbf{u}$ at `twin.it_lowres_delta`. Under
-`lowres.pressure` (off by default) each file also holds
-its static pressure; the difference's, $\Delta p$, is the pressure the
-budget's `Wp` is computed from (to round-off), solved from
-$\Delta\mathbf{u}$ directly rather than as a difference of two
-pressures. Both are computed at the run's
-resolution and then reduced. Both are snapshot files read by
-`dnsjax.analysis.read_state` / `read_pressure`, and neither is a
-checkpoint.
+`lowres.pressure` (off by default) each file also holds its static
+pressure; the difference's, $\Delta p$, is the pressure the budget's
+`Wp` is computed from, solved from $\Delta\mathbf{u}$ directly
+(`_difference_pressure_jit` in `twin/diagnostics.py`). Both are
+computed at the run's resolution and then reduced, both are snapshot
+files read by `dnsjax.analysis.read_state` / `read_pressure`, and
+neither is a checkpoint.
 
 ### `stats*.dat`, `steps*.dat`, `corrector*.dat` — per state
 
 The three streams a plain solver run writes are written here for
 **each** state of the pair, at the same `[outs]` cadences and in the
-same format: the reference into `stats.dat` / `steps.dat` /
-`corrector.dat` under the standard names, the partner into
-`stats_twin.dat` / `steps_twin.dat` / `corrector_twin.dat`.
+same format: the reference's under the standard names, the partner's
+with the `_twin` suffix.
 
 | stream | cadence | contents |
 |---|---|---|
@@ -386,33 +318,29 @@ same format: the reference into `stats.dat` / `steps.dat` /
 Each stream is off unless its cadence is set, and a pair is always
 written together: same columns, same sample times, same buffering and
 `fsync`ing, so the two load side by side with
-`analysis.twin.series.read_dat` and subtract column-wise. At
-`twin.e0 = 0` a partner file is **byte-identical** to its reference —
-one of the determinism guards the test suite pins.
+`analysis.twin.series.read_dat` and subtract column-wise (and are
+**byte-identical** at `twin.e0 = 0`, above).
 
 The partner's driving column is its own applied force, not a
 difference: under `constant_bulk_velocity` (or a blocked spanwise
 mean) the two states hold the same bulk with different forces, and
-that difference is the interesting number. It does no work on any
-$y$-integrated difference-field budget term, which is why `twin.dat`
-carries no driving column of its own.
+that difference is the interesting number (why `twin.dat` has no
+driving column: above).
 
 Recording `steps.dat` for both states is also what makes the lockstep
 loop run the *identical* jitted program on the pair in every
-iteration: the measured stepper variant is selected by the cadence,
-not by which state is being stepped.
+iteration, the measured stepper variant being selected by the cadence
+(`twin/driver.py`, "Diagnostic streams").
 
 ## Trajectory bookkeeping
 
 A twin trajectory lives in its run directory: the streams above, a
-`twin.json` member record (seed, `e0`, parent snapshot and clock, git
-hash, the resolved parameter dump), and **paired snapshots** —
+`twin.json` member record, and **paired snapshots** —
 `state{isnap}.tar` for the reference and `state{isnap}_twin.tar` for
-the partner, written back-to-back with identical `t`/`it`. The
-reference keeps the standard name — for the snapshots and for the
-per-state streams alike, the `_twin` suffix marking the partner
-throughout — so every existing tool works on the reference trajectory
-unchanged.
+the partner, with identical `t`/`it` (`twin/driver.py`, "Trajectory
+home, fresh start vs paired resume"). The reference keeps the standard
+names, the `_twin` suffix marking the partner throughout, so every
+existing tool works on the reference trajectory unchanged.
 
 Two files decide the start mode: the partner of `init.snapshot`, and
 the run directory's `twin.json`.
@@ -424,27 +352,24 @@ the run directory's `twin.json`.
 | absent | exists | Error: this directory already holds a twin trajectory |
 | absent | absent | **Fresh start** — perturb, write `twin.json`, save the IC pair |
 
-"Matches" is the `twin.json` configuration record — `e0`, the seed,
-the smoothness, the cadences, `dt`, the precision — and a resume that
-differs in any of them is refused rather than appending to streams it
-does not belong to. The refusal names the recorded value beside the
-configured one: when a default has moved since the member was recorded,
-the recorded value is what to pass. `twin.seed` is *matched*, not
-re-read, which is why a resume with the seed left unset adopts the
-recorded one first: the pair is not re-perturbed, so what it needs is
-the seed it was born with, and an un-pinned member would otherwise fail
+"Matches" is the `twin.json` configuration record, the driver's
+`_TWIN_MATCH_KEYS` (the format version, the system, `e0`, the seed,
+the perturbation shape, `bins`, the stream and cube cadences, `dt`,
+the precision): a resume that differs in any of them is refused rather
+than appending to streams it does not belong to. The refusal names the
+recorded value beside the configured one: when a default has moved
+since the member was recorded, the recorded value is what to pass.
+`twin.seed` is *matched*, not re-read, so a resume with the seed left
+unset adopts the recorded one first, or an unpinned member would fail
 its own first resume.
 
-On a paired resume a trajectory-defining parameter change is a hard
-error: switching mid-trajectory would disconnect the pair from its own
-streams. Start a fresh member instead. A fresh start inherits the
+A trajectory-defining parameter change is a hard error on a paired
+resume (start a fresh member instead). A fresh start inherits the
 parent's clock, so offline analysis reads the perturbation time from
-`twin.json`.
-
-`stop.max_sim_time` is a horizon counted from whichever clock the run
-starts on, not an absolute end time: a member restarted mid-horizon runs
-the whole value again, so to end where it was meant to, resume it with
-`--stop.max_sim_time` set to what is left.
+`twin.json`. `stop.max_sim_time` is a horizon counted from whichever
+clock the run starts on: to end a member restarted mid-horizon where
+it was meant to, resume it with `--stop.max_sim_time` set to what is
+left.
 
 ## Ensembles
 
@@ -452,75 +377,53 @@ One member = one run directory = one `dnsjax-twin` invocation, varying
 `twin.seed` and the parent snapshot — or leaving the seed unset, in
 which case each member draws its own and records it, so members
 launched by hand are independent without being told to be.
-`lab/scripts/ensemble_setup.py` harvests statistically independent parents
-and builds the member tree:
+`lab/scripts/ensemble_setup.py` harvests statistically independent
+parents into a manifest (`harvest`) and builds the member tree from it;
+its module docstring is the manual for both:
 
 ```bash
-uv run python lab/scripts/ensemble_setup.py harvest \
-  --run-dir prod/ --t-min 200 --spacing 5 --n 300 --out manifest.json
-
 uv run python lab/scripts/ensemble_setup.py build-twin \
   --manifest manifest.json --tree twins/ --e0 1e-5 \
   --horizon 5000 --it-budget 100 --it-spectra 100
 ```
 
-Every cadence a member records at — the `[twin]` streams, the
-per-state solver streams, `outs.it_snapshot` — is counted from that
-member's own perturbation step, recorded as `parent_it` in its
-`twin.json` and inherited across a paired resume. Its samples
-therefore sit at $t_\mathrm{parent} + n c \Delta t$ whatever
-iteration number the parent snapshot was harvested at, which is what
-puts the members of an ensemble on one relative grid: the clock every
-reader aligns on is $t - t_\mathrm{parent}$, and a cadence counted
-from the absolute step counter would displace a member's whole grid by
-the residue of its parent's `it`. The readers count that clock in
-whole steps (`series.relative_time`) rather than subtracting two
-floats: a `.dat` stream writes `t` to `outs.stats_precision`
-significant digits, which late in a long reference run is coarser than
-any tolerance an across-member stack can afford.
+Every cadence a member records at is counted from its own perturbation
+step (`parent_it` in its `twin.json`, inherited across a paired
+resume), so its samples sit at $t_\mathrm{parent} + n c \Delta t$
+whatever step the parent snapshot was harvested at: the members of an
+ensemble share one grid on the relative clock $t - t_\mathrm{parent}$
+(`twin/driver.py`, "Diagnostic streams"), which the readers count in
+whole steps (`series.relative_time`; the `series` docstring says why).
 
-`build-twin` needs no seeding subprocesses — the driver perturbs
-in-process at start — so each member directory holds only a generated
-`parameters.toml`, carrying `--horizon` straight through as
-`stop.max_sim_time`: every member integrates the same span however far
-apart their parents were harvested, which is what the shared time grid
-means. Seeds run `--seed-base + k` over the flat member
-index, and `--members-per-snapshot` fans several seeds out of one
-parent. An unset `--seed-base` is drawn from the system entropy pool
-and printed, so two ensembles built from the same parents are
-independent rather than both running seeds `1..N`; either way each
-member's concrete seed is written into its `parameters.toml`. So is its
-perturbation shape — `--smoothness`, `--wall-smoothness`,
-`--wall-confinement`, `--mean-flow`, each the driver's default unless
-given, and written out either way. That is what keeps the tree
-reproducible and resumable whichever code version launches or resumes
-a member, defaults included. `check_laminarization` is forced off so
-every member runs the full horizon and the streams aggregate on one
-shared time grid; a relaminarized member stays visible offline in its
-`E_ref` column. The script emits `run_commands.txt` and
-a `members.json` index, and never runs the solver itself.
+`build-twin` writes each member a `parameters.toml` carrying
+`--horizon` as `stop.max_sim_time` (every member integrates the same
+span) and the member's seed and perturbation shape, written out whether
+given or not: that keeps the tree reproducible and resumable whichever
+code version launches or resumes a member. `check_laminarization` is
+forced off so every member runs the full horizon; a relaminarized
+member stays visible offline in its `E_ref` column. The script emits
+`run_commands.txt` and a `members.json` index, and never runs the
+solver itself.
 
 ## Offline analysis
 
 `dnsjax_lab.analysis.twin` reads and aggregates all of it, and is
-importable **without JAX** — a guarantee the test suite pins.
+importable **without JAX** — a guarantee the test suite pins. Its
+modules are in the table below, and in full in its package docstring.
 
-Two kinds of `twin.dat` row sit off the `it_energy` sampling grid, and
-at `it_energy > 1` both are routine: the unconditional final row, so
-the end-of-run state is never lost, and a resumed segment's `t0` row
-when `outs.it_snapshot` is not a multiple of `it_energy`. They are real
-samples and are kept, so a consumer that needs a *uniform* grid — a
-centred difference, an across-member stack — selects one with
-`series.uniform_grid` instead of assuming the raw stream is one.
+At `it_energy > 1` a `twin.dat` stream routinely holds real samples
+off its sampling grid (the final row; a resumed segment's `t0` row), so
+a consumer that needs a *uniform* grid — a centred difference, an
+across-member stack — selects one with `series.uniform_grid` (the
+`series` docstring, "Off-grid rows").
 
 Members recorded under an absolute-step cadence, whose parents sat at
-different `it` residues, carry grids displaced against one another,
-and share no relative sample time but $t = 0$.
-`aggregate_members` and `lab/scripts/twin_spectral_maps.py` both refuse
-them at the default tolerance, naming the `align_atol`
-(`--align-atol`) that accepts them: it pairs each frame with every
-member's nearest sample instead, and reports how far apart the widest
-such pairing is.
+different `it` residues, carry grids displaced against one another
+that share no relative sample time but $t = 0$. `aggregate_members`
+and `lab/scripts/twin_spectral_maps.py` both refuse them at the
+default tolerance, naming the `align_atol` (`--align-atol`) that
+accepts them: it pairs each frame with every member's nearest sample
+instead, and reports how far apart the widest such pairing is.
 
 | Module | Role |
 |---|---|

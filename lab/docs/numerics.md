@@ -18,19 +18,20 @@ The **curved pipe** is the one system whose metric is not the identity: a
 pipe bent onto a circle of radius $R_c$, with curvature
 $\kappa = a/R_c$ (`geo.curvature`) and zero torsion, whose scale factors
 are $(1, r, h)$ with $h = 1 + \kappa r\cos\theta$. It solves the same
-equations in that metric, and it does so on the *straight* pipe's
-operators: carrying $h u_s$ in place of $u_s$ leaves the curl, the
-pressure projection, the influence matrix and every Helmholtz solve
-untouched, so no operator couples azimuthal modes. The four identities
-that make that work, and the two places curvature does survive, are
-derived in the `dnsjax_lab/geometries/wall_bounded/cylindrical_curved.py`
-module docstring. Curvature also reaches the dealiasing: the nonlinear
-term carries $1/h^2$, whose harmonics never end, so the 3/2 rule alone
-leaves it aliased. `phys.curvature_padding`, on by default, adds a fixed
-number of azimuthal points, set by $\kappa$ and the working precision,
-that puts that aliasing below roundoff at any resolution. Both initial
-conditions, the random field and the localized rolls, are mapped onto
-the toroidal continuity constraint.
+equations in that metric on the *straight* pipe's operators: carrying
+$h u_s$ in place of $u_s$ leaves the curl, the pressure projection, the
+influence matrix and every Helmholtz solve untouched, so no operator
+couples azimuthal modes. The four identities that make that work, and
+the two places curvature does survive, are derived in the
+`dnsjax_lab/geometries/wall_bounded/cylindrical_curved.py` module
+docstring. Curvature also reaches the dealiasing: the nonlinear term
+carries $1/h^2$, whose harmonics never end, so the 3/2 rule alone
+leaves it aliased, and `phys.curvature_padding`, on by default, adds a
+fixed number of azimuthal points, set by $\kappa$ and the working
+precision, that puts that aliasing below roundoff at any resolution
+(that docstring's "Dealiasing"). Both initial conditions, the random
+field and the localized rolls, are mapped onto the toroidal continuity
+constraint.
 
 The viscoelastic flows couple a symmetric **conformation tensor** $\mathbf{c}$
 through a simplified Phan-Thien–Tanner constitutive law,
@@ -44,28 +45,30 @@ through a simplified Phan-Thien–Tanner constitutive law,
 ```
 
 with the polymer stress feeding momentum as
-$\tfrac{1-\beta}{Re\ Wi}\nabla\cdot\mathbf{c}$ and solvent viscosity
-$\nu = \beta/Re$. This grows the state to nine components on the same solver
-machinery. The system is that of Lellep, Linkmann & Morozov
-([2024](#references), eqs. 1–3), carried over from their channel to the
-pipe and the annulus, with their stress diffusivity $\kappa$ and its wall
-condition: at a wall the conformation obeys the $\kappa = 0$ equation,
-which dnsjax imposes in the equivalent form $\nabla^2 \mathbf{c} = 0$.
-The defaults $\beta = 0.8$, $\epsilon = 10^{-3}$ and
-$\kappa = 5 \cdot 10^{-5}$ are theirs too; the Weissenberg and
-elasticity numbers are each flow's own.
+$\tfrac{1-\beta}{Re\ Wi}\nabla\cdot\mathbf{c}$ and the *solvent*
+viscosity $\nu = \beta/Re$, the polymer stress carrying the rest. This
+grows the state to nine components on the same solver machinery. The
+system is that of Lellep, Linkmann & Morozov ([2024](#references),
+eqs. 1–3), carried over from their channel to the pipe and the annulus,
+with their stress diffusivity $\kappa$ and its wall condition: at a
+wall the conformation obeys the $\kappa = 0$ equation, which dnsjax
+imposes in the equivalent form $\nabla^2 \mathbf{c} = 0$. The defaults
+$\beta = 0.8$, $\epsilon = 10^{-3}$ and $\kappa = 5 \cdot 10^{-5}$ are
+theirs too; the Weissenberg and elasticity numbers are each flow's own
+(the model and the state layout: the
+`dnsjax_lab/geometries/wall_bounded/_viscoelastic_common.py` module
+docstring).
 
 ## Conventions
 
-- **Reynolds number.** The viscoelastic flows expose no `re` (it is
-  derived as $Re = Wi/El$), and $\nu = \beta/Re$ is the *solvent*
-  viscosity, the polymer stress carrying the rest. The curved pipe keeps
-  the pipe's normalization, so under a held flux its `re` is the
+- **Reynolds number.** The viscoelastic flows expose no `re`: it is
+  derived as $Re = Wi/El$ (below). The curved pipe keeps the pipe's
+  normalization, so under a held flux its `re` is the
   bulk-velocity–diameter Reynolds number of the toroidal-pipe
-  literature, with Dean number $De = Re\sqrt{\kappa}$; under the default
-  constant pressure gradient it is the *nominal* value of the same
-  driving, and the realized bulk is lower by the Dean friction
-  increase.
+  literature, with Dean number $De = Re\sqrt{\kappa}$, and under the
+  default constant pressure gradient the *nominal* value of the same
+  driving (the `dnsjax_lab/flows/wall_bounded/specs/curved_pipe.py`
+  module docstring).
 - **Driving.** The curved pipe, like the pipe, accepts
   `phys.driving = "constant_bulk_velocity"`; the annular flows, like
   Taylor–Couette, can pin their axial mean velocity to zero

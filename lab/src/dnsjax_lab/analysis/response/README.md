@@ -12,31 +12,24 @@ which trade experimental cost against how much you have to assume about
 the turbulent background — and which share one basis, one fit and one
 output convention, so their answers are directly comparable.
 
-These modules **may** use JAX, and they do where it pays; `probes`
-and the `operator_tools` controllability export use NumPy (and SciPy)
-only.
-
 ## Requirements
 
 SciPy, which `uv sync` installs (a dependency of the lab, and of JAX),
-so nothing extra is needed here. It is imported **lazily**, inside the
-functions that use it — `logm`, the Lyapunov solves, non-symmetric
-`eig`: factorizations JAX has no GPU kernels for — so importing any
-module here costs no SciPy until a function needs it. The Lyapunov
-solves also have eigendecomposition closed forms, which the tests use as
-independent checks of SciPy's.
-
-The dense time sweeps (growth curves, input-response curves) run
-batched `expm` + SVD on the JAX default device, are GPU-capable, and
-need float64. The three identification CLIs take `--dist.platform` and
-select the backend before any JAX import, exactly as the solver does;
-the `operator_tools` controllability export needs neither, being NumPy
-and SciPy only.
+so nothing extra is needed here. These modules **may** use JAX, and
+they do where it pays: the dense time sweeps (growth curves,
+input-response curves) run on the JAX default device, are GPU-capable,
+and need float64. `probes` and the `operator_tools` controllability
+export are NumPy and SciPy only: no JAX, no device. SciPy is imported
+**lazily**, inside the functions that use it (where the line falls, and
+why: the `__init__.py` and `operator_tools.py` docstrings). The three
+identification CLIs take `--dist.platform` and select the backend
+before any JAX import, exactly as the solver does.
 
 ## The pipeline
 
 Steps 1–3 stand alone — turbulent statistics, and optimal growth about
-a measured mean. Steps 4–6 build on their outputs.
+a measured mean. Steps 4–6 build on their outputs (the pipeline in
+brief: the `analysis/response/__init__.py` docstring).
 
 ### 1. Probe the run
 
@@ -116,7 +109,7 @@ This writes `profiles_{i2}_{i3}` — `(m, C, Ny)` full-state profiles at
 unit energy norm — and `gram_eigvals_{i2}_{i3}` per mode. Pick
 `--n-modes` from the eigenvalue decay. The bundle is consumed directly
 by `scripts/snapshot_perturb.py --perturb.modes_npz` and by
-`--force.profiles`. NumPy and SciPy only: no JAX, no device.
+`--force.profiles`.
 
 ### 5. Ensemble impulse responses
 
@@ -135,14 +128,13 @@ uv run python lab/scripts/ensemble_setup.py build \
   --horizon 30 --probe-modes "3,0" --it-probes 10
 ```
 
-`harvest` selects snapshots past `--t-min` and thins them to a minimum
-`--spacing` in simulation time (several eddy-turnover times), so the
-members are statistically independent. `build` materializes one
-directory per member — a perturbed seed snapshot from
-`scripts/snapshot_perturb.py`, plus a generated `parameters.toml` — and
-emits `run_commands.txt` (one scheduler-agnostic launch line per
-member) and `members.json`. It never runs the solver itself;
-`--dry-run` prints the whole tree and every command without writing.
+`harvest` thins the snapshots past `--t-min` to a minimum `--spacing`
+in simulation time (several eddy-turnover times), so the members are
+statistically independent. `build` materializes one directory per
+member — a perturbed seed snapshot from `scripts/snapshot_perturb.py`,
+plus a generated `parameters.toml` — and emits `run_commands.txt` and
+`members.json`, and never runs the solver itself (`--dry-run` prints
+the tree; every flag and output: the script's docstring).
 
 One constraint on the harvest: members are aggregated on relative time
 — each member's stream less its own first sample — while `dnsjax`
@@ -159,9 +151,8 @@ Default `--pairing antithetic` seeds each parent twice, at $+\epsilon$
 and $-\epsilon$. Because dnsjax runs are deterministic for a fixed
 configuration and device layout, $(u_+ - u_-)/2$ cancels the shared
 background **and** every even-order nonlinear contribution, at the same
-cost as an unpaired pair. `baseline` pairs a perturbed member against
-the parent re-seeded at zero amplitude; `none` relies on the plain
-ensemble mean alone.
+cost as an unpaired pair; `baseline` and `none` are in the script's
+docstring.
 
 Run the members, then aggregate:
 
@@ -227,27 +218,19 @@ rather than a body-force term: the
 ## Why the three are comparable
 
 Every operator here lives in the export's **energy-orthonormal**
-coordinates: a reduced state $a$ satisfies
-$\lVert a \rVert_2^2 = q^H \mathrm{diag}(w) q$ for the full state
-$q = T_{\mathrm{lift}} a$, with both maps precomputed. So the plain
-matrix 2-norm *is* the energy norm. Three consequences make the whole
-package simpler than it would otherwise be:
-
-- the optimal growth is a plain matrix norm,
-  $G(t) = \lVert e^{tA} \rVert_2^2$;
-- a Galerkin restriction onto orthonormal columns preserves the norm;
-- the controllability Gramian with unit-covariance forcing in the
-  energy inner product is the Lyapunov solution of $(A, I)$.
-
-Because all three routes fit in those coordinates, on the same basis,
-and report the same quantities, their operators can be compared
-directly — against each other and against the reference operator
-restricted to the same subspace (`G_ref`, from $P^H A P$). On a
-truncated basis that restriction is not what a perfect fit returns:
-the noise-free linear data are $P^H e^{\tau A} P$, a semigroup only
-when the basis spans an $A$-invariant subspace, so the fitted generator
-drifts with the horizon even then, and `G_proj`, the growth of
-$P^H e^{t A} P$, is the curve a perfect fit tracks at each horizon.
+coordinates, in which the plain matrix 2-norm *is* the energy norm (the
+coordinates and their consequences — the optimal growth a plain matrix
+norm, norm-preserving Galerkin restriction, the Gramian a Lyapunov
+solution: the `operator_tools.py` docstring, "Coordinates"). Because
+all three routes fit in those coordinates, on the same basis, and
+report the same quantities, their operators can be compared directly —
+against each other and against the reference operator restricted to
+the same subspace (`G_ref`, from $P^H A P$). On a truncated basis that
+restriction is not what a perfect fit returns: the noise-free linear
+data are a semigroup only when the basis spans an $A$-invariant
+subspace, so the fitted generator drifts with the horizon even then,
+and `G_proj`, the growth of $P^H e^{t A} P$, is the curve a perfect fit
+tracks at each horizon (the `lim.py` docstring).
 
 ## Module map
 

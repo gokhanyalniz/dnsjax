@@ -2,14 +2,13 @@ r"""White-in-time stochastic mode forcing (state kicks) + coefficient log.
 
 Adds, every ``force.it_force`` steps, a random superposition of
 wall-normal channel profiles to each ``force.modes`` spectral mode
-(the ``force`` extension section; :mod:`dnsjax.extensions`) --
-a sequence of independent state increments ("kicks"), the
-discrete-time realization of white-in-time forcing localized at the
-chosen modes.  The drawn coefficients stream to
-``forcing.bin``/``forcing.json`` next to the ``.dat`` diagnostics,
-keeping the run's full forcing history available to any offline
-analysis.  E.g. cross-correlating the probe stream against it
-identifies the mode's linear operator without any hypothesis on the
+(the ``force`` extension section; :mod:`dnsjax.extensions`): a
+sequence of independent state increments ("kicks"), the discrete-time
+realization of white-in-time forcing localized at the chosen modes.
+The drawn coefficients stream to ``forcing.bin``/``forcing.json`` next
+to the ``.dat`` diagnostics, keeping the run's full forcing history
+for any offline analysis; cross-correlating the probe stream against
+it identifies the mode's linear operator without any hypothesis on the
 turbulent background (:mod:`dnsjax_lab.analysis.response.ssi`, which
 also holds the JAX-free reader).  On ``curved-pipe`` the component-0
 profile is added to the carried `$w_s = h\,u_s$`, not to `$u_s$`
@@ -54,10 +53,9 @@ Timing conventions (shared with the readers and resume)
   or doubled across a resume.
 - The coefficient PRNG is host-side, rank-identical, and seeded by
   ``force.seed`` -- drawn from the system entropy pool when unset
-  (:mod:`dnsjax.seeding`), and recorded here and in the snapshot so an
-  append-resume inherits it; on an append-resume the already-recorded
-  draws are skipped, so the coefficient stream continues exactly as if
-  the run had never stopped.
+  (:mod:`dnsjax.seeding`), and recorded here and in the snapshot, so an
+  append-resume inherits it and skips the already-recorded draws: the
+  coefficient stream continues exactly as if the run had never stopped.
 
 Amplitude guidance: each kick adds `$\varepsilon\sum_j w_j\,
 \mathbf{p}_j$` per mode with `$w_j \sim \mathcal{CN}(0,1)$` i.i.d.
@@ -76,39 +74,42 @@ File format
 
     numpy.dtype([("t", "<f8"), ("w", "<f8", (K, m, 2))])
 
-with ``K`` forced modes, ``m`` channels, and the trailing axis the ``(re, im)``
-of the `$\mathcal{CN}(0,1)$` coefficients `$w$` exactly as applied (unscaled by
-``amplitude``, which is in the sidecar; the kick was
-``amplitude * sum_j w_j profile_j``).  Coefficients are host-generated float64
-regardless of the state precision (the volume is tiny).  The ``forcing.json``
-sidecar carries the schema: modes (and the wavenumbers they denote -- a resume
-may change ``res.nx`` / ``res.nz``, which moves what a negative-block `$k_z$`
-index means), channel count, amplitude, cadence, seed, the profile bundle's
-path and SHA-256 (an append-resume must match all of these -- changing the
-basis mid-experiment invalidates the stream), and the full resolved parameter
-dump.  No non-finite scan is needed: the coefficients are finite by
-construction and the state itself is guarded by the regular diagnostics.
+with ``K`` forced modes, ``m`` channels, and the trailing axis the
+``(re, im)`` of the `$\mathcal{CN}(0,1)$` coefficients `$w$` exactly as
+applied (unscaled by ``amplitude``, which is in the sidecar; the kick
+was ``amplitude * sum_j w_j profile_j``).  Coefficients are
+host-generated float64 regardless of the state precision (the volume
+is tiny).  The ``forcing.json`` sidecar carries the schema: modes (and
+the wavenumbers they denote -- a resume may change ``res.nx`` /
+``res.nz``, which moves what a negative-block `$k_z$` index means),
+channel count, amplitude, cadence, seed, the profile bundle's path and
+SHA-256, and the full resolved parameter dump.  An append-resume must
+match all of these but the path and the dump, plus ``dt`` and the
+system (:data:`_MATCH_KEYS`): changing the basis mid-experiment
+invalidates the stream.  No non-finite scan is needed: the coefficients
+are finite by construction and the state itself is guarded by the
+regular diagnostics.
 
-The record layout is fixed across schema versions, so a stale stream
-reads *cleanly* and only its values mean something else -- which makes
-:data:`FORMAT_VERSION` the only thing between an old file and a silent
-misread.  Bump it whenever the stored meaning changes (the injection
-basis, the partner rule), and raise the reader's
+As for the probe stream (:mod:`dnsjax_lab.extensions.probes`), the
+fixed record layout leaves :data:`FORMAT_VERSION` the only guard
+against a silent misread: bump it whenever the stored meaning changes
+(the injection basis, the partner rule), and raise the reader's
 ``MIN_FORMAT_VERSION`` with it.
 
 Sharded scatter
 ---------------
 :func:`build_mode_injector` is the scatter dual of
 :func:`dnsjax_lab.extensions.probes.build_mode_extractor`: inside a
-``shard_map``, the device owning each static global mode index adds
-the replicated column into its local shard (everyone else adds
-zeros), so no global sharded axis is ever indexed.  The real-FFT
-conjugate partner (``i3 = 0``) is one more scatter target; its
-column -- the plain conjugate (every physical component is the
-transform of a real field) -- is built on the host (the placement
-rules of ``transient_growth.single_mode_state``, here in sharded form).
-The injector is generic: any loop-level state modification (feedback
-control, another forcing scheme) can reuse it as is.
+``shard_map``, the device owning each static global mode index (found
+from the local shard shape, as there) adds the replicated column into
+its local shard (everyone else adds zeros), so no global sharded axis
+is ever indexed.  The real-FFT conjugate partner (``i3 = 0``) is one
+more scatter target; its column -- the plain conjugate (every physical
+component is the transform of a real field) -- is built on the host
+(the placement rules of ``transient_growth.single_mode_state``, here
+in sharded form).  The injector is generic: any loop-level state
+modification (feedback control, another forcing scheme) can reuse it
+as is.
 """
 
 import hashlib
@@ -151,9 +152,8 @@ FORMAT_VERSION: int = 3
 _MATCH_KEYS: tuple[str, ...] = (
     "format_version",
     "modes",
-    # The wavenumbers, not the indices alone -- see the same entry in
-    # ``probes.py``: a resolution-change resume moves what a stored
-    # negative-block `$k_z$` index means.
+    # The wavenumbers, not the indices alone (module docstring, "File
+    # format").
     "wavenumbers",
     "n_channels",
     "amplitude",
@@ -174,10 +174,8 @@ def build_mode_injector(
     Returns a function ``(state, cols, *carry_args) -> state`` adding
     ``cols[k]`` (``(K, C, N_y)`` complex, replicated) into the
     wall-bounded spectral ``state`` at the static global mode
-    ``mode_pairs[k]`` for every ``k`` -- the scatter dual of
-    :func:`dnsjax_lab.extensions.probes.build_mode_extractor` (same owner
-    computation from the local shard shape inside a ``shard_map``;
-    non-owners add zeros).  ``state`` is donated (the caller rebinds).
+    ``mode_pairs[k]`` for every ``k`` (the scatter: module docstring,
+    "Sharded scatter").  ``state`` is donated (the caller rebinds).
 
     *cols* are given in **physical** components -- the basis of the
     injection profiles and of the plain-conjugate partner rule -- and
@@ -254,11 +252,11 @@ class StochasticForcer:
 
     Construct once with the initial state (shape/dtype source) after
     the ``force`` extension section is validated; then let the main
-    loop call :meth:`kick` at the ``it_force`` cadence and :meth:`flush` at the
-    ``flush_all_buffers`` sites.  All randomness is host-side and
-    rank-identical (every rank draws the same sequence); disk I/O is
-    main-process only, with the buffer cleared on all ranks in
-    lockstep (the ``.dat``-stream state machine).
+    loop call :meth:`kick` at the ``it_force`` cadence and :meth:`flush`
+    at the ``flush_all_buffers`` sites.  All randomness is host-side and
+    rank-identical; disk I/O is main-process only, with the buffer
+    cleared on all ranks in lockstep (the ``.dat``-stream state
+    machine).
     """
 
     def __init__(self, state: Array, directory: str | Path = ".") -> None:
@@ -266,8 +264,7 @@ class StochasticForcer:
         self.modes = parse_mode_pairs(f.modes)
         self.amplitude: float = float(f.amplitude)
         self.nbuffer: int = params.outs.nbuffer
-        # The flow's physical component count, not the state's leading
-        # size: a pipe state also carries solver slots.
+        # The flow's physical component count (as in ``ProbeStream``).
         n_components = spec_for(params.phys.system).n_components
         ny = int(state.shape[1])
         self._profiles = self._load_profiles(f, n_components, ny)
@@ -275,11 +272,9 @@ class StochasticForcer:
 
         # Scatter placements: per forced mode its target column and,
         # on the real-FFT plane (i3 = 0; validation excludes (0,0)),
-        # the conjugate partner at the mirrored true index.  Every
-        # physical component is the transform of a real field, so
-        # the partner is the plain conjugate in every geometry
-        # (``single_mode_state`` in dnsjax.analysis.transient_growth
-        # is the single-device host-side form of the same rule).
+        # the conjugate partner at the mirrored true index, the plain
+        # conjugate in every geometry (module docstring, "Sharded
+        # scatter").
         n2_true = params.res.nz - 1
         placements: list[tuple[int, int]] = []
         self._partner_slot: list[int | None] = []
@@ -307,11 +302,8 @@ class StochasticForcer:
         self.record_dtype = np.dtype(
             [("t", "<f8"), ("w", "<f8", (len(self.modes), self.m, 2))]
         )
-        # Axis-2 harmonics are *physical* wavenumbers: on the
-        # cylindrical/annular wedge the azimuthal mode of harmonic
-        # `$j$` is `$m = m_0 j$` (``geo.m0 = 1`` is the full circle),
-        # exactly as the geometry's ``Fourier.m`` builds it.  Cartesian
-        # axis 2 is `$k_z$`, which has no wedge factor.
+        # Axis-2 harmonics as physical wavenumbers, `$m = m_0 j$` on a
+        # wedge (the comment in ``ProbeStream.__init__``).
         m0 = 1 if params.phys.system in cartesian_systems else params.geo.m0
         q2 = complex_harmonics(params.res.nz) * m0
         q3 = real_harmonics(params.res.nx)
@@ -347,15 +339,11 @@ class StochasticForcer:
         self.json_path = Path(directory) / "forcing.json"
         n_existing = self._open_files()
 
-        # Rank-identical coefficient stream; skip the draws already
-        # taken so a resume continues the uninterrupted sequence (one
-        # fixed-shape draw per kick, mirrored in ``kick``).
-        #
         # The record count must equal the kicks the state has been
         # through: one at every multiple of it_force below it0 (a kick
         # fires before the step of its iteration, it = 0 included), so
-        # ``ceil(it0 / it_force)`` -- a snapshot off the kick cadence
-        # (a final one) included.  Resuming off an earlier snapshot than
+        # ``ceil(it0 / it_force)``, a snapshot off the kick cadence (a
+        # final one) included.  Resuming off an earlier snapshot than
         # the stream was written up to (a parent run to it = 1000 with
         # snapshots at 500 and 1000, resumed from 500), deleting
         # ``forcing.bin`` but not its sidecar, or a fresh start
@@ -378,6 +366,9 @@ class StochasticForcer:
                 "forcing.bin / forcing.json aside to start a new "
                 "stream."
             )
+        # Rank-identical; skip the draws already taken, one fixed-shape
+        # draw per kick as in ``kick`` (module docstring, "Timing
+        # conventions").
         self._rng = np.random.default_rng(f.seed)
         for _ in range(n_existing):
             self._rng.standard_normal((len(self.modes), self.m, 2))
@@ -524,9 +515,8 @@ class StochasticForcer:
     def _open_files(self) -> int:
         """Validate/append or create the pair; return existing records.
 
-        Same semantics as the probe stream: identical validation on
-        every rank, sidecar written by the main process only, appends
-        allowed only against a matching sidecar.
+        As :meth:`dnsjax_lab.extensions.probes.ProbeStream._open_files`,
+        against this module's :data:`_MATCH_KEYS`.
         """
         if self.bin_path.exists() and not self.json_path.exists():
             raise SystemExit(
@@ -564,8 +554,6 @@ class StochasticForcer:
                 "them)."
             )
         elif sharding.main_device:
-            # Atomic, for the same reason as every other sidecar
-            # (:func:`~dnsjax.snapshot_meta.write_sidecar_json`).
             write_sidecar_json(self.json_path, self._sidecar)
         return n_existing
 
@@ -628,14 +616,10 @@ class ForceHooks(RunHooks):
 
     The section's ``runtime`` factory
     (:class:`~dnsjax.extensions.RunHooks`).  Kicks the state every
-    ``it_force`` steps in ``modify``: after the equal-t probe sample
-    and any snapshot, which both record the pre-kick state, and
-    immediately before the step, so a resumed continuation never
-    double-applies a kick (saved states are pre-kick; the kick belongs
-    to the segment that steps from them) and the coefficient stream
-    continues without a gap.  The coefficient log flushes with the other
-    streams, unchecked: host-drawn Gaussians are finite by
-    construction.
+    ``it_force`` steps in ``modify`` (when, and why no kick is lost or
+    doubled across a resume: the module docstring's "Timing
+    conventions").  The coefficient log flushes with the other streams,
+    unchecked (:meth:`StochasticForcer.flush`).
     """
 
     def __init__(self, state: Array, t: float) -> None:

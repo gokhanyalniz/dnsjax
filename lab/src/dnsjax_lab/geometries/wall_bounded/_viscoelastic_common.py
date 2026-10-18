@@ -8,7 +8,9 @@ Both write the same equations in the **same** coordinate system
 operator or a boundary/axis condition is identical between
 them and lives here: the spin `$\leftrightarrow$` physical tensor
 algebra, the basis boundary, the sPTT scalar root, the Frobenius
-weights, and the pointwise physical-space RHS kernel.
+weights, the `$\nabla\cdot c$` curvature assembly, and the pointwise
+physical-space RHS kernel.  The time integration both share is
+:mod:`~dnsjax_lab.geometries.wall_bounded._viscoelastic_stepping`'s.
 
 What is **not** here is exactly what the two geometries disagree on:
 how a radial derivative is taken (a plain FD matrix on the annulus, a
@@ -47,6 +49,9 @@ Sureshkumar & Khomami, *J. Non-Newtonian Fluid Mech.* **138**, 111--133,
 2006), imposed in the equivalent form `$\nabla^2\mathbf{c} = 0$` as each
 wall row of the conformation solve (:func:`narrow_abase_wall_row`); at
 `$\kappa = 0$` the transport is hyperbolic and takes no wall condition.
+All products are at most quadratic
+(`$\mathrm{tr}(\mathbf{c})\,\mathbf{c}$`), so the 3/2-rule dealiasing
+is exact.
 
 State layout
 ------------
@@ -78,13 +83,27 @@ A given state crosses between the two at most once
 
 Spin weights
 ------------
-Each spin projection is an eigenvector of the basis-rotation generator
-`$\mathcal R$` (the `$\partial_\theta$` action on the tensor basis) with
-eigenvalue `$is$`, so the angular part
-`$\tfrac{1}{r^2}(\mathcal R + im)^2$` of the Laplacian becomes
-`$-(m+s)^2/r^2$` and the tensor Laplacian **diagonalizes** with
-`$m_{\mathrm{eff}} = m + s$` (:data:`TENSOR_SPIN`).  The velocity is the
-same mechanism at spin `$\pm1$` (`$u_\pm$`) and `$0$` (`$u_z$`).
+The cylindrical Laplacian couples the physical tensor components
+through `$1/r^2$` terms, as the vector Laplacian couples `$u_r$` and
+`$u_\theta$`.  With `$\partial_\theta \to im$`, its angular part is
+`$\tfrac{1}{r^2}(\mathcal R + im)^2$`, `$\mathcal R$` the basis-rotation
+generator (the `$\partial_\theta$` action on the tensor basis).  Each
+spin projection is an eigenvector of `$\mathcal R$` with eigenvalue
+`$is$` (spin weight `$s$`), so `$(\mathcal R + im)^2 \to -(m + s)^2$`
+and the tensor Laplacian **diagonalizes**:
+
+.. math::
+    (\nabla^2 \mathbf{c})_{\text{spin }s} =
+    \Bigl[\partial_r^2 + \tfrac{1}{r}\partial_r
+    - \tfrac{(m+s)^2}{r^2} - k_z^2\Bigr]\,\mathbf{c}_{\text{spin }s},
+
+with `$s = 0$` for `$c_{zz}, c_{+-}$`, `$s = \pm1$` for `$c_{z\pm}$` and
+`$s = \pm2$` for `$c_{\pm\pm}$`, i.e. `$m_{\mathrm{eff}} = m + s$`
+(:data:`TENSOR_SPIN`).  Each spin component therefore diffuses through
+a scalar Helmholtz solve with its own `$m_{\mathrm{eff}}$`, on the
+geometry's dense/Pallas machinery.  The velocity is the same mechanism
+at spin `$\pm1$` (`$u_\pm$`, `$m_{\mathrm{eff}} = m \pm 1$`) and `$0$`
+(`$u_z$`).
 
 In the pipe that spin weight also fixes the axis parity,
 `$(-1)^{m+s}$` -- see the ``cylindrical_viscoelastic`` module
@@ -195,9 +214,8 @@ def to_spin_basis(state: Array) -> Array:
     :func:`~dnsjax.geometries.wall_bounded._base.to_pm_basis`, and
     like it the boundary crossed at most once per state
     (:mod:`dnsjax.__main__`); elementwise on the unsharded component
-    axis, so it needs no collective, applies unchanged to a single
-    mode column ``(9, N_y)``, and is shared verbatim by both
-    viscoelastic geometries.  Inverse: :func:`from_spin_basis`.
+    axis, so it needs no collective and applies unchanged to a single
+    mode column ``(9, N_y)``.  Inverse: :func:`from_spin_basis`.
     """
     u_r, u_theta = state[1], state[2]
     vel = jnp.array([state[0], u_r + 1j * u_theta, u_r - 1j * u_theta])

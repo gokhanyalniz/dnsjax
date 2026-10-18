@@ -117,10 +117,9 @@ SPEC = FlowSpec(
         *wall_fields(0.5, CYLINDRICAL_GRIDS),
         *cyl_annular_fields(),
         *PIPE_CARRY_FIELDS,
-        # Wi = 20, El = 0.02 => Re = 1000, the Newtonian pipe's default;
-        # beta, epsilon and kappa are the published sPTT values (the
-        # module docstring): solvent ratio 0.8, weak extensibility, a
-        # trace of artificial conformation diffusion.
+        # The module docstring's defaults (beta, epsilon, kappa: solvent
+        # ratio 0.8, weak extensibility, a trace of artificial
+        # conformation diffusion).
         FieldSpec("phys", "el", default=0.02),
         FieldSpec("phys", "wi", default=20.0),
         FieldSpec("phys", "beta", default=0.8),

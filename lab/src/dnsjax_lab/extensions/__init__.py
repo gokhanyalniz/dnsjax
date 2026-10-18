@@ -1,7 +1,7 @@
 r"""The lab's extension sections, ``[probes]`` and ``[force]`` (JAX-free).
 
-Importing this module registers both with the core's extension
-registry (:func:`dnsjax.extensions.register_extension`).  The
+Importing this module registers both
+(:func:`dnsjax.extensions.register_extension`); the
 ``dnsjax.extensions`` entry point in ``lab/pyproject.toml`` names it,
 so :mod:`dnsjax.extensions` imports it whenever it is imported itself.
 The parameter models and their live values live here, JAX-free, so
@@ -14,8 +14,7 @@ are the sections' ``runtime`` factories, in modules that import JAX:
 - ``force`` -- the white-in-time stochastic mode kicks
   (:mod:`dnsjax_lab.extensions.forcing` injects them into the stepping
   loop and logs ``forcing.bin``/``forcing.json``); wall-bounded
-  non-viscoelastic flows, **trajectory-defining** (kicks alter the
-  dynamics exactly like a ``phys`` change).
+  non-viscoelastic flows, **trajectory-defining** (:class:`ForceParams`).
 """
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,19 +27,14 @@ from dnsjax.harmonics import parse_mode_pairs
 class ProbesParams(BaseModel):
     r"""Spectral-mode probe stream (state probes), optional.
 
-    Enabled when ``modes`` and ``it_probes`` are both set: every
-    ``it_probes`` steps the run records the complex wall-normal
-    profiles ``u_hat(y)`` of the listed global spectral modes into a
-    binary ``probes.bin`` (+ a ``probes.json`` schema sidecar).
-    ``modes`` is an ``"i2,i3;i2,i3;..."`` list of stored-layout
-    indices (axis 2 = complex slot, axis 3 = real-FFT slot -- the
-    transient-growth CLI's ``--tg.modes`` convention); the mean mode
-    ``(0,0)`` is allowed (it records the instantaneous mean profile).
-    Wall-bounded systems only.  ``it_probes`` trades time resolution
-    for disk (a record is ``8 + 2*K*C*ny*itemsize`` bytes); the buffered
-    writer makes any cadence cheap at runtime.  Format, buffering,
-    and the reader: the :mod:`dnsjax_lab.extensions.probes` and
+    Enabled when ``modes`` and ``it_probes`` are both set; wall-bounded
+    systems only.  The stream (the ``modes`` index convention, the
+    ``(0,0)`` mean mode's record), its format and buffering, and the
+    reader: the :mod:`dnsjax_lab.extensions.probes` and
     :mod:`dnsjax_lab.analysis.response.probes` docstrings.
+    ``it_probes`` trades time resolution for disk (a record is
+    ``8 + 2*K*C*ny*itemsize`` bytes); the buffered writer makes any
+    cadence cheap at runtime.
 
     On ``curved-pipe`` component 0 is the solver's carried streamwise
     variable `$w_s = h\,u_s$` (`$h = 1 + \kappa r\cos\theta$`), not
@@ -76,33 +70,23 @@ class ForceParams(BaseModel):
     ``it_force`` are all set (all-or-none): every ``it_force`` steps
     the main loop adds to each listed spectral mode (plus its
     real-FFT conjugate partner) a random superposition of the stored
-    channel profiles -- a sequence of independent state increments
-    ("kicks"), the discrete-time realization of white-in-time
-    forcing.  The drawn coefficients stream to
-    ``forcing.bin``/``forcing.json``, keeping the run's full forcing
-    history available to offline analysis -- e.g. their
-    cross-covariance with the probe stream identifies the mode's
-    linear operator (:mod:`dnsjax_lab.analysis.response.ssi`).
-
-    Kicks rather than a body-force term: a forcing term inside the
-    nonlinear RHS would be AB2-extrapolated under ``cnab2``
-    (colouring the noise) or corrector-iterated under
-    ``iterative-cn``, and would trace into the jitted steppers; a
-    loop-level kick keeps both schemes untouched and makes the
-    per-kick response exactly the solver's own propagator.  Full
-    conventions (timing relative to probes/snapshots, resume
-    continuation, amplitude guidance): the
+    channel profiles and logs the drawn coefficients to
+    ``forcing.bin``/``forcing.json``.  The kicks, why kicks rather than
+    a body-force term, their timing relative to probes and snapshots,
+    resume continuation and amplitude guidance: the
     :mod:`dnsjax_lab.extensions.forcing` module docstring.
 
     Wall-bounded, non-viscoelastic systems only: the injector's
     cylindrical/annular branch hard-codes the 3-component velocity map
-    ``to_pm_basis`` and has no ``to_spin_basis`` counterpart (unlike the probe
-    extractor, which does).  The conjugate partner itself is basis-agnostic --
-    a plain conjugate of a physical profile, valid for any component count.  On
-    ``curved-pipe`` a kick's component-0 profile lands on the carried
-    `$w_s = h\,u_s$` -- the column a probe records there -- not on `$u_s$`.
-    The whole section is **trajectory-defining**: resuming with changed forcing
-    starts a new trajectory (like a ``phys`` change).
+    ``to_pm_basis`` and has no ``to_spin_basis`` counterpart (unlike the
+    probe extractor, which does).  The conjugate partner itself is
+    basis-agnostic -- a plain conjugate of a physical profile, valid for
+    any component count.  On ``curved-pipe`` a kick's component-0
+    profile lands on the carried `$w_s = h\,u_s$` -- the column a probe
+    records there -- not on `$u_s$`.  The whole section is
+    **trajectory-defining**: kicks alter the dynamics exactly like a
+    ``phys`` change, so resuming with changed forcing starts a new
+    trajectory.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -136,10 +120,9 @@ class ForceParams(BaseModel):
         description=("Leading stored channels used per mode (default: all)."),
     )
     # Each kick adds ``eps * sum_j w_j profile_j`` with
-    # ``w_j ~ CN(0,1)`` i.i.d.  Pick eps in the linear-response window
-    # (halving it must leave the identified operator unchanged); the
-    # predicted stationary forced energy for planning:
-    # ``dnsjax_lab.analysis.response.ssi.predicted_forced_variance``.
+    # ``w_j ~ CN(0,1)`` i.i.d.; choosing eps (the linear-response
+    # window, the forced level for planning): the forcing module
+    # docstring's amplitude guidance.
     amplitude: float | None = Field(
         default=None,
         gt=0,
@@ -160,8 +143,9 @@ class ForceParams(BaseModel):
         ),
     )
     # Unset means "draw one" (:mod:`dnsjax.seeding`), resolved by
-    # ``bootstrap.resolve_run_seeds`` only when the enabling quartet
-    # below is configured -- so an unconfigured [force] never draws, and
+    # ``bootstrap.resolve_run_seeds`` only once the section is
+    # configured (``modes`` set, which the all-or-none check, run first,
+    # makes the whole quartet) -- so an unconfigured [force] never draws, and
     # the stray-knob check further down still sees ``None``.  The drawn
     # value is recorded in the snapshot and in ``forcing.json``, so an
     # append-resume inherits it and its match key still agrees.
@@ -189,10 +173,8 @@ def _validate_probes(values: ProbesParams, params) -> None:
     if values.modes is None:
         return
     if params.step.adaptive:
-        # probes.bin records carry t, but every reader reconstructs
-        # the uniform sample interval as it_probes * dt from the
-        # sidecar (and dt is an append-resume match key), so the
-        # stream is a fixed-dt feature.
+        # The records carry t, but every reader takes the interval from
+        # the sidecar, and dt is an append-resume match key.
         raise ValueError(
             "probes.modes: the probe stream requires a fixed time "
             "step (step.adaptive = False); its readers assume the "
@@ -239,18 +221,15 @@ def _validate_force(values: ForceParams, params) -> None:
         )
     if values.modes is None:
         # The secondary knobs have no effect without the enabling
-        # quartet -- and a recorded non-default value would flag a
-        # spurious trajectory change on a later resume (the section is
+        # quartet, and a non-default value would flag a spurious
+        # trajectory change on a resume (the section is
         # trajectory-defining), so reject rather than ignore.
         #
-        # ``seed == 0`` is exempt: it was this field's default before
-        # seeds became drawable, so every snapshot written by an
-        # *unforced* run of an older version records it.  The snapshot
-        # layer feeds that ``0`` straight back in, and rejecting it
-        # here would make those snapshots unresumable.  It costs
-        # nothing: ``0`` was never distinguishable from unset here
-        # either, and a configured ``force.seed = 0`` is still honoured
-        # (``resolve_run_seeds`` only draws over ``None``).
+        # ``seed == 0`` is exempt: older snapshots of *unforced* runs
+        # record it, and the snapshot layer feeds it back in, so
+        # rejecting it would make them unresumable.  A configured
+        # ``force.seed = 0`` is still honoured (``resolve_run_seeds``
+        # draws only over ``None``).
         stray = [
             k
             for k, v in (
@@ -267,9 +246,8 @@ def _validate_force(values: ForceParams, params) -> None:
             )
         return
     if params.step.adaptive:
-        # The white-in-time kick statistics and their readers
-        # hard-code the uniform kick interval it_force * dt (and dt
-        # is an append-resume match key of forcing.json).
+        # The kick statistics and their readers hard-code the interval,
+        # and dt is an append-resume match key of forcing.json.
         raise ValueError(
             "force.modes: stochastic forcing requires a fixed time "
             "step (step.adaptive = False); the kick interval "

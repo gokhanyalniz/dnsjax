@@ -3,58 +3,33 @@ r"""Viscoelastic (sPTT) extension of the cylindrical (pipe) geometry.
 Adds a symmetric conformation tensor `$\mathbf{c}$` to the cylindrical
 geometry, coupling it to the velocity via the polymer-stress
 divergence.  The time-integrated state grows from the 3 velocity
-components to **9**: 3 velocity + 6 independent symmetric-tensor
-components, carried as a single stacked spectral array
-``(9, Nr, Nm, Nkz)`` in the solver's spin basis
-
-.. math::
-    [\,u_z,\; u_+,\; u_-,\;
-      c_{zz},\; c_{z+},\; c_{z-},\; c_{+-},\; c_{++},\; c_{--}\,],
-
-with `$u_\pm = u_r \pm i u_\theta$` the decoupled velocity of
+components to **9** (3 velocity + 6 independent symmetric-tensor
+components), one stacked spectral array ``(9, Nr, Nm, Nkz)``: in the
+solver, the decoupled `$u_\pm$` velocity of
 :mod:`~dnsjax.geometries.wall_bounded.cylindrical` and the analogous
-tensor spin projections.  Everything outside the time stepper --
-snapshots, diagnostics, probes, initial conditions, the analysis
-package -- uses the physical layout
-`$(u_z, u_r, u_\theta, c_{zz}, c_{rz}, c_{\theta z}, c_{rr},
-c_{\theta\theta}, c_{r\theta})$`, and a given state crosses at most
-once.  Both layouts, the conversion pair, the spin weights and the
-pointwise physical-space arithmetic live in
-:mod:`._viscoelastic_common`, shared with the annular sPTT geometry.
+tensor spin projections; everywhere else, the physical components.
+Both layouts, the conversion pair, the spin weights and the pointwise
+physical-space arithmetic live in :mod:`._viscoelastic_common`, shared
+with the annular sPTT geometry.
 
 What lives where
 ----------------
-The time stepper itself -- the fused pseudo-spectral RHS, the FFT-free
-CN/AB2 coupling, the conformation Crank-Nicolson update, the
-predictor / corrector / norm, the `$H_c$` builders and the stepper
-factory -- is shared with the annular sPTT geometry and lives in
-:mod:`._viscoelastic_stepping`.  **This** module owns the pipe half:
-the flow dataclass, the analytical laminar profiles, the per-slot axis
-parity, and the adapter methods the shared stepper dispatches on
+The time stepper itself is shared with the annular sPTT geometry and
+lives in :mod:`._viscoelastic_stepping`.  **This** module owns the pipe
+half: the flow dataclass, the analytical laminar profiles, the per-slot
+axis parity, and the adapter methods the shared stepper dispatches on
 (parity-reduced radial derivatives, a single wall row, the axial body
 force -- see :class:`ViscoelasticCylindricalFlow`).
 
 Governing equations (sPTT)
 --------------------------
-.. math::
-    \partial_t \mathbf{u} + \mathbf{u}\cdot\nabla\mathbf{u}
-      &= -\nabla p + \tfrac{\beta}{\mathrm{Re}}\nabla^2\mathbf{u}
-      + \tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}\nabla\cdot\mathbf{c}
-      - \boldsymbol{\Pi}, \\
-    \partial_t \mathbf{c} + \mathbf{u}\cdot\nabla\mathbf{c}
-      - (\nabla\mathbf{u})^{\!\top}\!\cdot\mathbf{c}
-      - \mathbf{c}\cdot\nabla\mathbf{u}
-      &= \kappa\nabla^2\mathbf{c}
-      - \tfrac{\mathbf{c}-\mathbb{I}}{\mathrm{Wi}}
-        (1 - 3\epsilon + \epsilon\,\mathrm{tr}\,\mathbf{c}),
-
-with no-slip `$\mathbf{u}=0$` and `$\nabla^2\mathbf{c}=0$` at the
-single wall `$r = 1$`, regularity at the axis carried by parity (see
-below), and the **axial** body force `$-\Pi_z = 4/\mathrm{Re}$` (a
-uniform mean pressure gradient `$\Pi_z = -4/\mathrm{Re}$`; see
-:mod:`~dnsjax_lab.flows.wall_bounded.viscoelastic_pipe`).  All products are
-at most quadratic (`$\mathrm{tr}(\mathbf{c})\,\mathbf{c}$`), so the
-existing 3/2-rule dealiasing is exact.
+The system of :mod:`._viscoelastic_common` ("The model") with
+`$\mathbf{f} = -\boldsymbol{\Pi}$`, no-slip `$\mathbf{u}=0$` and
+`$\nabla^2\mathbf{c}=0$` at the single wall `$r = 1$`, regularity at
+the axis carried by parity (below), and the **axial** body force
+`$-\Pi_z = 4/\mathrm{Re}$` (a uniform mean pressure gradient
+`$\Pi_z = -4/\mathrm{Re}$`;
+:mod:`~dnsjax_lab.flows.wall_bounded.viscoelastic_pipe`).
 
 Axis parity of the conformation tensor
 --------------------------------------
@@ -109,39 +84,14 @@ lands the ghost correction on the radial axis either way.
 
 Time integration
 ----------------
-Both ``iterative-cn`` (default) and ``cnab2`` schemes are supported.
-``get_rhs`` returns the full 9-component nonlinear RHS -- velocity
-(`$\mathbf{u}\times\boldsymbol\omega$` + `$-\boldsymbol\Pi$` + FFT-free
-polymer divergence
-`$\tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}\nabla\cdot\mathbf{c}$`) and
-conformation (`$-\mathbf{u}\cdot\nabla\mathbf{c} + (\nabla u)^{\!\top}c
-+ c\nabla u - \tfrac{f(\mathrm{tr}\,c)}{\mathrm{Wi}}(c-\mathbb{I})$`) --
-built from a single fused pseudo-spectral evaluation (one batched
-inverse transform of ~36 fields, one batched forward transform of the
-9 outputs; the vorticity is free from the velocity-gradient tensor).
-The predictor/corrector then solves the velocity via the cylindrical
-`$1\times1$` IMM
+The shared stepper (:mod:`._viscoelastic_stepping`, both schemes) with
+the velocity on the cylindrical `$1\times1$` IMM
 (:func:`~dnsjax.geometries.wall_bounded.cylindrical._imm_iteration`,
-solvent viscosity `$\nu = \beta/\mathrm{Re}$`) and the conformation via
-a Crank-Nicolson Helmholtz solve per spin component
-(`$H_c = \tfrac1{\Delta t}I - \theta\kappa\nabla^2$`, one Laplacian BC
-wall row).  The polymer divergence is added to the velocity **sources**,
-so both IMM schemes project it with no change of their own.  With
-`$\kappa = 0$` the transport is purely hyperbolic (no wall BC) and the
-conformation update degenerates to the explicit CN combination.
-
-Both ``res.consistent_imm`` formulations are supported and need nothing
-from this module: each consumes the polymer divergence as one more
-source.
-
-The ``cnab2`` scheme (one FFT/step) makes the FFT-free linear/mean
-coupling implicit via ``_viscoelastic_stepping._l_bf`` -- velocity
-mean-flow coupling + polymer-stress divergence, conformation mean
-advection / mean-shear stretching + linear relaxation (all gated /
-structured so the explicit AB2 remainder is the pure
-fluctuation-fluctuation nonlinearity plus the nonlinear relaxation) --
-and advances that remainder explicitly.  It reproduces ``iterative-cn``
-to `$O(\Delta t^2)$` at ~1 FFT/step versus ~4.
+solvent viscosity `$\nu = \beta/\mathrm{Re}$`) and the conformation's
+Crank-Nicolson Helmholtz solve carrying the one Laplacian BC wall row.
+The polymer divergence is added to the velocity **sources**, so both
+``res.consistent_imm`` formulations project it with no change of their
+own and need nothing from this module.
 
 Design notes
 ------------
@@ -282,25 +232,16 @@ def viscoelastic_laminar_profiles(
     and the flow's laminar reference, both of which live outside the
     solver (:func:`to_spin_basis` converts when one enters it).
 
-    Velocity: the Hagen-Poiseuille profile `$W(r) = 1 - r^2$`, which is
-    the exact balance of `$-\Pi_z = 4/\mathrm{Re}$` against the *total*
-    (solvent + polymer) stress at `$\epsilon = 0$`; the shear-thinning
-    correction at `$\epsilon > 0$` is neglected, as in the annular flow.
-
-    Conformation: the pointwise sPTT equilibrium on the **discrete**
-    local shear `$S = D_1 W$` (no curvature term -- the flow is
-    unidirectional and axial, so `$\bar L_{rz}$` is the only nonzero
-    velocity gradient), which makes the conformation slice of the RHS
-    vanish identically at every `$\epsilon$`:
-
-    .. math::
-        c_{rr} = c_{\theta\theta} = 1, \quad
-        c_{rz} = \frac{\mathrm{Wi}\,S}{f}, \quad
-        c_{zz} = 1 + \frac{2(\mathrm{Wi}\,S)^2}{f^2}, \quad
-        f^3 - f^2 = 2\epsilon(\mathrm{Wi}\,S)^2,
-
-    with `$c_{r\theta} = c_{\theta z} = 0$`.  The sheared pair is
-    `$(c_{rz}, c_{zz})$` here, against the annulus's
+    The closed forms and where they balance: the
+    :mod:`~dnsjax_lab.flows.wall_bounded.viscoelastic_pipe` module
+    docstring.  Velocity: the Hagen-Poiseuille `$W(r) = 1 - r^2$`
+    (exact at `$\epsilon = 0$` only).  Conformation: the pointwise sPTT
+    equilibrium on the **discrete** local shear `$S = D_1 W$` (no
+    curvature term -- the flow is unidirectional and axial, so
+    `$\bar L_{rz}$` is the only nonzero velocity gradient):
+    `$c_{rr} = c_{\theta\theta} = 1$`, `$c_{rz} = \mathrm{Wi}\,S/f$`,
+    `$c_{zz} = 1 + 2 c_{rz}^2$`, the rest zero: the sheared pair
+    `$(c_{rz}, c_{zz})$` against the annulus's
     `$(c_{r\theta}, c_{\theta\theta})$`.
 
     *D1_even* is the even-parity radial FD matrix: `$W$` is even about
@@ -360,8 +301,7 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
 
     Extends
     :class:`~dnsjax.geometries.wall_bounded.cylindrical.CylindricalFlow`
-    (radial grid, parity-reduced FD matrices, `$1\times1$` IMM operators
-    -- built with solvent viscosity `$\nu = \beta/\mathrm{Re}$` via
+    (built with the solvent viscosity `$\nu = \beta/\mathrm{Re}$` via
     ``derived_params.nu``) with the conformation-tensor machinery: the
     stacked Crank-Nicolson Helmholtz operator ``Hc_op`` (6 spin
     components, `$m_{\mathrm{eff}} = m + s$` on the `$(-1)^{m+s}$`
@@ -371,10 +311,8 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
     transport is hyperbolic and the update is the explicit CN
     combination.
 
-    The methods below are the **pipe half of the adapter surface** the
-    shared stepper (:mod:`._viscoelastic_stepping`) dispatches on,
-    resolved once at trace time; being methods rather than fields they
-    add no pytree leaf.  In short: parity-reduced radial derivatives
+    The methods below are the **pipe half of the adapter surface** of
+    :mod:`._viscoelastic_stepping`: parity-reduced radial derivatives
     carrying the per-slot `$(-1)^{m+s}$` sign, a single
     `$\nabla^2 c = 0$` wall row (the axis is closed by the parity
     reduction), and an axial mean-mode body force.
@@ -384,8 +322,8 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
     which also zeros the base flow (total-field integration).
     """
 
-    #: CFL column labels (a ``ClassVar``: as an annotated field this
-    #: tuple would become two static pytree entries per flatten).
+    #: CFL column labels (a ``ClassVar``; why: the adapter table of
+    #: :mod:`._viscoelastic_stepping`).
     cfl_names: ClassVar[tuple[str, str, str]] = CFL_NAMES
 
     tensor_spin: Array = field(init=False)
@@ -433,11 +371,9 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
         r"""Build the stacked 6-component `$H_c$` Crank-Nicolson operator.
 
         Stores the narrow Laplacian BC wall row as the ``hc_narrowN``
-        leaf (its JAX-free NumPy build cannot run on tracers, so the
-        jitted adaptive-``dt`` rebuild reuses it), optionally
-        pre-checks the no-pivot LU at ``dt_max`` (``step.adaptive``;
-        the velocity `$H_k$` analogue), and delegates the
-        assembly/factorization to
+        leaf (its field comment says why), optionally pre-checks the
+        no-pivot LU at ``dt_max`` (``step.adaptive``; the velocity
+        `$H_k$` analogue), and delegates the assembly/factorization to
         :func:`._viscoelastic_stepping._build_hc_operator`.
 
         The wall row is one-sided at `$r = 1$`, so its `$D_2$` stencil
@@ -513,16 +449,16 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
         `$A_{\mathrm{base}}^{(\sigma)} c = (\partial_r^2 + \tfrac1r
         \partial_r)c$`, each slot on its own `$(-1)^{m+s}$` parity band,
         returned as ``(6, Nr, Nm, Nkz)``.  One matvec against the
-        **precomputed** parity-reduced pair (``CylindricalFlow.A_base_pos`` /
-        ``A_base_ghost``), not a `$D_2$` matvec, a `$D_1$` matvec and a
-        field-sized `$1/r$` multiply-add between them: `$D_1 c$` has no other
-        consumer here (the tensor's own radial derivatives are separate
-        stacks -- ``rhs_radial_derivatives`` and
-        ``div_c_radial_derivatives``), which is the premise the
-        curvilinear fusion needs.  6 full-width field-GEMMs instead of 12,
-        and one fewer ``(N_r, 6, N_m, N_{k_z})`` transient, kept although
-        it buys no measurable CPU time (Design notes: "Fusing
-        `$A_{\mathrm{base}}$` on the tensor slots").
+        precomputed parity-reduced pair (``CylindricalFlow.A_base_pos`` /
+        ``A_base_ghost``): `$D_1 c$` has no other consumer here (the
+        tensor's own radial derivatives are separate stacks --
+        ``rhs_radial_derivatives`` and ``div_c_radial_derivatives``),
+        the premise of
+        :func:`~dnsjax.geometries.wall_bounded.cylindrical._build_A_base`.
+        6 full-width field-GEMMs instead of 12, and one fewer
+        ``(N_r, 6, N_m, N_{k_z})`` transient, kept although it buys no
+        measurable CPU time (Design notes:
+        "Fusing `$A_{\mathrm{base}}$` on the tensor slots").
         """
         par = _parity_signs(TENSOR_SPIN, fourier_)
         # y-leading (Nr, 6, Nm, Nkz): the transpose-free GEMM layout.

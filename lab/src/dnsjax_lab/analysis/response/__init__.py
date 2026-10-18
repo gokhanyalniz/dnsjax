@@ -11,21 +11,17 @@ importing the package pulls in neither JAX nor SciPy):
 - :mod:`dnsjax_lab.analysis.response.operator_tools` -- per-mode linear
   operators exported by the transient-growth CLI
   (``--tg.save_operator``): controllability Gramian / modes, growth
-  curves, subspace restriction.  JAX-based (GPU-capable), SciPy
-  imported lazily.
+  curves, subspace restriction.
 - :mod:`dnsjax_lab.analysis.response.ensemble` -- ensemble-response
   aggregation and direct operator identification from injected-mode
-  response data.  JAX-based, SciPy imported lazily.
+  response data.
 - :mod:`dnsjax_lab.analysis.response.lim` -- linear inverse modelling:
   the same operator identified from lagged covariances of a plain
-  *unforced* probe stream (no extra runs; assumes white-in-time
-  turbulent forcing).  JAX-based, SciPy imported lazily.
+  *unforced* probe stream.
 - :mod:`dnsjax_lab.analysis.response.ssi` -- stochastic-forcing
-  identification: reader for the runtime kick log
-  (``forcing.bin``, :mod:`dnsjax_lab.extensions.forcing`) and the kick/response
-  cross-covariance fit (no whiteness hypothesis on the background;
-  needs a ``[force]``-enabled run).  JAX-based, SciPy imported
-  lazily.
+  identification: reader for the runtime kick log (``forcing.bin``,
+  :mod:`dnsjax_lab.extensions.forcing`) and the kick/response
+  cross-covariance fit.
 
 Pipeline
 --------
@@ -68,13 +64,16 @@ measured mean); steps 4-6 need the earlier outputs.  Two
 **alternative identification routes** replace steps 5-6 on the same
 basis, coordinates, and output convention (so all three operators
 are directly comparable): :mod:`.lim` needs only the step-1 probe
-stream of the plain run (cheapest; adds the whiteness hypothesis),
-and :mod:`.ssi` needs one run re-run with the ``[force]`` stochastic
-kicks (one experiment instead of an ensemble; hypothesis-free on the
-background).  Cost/assumption trade-offs: the two module docstrings.
+stream of the plain run (cheapest; adds the hypothesis that the
+turbulent forcing is white in time), and :mod:`.ssi` needs one run
+re-run with the ``[force]`` stochastic kicks (one experiment instead
+of an ensemble; hypothesis-free on the background).  Cost/assumption
+trade-offs: the two module docstrings.
 
 Modules here **may** use JAX, lazily (unlike the JAX-free
-:mod:`dnsjax_lab.analysis.twin`); the CLIs select the platform via
+:mod:`dnsjax_lab.analysis.twin`): every one but :mod:`.probes` is
+JAX-based (the growth curves, GPU-capable) and imports SciPy lazily,
+and the CLIs select the platform via
 ``bootstrap.configure_jax_platform`` before any JAX import.
 
 The JAX/NumPy line is drawn by profitability, not habit: the dense

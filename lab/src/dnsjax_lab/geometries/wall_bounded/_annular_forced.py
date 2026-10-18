@@ -21,8 +21,7 @@ def annular_forced_laminar_u_theta(
     `$-\Pi_\theta = C/(r\,\mathrm{Re})$` -- `$\Pi_\theta$` being the
     mean-mode azimuthal gradient in the codebase convention, so the
     force is its negative (:mod:`dnsjax.ic.mean_mode`) -- with no-slip
-    walls
-    `$U_\theta(r_1) = U_\theta(r_2) = 0$`.  The `$1/\mathrm{Re}$`
+    walls `$U_\theta(r_1) = U_\theta(r_2) = 0$`.  The `$1/\mathrm{Re}$`
     cancels, so the profile is **Reynolds-independent**:
 
     .. math::
@@ -38,15 +37,14 @@ def annular_forced_laminar_u_theta(
         \beta = \frac{C}{2}\,
         \frac{(r_1 r_2)^2 (\ln r_2 - \ln r_1)}{r_1^2 - r_2^2}.
 
-    Shared by the two force-driven annular flows: Newtonian Dean
-    (:func:`dnsjax_lab.flows.wall_bounded.dean.dean_laminar_u_theta`,
-    `$C = 2(r_1 + r_2)$`) and the viscoelastic
-    sPTT flow (`$C = r_1 + r_2$` in half-gap units, whose mid-gap force is the
-    plane channel's `$2/\mathrm{Re}$`;
-    :mod:`~dnsjax_lab.flows.wall_bounded.viscoelastic_dean`).  Pure function
-    (no flow construction), so it is importable both by the
-    ``start_from_laminar`` state and by the flows' initial conditions (the
-    total-field IC = laminar profile + perturbation).
+    `$C = 2(r_1 + r_2)$` for Newtonian Dean
+    (:func:`dnsjax_lab.flows.wall_bounded.dean.dean_laminar_u_theta`),
+    `$C = r_1 + r_2$` in half-gap units for the viscoelastic sPTT flow
+    (whose mid-gap force is the plane channel's `$2/\mathrm{Re}$`;
+    :mod:`~dnsjax_lab.flows.wall_bounded.viscoelastic_dean`).  Pure
+    function (no flow construction), so it is importable both by the
+    ``start_from_laminar`` state and by the flows' initial conditions
+    (the total-field IC = laminar profile + perturbation).
 
     Parameters
     ----------

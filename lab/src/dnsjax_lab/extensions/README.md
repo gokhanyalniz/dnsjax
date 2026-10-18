@@ -2,9 +2,9 @@
 
 Two optional parameter sections add binary streams to a running
 simulation, beside the always-available `stats.dat` / `steps.dat` /
-`corrector.dat` text diagnostics. Both are **extensions** — sections
-owned outside `parameters.py`, but parsed from the CLI and
-`parameters.toml`, listed in `--help`, validated strictly per flow, and
+`corrector.dat` text diagnostics. Both are **extensions**: sections
+owned outside `parameters.py`, yet parsed from the CLI and
+`parameters.toml`, listed in `--help`, validated strictly per flow and
 recorded into snapshot metadata once configured (the mechanism:
 [Parameter layering](../../../../docs/configuration.md)).
 
@@ -32,56 +32,41 @@ whatever modes it inherited
 indices — axis 2 is the complex slot, axis 3 the real-FFT slot, counting
 the component axis as axis 0 (the per-geometry layout:
 [`docs/scaling.md`](../../../../docs/scaling.md#array-layout-by-geometry)),
-the same convention the transient-growth CLI's `--tg.modes` uses. Indices
-are bounds-checked against the true (unpadded) mode counts, so a
-padding slot can never be probed. Unlike the transient-growth CLI, the
-mean mode `0,0` **is** allowed: its record is the instantaneous mean
-profile of the stored field — the perturbation on a base-flow system,
-to which `mean_profile` adds the closed-form laminar profile for plane
-Couette and plane Poiseuille, and the total itself on a force-driven
-one.
-
-On `curved-pipe` the component-0 profile is the solver's carried
-streamwise variable $w_s = h u_s$ with $h = 1 + \kappa r\cos\theta$,
-not $u_s$: $1/h$ couples every azimuthal mode, so no single mode
-column converts exactly (the label stays the cylindrical `u_z`).
+the transient-growth CLI's `--tg.modes` convention — bounds-checked
+against the true (unpadded) mode counts. Unlike that CLI, the mean
+mode `0,0` **is** allowed: its record is the instantaneous mean profile
+of the stored field (the `dnsjax_lab.extensions.probes` module
+docstring). On `curved-pipe` the component-0 profile is the solver's
+carried $w_s = h u_s$, not $u_s$, under the cylindrical label `u_z`
+(why: `dnsjax_lab.extensions.ProbesParams`).
 
 **Why a separate stream.** A mode time series wants $10^5$ to $10^6$
-samples. A snapshot per sample is some three orders of magnitude more
-bytes, and the scalar `.dat` streams cannot hold a complex profile in
-$y$. The probe stream is the input for mode statistics —
-covariances, spectra — and for every response route.
+samples, more than snapshots or the scalar `.dat` streams can carry
+(the module docstring); the probe stream is the input for mode
+statistics — covariances, spectra — and for every response route.
 
 **On disk.** `probes.bin` is a flat sequence of fixed-size records,
+one complex profile per probed mode and state component, beside a
+`probes.json` sidecar, written once, that carries the schema (the
+module docstring's "File format"). The reader is
+`dnsjax_lab.analysis.response.probes` — NumPy only, no JAX — which also
+provides `mean_profile`, `re_tau`, and `write_profile_file`.
 
-```python
-numpy.dtype([("t", "<f8"), ("u", VAL, (K, C, N_y, 2))])
-```
-
-for `K` probed modes and `C` state components, with the trailing axis
-`(re, im)` and `VAL` following `res.double_precision` (`t` is always
-float64). A `probes.json` sidecar, written once, carries the schema:
-the mode list, the integer wavenumbers, component labels, the
-wall-normal grid, the cadence, and the full resolved parameter dump.
-The reader is `dnsjax_lab.analysis.response.probes` — NumPy only, no JAX —
-which also provides `mean_profile`, `re_tau`, and `write_profile_file`.
-
-**Buffering matches the `.dat` streams.** Records accumulate in an
-on-device `(nbuffer, K, C, N_y)` buffer and are flushed — appended and
-`fsync`-ed — when it fills, at shutdown, before every snapshot write,
-and on a termination signal. Flushed records are scanned for
-non-finite values, and a hit aborts the run through the same
+**Buffering matches the `.dat` streams.** Records accumulate on the
+device and are flushed — appended and `fsync`-ed — when the buffer
+fills and at every flush site of the run loop: after the first step,
+before every snapshot write, at shutdown and on a termination signal.
+A non-finite value in a flushed record aborts the run through the same
 `FATAL` / exit-code-3 path as the other diagnostics.
 
 **Resume.** An existing `probes.bin`/`probes.json` pair is appended to
 only when the sidecar matches the current run — same modes *and the
-wavenumbers they denote* (a resume may change `res.nx` / `res.nz`, and a
-stored negative-block index then means a different mode), grid,
-components, precision, system and cadence. Anything else is a hard error
-asking you to move the old pair aside, rather than a stream whose two
-halves mean different things. A clean continuation duplicates one
-sample at the seam; the reader drops it, and flags genuinely
-non-monotonic timestamps.
+wavenumbers they denote*, grid, components, precision, system, cadence
+and `dt` (the module docstring's resume semantics) — and anything else
+is a hard error asking you to move the old pair aside, rather than a
+stream whose two halves mean different things. A clean continuation
+duplicates one sample at the seam; the reader drops it, and flags
+genuinely non-monotonic timestamps.
 
 ## `[force]` — white-in-time stochastic mode kicks
 
@@ -119,74 +104,59 @@ quartet with it, which is such a change.
 | `force.seed` | Kick-coefficient PRNG seed; unset draws one from the system entropy pool and records it, and an append-resume inherits that value rather than drawing again |
 
 **Why kicks and not a body-force term.** A forcing term inside the
-nonlinear right-hand side would be integrated by the scheme: `cnab2`
-would Adams–Bashforth-extrapolate the random sequence
-($1.5 f^n - 0.5 f^{n-1}$, which colours white noise), and the
-`iterative-cn` corrector would iterate on it. A loop-level state
+nonlinear right-hand side would be integrated by the scheme —
+Adams–Bashforth-extrapolated under `cnab2`, which colours white noise,
+and iterated on by the `iterative-cn` corrector. A loop-level state
 increment leaves both schemes untouched and makes the per-kick response
-*exactly* the solver's own propagator — the object the transient-growth
-export encodes — at the cost of one fused scatter-add every
-`it_force` steps.
+*exactly* the solver's own propagator, the object the transient-growth
+export encodes (the `dnsjax_lab.extensions.forcing` module docstring).
 
 **Timing.** A kick fires at the top of the loop on every iteration with
-`it % it_force == 0`: after the probe sample at the same $t$ and after
-any snapshot write, so both record the **pre-kick** state. A probe sample
-taken at a kick time therefore correlates with earlier kicks only,
-which gives the identification a clean zero-lag causality check.
-Snapshots are never post-kick, so a resumed continuation applies the
-kick belonging to its own first iteration: none is lost or doubled.
-The coefficient PRNG is host-side and rank-identical, and an
-append-resume skips the already-recorded draws, continuing the stream
-exactly as if the run had never stopped.
+`it % it_force == 0`, after the probe sample and any snapshot write at
+the same $t$, so both record the **pre-kick** state: a probe sample at
+a kick time correlates with earlier kicks only (a zero-lag causality
+check), and a resumed continuation neither loses nor doubles a kick.
+An append-resume continues the host-side, rank-identical coefficient
+stream exactly as if the run had never stopped (the module docstring's
+timing conventions).
 
-**Amplitude.** Each kick adds $\varepsilon \sum_j w_j \mathbf{p}_j$ per
-mode with $w_j \sim \mathcal{CN}(0, 1)$ i.i.d. and unit-energy
-profiles. Choose $\varepsilon$ inside the linear-response window:
-halving it must leave the identified operator unchanged. The stationary
-forced level follows from the operator's Lyapunov equation —
-`predicted_forced_variance` in the `ssi` module computes it for
-planning.
+**Amplitude.** Choose $\varepsilon$ inside the linear-response window:
+halving it must leave the identified operator unchanged.
+`predicted_forced_variance` in the `ssi` module computes the
+stationary forced level for planning (the module docstring's amplitude
+guidance).
 
-**On disk.** `forcing.bin` is a flat sequence of fixed-size records,
-
-```python
-numpy.dtype([("t", "<f8"), ("w", "<f8", (K, m, 2))])
-```
-
-for `K` forced modes and `m` channels, the trailing axis the
-`(re, im)` of the coefficients exactly as applied — unscaled by
-`amplitude`, which lives in the sidecar. Coefficients are host-generated
-float64 whatever the state precision; the volume is negligible. The
-`forcing.json` sidecar carries the modes and their wavenumbers, channel
-count, amplitude, cadence, seed, the resolved parameters, and the
-profile bundle's path and SHA-256 — an append-resume must match all of
-these, since changing the injection basis, or what a mode index means,
-invalidates the stream mid-experiment. The reader is
+**On disk.** `forcing.bin` is a flat sequence of fixed-size records of
+the coefficients exactly as applied — unscaled by `amplitude`, which
+lives in the sidecar, and float64 whatever the state precision. An
+append-resume must match the `forcing.json` sidecar on the modes and
+their wavenumbers, channel count, amplitude, cadence, seed, `dt`, the
+system and the profile bundle's SHA-256, since changing the injection
+basis, or what a mode index means, invalidates the stream
+mid-experiment (the record layout and the sidecar: the module
+docstring's "File format"). The reader is
 `dnsjax_lab.analysis.response.ssi`.
 
 **A kick's increment is generally not discretely solenoidal**, and what
 becomes of that part depends on the scheme. Under the default
-`res.consistent_imm` there is no pressure Poisson to absorb it: it lands
-in the carried state intact and is discarded one step later, when the
-reconstruction rebuilds the tangential pair from the wall-normal
-velocity and vorticity alone. The legacy primitive influence-matrix
-method (`res.consistent_imm = false`) instead feeds it into the pressure
-Poisson right-hand side and damps it over the following steps. Either
-way it reaches exactly one nonlinear evaluation (two under `cnab2`,
-which carries that evaluation forward) and never a solve — a bounded,
-per-event, truncation-class effect rather than an accumulating one. Keep
-injected profiles solenoidal if the distinction matters for the response
-being identified.
+`res.consistent_imm` it lands in the carried state intact and is
+discarded one step later, so it reaches exactly one nonlinear
+evaluation (two under `cnab2`) and never a solve; the legacy primitive
+influence-matrix method (`res.consistent_imm = false`) instead feeds it
+into the pressure Poisson right-hand side and damps it over the
+following steps. Either way it is a bounded, per-event,
+truncation-class effect rather than an accumulating one (the
+`forcing.py` module docstring). Keep injected profiles solenoidal if
+the distinction matters for the response being identified.
 
 ## Format versions
 
 Both sidecars carry a `format_version` enforced against the reader's
 `MIN_FORMAT_VERSION`, as the snapshot archive does. The record layouts
-are fixed across schema versions, so a stale stream reads *cleanly* and
-only its values mean something else — which makes the version the only
-thing standing between an old file and a silent misread. Bump the
-writer and the reader together whenever the stored *meaning* changes,
-not merely the layout.
+are fixed across schema versions, so the version is the only guard
+against a silent misread: bump the writer and the reader together
+whenever the stored *meaning* changes, not merely the layout (the two
+module docstrings).
 
 ## What to do with the streams
 

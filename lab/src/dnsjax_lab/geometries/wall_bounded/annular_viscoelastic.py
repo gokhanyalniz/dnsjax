@@ -3,124 +3,48 @@ r"""Viscoelastic (sPTT) extension of the annular geometry.
 Adds a symmetric conformation tensor `$\mathbf{c}$` to the annular
 (concentric-cylinder) geometry, coupling it to the velocity via the
 polymer-stress divergence.  The time-integrated state grows from the 3
-velocity components to **9**: 3 velocity + 6 independent symmetric-tensor
-components, carried as a single stacked spectral array
-``(9, Nr, Nm, Nkz)`` in the layout
-
-.. math::
-    [\,u_z,\; u_+,\; u_-,\;
-      c_{zz},\; c_{z+},\; c_{z-},\; c_{+-},\; c_{++},\; c_{--}\,]
-
-where the velocity uses the decoupled `$u_\pm = u_r \pm i u_\theta$`
-formulation of :mod:`~dnsjax.geometries.wall_bounded.annular`, and the
-tensor uses the analogous **spin** projections
-
-.. math::
-    c_{z\pm} = c_{rz} \pm i c_{\theta z}, \qquad
-    c_{+-}   = c_{rr} + c_{\theta\theta}, \qquad
-    c_{\pm\pm} = (c_{rr} - c_{\theta\theta}) \pm 2 i c_{r\theta}.
-
-As in the annular geometry this is the solver's **working** basis.
-Outside the time stepper -- snapshots, diagnostics, probes, initial
-conditions, the analysis package -- the state is the physical
-9-component layout
-
-.. math::
-    [\,u_z,\; u_r,\; u_\theta,\;
-      c_{zz},\; c_{rz},\; c_{\theta z},\;
-      c_{rr},\; c_{\theta\theta},\; c_{r\theta}\,],
-
-and a given state crosses between the two at most once
-(:func:`to_spin_basis` / :func:`from_spin_basis`, driven by
-:mod:`dnsjax.__main__`).
+velocity components to **9** (3 velocity + 6 independent
+symmetric-tensor components), one stacked spectral array
+``(9, Nr, Nm, Nkz)``: in the solver, the decoupled `$u_\pm$` velocity
+of :mod:`~dnsjax.geometries.wall_bounded.annular` and the analogous
+tensor spin projections; everywhere else, the physical components.
+Both layouts, the crossing between them and the spin weights:
+:mod:`._viscoelastic_common` ("State layout", "Spin weights").
 
 What lives where
 ----------------
-The time stepper itself -- the fused pseudo-spectral RHS, the FFT-free
-CN/AB2 coupling, the conformation Crank-Nicolson update, the
-predictor / corrector / norm, the `$H_c$` builders and the stepper
-factory -- is shared with the pipe's sPTT geometry and lives in
-:mod:`._viscoelastic_stepping`; the coordinate-level algebra under it
-(spin `$\leftrightarrow$` physical maps, the pointwise physical-space
-kernel, the `$\nabla\cdot c$` curvature assembly) in
-:mod:`._viscoelastic_common`.  **This** module owns the annular half:
-the flow dataclass, the analytical laminar profiles, the narrow
-Laplacian BC wall rows, and the adapter methods the shared stepper
-dispatches on (plain `$D_1$`/`$D_2$` radial derivatives, two wall
-rows, the azimuthal body force -- see
+The time stepper itself is shared with the pipe's sPTT geometry and
+lives in :mod:`._viscoelastic_stepping`, the coordinate-level algebra
+under it in :mod:`._viscoelastic_common`.  **This** module owns the
+annular half: the flow dataclass, the analytical laminar profiles, the
+narrow Laplacian BC wall rows, and the adapter methods the shared
+stepper dispatches on (plain `$D_1$`/`$D_2$` radial derivatives, two
+wall rows, the azimuthal body force -- see
 :class:`ViscoelasticAnnularFlow`).
 
 Spin diagonalization of the tensor Laplacian
 --------------------------------------------
-The cylindrical Laplacian couples the physical tensor components through
-`$1/r^2$` terms, exactly as the vector Laplacian couples `$u_r, u_\theta$`.
-Writing `$\partial_\theta \to im$` and collecting the basis-rotation
-generator `$\mathcal R$` (the `$\partial_\theta$` action on the tensor
-basis), the angular part of the Laplacian is
-`$\tfrac{1}{r^2}(\mathcal R + im)^2$`.  Each spin projection is an
-eigenvector of `$\mathcal R$` with eigenvalue `$is$` (spin weight
-`$s$`), so `$(\mathcal R + im)^2 \to -(m + s)^2$` and the tensor
-Laplacian **diagonalizes**:
-
-.. math::
-    (\nabla^2 \mathbf{c})_{\text{spin }s} =
-    \Bigl[\partial_r^2 + \tfrac{1}{r}\partial_r
-    - \tfrac{(m+s)^2}{r^2} - k_z^2\Bigr]\,\mathbf{c}_{\text{spin }s},
-
-with spin weights `$s = 0$` for `$c_{zz}, c_{+-}$`, `$s = \pm1$` for
-`$c_{z\pm}$`, and `$s = \pm2$` for `$c_{\pm\pm}$` -- the same mechanism as
-`$u_\pm$` (`$m_{\mathrm{eff}} = m \pm 1$`).  Each spin component therefore
-diffuses through a scalar Helmholtz solve with its own
-`$m_{\mathrm{eff}}$`, reusing the annular dense/Pallas machinery.
+Each spin component diffuses through a scalar Helmholtz solve with its
+own `$m_{\mathrm{eff}} = m + s$` (:mod:`._viscoelastic_common`,
+"Spin weights"), reusing the annular dense/Pallas machinery; the
+annulus has no axis, so no parity enters.
 
 Governing equations (sPTT)
 --------------------------
-.. math::
-    \partial_t \mathbf{u} + \mathbf{u}\cdot\nabla\mathbf{u}
-      &= -\nabla p + \tfrac{\beta}{\mathrm{Re}}\nabla^2\mathbf{u}
-      + \tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}\nabla\cdot\mathbf{c}
-      - \boldsymbol{\Pi}, \\
-    \partial_t \mathbf{c} + \mathbf{u}\cdot\nabla\mathbf{c}
-      - (\nabla\mathbf{u})^{\!\top}\!\cdot\mathbf{c}
-      - \mathbf{c}\cdot\nabla\mathbf{u}
-      &= \kappa\nabla^2\mathbf{c}
-      - \tfrac{\mathbf{c}-\mathbb{I}}{\mathrm{Wi}}
-        (1 - 3\epsilon + \epsilon\,\mathrm{tr}\,\mathbf{c}),
-
-with no-slip `$\mathbf{u}=0$` and `$\nabla^2\mathbf{c}=0$` at both walls,
-and the azimuthal body force `$-\Pi_\theta = (r_1+r_2)/(\mathrm{Re}\,r)$`
-(see :mod:`~dnsjax_lab.flows.wall_bounded.viscoelastic_dean`).  All products
-are at most quadratic (`$\mathrm{tr}(\mathbf{c})\,\mathbf{c}$`), so the
-existing 3/2-rule dealiasing is exact.
+The system of :mod:`._viscoelastic_common` ("The model") with
+`$\mathbf{f} = -\boldsymbol{\Pi}$`, no-slip `$\mathbf{u}=0$` and
+`$\nabla^2\mathbf{c}=0$` at both walls, and the azimuthal body force
+`$-\Pi_\theta = (r_1+r_2)/(\mathrm{Re}\,r)$`
+(:mod:`~dnsjax_lab.flows.wall_bounded.viscoelastic_dean`).
 
 Time integration
 ----------------
-Both ``iterative-cn`` (default) and ``cnab2`` schemes are supported.
-``get_rhs`` returns the full 9-component nonlinear RHS -- velocity
-(`$\mathbf{u}\times\boldsymbol\omega$` + `$-\boldsymbol\Pi$` + FFT-free
-polymer divergence
-`$\tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}\nabla\cdot\mathbf{c}$`) and
-conformation (`$-\mathbf{u}\cdot\nabla\mathbf{c} + (\nabla u)^{\!\top}c
-+ c\nabla u - \tfrac{f(\mathrm{tr}\,c)}{\mathrm{Wi}}(c-\mathbb{I})$`) --
-built from a single fused pseudo-spectral evaluation (one batched
-inverse transform of ~36 fields, one batched forward transform of the 9
-outputs; the vorticity is free from the velocity-gradient tensor).  The
-predictor/corrector then solves the velocity via the annular 2x2 IMM
+The shared stepper (:mod:`._viscoelastic_stepping`, both schemes) with
+the velocity on the annular `$2\times2$` IMM
 (:func:`~dnsjax.geometries.wall_bounded.annular._imm_iteration`,
-solvent viscosity `$\nu = \beta/\mathrm{Re}$`) and the conformation via a
-Crank-Nicolson Helmholtz solve per spin component (`$H_c = \tfrac1{\Delta
-t}I - \theta\kappa\nabla^2$`, Laplacian BC wall rows).  With
-`$\kappa = 0$` the transport is purely hyperbolic (no wall BC) and the
-conformation update degenerates to the explicit CN combination.
-
-The ``cnab2`` scheme (one FFT/step) makes the FFT-free linear/mean
-coupling implicit via ``_viscoelastic_stepping._l_bf`` -- velocity
-mean-flow coupling + polymer-stress divergence, conformation mean
-advection / mean-shear stretching + linear relaxation (all gated /
-structured so the explicit AB2 remainder is the pure
-fluctuation-fluctuation nonlinearity plus the nonlinear relaxation) --
-and advances that remainder explicitly.  It reproduces ``iterative-cn``
-to `$O(\Delta t^2)$` at ~1 FFT/step versus ~4.
+solvent viscosity `$\nu = \beta/\mathrm{Re}$`) and the conformation's
+Crank-Nicolson Helmholtz solve carrying a Laplacian BC row at each
+wall.
 """
 
 from dataclasses import dataclass, field
@@ -184,13 +108,9 @@ from dnsjax_lab.geometries.wall_bounded._viscoelastic_stepping import (
 
 # ── State layout ────────────────────────────────────────────────────
 #
-# Solver basis: state[0:3] = velocity (u_z, u_+, u_-); state[3:9] =
-# conformation spin components (c_zz, c_z+, c_z-, c_+-, c_++, c_--).
-# Physical (everything outside the stepper): (u_z, u_r, u_theta) +
-# (c_zz, c_rz, c_theta_z, c_rr, c_theta_theta, c_r_theta).  The layout,
-# the spin weights, the basis pair and the pointwise physical-space
-# arithmetic are geometry-free and shared with the pipe's viscoelastic
-# geometry: :mod:`._viscoelastic_common`.
+# The layout, the spin weights, the basis pair and the pointwise
+# physical-space arithmetic are geometry-free and shared with the
+# pipe's viscoelastic geometry: :mod:`._viscoelastic_common`.
 
 #: Role aliases for the basis boundary (see ``cylindrical.py``).
 to_solver_basis = to_spin_basis
@@ -282,8 +202,7 @@ class ViscoelasticAnnularFlow(AnnularFlow):
     r"""Precomputed data for viscoelastic (sPTT) annular flow.
 
     Extends :class:`~dnsjax.geometries.wall_bounded.annular.AnnularFlow`
-    (velocity radial grid, FD matrices, 2x2 IMM operators -- built with
-    solvent viscosity `$\nu = \beta/\mathrm{Re}$` via
+    (built with the solvent viscosity `$\nu = \beta/\mathrm{Re}$` via
     ``derived_params.nu``) with the conformation-tensor machinery: the
     stacked Crank-Nicolson Helmholtz operator ``Hc_op`` (6 spin
     components, `$m_{\mathrm{eff}} = m + s$`; two share
@@ -292,19 +211,17 @@ class ViscoelasticAnnularFlow(AnnularFlow):
     (``Hc_op = None``): the conformation transport is hyperbolic and the
     update is the explicit CN combination.
 
-    The methods below are the **annular half of the adapter surface**
-    the shared stepper (:mod:`._viscoelastic_stepping`) dispatches on,
-    resolved once at trace time; being methods rather than fields they
-    add no pytree leaf.  In short: plain `$D_1$`/`$D_2$` radial
-    derivatives (no axis, so no parity anywhere), two `$\nabla^2 c = 0$`
-    wall rows, and an azimuthal mean-mode body force.
+    The methods below are the **annular half of the adapter surface** of
+    :mod:`._viscoelastic_stepping`: plain `$D_1$`/`$D_2$` radial
+    derivatives (no axis, so no parity anywhere), two
+    `$\nabla^2 c = 0$` wall rows, and an azimuthal mean-mode body force.
 
     Subclasses (:mod:`~dnsjax_lab.flows.wall_bounded.viscoelastic_dean`)
     set ``force_theta`` and zero the base flow (total-field integration).
     """
 
-    #: CFL column labels (a ``ClassVar``: as an annotated field this
-    #: tuple would become two static pytree entries per flatten).
+    #: CFL column labels (a ``ClassVar``; why: the adapter table of
+    #: :mod:`._viscoelastic_stepping`).
     cfl_names: ClassVar[tuple[str, str, str]] = CFL_NAMES
 
     tensor_spin: Array = field(init=False)
@@ -345,12 +262,11 @@ class ViscoelasticAnnularFlow(AnnularFlow):
     def _build_conformation_operator(self) -> None:
         r"""Build the stacked 6-component `$H_c$` Crank-Nicolson operator.
 
-        Stores the narrow Laplacian BC wall rows as the
-        ``hc_narrow0`` / ``hc_narrowN`` leaves (their JAX-free NumPy
-        build cannot run on tracers, so the jitted adaptive-``dt``
-        rebuild reuses them), optionally pre-checks the no-pivot LU
-        at ``dt_max`` (``step.adaptive``; the velocity `$H_k$`
-        analogue), and delegates the assembly/factorization to
+        Stores the narrow Laplacian BC wall rows as the ``hc_narrow0`` /
+        ``hc_narrowN`` leaves (their field comment says why), optionally
+        pre-checks the no-pivot LU at ``dt_max`` (``step.adaptive``; the
+        velocity `$H_k$` analogue), and delegates the
+        assembly/factorization to
         :func:`._viscoelastic_stepping._build_hc_operator`.
         """
         # Full narrow Laplacian BC wall rows (JAX-free build).
@@ -408,25 +324,20 @@ class ViscoelasticAnnularFlow(AnnularFlow):
     def tensor_abase_matvec(self, c_spin: Array, fourier_: Fourier) -> Array:
         r"""`$A_{\mathrm{base}} c$` on the 6 spin slots, ``(6, Nr, Nm, Nkz)``.
 
-        `$A_{\mathrm{base}} c = (\partial_r^2 + \tfrac1r\partial_r)c$`.
-
-        One GEMM against the **precomputed** ``AnnularFlow.A_base``
-        (which the implicit bands are already built from), not a
-        `$D_2$` matvec, a `$D_1$` matvec and a field-sized `$1/r$`
-        multiply-add between them: `$D_1 c$` has no other consumer here
-        (``div_c_radial_derivatives`` is its own, narrower stack),
-        which is the premise the curvilinear fusion needs.  6
-        field-GEMMs instead of 12, one fewer
-        ``(6, N_r, N_m, N_{k_z})`` transient, and -- since this stack
-        is component-leading -- two of the four field-sized transposes
-        ``apply_y_matrix`` emits at ``component_axis = 0``.
-
-        It buys no measurable wall time on CPU and is kept on the FLOPs
-        and the dropped transient, not on a timing; the A/B, which
-        covers this flow too: the
+        `$A_{\mathrm{base}} c = (\partial_r^2 + \tfrac1r\partial_r)c$`,
+        one GEMM against the precomputed ``AnnularFlow.A_base`` (which
+        the implicit bands are already built from): `$D_1 c$` has no
+        other consumer here (``div_c_radial_derivatives`` is its own,
+        narrower stack), the premise of
+        :func:`~dnsjax.geometries.wall_bounded.cylindrical._build_A_base`.
+        6 field-GEMMs instead of 12, one fewer
+        ``(6, N_r, N_m, N_{k_z})`` transient, and -- this stack being
+        component-leading -- two of the four field-sized transposes
+        ``apply_y_matrix`` emits at ``component_axis = 0``.  Kept on
+        those grounds, not on a timing: it buys no measurable wall time
+        on CPU (the A/B, which covers this flow too: the
         :mod:`~dnsjax_lab.geometries.wall_bounded.cylindrical_viscoelastic`
-        Design notes ("Fusing `$A_{\mathrm{base}}$` on the tensor
-        slots").
+        Design notes, "Fusing `$A_{\mathrm{base}}$` on the tensor slots").
         """
         return apply_y_matrix(self.A_base, c_spin)
 

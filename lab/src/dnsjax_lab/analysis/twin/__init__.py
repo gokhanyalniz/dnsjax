@@ -7,12 +7,10 @@ of them):
   (``twin.dat`` / ``twin_budget.dat``) and the ``twin.json`` member
   record; the column-generic :func:`~.series.read_dat` (the core's
   :func:`dnsjax.analysis.read_dat`), which also loads the per-state
-  ``stats.dat`` / ``stats_twin.dat`` pair;
-  per-component budget sums and the budget-closure residuals;
-  :func:`~.series.relative_time`, which reads a member's sample times
-  as whole steps since its perturbation; and
-  :func:`~.series.uniform_grid`, which keeps a stream's own cadence
-  grid and drops the off-grid rows a resume and the final row add.
+  ``stats.dat`` / ``stats_twin.dat`` pair; per-component budget sums
+  and the budget-closure residuals; the step-count clock
+  (:func:`~.series.relative_time`) and the cadence grid
+  (:func:`~.series.uniform_grid`).
 - :mod:`.ensemble` -- member-tree aggregation of the twin streams on
   aligned relative time, and the growth-rate fits (`$\lambda$` from
   the exponential phase, the algebraic-phase linear rate).
@@ -24,11 +22,11 @@ of them):
   sidecar-driven record layout they share with the memory-mapped
   reader in ``lab/scripts/twin_spectral_maps.py``; the quadrature
   contraction; the three-bin energies recovered from them; the
-  fluctuation energy in `$(y, k)$` (the total with the `$(0, 0)$` mode
-  removed) that normalizes a difference spectrum; the shape overlap of
-  two such spectra, which ``lab/scripts/random_ic_calibrate.py`` scores an
-  initial condition with; and the budget regrouped into the terms of
-  the difference-energy balance (:func:`~.yspectra.balance_term`).
+  mean-free spectra and fluctuation energy that normalize a
+  difference spectrum; the shape overlap of two spectra, which
+  ``lab/scripts/random_ic_calibrate.py`` scores an initial condition
+  with; and the budget regrouped into the terms of the
+  difference-energy balance (:func:`~.yspectra.balance_term`).
 - :mod:`.cubes` -- readers for the 3-D ``(y, k_z, k_x)`` energy and
   budget cubes (``twin_spectra3d/``, ``twin_spectra3d_ref/``,
   ``twin_budget3d/``), one dnsjax tar per sample.

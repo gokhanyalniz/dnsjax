@@ -18,10 +18,11 @@ Conventions
   ``(0,0)`` therefore records the perturbation's instantaneous mean
   profile, and :func:`mean_profile` adds the closed-form laminar
   profile back to return the **total** streamwise mean.
-- Sample times are uniform by construction
-  (``t0 + k * it_probes * dt``); a resumed stream that re-ran a
+- Sample times are uniform (``t0 + k * it_probes * dt``) unless a
+  resume broke the grid: one from a snapshot off the probe cadence
+  records its initial state off the grid, and one that re-ran a
   trajectory segment shows up as non-monotonic ``t`` and is flagged
-  with a warning (filter with ``t`` yourself in that case).
+  with a warning (filter with ``t`` yourself in either case).
 """
 
 from __future__ import annotations
@@ -110,10 +111,9 @@ def _check_format_version(json_path: Path, meta: dict, minimum: int) -> None:
 
     The stream analogue of
     :func:`dnsjax.snapshot_meta.read_snapshot_meta`'s version choke
-    point: the binary layout is unchanged across these versions, so
-    an old stream reads without error and only its *values* are
-    wrong.  Shared with the forcing-stream reader
-    (:mod:`dnsjax_lab.analysis.response.ssi`).
+    point (an old stream reads without error: the
+    :mod:`dnsjax_lab.extensions.probes` docstring).  Shared with the
+    forcing-stream reader (:mod:`dnsjax_lab.analysis.response.ssi`).
     """
     version = meta.get("format_version", 0)
     if version < minimum:
@@ -134,12 +134,11 @@ def read_probes(path: str | Path = ".") -> ProbeData:
     Reconstructs the record dtype from the sidecar, reads every whole
     record (a truncated trailing record -- e.g. from a killed writer
     -- is dropped with a warning), and returns complex128 profiles.
-    Exact-duplicate consecutive timestamps -- the benign seam of a
-    clean continuation resume, where the parent's final sample and
-    the child's t0 sample record the same state -- are dropped
-    (keeping the last) with a note, so downstream consumers see a
-    uniform grid across resumes; genuinely decreasing timestamps (a
-    re-run trajectory segment) still only warn.
+    Exact-duplicate consecutive timestamps (a clean continuation's
+    seam: the :mod:`dnsjax_lab.extensions.probes` docstring) are
+    dropped, keeping the last, with a note, so downstream consumers
+    see a uniform grid across such resumes; genuinely decreasing
+    timestamps (a re-run trajectory segment) still only warn.
     """
     bin_path, json_path = _resolve_pair(path)
     if not json_path.exists():

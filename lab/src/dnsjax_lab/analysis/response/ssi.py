@@ -104,11 +104,10 @@ from dnsjax_lab.analysis.response.probes import (
 #: Version-1 streams were injected in the solver's decoupled
 #: `$(u_z, u_+, u_-)$` basis, under the conjugate-partner rule that
 #: basis needed, so replaying their coefficients against a physical
-#: profile bundle would be silently wrong.  Version-2 streams
-#: additionally record the axis-2 ``wavenumbers`` of an azimuthal wedge
-#: as the harmonic index rather than the physical `$m = m_0 j$`, so
-#: anything deriving a wavelength or a spectrum from them is wrong by
-#: `$m_0$` (correct only at ``geo.m0 = 1``).
+#: profile bundle would be silently wrong.  Version-2 streams also
+#: label an azimuthal wedge's axis-2 ``wavenumbers`` by harmonic index,
+#: as version-2 probe streams do
+#: (``dnsjax_lab.analysis.response.probes.MIN_FORMAT_VERSION``).
 MIN_FORMAT_VERSION: int = 3
 
 __all__ = [

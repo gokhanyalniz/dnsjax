@@ -36,16 +36,11 @@ def _derive(params, derived, user_set) -> None:
     r2 = r1 + 2.0
     derived.r_inner = r1
     derived.r_outer = r2
-    # Azimuthal wedge extent (m0 = 1 is the full circle); the tensor
-    # spin components ride the same physical wavenumbers
-    # m = m0 * harmonic as the velocity u_pm (their spin shifts
-    # m_eff = m + s are intrinsic, not harmonics), so the wedge works
-    # exactly as in the Newtonian annulus.
+    # Azimuthal wedge extent (m0 = 1 is the full circle), working as in
+    # the Newtonian annulus (the viscoelastic-pipe spec says why).
     params.geo.lz = 2 * pi / params.geo.m0
     derived.volume_fac = (r2**2 - r1**2) / 2  # int_{r1}^{r2} r dr
-    # Re := Wi/El -- derived, not a user parameter here: any directly
-    # assigned value is overwritten (resumed snapshots replay a
-    # consistent value).
+    # Re := Wi/El, derived as in the viscoelastic-pipe spec.
     params.phys.re = params.phys.wi / params.phys.el
 
 

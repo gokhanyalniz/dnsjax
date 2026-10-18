@@ -1,10 +1,10 @@
 r"""Difference-field pressure for the wall-normal-resolved budget.
 
 The volume-averaged budget of Egerique-de-la-Concha & Hwang (*J.
-Fluid Mech.* **1036**, A52, 2026) carries no pressure term, and is
-right not to: `$\Delta\mathbf{u}\cdot\nabla\Delta p =
+Fluid Mech.* **1036**, A52, 2026) carries no pressure term, rightly:
+`$\Delta\mathbf{u}\cdot\nabla\Delta p =
 \nabla\cdot(\Delta p\,\Delta\mathbf{u})$` is a divergence, so it
-integrates away over the domain.  That cancellation belongs to the
+integrates away over the domain.  The cancellation belongs to the
 *integral*, not the integrand.  Resolve the budget in `$y$` (as
 :func:`dnsjax_lab.twin.diagnostics.twin_ybudget` does) and the term
 reappears as a wall-normal flux -- zero net, but comparable to
@@ -15,9 +15,9 @@ only way the mean shear's energy reaches `$\Delta v$`, whose
 production against the mean profile vanishes identically (its
 production against the reference *fluctuations* does not).
 
-This module recovers `$\Delta\hat{p}$` so that term can be measured
-rather than left as a hole.  The solve itself -- the Poisson problem
-on the interior rows and the influence-matrix wall closure
+This module recovers `$\Delta\hat{p}$` so that term is measured.  The
+solve itself -- the Poisson problem on the interior rows and the
+influence-matrix wall closure
 `$(D_1\,\partial_t\Delta\hat v)|_w = 0$` -- is the geometry's
 :class:`~dnsjax.geometries.wall_bounded._cartesian_pressure.PoissonPressure`,
 whose module docstring derives it; nothing in it reads the field's
@@ -38,11 +38,10 @@ in the **convective** form by default
 (:func:`dnsjax_lab.twin.diagnostics._convective_sources`), which makes
 `$\Delta\hat p$` the difference of the two members' static pressures.
 Under ``twin.rotational_ybudget`` it is instead the rotational term the
-solver itself integrates (:mod:`dnsjax.rhs`),
-`$\mathbf{u}^{(1)}\times\Delta\boldsymbol{\omega} + \Delta\mathbf{u}
-\times\boldsymbol{\omega}^{(1)} + \Delta\mathbf{u}\times\Delta
-\boldsymbol{\omega}$`, and then `$\Delta\hat p$` comes back as the
-difference of the two members' **Bernoulli** pressures,
+solver itself integrates
+(:func:`dnsjax_lab.twin.diagnostics._rotational_sources`), and
+`$\Delta\hat p$` comes back as the difference of the two members'
+**Bernoulli** pressures,
 `$\Delta p + \mathbf{u}^{(1)}\!\cdot\Delta\mathbf{u} +
 |\Delta\mathbf{u}|^2/2$`.  The two differ by a gradient, so the total
 work is unchanged; the `$y$`-density is not
@@ -53,9 +52,8 @@ The mean mode
 `$\Delta\hat{v} \equiv 0$` at `$(k_z, k_x) = (0,0)$` and the horizontal
 gradients vanish there, so the *fluctuating* pressure does no work at
 that mode whatever its gauge.  What *does* act on the mean mode is the
-applied driving `$-\Delta\Pi$` (`$\Pi$` the mean pressure gradient --
-the sign convention is fixed in :mod:`dnsjax_lab.twin.diagnostics`,
-"Mean-mode driving"); that density is added by
+applied driving `$-\Delta\Pi$` (`$\Pi$` the mean pressure gradient,
+sign convention :mod:`dnsjax.ic.mean_mode`); that density is added by
 :func:`dnsjax_lab.twin.diagnostics.twin_ybudget`, which has the mean
 profile to hand.
 
@@ -119,13 +117,13 @@ class DifferencePressure(PoissonPressure):
         equivalent flux form `$-\sigma\,\partial_y
         \mathrm{Re}\{\Delta\hat{p}\Delta\hat{v}^*\}$`: the two agree
         only up to the discrete product-rule error, and this is the
-        one that appears in `$\partial_t e$`.  (The flux form is the
-        *interpretation* -- it is what makes `$\int W\,dy = 0$` at
-        every `$k$`, and comparing them is a check, not a shortcut.
-        It follows from continuity alone, so it holds for the
-        Bernoulli `$\Delta\hat p$` exactly as it did for the static
-        one -- of a larger field, hence a larger absolute residual:
-        the ``pi_flux`` column of ``lab/tests/test_twin_budget.py``.)
+        one that appears in `$\partial_t e$`.  The flux form is the
+        *interpretation*, what makes `$\int W\,dy = 0$` at every
+        `$k$`, and comparing the two is a check, not a shortcut.  It
+        follows from continuity alone, so it holds for the Bernoulli
+        `$\Delta\hat p$` exactly as for the static one, of a larger
+        field and hence with a larger absolute residual (the
+        ``pi_flux`` column of ``lab/tests/test_twin_budget.py``).
 
         Returned as a `$y$`-density divided by ``volume_fac``, like
         every other :func:`dnsjax_lab.twin.diagnostics.twin_ybudget` term.
@@ -149,20 +147,20 @@ class DifferencePressure(PoissonPressure):
 
         `$(D_1\Delta\hat p - \hat{\mathcal N}_y - Re^{-1}D_2\Delta\hat
         v)|_w$`, the condition the IMM closure does *not* impose, as a
-        wall-normal truncation diagnostic: it must shrink
-        with ``res.ny``.  Shape ``(2, Nkz, Nkx)`` complex, walls
+        wall-normal truncation diagnostic: it must shrink with
+        ``res.ny``.  Shape ``(2, Nkz, Nkx)`` complex, walls
         ``[bottom, top]``.
 
-        `$\hat{\mathcal N}_y$` is carried unconditionally because
-        it is form-dependent.  Evaluating the `$y$`-momentum equation at
-        a wall where `$\partial_t\Delta\hat v = \Delta\hat v = 0$`
-        gives `$(\partial_y\Delta\hat p)|_w = \hat{\mathcal N}_y|_w +
+        `$\hat{\mathcal N}_y$` is carried unconditionally because it
+        is form-dependent.  The `$y$`-momentum equation at a wall,
+        where `$\partial_t\Delta\hat v = \Delta\hat v = 0$`, gives
+        `$(\partial_y\Delta\hat p)|_w = \hat{\mathcal N}_y|_w +
         Re^{-1}(D_2\Delta\hat v)|_w$`.  Convectively every term of
         `$\mathcal{N}$` carries a velocity factor that no-slip kills,
         so `$\hat{\mathcal N}_y|_w$` is machine-zero and subtracting
         it is a no-op.  Rotationally it is `$(\mathbf{U}_w\cdot
-        \partial_y\Delta\mathbf{u}_\parallel)|_w$` -- non-zero
-        wherever the wall moves (plane-Couette) -- and is exactly
+        \partial_y\Delta\mathbf{u}_\parallel)|_w$`, non-zero wherever
+        the wall moves (plane-Couette), and is exactly
         `$\partial_y(\mathbf{u}^{(1)}\!\cdot\Delta\mathbf{u})|_w$`,
         the Bernoulli part of `$\Delta\hat p$`, so subtracting it
         leaves the same quantity in both forms.

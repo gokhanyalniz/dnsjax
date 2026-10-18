@@ -24,8 +24,7 @@ With a transient-growth operator bundle (``--operator``, the
 energy amplification `$E(t)/E(0)$` of the response against the
 linear prediction for *this* input
 (:func:`.operator_tools.input_response_curve` seeded with the measured
-`$t=0$` projection)
-and the optimal-growth envelope `$G(t)$`.
+`$t=0$` projection) and the optimal-growth envelope `$G(t)$`.
 
 Direct identification
 ---------------------
@@ -111,12 +110,10 @@ def identify_generator(
     per-horizon reconstruction residuals
     `$\lVert e^{\tau_i L} - M_i\rVert_F / \lVert M_i\rVert_F$`.
     Large residuals at long horizons flag nonlinearity or noise -- and,
-    on a truncated basis `$P$`, the truncation itself: the noise-free
-    linear `$M(\tau) = P^H e^{\tau A} P$` is a semigroup only when the
-    span of `$P$` is invariant under `$A$`, so even exact data then fit
-    a horizon-dependent `$L$`
-    (:func:`.operator_tools.projected_growth_curve` is that limit's
-    growth).
+    on a truncated basis `$P$`, the truncation itself: even noise-free
+    linear data then fit a horizon-dependent `$L$`
+    (:func:`.operator_tools.projected_growth_curve`, that limit's
+    growth, says why).
     """
     from scipy.linalg import expm, logm
 
@@ -233,15 +230,11 @@ def _member_response(
                 f"{ref_dir}'s {ref.u.shape}"
             )
         if not np.allclose(pd.t - pd.t[0], t_rel, rtol=0, atol=atol):
-            # A shared ``it_probes * dt`` does *not* on its own put two
-            # members on one relative grid: ``dnsjax`` gates the probe
-            # stream on ``it % it_probes``, the absolute step counter,
-            # so a member whose parent snapshot sits at a different
-            # ``it`` residue samples at a displaced phase.  (The twin
-            # driver counts its cadences from the member's own start
-            # instead; ``dnsjax_lab.analysis.twin.ensemble`` names the
-            # trap.)  Harvest parents at ``it`` multiples of
-            # ``it_probes``.
+            # ``dnsjax`` gates the probe stream on the absolute
+            # ``it % it_probes``, so harvest parents at ``it`` multiples
+            # of ``it_probes`` (the twin driver counts its cadences from
+            # the member's own start; ``dnsjax_lab.analysis.twin.ensemble``
+            # names the trap).
             raise SystemExit(
                 f"{d}: relative sample times differ from {ref_dir}'s "
                 "-- either the cadence (it_probes * dt) differs across "

@@ -7,13 +7,12 @@ r"""JAX-free readers for the wall-normal-resolved twin streams.
 arrays, the two wavenumber axes in physical units, the wall-normal
 grid and its quadrature weights, and the sidecar.
 
-The reference's ``r_*`` fields have a stream of their own, on their
-own cadence (by default the difference's steps).  A member recorded
-before that split holds them inside ``twin_yspectra.bin``
-(``includes_ref`` in its sidecar).  :func:`read_twin_yspectra` returns
-them either way, on the difference stream's times, with ``nan`` rows
-where the reference has no sample.  :func:`read_twin_yspectra_ref`
-returns them on their own times.
+The reference's ``r_*`` fields come from their own stream or, for a
+member recorded before that split, from inside ``twin_yspectra.bin``
+(``includes_ref`` in its sidecar; :mod:`dnsjax_lab.twin.yspectra`).
+:func:`read_twin_yspectra` returns them either way, on the difference
+stream's times, with ``nan`` rows where the reference has no sample;
+:func:`read_twin_yspectra_ref` returns them on their own times.
 
 Which fields a stream carries is the sidecar's ``suffixes``, and
 :func:`stored_fields` is the one place that turns it into a record
@@ -27,64 +26,29 @@ suffix tuples exist, from two eras, and all three are read:
   Those sidecars have no ``suffixes`` key and a ``format_version``
   below the current writer's; :data:`MIN_YSPECTRA_VERSION` /
   :data:`MIN_YBUDGET_VERSION` are therefore held at the old values
-  rather than raised with the writer, which is the exception to the
-  usual lockstep rule (:mod:`dnsjax_lab.twin.yspectra` says why).
+  rather than raised with the writer, the exception to the usual
+  lockstep rule (:mod:`dnsjax_lab.twin.yspectra` says why).
 
 Everything stored is a `$y$`-**density** already divided by
-``volume_fac``.  :func:`integrate_y` contracts one with the weights
-to give the per-`$k$` quantity; summing *that* over `$k$` gives the
-matching volume-averaged rate.  Both wavenumber axes are one-sided
-(`$|k_z|$` folded), so those sums run over the stored axis with no
-further weighting.  A ``*_xz00`` field has no wavenumber axis --
-it is the `$(0, 0)$` mode alone -- so :func:`integrate_y` returns
-its `$y$`-average directly.
-
-For the energies that rate is ``twin.dat``'s ``E_d`` exactly.  For
-the budget it is a ``twin_budget.dat`` column only where the two
-regroup the same Parseval sum, and which columns those are depends on
-the form the stream was written in -- the sidecar's ``terms`` names it
-(:mod:`dnsjax_lab.twin.diagnostics`, "Two budget forms").  In the
-**default convective** form ``-V`` gives ``eps_tot`` and
-``P_U + P_r`` gives ``P_tot``, both exactly, while the transfer terms
-match their per-bin counterparts only up to the discrete
-integration-by-parts residual that makes ``T_tot`` nonzero.  Under
-``twin.rotational_ybudget`` the production identity moves to
-``P_lift`` (the three mean-gradient production columns) and the rest
-of the split differs from ``twin_budget.dat`` by the work of a
-gradient -- zero in total, not per `$y$`.
+``volume_fac``, which :func:`integrate_y` turns into the per-`$k$`
+quantity.  Both wavenumber axes are one-sided (`$|k_z|$` folded), so a
+sum over `$k$` runs over the stored axis with no further weighting.
+For the energies the total is ``twin.dat``'s ``E_d`` exactly; which
+``twin_budget.dat`` columns the budget's totals reproduce depends on
+the form the stream was written in, which the sidecar's ``terms``
+names (:mod:`dnsjax_lab.twin.diagnostics`, "Spectral budget" and
+"Two budget forms").
 
 :func:`balance_term` regroups the stored budget densities into the
 terms of the difference-energy balance, each as its contribution to
 `$\partial_t e$` (its docstring has the correspondence), and is what
 ``lab/scripts/twin_spectral_maps.py`` draws.
 
-:func:`bin_energies` is the bridge back to the three-bin diagnostics
-of Egerique-de-la-Concha & Hwang (*J. Fluid Mech.* **1036**, A52,
-2026), and it needs nothing beyond the default streams: the first
-column of the `$k_x$` marginal is the whole `$k_x = 0$` plane summed
-over `$k_z$`, so
-
-.. math::
-    E_{\Delta U} = \textstyle\int \sum_\alpha e^{xz00}_\alpha ,
-    \quad
-    E_{\Delta u_1} = \int \sum_\alpha e^{z}_\alpha(y, 0)
-        - E_{\Delta U} ,
-    \quad
-    E_{\Delta u_2} = \int \sum_\alpha \sum_{k_x > 0} e^{z}_\alpha .
-
-The `$k_x = 0$` plane (``twin.x0_planes``) adds only the
-`$k_z$`-resolution of the two fluctuating bins:
-`$E_{\Delta u_1}$` per `$k_z$` as
-`$\sum_\alpha e^{x0}_\alpha(y, k_z > 0)$`, and with it
-`$E_{\Delta u_2}$` per `$k_z$` as
-`$\sum_\alpha (e^{x}_\alpha - e^{x0}_\alpha)$` -- which without the
-plane is resolved in `$k_x$` only.  A pre-``xz00`` stream takes its
-`$(0, 0)$` mode from that plane's first column instead
+:func:`bin_energies` is the bridge back to the three-bin diagnostics,
+from the default streams alone; a pre-``xz00`` stream takes its
+`$(0, 0)$` mode from its ``x0`` plane's first column instead
 (:func:`mean_mode_name`).  The mode's other use is taking it back off
-a spectrum, in the three reductions :func:`mean_free_spectrum` /
-:func:`fluctuation_profile` / :func:`fluctuation_energy`, which are
-one definition read at three resolutions -- `$(y, k)$`, `$(y)$` and a
-scalar.
+a spectrum (:func:`mean_free_spectrum` and its two reductions).
 """
 
 from __future__ import annotations
@@ -265,8 +229,8 @@ def _read(path: str | Path, stem: str, floor: int) -> YResolvedData:
     if n_records == 0:
         raise ValueError(f"{bin_path}: no complete records")
     if raw.size % dtype.itemsize:
-        # A kill mid-write leaves a partial trailing record; the
-        # complete prefix is intact (append-only + fsync per flush).
+        # A partial trailing record, dropped as in
+        # ``dnsjax_lab.analysis.twin.spectra._read`` (which says why).
         raw = raw[: n_records * dtype.itemsize]
     records = raw.view(dtype)
 
@@ -405,11 +369,10 @@ def mean_free_spectrum(
     carries.
 
     The mean mode lives in the `$m = 0$` column and **only** there, so
-    that is the one column this touches.  What it is *not* is the
-    whole of that column: ``*_x[..., 0]`` is every `$k_z = 0$` mode
-    summed over `$k_x$` and ``*_z[..., 0]`` every `$k_x = 0$` mode
-    summed over `$k_z$`, both of which carry fluctuating modes that
-    have every right to be there.
+    that is the one column this touches.  It is *not* the whole of
+    that column: ``*_x[..., 0]`` is every `$k_z = 0$` mode summed over
+    `$k_x$` and ``*_z[..., 0]`` every `$k_x = 0$` mode summed over
+    `$k_z$`, both carrying fluctuating modes too.
 
     Use it wherever a **reference** spectrum is a denominator: the
     `$(0, 0)$` mode is the wall-parallel mean, common to both states
@@ -435,8 +398,8 @@ def fluctuation_profile(
 
     Either marginal gives the same profile, since each already sums
     the other axis, so passing ``r_z`` against the same mean mode as
-    ``r_x`` is a genuine cross-check rather than a second reading of
-    the same numbers.
+    ``r_x`` is a cross-check rather than a second reading of the same
+    numbers.
     """
     return marginal.sum(axis=-1) - mean_mode
 
@@ -480,12 +443,12 @@ def shape_alignment(
     What it is for: the difference field of a twin run settles onto a
     `$(y, k)$` distribution of its own within a few time units,
     whatever it started from, and `$1 - A(t)$` against that
-    distribution decays exponentially.  An initial condition is
-    therefore worth exactly the head start its own `$A(0)$` buys, and
-    this is the number to calibrate one against -- see
-    ``lab/scripts/random_ic_calibrate.py``, which is its caller, and
-    :mod:`dnsjax.ic.random_field` for what the shipped generator is
-    calibrated to.
+    distribution decays exponentially.  An initial condition's
+    `$A(0)$` is the head start its shape gives that settling, the
+    score ``lab/scripts/random_ic_calibrate.py`` (its caller) computes;
+    it is not a growth predictor, which is why the shipped generator is
+    not fitted to it (:mod:`dnsjax.ic.random_field`, Design notes
+    "Shape is not growth").
 
     Pair it with :func:`mean_free_spectrum`: the `$(0, 0)$` mode is
     the wall-parallel mean and is not part of the shape being
@@ -516,17 +479,28 @@ def shape_alignment(
 def bin_energies(data: YResolvedData) -> dict[str, np.ndarray]:
     r"""`$E_{\Delta U}$`, `$E_{\Delta u_1}$`, `$E_{\Delta u_2}$` per record.
 
-    The three-bin decomposition recovered from the stored marginals
-    (module docstring): ``E_dU`` / ``E_du1`` / ``E_du2``
-    component-summed, and ``E_du1_x`` / ``E_du1_y`` / ``E_du1_z``, the
-    streak bin per velocity component -- every column ``twin.dat``
-    carries under ``twin.bins``, and the reason that flag can stay
-    off.  Every layout carries what it needs: the `$(0, 0)$` mode
+    The three-bin decomposition of Egerique-de-la-Concha & Hwang (*J.
+    Fluid Mech.* **1036**, A52, 2026) recovered from the stored
+    marginals: ``E_dU`` / ``E_du1`` / ``E_du2`` component-summed, and
+    ``E_du1_x`` / ``E_du1_y`` / ``E_du1_z``, the streak bin per
+    velocity component -- every column ``twin.dat`` carries under
+    ``twin.bins``, and the reason that flag can stay off.  Every
+    layout carries what it needs, the `$(0, 0)$` mode
     (:func:`mean_mode_name`) and the `$k_x$` marginal ``e_z``, whose
-    first column is the whole `$k_x = 0$` plane.  So
-    ``twin.x0_planes`` is not required; it adds the `$k_z$` resolution
-    of `$E_{\Delta u_1}$` and `$E_{\Delta u_2}$`, which this does not
-    return.
+    first column is the whole `$k_x = 0$` plane summed over `$k_z$`:
+
+    .. math::
+        E_{\Delta U} = \textstyle\int \sum_\alpha e^{xz00}_\alpha ,
+        \quad
+        E_{\Delta u_1} = \int \sum_\alpha e^{z}_\alpha(y, 0)
+            - E_{\Delta U} ,
+        \quad
+        E_{\Delta u_2} = \int \sum_\alpha \sum_{k_x > 0} e^{z}_\alpha .
+
+    ``twin.x0_planes`` is therefore not required; it adds the `$k_z$`
+    resolution of `$E_{\Delta u_1}$` and `$E_{\Delta u_2}$`, which
+    this does not return (:mod:`dnsjax_lab.twin.diagnostics`,
+    "Wall-normal-resolved spectra").
     """
     name = mean_mode_name(data.meta, "e")
     e_mean = np.einsum(

@@ -23,21 +23,11 @@ one-sided marginal bins of
   ``twin.rotational_ybudget``.  The sidecar's ``terms`` names them
   and is a match key, so a resume cannot change form mid-stream.
 
-Why these replace the three-bin diagnostics: the `$\Delta U$` /
-`$\Delta u_1$` / `$\Delta u_2$` split is a three-bin partition of the
-`$(k_x, k_z)$` plane, and its own authors restrict it to minimal flow
-units (Egerique-de-la-Concha & Hwang, *J. Fluid Mech.* **1036**, A52,
-2026, after their eq. 2.5).  These streams refine the bin index to
-the wavenumber itself and drop the `$y$`-integration.  The old three
-numbers come back from the default record: the `$(0, 0)$` mode is
-`$E_{\Delta U}$`, and the first column of the `$k_x$` marginal is the
-whole `$k_x = 0$` plane, so `$E_{\Delta u_1}$` is that column less the
-mode (:func:`dnsjax_lab.analysis.twin.bin_energies`).  The full plane
-(``twin.x0_planes``, **off by default**) adds only the `$k_z$`
-resolution of `$E_{\Delta u_1}$` and, as the rest of the `$k_z$`
-marginal, of `$E_{\Delta u_2}$`, which is otherwise resolved in `$k_x$`
-alone.  The mode is also the mean the reference fluctuation energy is
-measured against.
+Why these replace the three-bin diagnostics, how the three numbers
+come back from the default record
+(:func:`dnsjax_lab.analysis.twin.bin_energies`) and what the
+``twin.x0_planes`` plane adds (**off by default**):
+:mod:`dnsjax_lab.twin.diagnostics`, "Wall-normal-resolved spectra".
 
 File format
 -----------
@@ -59,10 +49,11 @@ the prefixes (or the budget terms) with
     twin_ybudget:   <term>_<suffix>  for each of ybudget_terms(),
                     leading axis (ny, ...)
 
-The sidecar's ``suffixes`` names that middle row outright, so a
-reader never infers the layout: :mod:`dnsjax_lab.analysis.twin.yspectra`
-reads it, and falls back to the pre-``xz00`` triple
-``("x", "z", "x0")`` below this module's format versions.
+The sidecar's ``suffixes`` lists the stored suffixes (the top row, as the
+``stored`` row selects them), so a reader never infers the layout:
+:mod:`dnsjax_lab.analysis.twin.yspectra` reads it, and falls back to the
+pre-``xz00`` triple ``("x", "z", "x0")`` below this module's format
+versions.
 
 Every array is a `$y$`-**density** already divided by
 ``volume_fac``: contract with the sidecar's ``y_weights`` for the
@@ -73,17 +64,13 @@ without rebuilding the grid.
 
 Both wavenumber axes are **one-sided**: ``kz_harmonics`` and
 ``kx_harmonics`` are :func:`dnsjax.harmonics.real_harmonics` of
-``nz`` / ``nx``.  The `$k_z$` axis is folded onto `$|k_z|$` for a
-reason that is not cosmetic --
-:func:`dnsjax_lab.twin.diagnostics._fold_kz` has it.
-
-The ``xz00`` column has no wavenumber axis at all, being one mode.
+``nz`` / ``nx``, the `$k_z$` axis folded onto `$|k_z|$` as a
+requirement, not a convenience
+(:func:`dnsjax_lab.twin.diagnostics._fold_kz`).
 
 Buffering, sidecar matching, resume-by-append and the non-finite scan
 are :class:`dnsjax_lab.twin._binstream.BinStream`'s; the JAX-free reader
-is :mod:`dnsjax_lab.analysis.twin.yspectra`.  Each stream keeps its own
-:data:`FORMAT_VERSION` / ``_MATCH_KEYS``, bumped when *its* stored
-meaning changes.
+is :mod:`dnsjax_lab.analysis.twin.yspectra`.
 """
 
 from pathlib import Path
@@ -104,9 +91,9 @@ from dnsjax_lab.twin.diagnostics import (
 #: raised in step with these: version 2 / 3 added ``xz00`` and made
 #: ``x0`` opt-in, which is a change of *layout*, not of what a stored
 #: array means, and the sidecar's ``suffixes`` names the layout
-#: outright.  Holding the floors is what keeps a member recorded
-#: before this readable -- the one thing this pair of streams is
-#: expected to do that the snapshot format is not.
+#: outright.  Holding the floors keeps a member recorded before
+#: ``xz00`` readable, which this pair of streams is expected to do and
+#: the snapshot format is not.
 YSPECTRA_FORMAT_VERSION: int = 2
 YBUDGET_FORMAT_VERSION: int = 3
 
@@ -119,9 +106,9 @@ def _suffix_shapes(x0: bool) -> tuple[tuple[str, tuple[int, ...]], ...]:
     r"""``(suffix, trailing shape)`` in stored order.
 
     The trailing shape is what a field carries *after* its leading
-    axis (the three velocity components, or the wall-normal grid for
-    the budget): a wavenumber axis for the two marginals and the
-    `$k_x = 0$` plane, nothing at all for the single `$(0, 0)$` mode.
+    axes (component and wall-normal for the energies, wall-normal
+    alone for the budget): a wavenumber axis for the two marginals and
+    the `$k_x = 0$` plane, nothing for the single `$(0, 0)$` mode.
     The reader's counterpart is
     :func:`dnsjax_lab.analysis.twin.yspectra.stored_fields`.
     """
@@ -191,13 +178,11 @@ _YBUDGET_MATCH_KEYS: tuple[str, ...] = (
 
 
 def _common_sidecar(twin_values, y_weights: list[float]) -> dict:
-    """The keys both sidecars share (grid, axes, layout, provenance).
+    """The keys the three sidecars share (grid, axes, layout, provenance).
 
-    ``suffixes`` is the layout key: it names the field table both
-    streams are laid out by, so a reader never has to infer one, and
-    it is a match key in both -- a resume that flipped
-    ``twin.x0_planes`` would otherwise append records of a different
-    size onto an existing ``.bin``.
+    ``suffixes``, the layout key (module docstring), is a match key in
+    all three: a resume that flipped ``twin.x0_planes`` would otherwise
+    append records of a different size onto an existing ``.bin``.
     """
     n_kz, n_kx = marginal_bin_counts()
     return {
@@ -279,7 +264,9 @@ class TwinYSpectraRefStream(BinStream):
 
     The ``r_<suffix>`` fields of the module docstring every *cadence*
     steps (the resolved ``twin.it_yspectra_ref``), on the same bins and
-    with the same sidecar keys as ``twin_yspectra.bin``.
+    with ``twin_yspectra.bin``'s sidecar keys, its own cadence
+    (``it_yspectra_ref``) in place of ``it_yspectra`` and no
+    ``includes_ref``.
     """
 
     def __init__(

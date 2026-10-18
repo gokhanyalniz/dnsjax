@@ -1,21 +1,21 @@
 r"""Shared buffered-binary-stream machinery for the twin writers.
 
-The three ``dnsjax-twin`` binary streams -- ``twin_spectra.bin``
-(:mod:`dnsjax_lab.twin.spectra`), ``twin_yspectra.bin`` and
+The ``dnsjax-twin`` binary streams -- ``twin_spectra*.bin``
+(:mod:`dnsjax_lab.twin.spectra`), ``twin_yspectra*.bin`` and
 ``twin_ybudget.bin`` (:mod:`dnsjax_lab.twin.yspectra`) -- differ only in
-*what* they record.  Everything around that is one state machine,
-inherited from ``extensions.probes.ProbeStream``: an on-device buffer
-of a few records, host-side timestamps, disk I/O and the sidecar on
-the main process, index resets on **all** ranks, an ``fsync``-ed
-append, and a post-write non-finite scan whose message the driver
-aborts on.  It lives here rather than being written three times.
+*what* they record.  Everything around that is one state machine, the
+one of ``extensions.probes.ProbeStream``, written once here: an
+on-device buffer of a few records, host-side timestamps, disk I/O and
+the sidecar on the main process, index resets on **all** ranks, an
+``fsync``-ed append, and a post-write non-finite scan whose message
+the driver aborts on.
 
 What a subclass supplies
 ------------------------
-Its own :data:`FORMAT_VERSION`, ``_MATCH_KEYS`` and sidecar dict --
-these are per-stream on purpose, since a stream's stored *meaning*
-changes independently of its siblings' -- plus the field table
-``((name, shape), ...)`` and the two paths.  Nothing else.
+Its own :data:`FORMAT_VERSION`, ``_MATCH_KEYS`` and sidecar dict, per
+stream on purpose (a stream's stored *meaning* changes independently
+of its siblings'), plus the field table ``((name, shape), ...)``, the
+value dtype, the buffer depth and the two paths.
 
 Why the buffer is flat
 ----------------------
@@ -23,9 +23,8 @@ Fields of one stream need not share a shape: ``twin_yspectra`` mixes
 `$(3, N_y, n_{k_z})$` and `$(3, N_y, n_{k_x})$` blocks.  The device
 buffer is therefore ``(nbuffer, total_flat)`` with per-field offsets,
 and the structured record dtype restores the real shapes at write
-time -- so the **on-disk layout is unchanged** by this indirection
-(a stream whose fields do share a shape writes exactly the bytes it
-wrote before).
+time, so the indirection leaves the **on-disk layout** that of the
+records alone.
 """
 
 import json

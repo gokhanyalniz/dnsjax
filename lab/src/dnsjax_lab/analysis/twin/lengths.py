@@ -38,9 +38,8 @@ for a snapshot pair.  Cartesian wall-bounded snapshots only (the
 stored layout is ``(y, k_z, k_x)`` per component and the base flow
 cancels in the pair difference).
 
-Assemble the pair with :func:`partner_of` rather than by hand: the
-difference field is meaningful only between two snapshots of the *same*
-lockstep write, and :func:`integral_lengths` enforces that.
+Assemble the pair with :func:`partner_of`; :func:`integral_lengths`
+refuses two snapshots of different lockstep writes.
 """
 
 from __future__ import annotations

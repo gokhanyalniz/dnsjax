@@ -18,21 +18,10 @@ from pydantic.fields import FieldInfo
 class _Physics:
     """``[phys]``: the quasi-Keplerian, sPTT and curved-pipe controls."""
 
-    # Rotation number R_Omega (system == "quasi-keplerian"), following
-    # Dubrulle et al. 2005:
-    #   R_Omega = (1 - eta) (Re_i + Re_o) / (eta Re_o - Re_i),
-    # with Re_i = re1 and Re_o the derived outer Reynolds number.  It is
-    # constant along half-lines through the origin of (Re_o, Re_i) space.
-    # The quasi-Keplerian regime (co-rotating, angular momentum
-    # increasing / angular velocity decreasing outward -- linearly stable
-    # by Rayleigh's criterion) is the open half-line -inf < R_Omega < -1,
-    # bounded by the Rayleigh line R_Omega = -1 (Re_o = eta Re_i) and the
-    # solid-body limit R_Omega -> -inf (Re_o = Re_i / eta).  The
-    # quasi-Keplerian spec's ``derive`` requires re1 > 0 and r_omega < -1,
-    # then derives re2 = re1 (1 - eta + R_Omega) / (eta R_Omega -
-    # (1 - eta)) and stores it, so every downstream circular-Couette
-    # path is shared with Taylor-Couette (``re1`` is the inner Reynolds
-    # number Re_i).
+    # Rotation number R_Omega (system == "quasi-keplerian"): its
+    # definition, the quasi-Keplerian half-line and the derived outer
+    # Reynolds number (stored as re2, re1 being the inner one), the
+    # ``flows.wall_bounded.quasi_keplerian`` module docstring.
     r_omega: float | None = Field(
         default=None,
         description=(
@@ -43,18 +32,13 @@ class _Physics:
     )
     # Viscoelastic (sPTT) control parameters, shared by both
     # viscoelastic systems ("viscoelastic-pipe" / "viscoelastic-dean";
-    # see ``flows.wall_bounded.viscoelastic_{pipe,dean}`` and
-    # ``geometries.wall_bounded.{cylindrical,annular}_viscoelastic``).
-    # All ``None`` for other systems; unset values fall back to each
-    # flow's own FieldSpec defaults.  beta 0.8 / epsilon 0.001 /
-    # kappa 5e-5 are shared -- the values of Lellep, Linkmann &
-    # Morozov, PNAS 121, e2318851121 (2024), whose sPTT system both
-    # flows integrate (``_viscoelastic_common``) -- but el and wi are
-    # not: Re := Wi/El is derived, so those two *are* the Reynolds
-    # number, and each flow picks the regime it is about -- el 80,
-    # wi 105 (Re ~ 1.3, inertialess and strongly elastic) for the
-    # annulus; el 0.02, wi 20 (Re = 1000, elasto-inertial) for the
-    # pipe.
+    # see ``flows.wall_bounded.viscoelastic_{pipe,dean}`` and the model,
+    # ``geometries.wall_bounded._viscoelastic_common``).  All ``None``
+    # for other systems; unset values fall back to each flow's own
+    # FieldSpec defaults: the published beta / epsilon / kappa both
+    # flows share, and a per-flow el and wi, which set the regime
+    # through the derived Re := Wi/El (values and regimes: the two
+    # specs' docstrings).
     el: float | None = Field(
         default=None,
         gt=0,
