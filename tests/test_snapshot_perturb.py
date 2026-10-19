@@ -176,8 +176,14 @@ def _check_operator_bundle(path: Path) -> np.ndarray:
     q = basis @ a
     assert_allclose(Q.conj().T @ (F @ (V.conj().T @ q)), a, atol=1e-10)
     assert_allclose(np.vdot(q, w * q).real, np.vdot(a, a).real, rtol=1e-10)
-    got = np.sort_complex(np.linalg.eigvals(A))
-    assert_allclose(got, np.sort_complex(lam), atol=1e-9 * np.abs(lam).max())
+    # Pair eig(A) with lam by nearest neighbour, one to one, never by
+    # np.sort_complex: the members of a conjugate pair have real parts
+    # equal up to roundoff, so a lexicographic sort can order the pair
+    # differently in two computations.
+    got = np.linalg.eigvals(A)
+    nearest = np.abs(got[:, None] - lam[None, :]).argmin(axis=1)
+    assert_array_equal(np.sort(nearest), np.arange(lam.size))
+    assert_allclose(got, lam[nearest], atol=1e-9 * np.abs(lam).max())
     return basis.T.reshape(r_res, 3, NY)
 
 
