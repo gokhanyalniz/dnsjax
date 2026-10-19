@@ -21,10 +21,11 @@ collectives themselves need an MPIwrapper build and >= 2 ranks, and
 fail *loudly* (MPItrampoline aborts on a bad ``MPITRAMPOLINE_LIB``),
 whereas a discovery that wrongly returns ``None`` degrades silently
 to gloo, which these cases pin down.  ``jax.distributed.initialize``
-is stubbed: what is under test is which detection method dnsjax hands
-it, not JAX's detection (the suite's mpirun rows cover the CPU path
-for real).  The wrapper library is an empty stub file, since
-discovery is a pure path test and nothing here dlopens it.
+is stubbed: what is under test is which detection method and which
+``[dist]`` timeouts dnsjax hands it, not JAX's detection (the suite's
+mpirun rows cover the CPU path for real).  The wrapper library is an
+empty stub file, since discovery is a pure path test and nothing here
+dlopens it.
 
 Cases mutate ``os.environ`` and restore it (``_env``), so ordering is
 free; where a case sets JAX's config back (visible devices, dispatch,
@@ -618,11 +619,12 @@ def _exits(fn) -> str | None:
 
 
 @contextlib.contextmanager
-def _stub_initialize(explicit_ok: bool = True):
+def _stub_initialize(explicit_ok: bool = True, seen: list | None = None):
     """Stand in for ``jax.distributed.initialize``; record the methods.
 
     *explicit_ok* false makes it fail the way JAX does when nothing
-    identifies the launcher and no parameters were supplied.
+    identifies the launcher and no coordinator was supplied.  Each
+    call's keyword arguments are appended to *seen* when given.
     """
     import jax
 
@@ -630,7 +632,9 @@ def _stub_initialize(explicit_ok: bool = True):
 
     def fake(cluster_detection_method: str | None = None, **kwargs):
         calls.append(cluster_detection_method)
-        if not explicit_ok and not kwargs:
+        if seen is not None:
+            seen.append(kwargs)
+        if not explicit_ok and "coordinator_address" not in kwargs:
             raise ValueError("coordinator_address should be defined.")
 
     real = jax.distributed.initialize
@@ -712,6 +716,53 @@ def case_bootstrap() -> None:
             "a bare marker names itself as the thing to unset",
             msg,
         )
+
+
+def case_runtime_timeouts() -> None:
+    """Both routes hand ``initialize`` the ``[dist]`` timeouts."""
+    from dnsjax.parameters import params
+
+    saved = (params.dist.initialization_timeout, params.dist.heartbeat_timeout)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            nodefile = Path(tmp) / "nodes"
+            nodefile.write_text("head-01\n")
+            routes = (
+                (
+                    "a self-describing launcher",
+                    {
+                        **_OMPI,
+                        "PBS_NODEFILE": str(nodefile),
+                        "PBS_JOBID": "12.pbs",
+                    },
+                ),
+                ("JAX's own detection", {"SLURM_PROCID": "2"}),
+            )
+            # JAX's own defaults, then raised values.
+            for init, beat in ((300, 100), (1800, 900)):
+                params.dist.initialization_timeout = init
+                params.dist.heartbeat_timeout = beat
+                for label, env in routes:
+                    seen: list[dict] = []
+                    with _env(**env), _stub_initialize(seen=seen):
+                        bootstrap._bootstrap_distributed()
+                    got = [
+                        (
+                            k.get("initialization_timeout"),
+                            k.get("heartbeat_timeout_seconds"),
+                        )
+                        for k in seen
+                    ]
+                    check(
+                        got == [(init, beat)],
+                        f"{label} passes the timeouts {init} s / {beat} s",
+                        got,
+                    )
+    finally:
+        (
+            params.dist.initialization_timeout,
+            params.dist.heartbeat_timeout,
+        ) = saved
 
 
 # ── Case G: CPU collectives selection ────────────────────────────────
@@ -823,6 +874,7 @@ def main() -> int:
     case_solo_launch()
     case_local_device_ids()
     case_bootstrap()
+    case_runtime_timeouts()
     case_cpu_collectives()
 
     if FAILURES:

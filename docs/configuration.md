@@ -19,8 +19,8 @@ plane channel has `--geo.lx`/`--res.nx`/`--res.ny`/`--res.nz`, and the
 `[lowres]` resolution targets follow the same names), and per-flow
 defaults (the pipe's moving frame `u_grid = 0.5`, its scheme-dependent
 `grid_type`) are materialized before printing or recording. The
-parameters that must be known before JAX initializes — `dist.np0`,
-`dist.np1`, `dist.platform` and `res.double_precision` — are never
+parameters that must be known before JAX initializes — the `dist`
+fields and `res.double_precision` — are never
 inherited from a snapshot, nor are the resume-decision fields
 `init.snapshot` and `init.force_resume` (recorded for lineage only) or
 the execution-only `solver` section. A snapshot that

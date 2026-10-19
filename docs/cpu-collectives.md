@@ -39,6 +39,14 @@ variable in the job script rather than relying on a path some nodes may
 not mount: a node that cannot see the library falls back to `gloo` while
 its peers take MPI, and the run then hangs.
 
+A launch of many thousands of processes may outgrow the distributed
+runtime's default timeouts: `--dist.initialization_timeout` (300 s for
+every process to connect) and `--dist.heartbeat_timeout` (100 s of
+silence before a process counts as failed and the run stops) raise
+them, and a longer heartbeat timeout also delays the stop after a
+process has failed (the `Distribution` docstring of
+[`src/dnsjax/parameters.py`](../src/dnsjax/parameters.py)).
+
 On macOS the search cannot fire at all — it scans `LD_LIBRARY_PATH` for a
 `.so`, where macOS has `DYLD_LIBRARY_PATH`, a `.dylib` convention, and
 SIP stripping that variable from spawned processes — so set

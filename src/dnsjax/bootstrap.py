@@ -1183,19 +1183,25 @@ def _bootstrap_distributed() -> None:
     (:func:`_solo_launch`) -- whether the launcher said so or nothing
     in the environment claims otherwise; :func:`_apply_local_device_ids`
     then selects the devices ``initialize`` would have (Design notes:
-    "No distributed runtime for one process").
+    "No distributed runtime for one process").  Either route passes the
+    runtime's timeouts, ``dist.initialization_timeout`` and
+    ``dist.heartbeat_timeout`` (JAX's defaults unless set).
     """
     import jax
 
     if _solo_launch():
         _apply_local_device_ids()
         return
+    timeouts = {
+        "initialization_timeout": params.dist.initialization_timeout,
+        "heartbeat_timeout_seconds": params.dist.heartbeat_timeout,
+    }
     explicit = _launcher_params()
     if explicit is not None:
-        jax.distributed.initialize(**explicit)
+        jax.distributed.initialize(**explicit, **timeouts)
         return
     try:
-        jax.distributed.initialize()
+        jax.distributed.initialize(**timeouts)
     except ValueError as exc:  # nothing identified the launcher
         raise SystemExit(_undetectable_launcher(exc)) from None
 

@@ -106,6 +106,8 @@ GLOBAL_FIELDS: tuple[tuple[str, str], ...] = (
     ("dist", "np0"),
     ("dist", "np1"),
     ("dist", "platform"),
+    ("dist", "initialization_timeout"),
+    ("dist", "heartbeat_timeout"),
     ("phys", "system"),
     ("phys", "oversampling_factor"),
     ("res", "double_precision"),

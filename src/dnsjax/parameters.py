@@ -4,8 +4,8 @@ Configuration is layered, lowest priority first: hard-coded defaults ->
 parameters embedded in a resumed snapshot (:func:`read_snapshot_params`)
 -> ``parameters.toml`` (if present) -> command-line arguments.  The
 snapshot layer is skipped for the parameters that must be known to
-configure JAX *before* the snapshot is read (``dist.np0``, ``dist.np1``,
-``dist.platform``, ``res.double_precision``), for the resume-decision
+configure JAX *before* the snapshot is read (the ``[dist]`` fields and
+``res.double_precision``), for the resume-decision
 fields ``init.snapshot`` / ``init.force_resume`` (recorded for lineage,
 never inherited) and for the execution-only ``[solver]`` section
 (:func:`read_snapshot_params`); those come only from defaults / TOML /
@@ -450,6 +450,13 @@ class Distribution(BaseModel):
     collectives remain NCCL, and ``JAX_LOCAL_DEVICE_IDS`` is honoured
     either way, so the single-process launch above is unaffected.
 
+    The distributed runtime's two timeouts are fields here, at JAX's
+    defaults: ``initialization_timeout`` (300 s for every process to
+    connect) and ``heartbeat_timeout`` (100 s of silence before a
+    process counts as failed and the run stops).  A launch of many
+    thousands of processes may need either raised; a longer heartbeat
+    timeout also delays the stop after a process has failed.
+
     CPU runs: threads per rank
     --------------------------
     **A CPU run takes one XLA thread per rank.**  Parallelism on CPU
@@ -544,6 +551,25 @@ class Distribution(BaseModel):
     )
     platform: Literal["cpu", "cuda", "rocm", "oneapi", "tpu"] = Field(
         default="cpu", description="JAX backend platform to run on."
+    )
+    # Passed to ``jax.distributed.initialize`` on every multi-process
+    # launch (``bootstrap._bootstrap_distributed``); the defaults are
+    # JAX's own, so an unset field changes nothing.
+    initialization_timeout: int = Field(
+        ge=1,
+        default=300,
+        description=(
+            "Seconds a multi-process run's processes keep trying to "
+            "connect to the distributed runtime before giving up."
+        ),
+    )
+    heartbeat_timeout: int = Field(
+        ge=1,
+        default=100,
+        description=(
+            "Seconds without a heartbeat after which the distributed "
+            "runtime counts a process as failed and stops the run."
+        ),
     )
 
 
@@ -2068,6 +2094,8 @@ _SNAPSHOT_SKIP_FIELDS: tuple[tuple[str, str], ...] = (
     ("dist", "np0"),
     ("dist", "np1"),
     ("dist", "platform"),
+    ("dist", "initialization_timeout"),
+    ("dist", "heartbeat_timeout"),
     ("res", "double_precision"),
 )
 
