@@ -341,30 +341,40 @@ layout's padding before anything runs.
 
 **Size the node, not only the rank.** On a node of many cores and a few
 GiB per core, every rank's own runtime — the interpreter, jaxlib, the
-compiled programs, the MPI library's buffers — is multiplied by the
-rank count, on top of the problem's share, and it is a large fraction
-of the budget: about 0.45 GiB of private memory per rank for a
-production plane-channel configuration on a workstation, before any
-site MPI's own; on an [ARCHER2](#strong-scaling-on-archer2) node (two
-64-core AMD EPYC 7742, 256 GB over 16 DDR4-3200 channels; Cray MPICH),
-measured on a problem too small to matter, about 0.65 GiB per rank at
-`(2, 64)` and 1.0 GiB at `(1, 128)` — 85 and 130 GiB of the node's
-222 before the problem's own share. On the production run measured
-there, a rank held about 1.1 GiB besides its share of the problem's
-93.5 GiB while stepping at `(128, n)` (0.9 GiB at `(64, 2n)`) on up to
-16 nodes, and more beyond: 1.2 GiB at 32 nodes and 1.3 at 64. One
-process on the first node held some 70 KiB more per rank of the job on
-top (0.57 GiB more at 8192 ranks). Three things separate the two: a
-memory budget (the lab's) predicts the problem's share per rank for
-any layout from XLA's own buffer assignment, without the machine; the
-`Peak host memory` line of a run reports what the operating system saw
-at the high-water mark, start-up included, and the
-`Resident host memory` line under it what the run still holds at the
-end; and a per-node sampler (the lab's, which the SLURM example runs as
-`MEMWATCH`) samples each node's total during a job, so an out-of-memory
-kill is placed against its layout and start-up phase. A layout that
-does not fit is helped, in order, by less padding, by
-`solver.rhs_transform_chunks`, and by fewer ranks per node.
+compiled programs, the MPI library's buffers — is multiplied by the rank
+count, on top of the problem's share, and it is a large fraction of the
+budget: about 0.45 GiB of private memory per rank for a production
+plane-channel configuration on a workstation, before any site MPI's own;
+on an [ARCHER2](#strong-scaling-on-archer2) node (two 64-core AMD EPYC
+7742, 256 GB over 16 DDR4-3200 channels; Cray MPICH), measured on a
+problem too small to matter, about 0.65 GiB per rank at `(2, 64)` and
+1.0 GiB at `(1, 128)` — 85 and 130 GiB of the node's 222 before the
+problem's own share. On the production run measured there, a rank held
+about 1.1 GiB besides its share of the problem's 93.5 GiB while stepping
+at `(128, n)` (0.9 GiB at `(64, 2n)`) on up to 16 nodes, and more
+beyond: 1.2 GiB at 32 nodes and 1.3 at 64. One process on the first node
+held some 70 KiB more per rank of the job on top (0.57 GiB more at 8192
+ranks). What sets that footprint is the grid: the per-node peaks there
+(shared pages counted once) fit 0.47 GiB per rank plus 3.4 MiB for each
+rank it exchanges with, $n_{p0} + n_{p1} - 2$ of them, on 8 to 64 nodes,
+and about as much (2.9 MiB) on one node, where every partner is local
+(the measurement: the `dnsjax.parameters` Design notes, "Memory per
+exchange partner"). At a given rank count the square grid has the fewest
+partners; at 128 ranks per node a grid on $N$ nodes has at least
+$2\sqrt{128 N} - 2$, so were the growth to continue past the 190
+partners measured, the footprint alone would fill a node near 380
+partners, which `(128, 256)` reaches on 256 nodes. Three things separate
+the problem's share from the rest: a memory budget (the lab's) predicts
+the problem's share per rank for any layout from XLA's own buffer
+assignment, without the machine; the `Peak host memory` line of a run
+reports what the operating system saw at the high-water mark, start-up
+included, and the `Resident host memory` line under it what the run
+still holds at the end; and a per-node sampler (the lab's, which the
+SLURM example runs as `MEMWATCH`) samples each node's total during a
+job, so an out-of-memory kill is placed against its layout and start-up
+phase. A layout that does not fit is helped, in order, by less padding,
+by `solver.rhs_transform_chunks`, by a squarer grid (fewer partners),
+and by fewer ranks per node.
 
 **Wall-normal derivatives** run as stencils on CPU rather than as dense
 $n_y \times n_y$ matrix products (`solver.wall_normal_matvec = "auto"`):

@@ -45,7 +45,10 @@ temporaries, and outputs not aliased to an input.  What is *not*: each
 process's own runtime (Python, jaxlib, the compiled programs, MPI
 buffers).  The closing ``Peak host memory`` line of a small CPU run
 measures that; pass it as ``--overhead-gib`` to compare a node's total
-against ``--node-gib``.
+against ``--node-gib``.  It depends on the grid: it grows with each
+rank's exchange partners, ``np0 + np1 - 2`` (the ``dnsjax.parameters``
+Design notes, "Memory per exchange partner"), so measure it on the grid
+in question, or scale it by that law.
 
 Usage (from the repository root)::
 

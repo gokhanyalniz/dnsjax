@@ -37,6 +37,31 @@ to 16 nodes and behind every 32-node ``(128, n)`` run but one outlier
 (``docs/scaling.md``), and ``(1, 256)`` did not fit in two nodes'
 memory.
 
+**Memory per exchange partner.**  Besides its share of the problem's
+arrays, a rank holds memory that grows with the number of ranks it
+exchanges with, `$p = n_{p0} + n_{p1} - 2$` (the other members of its
+``np0`` and ``np1`` groups).  On ARCHER2 (node hardware:
+``docs/scaling.md``, "Strong scaling on ARCHER2"; 128 ranks per node,
+Cray MPICH through MPItrampoline) the per-node peaks of the
+``1280 x 383 x 384`` runs on 8 to 64 nodes -- 14 runs of ``(128, n)``
+and ``(64, 2n)``, 78 to 190 partners, shared pages counted once --
+fit `$0.47 + 3.42 \times 10^{-3}\,p$` GiB per rank plus the problem's
+93.5 GiB spread over the ranks, to 0.01 GiB per rank: 3.4 MiB per
+partner.  At equal node count, hence equal data per rank, the two
+grids differ by 3.1 to 3.4 MiB per partner.  On one node, where every
+partner is on the node, the factorizations of 128 ranks give 2.9 MiB
+per partner over 22 to 127 partners, and a grid and its transpose agree
+(``(8, 16)`` and ``(16, 8)`` to 0.1 GiB per node, ``(2, 64)`` and
+``(64, 2)`` to 1.2), where a layout effect would not, ``np1`` carrying
+the oversampled axis.  Cray MPICH's own allocations do not account for
+it (at most 14 MB per process from 8 to 32 nodes); the cause is not
+identified.  At a given device count `$P$` the partner count is least
+on the square grid, `$n_{p0} = n_{p1} = \sqrt{P}$`, and at 128 ranks per
+node it is at least `$2\sqrt{128 N} - 2$` on `$N$` nodes: if the growth
+continued past the 190 partners measured, the footprint alone would
+fill a 222 GiB node near 380 partners, as ``(128, 256)`` on 256 nodes
+has (382).
+
 **One thread per rank.**  The rule is a design decision, and
 measurement only checks that nothing argues against it.  Plane Couette
 ``64 x 48 x 64``, 30 steps: 2 ranks take 5.2 s at 1 thread against
@@ -366,7 +391,11 @@ class Distribution(BaseModel):
     which is why the 1D rule is the firm one and the axis a lesser
     trade.  Routing the collectives through MPI rather than
     gloo (below) speeds up every exchange, shifting weight from the
-    per-exchange cost back toward volume.
+    per-exchange cost back toward volume.  Each rank's memory also
+    grows with its exchange partners, ``np0 + np1 - 2``, least on the
+    square grid at a given rank count, and on a node full of ranks that
+    can decide which grids fit (Design notes: "Memory per exchange
+    partner").
 
     **On GPU** the mode plane is tiled, which makes ``np1`` the
     granular axis: keep ``(nx // 2) / np1`` a multiple of
