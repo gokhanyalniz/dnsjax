@@ -413,9 +413,18 @@ slowest), and the solver's own set-up took a further 70 to 120 s at
 every node count. Compile the bytecode once after each update — the
 environment's with `uv sync --compile-bytecode` (uv otherwise leaves it
 to the first import), the checkout's own with
-`python -m compileall src` — and keep the ranks from writing theirs
-(`PYTHONDONTWRITEBYTECODE=1`): a module left uncompiled is then
-compiled in memory by every rank, at every start.
+`python -m compileall src`, and the interpreter's standard library,
+which uv installs uncompiled, with `python -m compileall` over the
+directory `sysconfig.get_path("stdlib")` names (the commands:
+[`examples/slurm/cpu.slurm`](../examples/slurm/cpu.slurm)) — and keep
+the ranks from writing theirs (`PYTHONDONTWRITEBYTECODE=1`): a module
+left uncompiled is then compiled in memory by every rank, at every
+start. Under Spindle the compiled set must be complete: a module read
+from source there can arrive as null bytes, the file on disk intact,
+and its import fails with
+`SyntaxError: source code string cannot contain null bytes` (observed
+with Spindle 0.13 and Python 3.14.9); a compiled module is read from
+its bytecode instead.
 
 **A four-GPU node** (for example 4 × NVIDIA H200): one process addressing
 all four GPUs, no launcher:

@@ -95,8 +95,12 @@ MAX_WALL_TIME="<PThhHmmM>"
 # checkout's own environment (made by `uv sync`).  Point PYTHON
 # elsewhere if dnsjax is installed into another interpreter.  The ranks
 # write no bytecode (section 3), so compile it once after every update
-# of the checkout:
+# of the checkout, from the checkout: the environment, the checkout's
+# own sources, and the interpreter's standard library, which uv
+# installs uncompiled:
 #     uv sync --compile-bytecode && .venv/bin/python -m compileall -q src
+#     .venv/bin/python -m compileall -q "$(.venv/bin/python -c \
+#         'import sysconfig; print(sysconfig.get_path("stdlib"))')"
 DNSJAX_DIR="<PATH_TO_DNSJAX>"
 PYTHON="$DNSJAX_DIR/.venv/bin/python"
 
@@ -114,9 +118,12 @@ MODULES=""
 # Spindle: one process per node reads Python's ~800 modules for all of
 # that node's ranks, instead of every rank reading them from the shared
 # filesystem.  On many nodes the start-up is much faster, and kinder to
-# the filesystem, for some memory per node.  1: use it where it can be
-# found (on PATH, or as the module `spindle`), and run without it
-# otherwise; 0: never.
+# the filesystem, for some memory per node.  It needs every module
+# compiled (above): a module read from source under it can arrive as
+# null bytes, and its import fails with "SyntaxError: source code
+# string cannot contain null bytes" (observed with Spindle 0.13).
+# 1: use it where it can be found (on PATH, or as the module
+# `spindle`), and run without it otherwise; 0: never.
 USE_SPINDLE=1
 
 # Extra srun flags the machine needs, e.g. --mpi=pmix for Open MPI.
