@@ -28,7 +28,9 @@ What each case pins:
    less its `$(0, 0)$` mode, contracted with the quadrature weights
    and averaged over the **distinct** absolute instants of the member
    set: the dedup counts a pair straddling
-   :data:`~twin_spectral_maps._T_ATOL` once, a doctored second
+   :data:`~twin_spectral_maps._T_ATOL` once, keeps a shared instant's
+   copy from the member with the latest parent (the path breaking a
+   tie) whatever the member order, a doctored second
    marginal is refused, and the three layouts give one number.  No
    map is drawn over it: a difference map and its reference map are
    both in wall units, and a stream without its reference half, which
@@ -625,7 +627,12 @@ def test_reference_scale() -> None:
 
 
 def test_distinct_instants() -> None:
-    """One reference instant is counted once, on a tolerance."""
+    """One reference instant is counted once, from the latest parent.
+
+    Samples meet on a tolerance.  The copy of a shared instant counted
+    is the one from the member whose parent is the latest, then the
+    first by path, whatever order the members are given in.
+    """
     meta = _meta("twin_yspectra")
     first = _member(meta, _records(meta, "twin_yspectra", 3), path="a")
     second_rec = _records(meta, "twin_yspectra", 3, t0=101.0, seed=1)
@@ -638,9 +645,30 @@ def test_distinct_instants() -> None:
 
     picks, n_instants, n_samples = series._distinct_instants()
     assert (n_samples, n_instants) == (6, 4)
-    assert picks[0].tolist() == [0, 1, 2]  # whichever sorts first owns it
-    assert picks[1].tolist() == [2]
+    # "b" starts later, so its copies of 101 and 102 are the ones kept.
+    assert picks[0].tolist() == [0]
+    assert picks[1].tolist() == [0, 1, 2]
     assert sum(p.size for p in picks) == n_instants
+
+    # The copies differ (another seed), so a rule that followed the
+    # order given would show here.
+    swapped = _series("twin_yspectra", [second, first])
+    got = [p.tolist() for p in swapped._distinct_instants()[0]]
+    assert got == [[0, 1, 2], [0]], got
+    assert np.allclose(
+        swapped.reference_scale(), series.reference_scale(), rtol=1e-13
+    )
+
+    # A member on the second's parent ties with it, and the path decides.
+    third_rec = _records(meta, "twin_yspectra", 3, t0=101.0, seed=2)
+    third_rec["t"] = second_rec["t"]
+    third = _member(meta, third_rec, path="c")
+    for members in ([first, second, third], [third, first, second]):
+        kept = _series("twin_yspectra", members)._distinct_instants()[0]
+        by_path = {
+            str(m.path): p.tolist() for m, p in zip(members, kept, strict=True)
+        }
+        assert by_path == {"a": [0], "b": [0, 1, 2], "c": []}, by_path
 
     report = series.reference_report()
     assert "4 distinct instants of 6 samples" in report[0]

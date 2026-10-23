@@ -273,16 +273,28 @@ either, mode by mode, so a saturated pair's ``e_*`` panel is twice its
 `$E^{\mathrm{ref}}$` is averaged over **distinct reference
 instants**: the members of an ensemble are subsampled from one long
 turbulent run, so their reference halves are not independent --
-members built from one parent snapshot carry bit-identical ``r_*``,
-and members from different parents repeat each other wherever their
-windows overlap.  Samples are therefore grouped on **absolute** time
-(the ensemble alignment above is relative) and each instant counted
-once, to the same tolerance as the frame grid and for the same
-reason: a rounded key would count a straddling pair twice and
-double-weight the reference state it names.  Every record of every
-stream feeds that average, independently of ``--stride`` /
+members built from one parent snapshot start from one state, and
+members from different parents cover the same stretch of the run
+wherever their windows overlap.  Samples are therefore grouped on
+**absolute** time (the ensemble alignment above is relative) and each
+instant counted once, to the same tolerance as the frame grid and for
+the same reason: a rounded key would count a straddling pair twice
+and double-weight the reference state it names.  Every record of
+every stream feeds that average, independently of ``--stride`` /
 ``--first`` / ``--last``; ``--ref-stride`` subsamples it for a
 cheaper pass.
+
+The copies of one instant are not one state, though.  Each reference
+half is integrated afresh from its parent: it matches the run it came
+from bit for bit only where both ran the same arithmetic (the same
+padded mode counts, hardware and software), and to round-off
+otherwise, which the flow amplifies at its leading Lyapunov exponent
+until the copies are independent states (Design notes, "Copies of
+one reference instant").  The copy counted is therefore the one from
+the member whose parent is the latest: integrated the shortest time
+since it left the run, it is the closest to the run's own state.  The
+average is then the run's own time average as closely as the parents'
+spacing allows, whatever order the members are given in.
 
 Two members meet on that key when their parents are separated by a
 whole number of sample cadences, as a harvest spacing that is a
@@ -878,6 +890,35 @@ than the gigabytes the eager reader
 in.  The record layout and the format-version floors are that
 reader's, imported; its truncation and duplicate-``t`` policies are
 mirrored here.
+
+Design notes
+------------
+**Copies of one reference instant.**  Two members' reference copies
+of one absolute instant were compared across ten plane-Poiseuille
+members at `$Re = 4200$` (`$192 \times 215 \times 160$`,
+``dt = 0.01``, 32 CPU devices) whose parents lay 50 time units apart
+along one run.  Their spectra differed, relative and in the 2-norm,
+by `$2\times10^{-12}$` 50 time units after the older copy's parent,
+`$10^{-8}$` after 100, `$3\times10^{-5}$` after 150 and a few per
+cent from 200 on: growth at 0.16 per unit time, the ensemble's
+leading Lyapunov exponent, from `$10^{-15}$` extrapolated to that
+parent.  On a `$16 \times 33 \times 16$` plane-Poiseuille run (JAX
+0.11.2, CPU), a resumed run and a twin's reference half reproduce
+the uninterrupted run bit for bit, on one process and on two.  The
+bits change with the padded `$k_z$` mode count, which ``np0`` rounds
+up to a multiple of itself, and not with the process count or the
+wall-normal padding.  Copies therefore agree bit for bit only where
+the run and the members share padded mode counts, hardware and
+software, and otherwise part at round-off.
+
+Counting the first member in the order given (rejected) made the
+average depend on that order: two orders of the ensemble above gave
+values of `$E^{\mathrm{ref}}_u$` 0.16 % apart.  The mean of every
+copy of an instant (rejected) mixes in copies already independent of
+the run, at four times the pass's cost; counting every sample
+(rejected) weights the stretch where most windows overlap the most.
+The latest parent's copy is at most one parent spacing old, which
+there kept it within `$10^{-11}$` of the run.
 """
 
 from __future__ import annotations
@@ -1496,6 +1537,15 @@ class _Member:
     parent: str  # its parent snapshot, "" when unrecorded
     ref: _Reference | None = None  # its reference spectra, if any
 
+    @property
+    def parent_t(self) -> float:
+        """The perturbation's absolute time, to rounding.
+
+        ``twin.json``'s ``parent_t``, or the stream's first sample
+        where that is unrecorded: what :attr:`t_rel` counts from.
+        """
+        return float(self.t_abs[0] - self.t_rel[0])
+
 
 def _check_cadence(path: Path, times: np.ndarray) -> None:
     """A stream's own samples must be ascending and well separated.
@@ -1993,11 +2043,13 @@ class YSeries:
         name every distinct instant exactly once -- with the instant
         and sample counts.  Samples are grouped by **proximity in
         absolute time** to :data:`_T_ATOL`, never by a rounded key
-        (module docstring, "The reference average").  Whichever member
-        sorts first owns a shared instant; they hold the same reference
-        state, so it does not matter which.  The grouping is
-        transitive; :func:`_check_cadence` has already refused a stream
-        sampled closer than the tolerance.
+        (module docstring, "The reference average").  A shared instant
+        is taken from the member whose parent is the latest, the copy
+        closest to the run the parents came from; members sharing that
+        parent go by path, so the choice depends on the member set and
+        never on the order it is given in.  The grouping is transitive;
+        :func:`_check_cadence` has already refused a stream sampled
+        closer than the tolerance.
         """
         times = [m.ref.t_abs[:: self.ref_stride] for m in self.members]
         rows = [m.ref.rows[:: self.ref_stride] for m in self.members]
@@ -2009,7 +2061,16 @@ class YSeries:
         order = np.argsort(flat, kind="stable")
         opening = np.ones(order.size, dtype=bool)
         opening[1:] = np.diff(flat[order]) > _T_ATOL
-        keep, owned = index[order[opening]], owner[order[opening]]
+        instant = np.cumsum(opening) - 1
+        # Within each instant: the latest parent first, then the path.
+        parent_t = np.array([m.parent_t for m in self.members])
+        path_rank = np.argsort(np.argsort([str(m.path) for m in self.members]))
+        by = owner[order]
+        ranked = np.lexsort((path_rank[by], -parent_t[by], instant))
+        lead = np.ones(ranked.size, dtype=bool)
+        lead[1:] = np.diff(instant[ranked]) != 0
+        chosen = order[ranked[lead]]
+        keep, owned = index[chosen], owner[chosen]
         picks = [
             np.sort(member_rows[keep[owned == i]])
             for i, member_rows in enumerate(rows)
