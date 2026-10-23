@@ -51,7 +51,11 @@ from pathlib import Path
 
 import numpy as np
 
-from dnsjax_lab.analysis.twin.series import read_twin, uniform_grid
+from dnsjax_lab.analysis.twin.series import (
+    GridResolutionError,
+    read_twin,
+    uniform_grid,
+)
 
 #: Relative-time alignment tolerance across members (simulation time).
 #: Relative times are whole multiples of the step
@@ -68,10 +72,16 @@ def _grid_mask(t: np.ndarray) -> np.ndarray:
     (:mod:`dnsjax_lab.analysis.twin.series`, "Off-grid rows"), and which
     of them a member has depends on whether and where it was resumed,
     so otherwise identical members stack only once each is restricted
-    to its own grid.
+    to its own grid.  A stream too short or too irregular to have a grid
+    stacks whole.  A time column that does not resolve its grid
+    (:class:`~.series.GridResolutionError`) is refused instead: its rows
+    carry the column's rounding, so neither a mask nor the whole stream
+    puts them on the step grid the members share.
     """
     try:
         return uniform_grid(t)[1]
+    except GridResolutionError:
+        raise
     except ValueError:
         return np.ones(t.shape, dtype=bool)
 

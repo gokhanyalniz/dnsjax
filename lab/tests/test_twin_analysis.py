@@ -18,7 +18,7 @@ The package is ``dnsjax_lab.analysis.twin``, the orchestration
 - the cadence grid of such a column: on the member's step counts every
   cadence row kept and the off-grid final row dropped, across the
   printed ``t`` losing a decimal at ``t = 1000``, where the absolute
-  column is refused;
+  column is refused, by the ensemble stack's member mask too;
 - the growth-rate fits against planted laws;
 - the ``twin_spectra.bin`` reader: byte-exact round trip, truncated
   trailing record, duplicate-timestamp seams, version floor,
@@ -100,6 +100,7 @@ from dnsjax_lab.analysis.twin import (  # noqa: E402
     read_twin,
     uniform_grid,
 )
+from dnsjax_lab.analysis.twin.ensemble import _grid_mask  # noqa: E402
 from dnsjax_lab.analysis.twin.growth import (  # noqa: E402
     algebraic_exponent,
     bound_free,
@@ -633,7 +634,8 @@ def test_cadence_grid_at_driver_precision() -> None:
     off-grid final one; the absolute column is refused rather than
     masked down to one side of the crossing, at a cadence of many steps
     and at the default of one, where the crossing is far wider than the
-    tolerance.
+    tolerance.  The ensemble stack's per-member mask passes that refusal
+    on, where a stream too short for a grid stacks whole.
     """
     digits = Outputs().stats_precision
     dt = 0.0025
@@ -661,12 +663,18 @@ def test_cadence_grid_at_driver_precision() -> None:
             assert on_grid[:n].all(), (it_energy, on_grid)
             assert on_grid.size == n + (tail is not None)
             assert not on_grid[n:].any(), (it_energy, on_grid)
-            try:
-                uniform_grid(series.t)
-            except GridResolutionError as exc:
-                assert "does not resolve the grid" in str(exc), exc
-            else:
-                raise AssertionError(f"it_energy {it_energy}: not refused")
+            for refuse in (uniform_grid, _grid_mask):
+                try:
+                    refuse(series.t)
+                except GridResolutionError as exc:
+                    assert "does not resolve the grid" in str(exc), exc
+                else:
+                    raise AssertionError(
+                        f"{refuse.__name__}, it_energy {it_energy}: "
+                        "not refused"
+                    )
+            assert (_grid_mask(series.t_rel) == on_grid).all()
+            assert _grid_mask(series.t[:2]).all()
     print("cadence grid at the driver's t precision: OK")
 
 
