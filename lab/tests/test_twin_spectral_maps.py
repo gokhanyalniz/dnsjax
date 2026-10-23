@@ -22,8 +22,8 @@ What each case pins:
    *in the plotted units*, so a ratio's wall/outer ratio is
    `$Re_\tau$` under ``ky`` against `$1$` under ``k`` -- the asymmetry
    the script's docstring documents ("Premultiplication"), asserted here
-   so it cannot change silently in either direction -- and an energy
-   carries the unit conversion on top of it.
+   so it cannot change silently in either direction -- and an energy,
+   `$E/u_\tau^2$` in both systems, carries nothing more.
 3. **`$E^{\mathrm{ref}}$`.** The total-in-`$(y, k)$` reference energy
    less its `$(0, 0)$` mode, contracted with the quadrature weights
    and averaged over the **distinct** absolute instants of the member
@@ -169,9 +169,18 @@ What each case pins:
     at ``t = 1000``, is
     their geometric mean, records its source and falls back to the
     spectra totals without one; a band's budget rates are its own
-    terms over its own energy; and the summary figure draws a window
-    with no positive rate -- inside saturation, its energy drifting
-    down -- rather than failing on it.
+    terms over its own energy; the summary figure states the rates in
+    `$u_\tau/h$`; and it draws a window with no positive rate --
+    inside saturation, its energy drifting down -- rather than failing
+    on it.
+25. **Presented units.** Time is `$t\,u_\tau/h$` and a rate per
+    `$h/u_\tau$` whatever ``--outer-units`` says, each with its wall
+    unit a factor of `$Re_\tau$` away; both headers state both times;
+    an energy is `$E/u_\tau^2$` in both systems and a budget term
+    `$Re_\tau$` apart; and ``--align-atol`` reaches the reader as the
+    same code-time tolerance read in `$h/u_\tau$` or, under
+    ``--input-code-units``, in `$h/U_\mathrm{cl}$`, exact alignment
+    when unset.
 
 Usage::
 
@@ -567,10 +576,11 @@ def test_ky_is_the_plotted_y() -> None:
         got = draw("decorr_k_z", wall, premultiply).values
         want = factor * draw("decorr_k_z", outer, premultiply).values
         assert np.allclose(got, want, equal_nan=True)
-    # An energy carries the energy conversion on top of it.
+    # An energy is E/u_tau^2 in both systems, so it carries nothing
+    # more.
     for premultiply, factor in (("k", 1.0), ("ky", RE_TAU)):
         got = draw("e_z", wall, premultiply).values
-        want = factor / U_TAU**2 * draw("e_z", outer, premultiply).values
+        want = factor * draw("e_z", outer, premultiply).values
         assert np.allclose(got, want)
 
 
@@ -1498,7 +1508,8 @@ def test_spacetime() -> None:
             )
             assert np.allclose(drawn.values, want), (component, premultiply)
         assert drawn.values.shape == (rec.size, (NY + 1) // 2)
-        assert np.allclose(drawn.t, options.units.time(series.t_rel))
+        # Time is outer, t u_tau/h, whatever the lengths are in.
+        assert np.allclose(drawn.t, series.t_rel * U_TAU)
 
     # The k_x = 0 slice keeps its name, and the unit conversion.
     x0_meta = _meta("twin_yspectra", suffixes=WITH_X0)
@@ -1608,6 +1619,9 @@ def test_spacetime() -> None:
         assert np.allclose(stored["values"], [p.values for p in panels])
         assert list(stored["panels"]) == ["u", "v", "w", "sum"]
         assert np.allclose(stored["t"], series.t_rel)
+        assert np.allclose(stored["t_plotted"], series.t_rel * U_TAU)
+        assert str(stored["time_units"]) == "h/u_tau"
+        assert np.isclose(float(stored["time_plus_factor"]), RE_TAU * U_TAU)
         assert np.allclose(stored["y"], tsm._half_grid(series.y, "mean"))
         assert np.allclose(stored["y_plotted"], panels[0].y)
         assert not bool(stored["premultiplied"])
@@ -2160,7 +2174,8 @@ def test_shape_maps() -> None:
             (tsm.MapOptions(units, premultiply="none"), 1.0),
             (tsm.MapOptions(units, premultiply="ky"), 1.0),
             (tsm.MapOptions(units, volume_fac=False), 1.0 / VOLUME_FAC),
-            (tsm.MapOptions(outer_units), U_TAU**2 / RE_TAU),
+            # E/u_tau^2 in both systems: only y+ -> y/h moves it.
+            (tsm.MapOptions(outer_units), 1.0 / RE_TAU),
         ):
             moved = tsm.make_map(
                 series, "s_x", 1, options=other, component=component
@@ -2170,7 +2185,7 @@ def test_shape_maps() -> None:
     outer = tsm.make_map(
         series, "s_x", 1, options=tsm.MapOptions(outer_units)
     ).title
-    assert r"\max = " in outer and r"u_\tau" not in outer, outer
+    assert r"\max/u_\tau^2 = " in outer and "y^+" not in outer, outer
     # Taken last: a smoothed reference panel still reaches 1 in the box.
     smoothed = tsm.make_map(
         series, "s_x", 1, options=tsm.MapOptions(units, smooth=3)
@@ -2275,8 +2290,18 @@ def test_shape_maps() -> None:
     diss = tsm.make_map(budget, "s_diss_z", 0, options=options).title
     assert diss.startswith("$-"), diss
     assert r"/\max(k_{x}^+ y^+\,\mathcal{P}_\Delta)$" in diss, diss
-    prod = tsm.make_map(budget, "s_prod_z", 0, options=options).title
-    assert r"\max\,\nu/u_\tau^4 = " in prod, prod
+    prod = tsm.make_map(budget, "s_prod_z", 0, options=options)
+    assert r"\max\,\nu/u_\tau^4 = " in prod.title, prod.title
+    # Outer units: the term is Re_tau times larger (B h/u_tau^3) and y
+    # Re_tau times smaller (y/h), so the k y peak is the same number.
+    outer_prod = tsm.make_map(
+        budget,
+        "s_prod_z",
+        0,
+        options=tsm.MapOptions(tsm.Units(RE, RE_TAU, wall=False)),
+    )
+    assert r"\max\,h/u_\tau^3 = " in outer_prod.title, outer_prod.title
+    assert np.isclose(outer_prod.peak, prod.peak)
 
     # The levels of case 18, the production frozen from its most
     # negative value in any frame up to 1.  Under --clim ramped they are
@@ -2906,9 +2931,7 @@ def test_front_times() -> None:
     series = _series("twin_yspectra", [_member(meta, _saturated(meta))])
     for map_ in tsm.front_maps(series, "x", options):
         finite = map_.values[np.isfinite(map_.values)]
-        assert finite.size and np.allclose(
-            finite, options.units.plotted_time(series.t_rel[0])
-        )
+        assert finite.size and np.allclose(finite, series.t_rel[0] * U_TAU)
     print("front times: OK")
 
 
@@ -2923,6 +2946,38 @@ def test_growth_laws() -> None:
     assert abs(phases.decorrelation[2] - nu) < 0.1 * nu
     assert phases.decorrelation[0] > phases.exponential[1]
     options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
+    # The summary states both rates per h/u_tau, the clock's rate over
+    # u_tau.
+    energy = sat * (1.0 - np.exp(-f))
+    fig = tsm.growth_summary_figure(
+        types.SimpleNamespace(t_rel=t, n_members=1),
+        tsm.GrowthCurves(
+            t=t,
+            energy=energy[None, :],
+            saturation=np.array([sat]),
+            labels=["E"],
+            members=energy[None, :],
+        ),
+        phases,
+        options,
+        tsm.PlotStyle(),
+    )
+    ax_e, ax_g, ax_f, _ = fig.axes[:4]
+    gamma_label = options.units.per_time(phases.exponential[2])
+    nu_label = options.units.per_time(phases.decorrelation[2])
+    assert any(
+        f"{gamma_label:.3g}" in label and r"u_\tau/h" in label
+        for label in ax_e.get_legend_handles_labels()[1]
+    )
+    assert any(
+        f"{nu_label:.3g}" in label and r"u_\tau/h" in label
+        for label in ax_f.get_legend_handles_labels()[1]
+    )
+    assert ax_e.get_xlabel() == r"$t\,u_\tau/h$"
+    assert r"u_\tau/h" in ax_g.get_ylabel()
+    # The axis spans the outer clock, not the code one.
+    assert 0.0 < ax_e.get_xlim()[1] <= t[-1] * U_TAU * (1.0 + 1e-12)
+    plt.close(fig)
     meta = _meta("twin_yspectra")
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -3015,6 +3070,73 @@ def test_growth_laws() -> None:
     )
     plt.close(fig)
     print("growth laws: OK")
+
+
+def test_presented_units() -> None:
+    r"""Time and rates in `$h$` and `$u_\tau$`, inner units beside."""
+    units = tsm.Units(RE, RE_TAU)
+    outer = tsm.Units(RE, RE_TAU, wall=False)
+    t, rate = 12.5, 0.16
+    for u in (units, outer):
+        assert np.isclose(u.time(t), t * U_TAU)
+        assert np.isclose(u.time_plus(t), RE_TAU * u.time(t))
+        assert np.isclose(u.per_time(rate), rate / U_TAU)
+        # A secondary axis is a factor of Re_tau either way: t+, and a
+        # rate per t+ (gamma nu/u_tau^2 = gamma/(Re u_tau^2)).
+        assert np.isclose(u.to_plus[0](u.time(t)), u.time_plus(t))
+        assert np.isclose(
+            u.rate_to_plus[0](u.per_time(rate)), rate / (RE * U_TAU**2)
+        )
+        assert u.t_label == r"$t\,u_\tau/h$"
+    # An energy is E/u_tau^2 in both systems; a budget term B nu/u_tau^4
+    # in wall units, B h/u_tau^3 = Re_tau B+ in outer ones.
+    assert np.isclose(outer.energy(1.0), units.energy(1.0))
+    assert np.isclose(units.energy(1.0), 1.0 / U_TAU**2)
+    assert np.isclose(units.rate(1.0), 1.0 / (U_TAU**4 * RE))
+    assert np.isclose(outer.rate(1.0), RE_TAU * units.rate(1.0))
+    assert outer.norm_suffix("rate") == r"\,h/u_\tau^3"
+    # The secondary length axis is the other system's.
+    assert np.isclose(units.other_length[0](RE_TAU), 1.0)
+    assert np.isclose(outer.other_length[0](1.0), RE_TAU)
+    assert units.lambda_label("z", other=True) == r"$\lambda_{z}/h$"
+    assert outer.lambda_label("z", other=True) == r"$\lambda_{z}^+$"
+    assert (units.other_y_label, outer.other_y_label) == (
+        r"$y/h$",
+        r"$y^+$",
+    )
+
+    # Both headers state both times.
+    clock = types.SimpleNamespace(t_rel=np.array([0.0, t]), n_members=2)
+    frame = tsm._suptitle(clock, 1, units)
+    assert rf"t\,u_\tau/h = {t * U_TAU:.4g}" in frame, frame
+    assert rf"t^+ = {t * U_TAU * RE_TAU:.4g}" in frame, frame
+    window = tsm._spacetime_suptitle(clock, units)
+    assert window.startswith("$2$ member(s), "), window
+    assert rf"= 0\ldots{t * U_TAU:.4g}" in window, window
+    assert "U_" not in frame + window
+
+    # --align-atol is read in h/u_tau, or in h/U_cl under
+    # --input-code-units, and reaches the reader in code time.
+    parser = tsm.build_parser()
+    base = ["--members", "a", "--out", "o", "--re", str(RE)]
+    base += ["--re-tau", str(RE_TAU)]
+    code_atol = 0.4
+    for argv in (
+        ["--align-atol", str(code_atol * U_TAU)],
+        ["--input-code-units", "--align-atol", str(code_atol)],
+    ):
+        args = parser.parse_args(base + argv)
+        got = tsm.clock_tolerance(
+            args.align_atol, units, code_units=args.input_code_units
+        )
+        assert np.isclose(got, code_atol), argv
+    for argv in ([], ["--input-code-units"]):
+        args = parser.parse_args(base + argv)
+        got = tsm.clock_tolerance(
+            args.align_atol, units, code_units=args.input_code_units
+        )
+        assert got == tsm._T_ATOL, argv
+    print("presented units: OK")
 
 
 # ── Runner ───────────────────────────────────────────────────────────

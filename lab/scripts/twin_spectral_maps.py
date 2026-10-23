@@ -6,7 +6,8 @@ over a set of ``dnsjax-twin`` member directories, following the
 premultiplied spectral maps of Cho, Hwang & Choi, *J. Fluid Mech.*
 **854**, 474-504 (2018) -- their figures 3 and 11: wavelength on a
 logarithmic abscissa, filled contours plus contour lines, inner units
-on the primary axes and outer units on the secondary ones.  They
+on the primary axes and outer units, `$h$` and `$u_\tau$`, on the
+secondary ones.  They
 depart from the paper in the premultiplier: `$k$` alone, the commoner
 convention for a spectrum on a logarithmic ordinate, not its
 `$k\,y$` (next section).  ``--yscale linear`` swaps the ordinate
@@ -23,7 +24,7 @@ of maps, each on both wavenumber marginals (``_z`` gives `$\lambda_x$`;
 the paper shows only `$\lambda_z$`):
 
 - the **difference** spectra, a panel per velocity component and one
-  for their sum, in wall units ("Inner units");
+  for their sum, in wall units ("Units");
 - their **shape** maps, the same panels under the `$k\,y^+$`
   premultiplier, each over its frame's peak of the summed panel
   ("Shape maps");
@@ -156,31 +157,51 @@ numbers agree: at plane-Poiseuille `$Re = 4200$`,
 `$\lambda_z^+ \approx 130$`, the textbook near-wall peak.  Without
 the factor every map is a factor of two low.
 
-Inner units
------------
+Units
+-----
 With `$h = U_\mathrm{cl} = 1$` in the code's non-dimensionalization,
-`$\nu = 1/Re$` and `$u_\tau = Re_\tau/Re$`, so
+`$\nu = 1/Re$` and `$u_\tau = Re_\tau/Re$`, where ``--re-tau`` is the
+reference flow's time-averaged friction Reynolds number: an input,
+never measured here.  Nothing is drawn in the code's own units.  Time
+and rates are in **outer** units, `$h$` and `$u_\tau$`, and the maps'
+lengths and budget terms in **wall** units:
 
 .. math::
+    t\,u_\tau/h = t\,Re_\tau/Re, \quad
+    \gamma\,h/u_\tau = \gamma\,Re/Re_\tau, \quad
     \lambda^+ = \lambda\,Re_\tau, \quad y^+ = (1 - |y|)\,Re_\tau,
-    \quad t^+ = t\,Re_\tau^2/Re, \quad
-    E^+ = E\,Re^2/Re_\tau^2, \quad
+    \quad E/u_\tau^2 = E\,Re^2/Re_\tau^2, \quad
     \mathcal{B}^+ = \mathcal{B}\,Re^3/Re_\tau^4 ,
 
-the last two for an energy and for a budget rate (`$u_\tau^2$` and
-`$u_\tau^4/\nu$`).  ``Re_tau`` is a **measured** input, never derived
-here.
+for a time, a rate per unit time, the two lengths, an energy and a
+budget rate (`$u_\tau^4/\nu$`).  The other system goes beside each,
+on a secondary axis wherever the figure has room for one, and every
+header states both times.  Each inner quantity is its outer one times
+a power of `$Re_\tau$` -- `$t^+ = Re_\tau\,t\,u_\tau/h$`,
+`$\gamma\,\nu/u_\tau^2 = (\gamma\,h/u_\tau)/Re_\tau$`,
+`$\lambda^+ = Re_\tau\,\lambda/h$`,
+`$\mathcal{B}^+ = (\mathcal{B}\,h/u_\tau^3)/Re_\tau$` -- and an
+energy is the same number in both (:class:`Units`).  The decorrelation
+front's colour bar is outer time alone: its map's own `$y/h$` axis
+takes the side a `$t^+$` scale would need.
 
-Every panel that has a dimension is drawn in these units, and its
-title spells the conversion out after the symbol: an energy as
-`$E/u_\tau^2$`, which is `$E^+$`, and a budget term -- an energy per
-unit time -- as `$\mathcal{B}\,\nu/u_\tau^4$`, which is
-`$\mathcal{B}^+$`.  A difference map and its reference map are
-therefore on one scale, as are two runs at different amplitudes.  The
-premultipliers are in the units of the axes they serve
-("Premultiplication"), and a ratio -- either decorrelation, a shape
-map -- has no units to convert.  ``--outer-units`` draws everything
-in `$h$` and `$U_\mathrm{cl}$` instead.
+Every map panel that has a dimension spells its conversion out after
+the symbol: an energy as `$E/u_\tau^2$`, which is `$E^+$`, and a
+budget term -- an energy per unit time -- as
+`$\mathcal{B}\,\nu/u_\tau^4$`, which is `$\mathcal{B}^+$`.  A
+difference map and its reference map are therefore on one scale, as
+are two runs at different amplitudes.  The premultipliers are in the
+units of the axes they serve ("Premultiplication"), and a ratio --
+either decorrelation, a shape map -- has no units to convert.
+``--outer-units`` swaps the maps' two systems: lengths in `$h$` and
+budget terms as `$\mathcal{B}\,h/u_\tau^3$`, wall units on the
+secondary axes; time and rates are outer either way.
+
+A time-valued option, ``--align-atol``, is read in `$h/u_\tau$`, or in
+the code's `$h/U_\mathrm{cl}$` under ``--input-code-units``.  A written
+``.npz`` keeps the stream's own clock ``t`` in code time, for matching
+against the streams, beside ``t_plotted`` and the factors that convert
+each code-unit value to the one written.
 
 Ensemble averaging
 ------------------
@@ -262,8 +283,8 @@ off index 0 of the `$k_x = 0$` plane, the same number
 (:func:`~dnsjax_lab.analysis.twin.yspectra.mean_mode_name`) -- and
 *not* off ``r_x[..., 0]``, the whole `$k_z = 0$` column.
 
-No map is drawn over it.  Every energy panel is in wall units
-("Inner units"), which already puts a difference map and its
+No map is drawn over it.  Every energy panel is in `$E/u_\tau^2$`
+("Units"), which already puts a difference map and its
 reference map on one scale, and the reading every measurement here
 rests on is legible there directly: two statistically identical fields
 that have decorrelated completely differ by twice the energy of
@@ -482,7 +503,7 @@ bar extends downward to say so.  A series that changes sign (a budget
 term does) gets no logarithmic figure, with a line saying why.
 
 Beside each pair goes a ``.npz`` (:func:`write_spacetime_npz`): the
-drawn arrays, their axes in both unit systems, the divisor a
+drawn arrays, their axes in code units and as plotted, the divisor a
 decorrelation panel took, every factor that was and was not applied,
 and the stream metadata the figures were labelled from.  Enough to
 redraw a panel, or to undo its division or its units, without them.
@@ -588,6 +609,10 @@ rate -- bends the `$\gamma$`-`$R$` diagram only as `$R \to 1$`, by
 early rate; a slowing at `$R \ll 1$`, or a late rate well below the
 early one, is therefore no inflection.
 
+The phases are found on the streams' clock and drawn in outer units
+("Units"): time in `$t\,u_\tau/h$`, `$\gamma$` and `$\nu$` in
+`$u_\tau/h$`, with `$t^+$` and `$u_\tau^2/\nu$` on secondary axes.
+
 ``growth_global`` is the summary: the total difference energy on each
 member's ``twin.dat`` cadence (aligned on whole steps since the
 perturbation; the spectra stream's totals where any member lacks one,
@@ -679,7 +704,7 @@ a decade) and coarse in plain `$y$` at the centreline.  The contour
 lines are drawn on top either way.
 
 Every colour scale, per frame, ramped or frozen, is read off the
-**plotted** quantity -- premultiplied, folded, in inner units, over
+**plotted** quantity -- premultiplied, folded, in the plotted units, over
 exactly the rows the axes box shows: the ordinate's floor and limits
 included, not merely the wall row a logarithmic axis cannot place
 (:meth:`Map.drawn`, :func:`y_limits`).  The colour bar therefore
@@ -893,23 +918,23 @@ mirrored here.
 
 Design notes
 ------------
-**Copies of one reference instant.**  Two members' reference copies
-of one absolute instant were compared across ten plane-Poiseuille
-members at `$Re = 4200$` (`$192 \times 215 \times 160$`,
-``dt = 0.01``, 32 CPU devices) whose parents lay 50 time units apart
-along one run.  Their spectra differed, relative and in the 2-norm,
-by `$2\times10^{-12}$` 50 time units after the older copy's parent,
-`$10^{-8}$` after 100, `$3\times10^{-5}$` after 150 and a few per
-cent from 200 on: growth at 0.16 per unit time, the ensemble's
-leading Lyapunov exponent, from `$10^{-15}$` extrapolated to that
-parent.  On a `$16 \times 33 \times 16$` plane-Poiseuille run (JAX
-0.11.2, CPU), a resumed run and a twin's reference half reproduce
-the uninterrupted run bit for bit, on one process and on two.  The
-bits change with the padded `$k_z$` mode count, which ``np0`` rounds
-up to a multiple of itself, and not with the process count or the
-wall-normal padding.  Copies therefore agree bit for bit only where
-the run and the members share padded mode counts, hardware and
-software, and otherwise part at round-off.
+**Copies of one reference instant.**  Two members' reference copies of
+one absolute instant were compared across ten plane-Poiseuille members
+at `$Re = 4200$` (`$192 \times 215 \times 160$`, ``dt = 0.01``, 32 CPU
+devices) whose parents lay 50 time units (`$h/U_\mathrm{cl}$`) apart
+along one run.  Their spectra differed, relative and in the 2-norm, by
+`$2\times10^{-12}$` 50 time units after the older copy's parent,
+`$10^{-8}$` after 100, `$3\times10^{-5}$` after 150 and a few per cent
+from 200 on: growth at 0.16 per unit time (3.8 per `$h/u_\tau$` at
+`$Re_\tau = 178.6$`), the ensemble's leading Lyapunov exponent, from
+`$10^{-15}$` extrapolated to that parent.  On a
+`$16 \times 33 \times 16$` plane-Poiseuille run (JAX 0.11.2, CPU), a
+resumed run and a twin's reference half reproduce the uninterrupted run
+bit for bit, on one process and on two.  The bits change with the padded
+`$k_z$` mode count, which ``np0`` rounds up to a multiple of itself, and
+not with the process count or the wall-normal padding.  Copies therefore
+agree bit for bit only where the run and the members share padded mode
+counts, hardware and software, and otherwise part at round-off.
 
 Counting the first member in the order given (rejected) made the
 average depend on that order: two orders of the ensemble above gave
@@ -928,8 +953,10 @@ import json
 import math
 import shutil
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 from dnsjax_lab.analysis.twin.growth import (
@@ -1220,6 +1247,18 @@ GROWTH_TOLERANCE: float = 0.1
 #: fluctuations take `$R$` to 1 and beyond at saturation.
 GROWTH_R_MAX: float = 0.95
 
+#: The rate axis of the growth figures, in `$u_\tau/h$`: its floor and
+#: its default range.  At `$Re_\tau = 179$` and `$512$` (plane
+#: Poiseuille, `$Re = 4200$` and `$14000$`) it spans the rates from the
+#: seed's decay to the slow end of decorrelation.
+GROWTH_RATE_RANGE: tuple[float, float] = (0.05, 30.0)
+
+#: The instants marked along the `$\gamma$`-`$R$` curve, in
+#: `$t\,u_\tau/h$`, each where a sample lies within
+#: :data:`GROWTH_STAMP_ATOL` of it.
+GROWTH_STAMPS: tuple[float, ...] = (0.5, 1.0, 1.5, 2.0, 2.5, 3.0)
+GROWTH_STAMP_ATOL: float = 0.05
+
 #: Columns of every budget figure, map or spacetime alike, whatever
 #: ``--ncols`` sets for the spectra: its nine panels are the three rows
 #: of :data:`MAP_PANELS` (module docstring, "Figure geometry").
@@ -1404,12 +1443,28 @@ _BAND_RANGE: tuple[float, float] = (0.3, 1.0)
 
 @dataclass(frozen=True)
 class Units:
-    r"""Outer `$\to$` inner unit conversions for one measured flow.
+    r"""Code `$\to$` presented unit conversions for one flow.
 
-    *re* is the code's ``phys.re`` and *re_tau* the **measured**
-    friction Reynolds number; nothing here re-measures it.  With
-    *wall* false every conversion but :meth:`time` is the identity and
-    the labels revert to outer units (`$h$`, `$U_\mathrm{cl}$`).
+    *re* is the code's ``phys.re`` and *re_tau* the friction Reynolds
+    number the caller supplies, from the reference flow's time-averaged
+    statistics; nothing here measures it.  The code's units are `$h$`
+    and `$U_\mathrm{cl}$`, and nothing is drawn in them: with
+    `$u_\tau/U_\mathrm{cl} = Re_\tau/Re$` (:attr:`u_tau`) every
+    presented quantity is in `$h$` and `$u_\tau$` or in wall units.
+
+    Time and rates are outer whatever *wall* says: :meth:`time` gives
+    `$t\,u_\tau/h$`, :meth:`per_time` a rate per `$h/u_\tau$`, and
+    :meth:`time_plus` the `$t^+$` a header or a secondary axis adds.
+    *wall* picks the primary system of the maps' lengths and budget
+    densities: wall units (`$\lambda^+$`, `$y^+$`,
+    `$\mathcal{B}\,\nu/u_\tau^4$`) by default, `$h$` and `$u_\tau$`
+    (`$\lambda/h$`, `$y/h$`, `$\mathcal{B}\,h/u_\tau^3$`) under
+    ``--outer-units``.  An energy is `$E/u_\tau^2$` in both.  Each
+    inner quantity is its outer one times a power of `$Re_\tau$`
+    (`$\lambda^+ = Re_\tau\,\lambda/h$`, `$t^+ = Re_\tau\,t\,u_\tau/h$`,
+    `$\mathcal{B}^+ = \mathcal{B}\,h/u_\tau^3 / Re_\tau$`), which is
+    all a secondary axis converts by (:attr:`other_length`,
+    :attr:`to_plus`, :attr:`rate_to_plus`).
     """
 
     re: float
@@ -1422,31 +1477,56 @@ class Units:
         return self.re_tau / self.re
 
     def length(self, values):
-        r"""`$\lambda \to \lambda^+ = \lambda\,Re_\tau$`."""
+        r"""`$\lambda \to \lambda^+ = \lambda\,Re_\tau$`, or `$\lambda/h$`.
+
+        The second (the identity) under ``--outer-units``.
+        """
         return values * self.re_tau if self.wall else values
 
+    @property
+    def other_length(self) -> tuple[Callable, Callable]:
+        """``functions=`` of a secondary length axis: plotted to other."""
+        down = (lambda v: v / self.re_tau, lambda v: v * self.re_tau)
+        return down if self.wall else down[::-1]
+
     def time(self, t: float | np.ndarray) -> float | np.ndarray:
-        r"""`$t \to t^+ = t\,Re_\tau^2/Re$`.
+        r"""`$t \to t\,u_\tau/h = t\,Re_\tau/Re$`, the presented time.
 
-        Unconditional, unlike :meth:`length` and :meth:`energy`: the
-        figure titles report `$t^+$` beside the outer `$t$` whatever
-        units the axes are in.  An axis wants :meth:`plotted_time`.
+        Unconditional: time is drawn in outer units whatever *wall*
+        says, with :meth:`time_plus` beside it.
         """
-        return t * self.re_tau**2 / self.re
+        return t * self.u_tau
 
-    def plotted_time(self, t: float | np.ndarray) -> float | np.ndarray:
-        r"""`$t$` in whichever units the figure is drawn in."""
-        return self.time(t) if self.wall else t
+    def time_plus(self, t: float | np.ndarray) -> float | np.ndarray:
+        r"""`$t \to t^+ = t\,Re_\tau^2/Re$`."""
+        return t * self.re_tau * self.u_tau
+
+    def per_time(self, values):
+        r"""A rate per unit code time `$\to$` per `$h/u_\tau$`."""
+        return values / self.u_tau
+
+    @property
+    def to_plus(self) -> tuple[Callable, Callable]:
+        r"""``functions=`` of a secondary time axis: `$t^+$`."""
+        return (lambda v: v * self.re_tau, lambda v: v / self.re_tau)
+
+    @property
+    def rate_to_plus(self) -> tuple[Callable, Callable]:
+        r"""``functions=`` of a secondary rate axis: per `$t^+$`."""
+        return self.to_plus[::-1]
 
     def energy(self, values):
-        r"""`$E \to E/u_\tau^2$`."""
-        return values / self.u_tau**2 if self.wall else values
+        r"""`$E \to E/u_\tau^2$`, the same number in both systems."""
+        return values / self.u_tau**2
 
     def rate(self, values):
-        r"""`$\mathcal{B} \to \mathcal{B}\,\nu/u_\tau^4$`."""
-        if not self.wall:
-            return values
-        return values / (self.u_tau**4 * self.re)
+        r"""`$\mathcal{B} \to \mathcal{B}\,\nu/u_\tau^4$`.
+
+        Or `$\mathcal{B}\,h/u_\tau^3$` under ``--outer-units``.
+        """
+        if self.wall:
+            return values / (self.u_tau**4 * self.re)
+        return values / self.u_tau**3
 
     def convert(self, values, kind: str):
         """Dispatch :meth:`energy` / :meth:`rate` on *kind*."""
@@ -1454,22 +1534,22 @@ class Units:
 
     @property
     def suffix(self) -> str:
-        """``+`` on a symbol that is plotted in inner units."""
+        """``+`` on a length symbol that is plotted in inner units."""
         return "^+" if self.wall else ""
 
-    def lambda_label(self, axis: str = "", *, outer: bool = False) -> str:
+    def lambda_label(self, axis: str = "", *, other: bool = False) -> str:
         r"""Abscissa label for the wavelength of one marginal.
 
         *axis* is that wavelength's own subscript -- ``z`` on the
         `$k_z$` marginal, ``x`` on the `$k_x$` one (:data:`MARGINALS`)
         -- and is empty only for a map that is not a single marginal.
-        *outer* forces outer units, which is what the secondary
-        abscissa wants while the primary one is in wall units.
+        *other* labels the other system, which is what the secondary
+        abscissa is in.
         """
         lam = rf"\lambda_{{{axis}}}" if axis else r"\lambda"
-        if outer or not self.wall:
-            return rf"${lam}/h$"
-        return rf"${lam}^+$"
+        if self.wall != other:
+            return rf"${lam}^+$"
+        return rf"${lam}/h$"
 
     @property
     def y_label(self) -> str:
@@ -1477,17 +1557,57 @@ class Units:
         return r"$y^+$" if self.wall else r"$y/h$"
 
     @property
-    def t_label(self) -> str:
-        """Time axis label (primary axis) of a spacetime map."""
-        return r"$t^+$" if self.wall else r"$t\,U_\mathrm{cl}/h$"
+    def other_y_label(self) -> str:
+        """Wall-distance axis label (secondary axis)."""
+        return r"$y/h$" if self.wall else r"$y^+$"
+
+    #: Time axis labels: the presented (outer) time and its inner twin.
+    t_label: ClassVar[str] = r"$t\,u_\tau/h$"
+    t_plus_label: ClassVar[str] = r"$t^+$"
+    #: A rate's units, presented and inner, for an axis label.
+    rate_unit: ClassVar[str] = r"($u_\tau/h$)"
+    rate_plus_unit: ClassVar[str] = r"($u_\tau^2/\nu$)"
 
     def norm_suffix(self, kind: str) -> str:
         """Normalization appended to a panel title."""
-        if not self.wall:
-            return ""
         if kind == "energy":
             return r"/u_\tau^2"
-        return r"\,\nu/u_\tau^4"
+        return r"\,\nu/u_\tau^4" if self.wall else r"\,h/u_\tau^3"
+
+    def time_header(self, first: float, last: float | None = None) -> str:
+        r"""One instant or window of code time, as a header states it.
+
+        `$t\,u_\tau/h$` and `$t^+$` in one math group, with `\;`
+        spacers: LaTeX collapses literal spaces between two groups,
+        and mathtext knows no `\quad`.
+        """
+
+        def span(convert) -> str:
+            text = f"{convert(first):.4g}"
+            if last is not None:
+                text += rf"\ldots{convert(last):.4g}"
+            return text
+
+        return (
+            rf"$t\,u_\tau/h = {span(self.time)},"
+            rf"\;\;\; t^+ = {span(self.time_plus)}$"
+        )
+
+
+def _twin(ax, side: str, functions, label: str):
+    """A labelled secondary axis on *side*, converting by *functions*.
+
+    The other unit system of the axis it sits on (:class:`Units`):
+    ``"top"`` / ``"bottom"`` twin the abscissa, ``"right"`` /
+    ``"left"`` the ordinate.
+    """
+    if side in ("top", "bottom"):
+        twin = ax.secondary_xaxis(side, functions=functions)
+        twin.set_xlabel(label)
+    else:
+        twin = ax.secondary_yaxis(side, functions=functions)
+        twin.set_ylabel(label)
+    return twin
 
 
 # ── Stream reading ───────────────────────────────────────────────────
@@ -2259,10 +2379,11 @@ def _check_phase(
         "not a multiple of the sample cadence was recorded on a "
         "displaced grid; dnsjax-twin anchors the cadence on the "
         "member's own perturbation step and no longer does that.  To "
-        "use the members as recorded, pass --align-atol "
-        f"{min(1.05 * worst, 0.5 * cadence):.6g} (up to half the "
-        f"{cadence:.6g} cadence), which pairs each frame with every "
-        "member's nearest sample instead of its own."
+        "use the members as recorded, pass --input-code-units "
+        f"--align-atol {min(1.05 * worst, 0.5 * cadence):.6g} (up to "
+        f"half the {cadence:.6g} cadence; every time here is code "
+        "time, h/U_cl), which pairs each frame with every member's "
+        "nearest sample instead of its own."
     )
 
 
@@ -2817,7 +2938,7 @@ def field_title(
     r"""The LaTeX panel title for one stored (or virtual) field.
 
     The symbol behind its premultiplier and ahead of the unit
-    conversion it is drawn in (module docstring, "Inner units").  A
+    conversion it is drawn in (module docstring, "Units").  A
     shape panel names the reference panel it is over instead; the
     reference panel, over its own peak *peak*, reports that peak on a
     second line, which :func:`panel_geometry` budgets (module
@@ -2928,7 +3049,7 @@ def make_map(
     ``--signs-from-data`` and :func:`scan_panels` feed back in.
 
     Every panel but a decorrelation is in the plotted units (module
-    docstring, "Inner units").  A ``decorr*`` panel is divided by its
+    docstring, "Units").  A ``decorr*`` panel is divided by its
     own resolved divisor (:func:`map_divisor`) **after** the component
     reduction, so the summed panel is one ratio of sums, and before the
     `$m = 0$` column is dropped, which is not drawn but may not be
@@ -3507,14 +3628,16 @@ def draw_map(
     ax.set_xlabel(units.lambda_label(map_.lam_axis))
     ax.set_ylabel(units.y_label)
 
-    if secondary and units.wall:
-        # The outer-unit twins of the two inner-unit axes; both are a
-        # plain division by Re_tau, as in the paper's frames.
-        outer = (lambda v: v / units.re_tau, lambda v: v * units.re_tau)
-        ax.secondary_xaxis("top", functions=outer).set_xlabel(
-            units.lambda_label(map_.lam_axis, outer=True)
+    if secondary:
+        # The other unit system's twins of both axes, a plain factor of
+        # Re_tau, as in the paper's frames.
+        _twin(
+            ax,
+            "top",
+            units.other_length,
+            units.lambda_label(map_.lam_axis, other=True),
         )
-        ax.secondary_yaxis("right", functions=outer).set_ylabel(r"$y/h$")
+        _twin(ax, "right", units.other_length, units.other_y_label)
     if title:
         ax.set_title(map_.title, pad=_TITLE_PAD)
     if cax is not None and filled is not None:
@@ -3717,14 +3840,8 @@ def figure_columns(series: YSeries) -> int | None:
 
 
 def _suptitle(series: YSeries, frame: int, units: Units) -> str:
-    r"""``t`` in simulation units and in inner units."""
-    t = float(series.t_rel[frame])
-    # One math group with `\;` spacers: LaTeX collapses literal spaces
-    # between two groups, mathtext knows no `\quad`.
-    return (
-        rf"$t = {t:.6g}\,h/U_\mathrm{{cl}},"
-        rf"\;\;\; t^+ = {units.time(t):.6g}$"
-    )
+    r"""The frame's time, in outer and in inner units."""
+    return units.time_header(float(series.t_rel[frame]))
 
 
 def panel_figure(
@@ -4079,11 +4196,12 @@ def track_figure(
     A line per tracked panel, in panel order, coloured and dashed by
     :data:`_TRACK_SERIES` / :data:`_TRACK_DASHES` and named by the
     panel's symbol (:func:`panel_symbol`).  Both ordinates are on the
-    maps' scales and in their units, with the outer-unit twins the maps
-    carry, and time is the spacetime maps' axis.
+    maps' scales and in their units, with the other system's twins the
+    maps carry, and time is the spacetime maps' axis, `$t\,u_\tau/h$`
+    with `$t^+$` on top.
     """
     units = options.units
-    t = units.plotted_time(series.t_rel)
+    t = units.time(series.t_rel)
     axis = MARGINALS[keys[0][0].rpartition("_")[2]][0]
     fig, (ax_y, ax_lam) = plt.subplots(
         2,
@@ -4109,18 +4227,16 @@ def track_figure(
     ax_lam.set_xlim(float(t[0]), float(t[-1]))
     for ax in (ax_y, ax_lam):
         ax.grid(True, color="0.88", linewidth=0.5)
-    if units.wall:
-        # The maps' outer-unit twins, and the spacetime maps' for time.
-        lengths = (lambda v: v / units.re_tau, lambda v: v * units.re_tau)
-        factor = units.re_tau**2 / units.re
-        times = (lambda v: v / factor, lambda v: v * factor)
-        ax_y.secondary_yaxis("right", functions=lengths).set_ylabel(r"$y/h$")
-        ax_lam.secondary_yaxis("right", functions=lengths).set_ylabel(
-            units.lambda_label(axis, outer=True)
-        )
-        ax_y.secondary_xaxis("top", functions=times).set_xlabel(
-            r"$t\,U_\mathrm{cl}/h$"
-        )
+    # The maps' twins in the other system, and the spacetime maps' for
+    # time.
+    _twin(ax_y, "right", units.other_length, units.other_y_label)
+    _twin(
+        ax_lam,
+        "right",
+        units.other_length,
+        units.lambda_label(axis, other=True),
+    )
+    _twin(ax_y, "top", units.to_plus, units.t_plus_label)
     handles, labels = ax_y.get_legend_handles_labels()
     fig.legend(
         handles,
@@ -4164,7 +4280,7 @@ def write_track_npz(
             ]
         ),
         "t": series.t_rel,
-        "t_plotted": units.plotted_time(series.t_rel),
+        "t_plotted": units.time(series.t_rel),
         "index": series.index,
         "threshold": 1.0 - 1.0 / max(n_levels, 2),
         "measure": (
@@ -4173,12 +4289,7 @@ def write_track_npz(
             + "; centroid of ln(lambda) and "
             + ("ln(y)" if options.y_log else "y")
         ),
-        "length_factor": units.length(1.0),
-        "time_factor": units.plotted_time(1.0),
-        "wall_units": units.wall,
-        "re": units.re,
-        "re_tau": units.re_tau,
-        "half": options.half,
+        **_units_payload(options),
         # What the tracked maps took, which a shape map fixes itself.
         "premultiply": map_premultiplier(keys[0][0], options),
         "volume_fac_applied": options.volume_fac,
@@ -4215,7 +4326,7 @@ def moments_figure(
     entries are in the plotted units instead of decades.
     """
     units = options.units
-    t = units.plotted_time(series.t_rel)
+    t = units.time(series.t_rel)
     log_y = options.y_log
     axis = MARGINALS[keys[0][0].rpartition("_")[2]][0]
     rows = (
@@ -4264,11 +4375,7 @@ def moments_figure(
             ax.axhline(1.0, color="0.5", linewidth=0.6, linestyle=":")
     axes[-1].set_xlabel(units.t_label)
     axes[-1].set_xlim(float(t[0]), float(t[-1]))
-    if units.wall:
-        factor = units.re_tau**2 / units.re
-        axes[0].secondary_xaxis(
-            "top", functions=(lambda v: v / factor, lambda v: v * factor)
-        ).set_xlabel(r"$t\,U_\mathrm{cl}/h$")
+    _twin(axes[0], "top", units.to_plus, units.t_plus_label)
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(
         handles,
@@ -4328,7 +4435,7 @@ def write_moments_npz(
             ]
         ),
         "t": series.t_rel,
-        "t_plotted": units.plotted_time(series.t_rel),
+        "t_plotted": units.time(series.t_rel),
         "index": series.index,
         "measure": (
             "plotted value x trapezoidal widths in ln(lambda) and "
@@ -4424,7 +4531,7 @@ class SpacetimeMap:
     """
 
     y: np.ndarray  # (n_y,) wall distance, plotted units
-    t: np.ndarray  # (n_t,) time since the perturbation, plotted units
+    t: np.ndarray  # (n_t,) time since the perturbation, t u_tau/h
     values: np.ndarray  # (n_t, n_y)
     title: str  # LaTeX panel title
     name: str  # the base field it came from
@@ -4665,7 +4772,7 @@ def make_spacetime(
     name = f"{base}_{marginal}" if marginal else base
     return SpacetimeMap(
         y=y,
-        t=options.units.plotted_time(series.t_rel),
+        t=options.units.time(series.t_rel),
         values=folded,
         title=spacetime_title(
             series,
@@ -4749,7 +4856,7 @@ class ScaleMap:
     """
 
     lam: np.ndarray  # (n_lam,) wavelength, ascending, plotted units
-    t: np.ndarray  # (n_t,) time since the perturbation, plotted units
+    t: np.ndarray  # (n_t,) time since the perturbation, t u_tau/h
     values: np.ndarray  # (n_t, n_lam)
     title: str
     name: str
@@ -4853,7 +4960,7 @@ def make_scaletime(
     name = f"{base}_{marginal}"
     return ScaleMap(
         lam=options.units.length(series.wavelengths(marginal)),
-        t=options.units.plotted_time(series.t_rel),
+        t=options.units.time(series.t_rel),
         values=values,
         title=scaletime_title(series, base, marginal, component, options),
         name=name,
@@ -5010,15 +5117,19 @@ def draw_spacetime(
 def _time_map_abscissa(
     map_, units: Units
 ) -> tuple[np.ndarray, bool, str, str]:
-    """``(coordinate, log, label, outer label)`` of a map against time."""
+    """``(coordinate, log, label, other label)`` of a map against time.
+
+    The other label is the secondary abscissa's, in the other unit
+    system (:class:`Units`).
+    """
     if isinstance(map_, ScaleMap):
         return (
             map_.lam,
             True,
             units.lambda_label(map_.lam_axis),
-            units.lambda_label(map_.lam_axis, outer=True),
+            units.lambda_label(map_.lam_axis, other=True),
         )
-    return map_.y, map_.y_log, units.y_label, r"$y/h$"
+    return map_.y, map_.y_log, units.y_label, units.other_y_label
 
 
 def draw_time_map(
@@ -5056,7 +5167,7 @@ def draw_time_map(
     solid, the others dashed, haloed in white like a track
     (:func:`draw_track`).
     """
-    x, x_log, x_label, x_outer = _time_map_abscissa(map_, units)
+    x, x_log, x_label, x_other = _time_map_abscissa(map_, units)
     ax.set_xscale("log" if x_log else "linear")
     _, values = map_.drawn()
     scaled = values if lim is None else map_.drawn(lim)[1]
@@ -5133,16 +5244,12 @@ def draw_time_map(
     ax.set_ylim(float(map_.t.min()), float(map_.t.max()))
     ax.set_xlabel(x_label)
     ax.set_ylabel(units.t_label)
-    if secondary and units.wall:
-        # The outer-unit twins of both axes, as draw_map's are: a
-        # division by Re_tau for the length, by Re_tau^2/Re for time.
-        lengths = (lambda v: v / units.re_tau, lambda v: v * units.re_tau)
-        factor = units.re_tau**2 / units.re
-        times = (lambda v: v / factor, lambda v: v * factor)
-        ax.secondary_xaxis("top", functions=lengths).set_xlabel(x_outer)
-        ax.secondary_yaxis("right", functions=times).set_ylabel(
-            r"$t\,U_\mathrm{cl}/h$"
-        )
+    if secondary:
+        # The other system's twins of both axes, as draw_map's are: a
+        # factor of Re_tau each, the length's either way and the time
+        # always t+ beside the outer t.
+        _twin(ax, "top", units.other_length, x_other)
+        _twin(ax, "right", units.to_plus, units.t_plus_label)
     if title:
         ax.set_title(map_.title, pad=_TITLE_PAD)
     if cax is not None and filled is not None:
@@ -5220,11 +5327,8 @@ def draw_quantiles(
 def _spacetime_suptitle(series: YSeries, units: Units) -> str:
     r"""The window the map covers, in both time units."""
     first, last = float(series.t_rel[0]), float(series.t_rel[-1])
-    return (
-        rf"${series.n_members}$ member(s), "
-        rf"$t = {first:.6g}\ldots{last:.6g}\,h/U_\mathrm{{cl}},"
-        rf"\;\;\; t^+ = {units.time(first):.6g}"
-        rf"\ldots{units.time(last):.6g}$"
+    return rf"${series.n_members}$ member(s), " + units.time_header(
+        first, last
     )
 
 
@@ -5328,7 +5432,6 @@ def write_spacetime_npz(
     unrestricted by *ylim* (stored beside them): enough also to check
     a number against the stream without the figures.
     """
-    units = options.units
     meta = {
         key: series.meta.get(key)
         for key in (
@@ -5371,18 +5474,10 @@ def write_spacetime_npz(
                 for d in divisors
             ]
         ),
-        "half": options.half,
         "premultiplied": False,
         "volume_fac_applied": options.volume_fac,
         "volume_fac": series.volume_fac,
-        "wall_units": units.wall,
-        "re": units.re,
-        "re_tau": units.re_tau,
-        "u_tau": units.u_tau,
-        "energy_factor": units.energy(1.0),
-        "rate_factor": units.rate(1.0),
-        "length_factor": units.length(1.0),
-        "time_factor": units.plotted_time(1.0),
+        **_units_payload(options),
         "mode_sum": (
             "every mode; a reference (r_*) loses its (0, 0) mode"
             if not spec.marginal
@@ -5562,7 +5657,13 @@ def _stream_meta(series: YSeries) -> dict:
 
 
 def _units_payload(options: MapOptions) -> dict:
-    """The unit factors every written ``.npz`` carries."""
+    r"""The unit factors every written ``.npz`` carries.
+
+    Each ``*_factor`` takes a code-unit value (`$h$`, `$U_\mathrm{cl}$`)
+    to the one written beside it: ``t`` stays the stream's own clock,
+    in code time, and ``t_plotted`` is ``t * time_factor``, in
+    `$h/u_\tau$`; a rate per unit time is in `$u_\tau/h$`.
+    """
     units = options.units
     return {
         "half": options.half,
@@ -5573,7 +5674,10 @@ def _units_payload(options: MapOptions) -> dict:
         "energy_factor": units.energy(1.0),
         "rate_factor": units.rate(1.0),
         "length_factor": units.length(1.0),
-        "time_factor": units.plotted_time(1.0),
+        "time_factor": units.time(1.0),
+        "time_plus_factor": units.time_plus(1.0),
+        "per_time_factor": units.per_time(1.0),
+        "time_units": "h/u_tau",
     }
 
 
@@ -5887,13 +5991,14 @@ def moment_budget(
     :class:`~dnsjax_lab.analysis.twin.moments.MomentRates` field, their
     sum over the groups, and the same rate by second-order finite
     differences of the moments themselves, the closure check (module
-    docstring, "Moment budget").  Rates are per unit of plotted time.
+    docstring, "Moment budget").  Rates are per `$h/u_\tau$`, the
+    presented time (:meth:`Units.per_time`).
     """
     _check_shared_frames(spectra, budget)
     e_sums, t_sums, groups = moment_budget_sums(
         spectra, budget, marginal, options
     )
-    per_time = 1.0 / options.units.plotted_time(1.0)
+    per_time = options.units.per_time(1.0)
     rates = [moment_rates(e_sums, t_sums[:, g]) for g in range(len(groups))]
     m = log_moments(e_sums)
     t = spectra.t_rel
@@ -5935,7 +6040,7 @@ def moment_budget_figure(
     for all of the motion (module docstring, "Moment budget").
     """
     units = options.units
-    t = units.plotted_time(series.t_rel)
+    t = units.time(series.t_rel)
     rows = _MOMENT_ROWS_JOINT if marginal else _MOMENT_ROWS_Y
     fig, axes = plt.subplots(
         len(rows),
@@ -5967,20 +6072,13 @@ def moment_budget_figure(
             label="moments, differenced",
         )
         ax.axhline(0.0, color="0.75", linewidth=0.5)
-        # Per unit of the plotted time: t+ in wall units.
-        ax.set_ylabel(
-            label.replace(r"\mathrm{d}t$", r"\mathrm{d}t^+$")
-            if units.wall
-            else label
-        )
+        # Per h/u_tau, the plotted time, with the rate per t+ opposite.
+        ax.set_ylabel(label + "\n" + units.rate_unit)
+        _twin(ax, "right", units.rate_to_plus, units.rate_plus_unit)
         ax.grid(True, color="0.92", linewidth=0.5)
     axes[-1].set_xlabel(units.t_label)
     axes[-1].set_xlim(float(t[0]), float(t[-1]))
-    if units.wall:
-        factor = units.re_tau**2 / units.re
-        axes[0].secondary_xaxis(
-            "top", functions=(lambda v: v / factor, lambda v: v * factor)
-        ).set_xlabel(r"$t\,U_\mathrm{cl}/h$")
+    _twin(axes[0], "top", units.to_plus, units.t_plus_label)
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(
         handles,
@@ -6030,7 +6128,7 @@ def write_moment_budget_npz(
         "var_y": m.var_y,
         "cov": m.cov,
         "t": series.t_rel,
-        "t_plotted": options.units.plotted_time(series.t_rel),
+        "t_plotted": options.units.time(series.t_rel),
         "index": series.index,
         "marginal": marginal,
         "cells": (
@@ -6040,7 +6138,7 @@ def write_moment_budget_npz(
         ),
         "weights": "half_weights (exact energies)",
         "coordinates": "ln of the plotted wavelength and wall distance",
-        "rate_units": "per unit of plotted time",
+        "rate_units": "per h/u_tau (the plotted time)",
         "n_members": series.n_members,
         "members": np.asarray([str(mm.path) for mm in series.members]),
         "meta_json": json.dumps(_stream_meta(series)),
@@ -6139,13 +6237,12 @@ def front_maps(
     `$\mathcal{R} = e/(2\langle r\rangle_t)$` (the ``decorr`` maps'
     ratio, :func:`map_divisor`, symmetrized before the fold), the summed
     panel one ratio of sums; then folded, `$m = 0$` dropped, ascending
-    in wavelength, and timed (:func:`front_times`) in the plotted
-    units.  A :class:`Map` per panel, so the maps' geometry serves
-    them.
+    in wavelength, and timed (:func:`front_times`) in `$t\,u_\tau/h$`.
+    A :class:`Map` per panel, so the maps' geometry serves them.
     """
     e = series.field(f"e_{marginal}")
     divisor = map_divisor(series, DECORR, marginal, options.half)
-    t = options.units.plotted_time(series.t_rel)
+    t = options.units.time(series.t_rel)
     maps = []
     for component in (*range(len(COMPONENTS)), None):
         if component is None:
@@ -6160,7 +6257,7 @@ def front_maps(
                 lam=options.units.length(series.wavelengths(marginal)),
                 y=options.units.length(wall_distance),
                 values=front_times(t, folded, level),
-                title=rf"$t{options.units.suffix}_{{1/2}}$ of ${symbol}$",
+                title=rf"$t_{{1/2}}$ of ${symbol}$",
                 name=f"e_{marginal}",
                 non_negative=True,
                 y_log=options.y_log,
@@ -6217,12 +6314,13 @@ def draw_front(
         ax.set_aspect(1.0, adjustable="box", anchor="C")
     ax.set_xlabel(units.lambda_label(map_.lam_axis))
     ax.set_ylabel(units.y_label)
-    if units.wall:
-        outer = (lambda v: v / units.re_tau, lambda v: v * units.re_tau)
-        ax.secondary_xaxis("top", functions=outer).set_xlabel(
-            units.lambda_label(map_.lam_axis, outer=True)
-        )
-        ax.secondary_yaxis("right", functions=outer).set_ylabel(r"$y/h$")
+    _twin(
+        ax,
+        "top",
+        units.other_length,
+        units.lambda_label(map_.lam_axis, other=True),
+    )
+    _twin(ax, "right", units.other_length, units.other_y_label)
     ax.set_title(map_.title, pad=_TITLE_PAD)
     if cax is not None and filled is not None:
         bar = ax.figure.colorbar(filled, cax=cax, ticks=_bar_ticks(levels))
@@ -6299,7 +6397,7 @@ def render_front(
     np.savez_compressed(
         npz,
         t_half_plotted=np.stack([m.values for m in maps]),
-        t_half=np.stack([m.values for m in maps]) / units.plotted_time(1.0),
+        t_half=np.stack([m.values for m in maps]) / units.time(1.0),
         lam=series.wavelengths(spec.marginal),
         lam_plotted=maps[0].lam,
         y=_half_grid(series.y, options.half),
@@ -6350,7 +6448,9 @@ class GrowthCurves:
     distance, plotted units) where one exists, ``members`` holds each
     member's own energy for a single curve, and ``rates`` the budget
     groups per unit energy, ``{group: (n_curves, n_t)}``, where the
-    budget stream was read.
+    budget stream was read.  ``t``, :attr:`gamma` and ``rates`` are in
+    code time (`$h/U_\mathrm{cl}$`) and per unit of it; the figures
+    draw them through :meth:`Units.time` and :meth:`Units.per_time`.
     """
 
     t: np.ndarray
@@ -6742,7 +6842,9 @@ class GrowthPhases:
     r"""The two phases a growth curve is marked by, by stated criteria.
 
     ``exponential`` and ``decorrelation`` are ``(t_start, t_stop,
-    rate)`` in outer time, or ``None``: the longest window over which
+    rate)`` in code time (`$h/U_\mathrm{cl}$`, the rate per unit of
+    it), or ``None``, drawn through :meth:`Units.time` and
+    :meth:`Units.per_time`: the longest window over which
     `$\gamma$` -- respectively `$\mathrm{d}f/\mathrm{d}t$`, below
     :data:`GROWTH_R_MAX` and after the exponential window -- stays
     within :data:`GROWTH_TOLERANCE` of its own mean
@@ -6794,8 +6896,8 @@ def _shade_phases(ax, phases: GrowthPhases, units: Units) -> None:
     ):
         if window is not None:
             ax.axvspan(
-                units.plotted_time(window[0]),
-                units.plotted_time(window[1]),
+                units.time(window[0]),
+                units.time(window[1]),
                 color=tint,
                 zorder=0,
                 linewidth=0,
@@ -6803,14 +6905,25 @@ def _shade_phases(ax, phases: GrowthPhases, units: Units) -> None:
 
 
 def _time_axis(ax, t_plotted: np.ndarray, units: Units, *, top: bool) -> None:
-    """Grid, limits and (on the top row) the outer-time twin of a time axis."""
+    r"""Grid, limits and (on the top row) the `$t^+$` twin of a time axis.
+
+    *t_plotted* is in `$t\,u_\tau/h$`; its first and last entries are
+    the limits.
+    """
     ax.set_xlim(float(t_plotted[0]), float(t_plotted[-1]))
     ax.grid(True, color="0.92", linewidth=0.5)
-    if top and units.wall:
-        factor = units.re_tau**2 / units.re
-        ax.secondary_xaxis(
-            "top", functions=(lambda v: v / factor, lambda v: v * factor)
-        ).set_xlabel(r"$t\,U_\mathrm{cl}/h$")
+    if top:
+        _twin(ax, "top", units.to_plus, units.t_plus_label)
+
+
+def _rate_axis(ax, units: Units, label: str = "") -> None:
+    r"""Label a rate axis in `$u_\tau/h$`, with its per-`$t^+$` twin.
+
+    *label* precedes the unit.  The twin sits on the right, which every
+    rate axis of the growth figures leaves free.
+    """
+    ax.set_ylabel(f"{label} {units.rate_unit}" if label else units.rate_unit)
+    _twin(ax, "right", units.rate_to_plus, units.rate_plus_unit)
 
 
 def _slope_key(ax, r_end: float, g_end: float) -> None:
@@ -6893,14 +7006,14 @@ def growth_summary_figure(
     """
     units = options.units
     t = curves.t
-    tp = units.plotted_time(t)
+    tp = units.time(t)
     energy = curves.energy[0]
     sat = float(curves.saturation[0])
     r = energy / sat
     gamma = log_rate(t, energy)
     f = np.where(r <= GROWTH_R_MAX, bound_free(r), np.nan)
     t_end = min(float(t[-1]), 1.15 * _saturation_time(t, r, GROWTH_R_MAX))
-    tp_end = units.plotted_time(t_end)
+    tp_end = units.time(t_end)
     fig, axes = plt.subplots(
         2,
         2,
@@ -6913,14 +7026,9 @@ def growth_summary_figure(
 
     def time_axes(ax, top: bool) -> None:
         _shade_phases(ax, phases, units)
-        ax.set_xlim(0.0 if tp[0] <= 0 else float(tp[0]), tp_end)
-        ax.grid(True, color="0.92", linewidth=0.5)
+        start = 0.0 if tp[0] <= 0 else float(tp[0])
+        _time_axis(ax, np.array([start, tp_end]), units, top=top)
         ax.set_xlabel(units.t_label)
-        if top and units.wall:
-            factor = units.re_tau**2 / units.re
-            ax.secondary_xaxis(
-                "top", functions=(lambda v: v / factor, lambda v: v * factor)
-            ).set_xlabel(r"$t\,U_\mathrm{cl}/h$")
 
     # (a) ln R against t.
     time_axes(ax_e, top=True)
@@ -6940,14 +7048,14 @@ def growth_summary_figure(
         span = exp_w[1] - exp_w[0]
         tt = np.linspace(max(t[0], exp_w[0] - span), exp_w[1] + 2.5 * span, 50)
         ax_e.plot(
-            units.plotted_time(tt),
+            units.time(tt),
             np.exp(intercept + slope * tt),
             color=blue,
             linestyle=(0, (5, 2)),
             linewidth=1.3,
             label=(
-                rf"exponential, $\gamma_0 = {exp_w[2]:.3g}\,"
-                rf"U_\mathrm{{cl}}/h$"
+                rf"exponential, $\gamma_0 = {units.per_time(exp_w[2]):.3g}"
+                rf"\,u_\tau/h$"
             ),
         )
     ax_e.set_yscale("log")
@@ -6961,7 +7069,7 @@ def growth_summary_figure(
         if window is not None:
             ax_e.annotate(
                 name,
-                (units.plotted_time(0.5 * (window[0] + window[1])), 1.0),
+                (units.time(0.5 * (window[0] + window[1])), 1.0),
                 xycoords=("data", "axes fraction"),
                 textcoords="offset points",
                 xytext=(0, -3),
@@ -6971,21 +7079,24 @@ def growth_summary_figure(
                 color=colour,
             )
 
-    # (b) ln gamma against ln R.
+    # (b) ln gamma against ln R, the rate per h/u_tau.
+    gamma = units.per_time(gamma)
     ok = (gamma > 0.0) & (r > 0.0) & np.isfinite(gamma)
     peak = int(np.nanargmax(np.where(ok, gamma, -np.inf)))
     path = ok & (np.arange(t.size) >= peak)
     if path.any():
         r_lo = float(r[path].min())
         slow = gamma[path & (r < 0.99)]
-        g_bottom = 0.6 * max(float(slow.min()) if slow.size else 0.0, 3e-3)
+        g_bottom = 0.6 * max(
+            float(slow.min()) if slow.size else 0.0, GROWTH_RATE_RANGE[0]
+        )
         g_top = 1.8 * float(gamma[path].max())
     else:
         # A window with no positive rate -- one inside saturation, its
         # energy drifting down -- has no curve to draw here, and takes
         # the bands figure's range.
         r_lo = float(r[r > 0.0].min())
-        g_bottom, g_top = 3e-3, 1.0
+        g_bottom, g_top = GROWTH_RATE_RANGE
         ax_g.text(
             0.5,
             0.5,
@@ -7023,7 +7134,7 @@ def growth_summary_figure(
     if exp_w is not None:
         ax_g.plot(
             rr,
-            logistic_rate(rr, exp_w[2]),
+            logistic_rate(rr, units.per_time(exp_w[2])),
             color="black",
             linewidth=0.9,
             linestyle=(0, (5, 2)),
@@ -7033,7 +7144,7 @@ def growth_summary_figure(
         big = rr >= 0.03
         ax_g.plot(
             rr[big],
-            decorrelation_rate(rr[big], dec_w[2]),
+            decorrelation_rate(rr[big], units.per_time(dec_w[2])),
             color=vermillion,
             linewidth=1.0,
             linestyle=(0, (1.5, 1.2)),
@@ -7045,9 +7156,9 @@ def growth_summary_figure(
         r_end=10.0 ** (math.log10(r_lo) + 1.8),
         g_end=10.0 ** (y_lo + 0.1 * (y_hi - y_lo)),
     )
-    for stamp in (10.0, 20.0, 30.0, 40.0, 50.0, 60.0):
-        i = int(np.argmin(np.abs(t - stamp)))
-        if path[i] and abs(t[i] - stamp) < 1.0 and r[i] < 1.0:
+    for stamp in GROWTH_STAMPS:
+        i = int(np.argmin(np.abs(tp - stamp)))
+        if path[i] and abs(tp[i] - stamp) < GROWTH_STAMP_ATOL and r[i] < 1.0:
             ax_g.plot(
                 r[i], gamma[i], "o", color="black", markersize=2.5, zorder=4
             )
@@ -7061,10 +7172,7 @@ def growth_summary_figure(
                 fontsize="xx-small",
             )
     ax_g.set_xlabel(r"$R$")
-    ax_g.set_ylabel(
-        r"$\gamma = \mathrm{d}\ln E_\Delta/\mathrm{d}t$"
-        r" ($U_\mathrm{cl}/h$)"
-    )
+    _rate_axis(ax_g, units, r"$\gamma = \mathrm{d}\ln E_\Delta/\mathrm{d}t$")
     ax_g.grid(True, color="0.92", linewidth=0.5, which="both")
     ax_g.legend(
         fontsize="x-small",
@@ -7083,12 +7191,15 @@ def growth_summary_figure(
         span = dec_w[1] - dec_w[0]
         tt = np.linspace(dec_w[0] - 0.7 * span, dec_w[1] + 0.5 * span, 50)
         ax_f.plot(
-            units.plotted_time(tt),
+            units.time(tt),
             intercept + slope * tt,
             color=vermillion,
             linestyle=(0, (5, 2)),
             linewidth=1.3,
-            label=rf"constant rate, $\nu = {dec_w[2]:.3g}\,U_\mathrm{{cl}}/h$",
+            label=(
+                rf"constant rate, $\nu = {units.per_time(dec_w[2]):.3g}"
+                rf"\,u_\tau/h$"
+            ),
         )
     if exp_w is not None:
         half = np.flatnonzero(r >= 0.5)
@@ -7130,7 +7241,7 @@ def growth_summary_figure(
         width = 1.0 / rate
         tt = np.linspace(t[k] - 2.0 * width, t[k] + 2.0 * width, 20)
         ax_r.plot(
-            units.plotted_time(tt),
+            units.time(tt),
             r[k] + peak_slope * (tt - t[k]),
             color=blue,
             linestyle=(0, (5, 2)),
@@ -7138,7 +7249,7 @@ def growth_summary_figure(
             label="tangent at the inflection",
         )
         ax_r.plot(
-            units.plotted_time(t[k]),
+            units.time(t[k]),
             r[k],
             "o",
             color=blue,
@@ -7201,7 +7312,7 @@ def growth_bands_figure(
     """
     units = options.units
     t = curves.t
-    tp = units.plotted_time(t)
+    tp = units.time(t)
     colours = _band_colours(curves)
     n_rows = 2 if curves.rates else 1
     fig, axes = plt.subplots(
@@ -7212,7 +7323,7 @@ def growth_bands_figure(
         squeeze=False,
     )
     ax_g, ax_f = axes[0]
-    r_all, gamma_all = curves.r, curves.gamma
+    r_all, gamma_all = curves.r, units.per_time(curves.gamma)
     for index, label in enumerate(curves.labels):
         r, gamma = r_all[index], gamma_all[index]
         ok = (gamma > 0.0) & (r > 0.0)
@@ -7252,12 +7363,12 @@ def growth_bands_figure(
     ax_g.set_yscale("log")
     r_lo = float(np.nanmin(np.where(r_all > 0, r_all, np.nan)))
     ax_g.set_xlim(max(r_lo, 1e-8) * 0.5, 1.5)
-    ax_g.set_ylim(3e-3, 1.0)
+    ax_g.set_ylim(*GROWTH_RATE_RANGE)
     _slope_key(
-        ax_g, r_end=10.0 ** (math.log10(max(r_lo, 1e-8)) + 3.0), g_end=5e-3
+        ax_g, r_end=10.0 ** (math.log10(max(r_lo, 1e-8)) + 3.0), g_end=0.1
     )
     ax_g.set_xlabel(r"$R$")
-    ax_g.set_ylabel(r"$\gamma$ ($U_\mathrm{cl}/h$)")
+    _rate_axis(ax_g, units, r"$\gamma$")
     ax_g.grid(True, color="0.92", linewidth=0.5, which="both")
     ax_f.set_ylim(0.0, float(bound_free(np.array(GROWTH_R_MAX))) * 1.05)
     ax_f.set_ylabel(r"$-\ln(1 - R)$")
@@ -7266,7 +7377,9 @@ def growth_bands_figure(
     if curves.rates:
         for ax, (heading, groups) in zip(axes[1], rate_panels, strict=True):
             for index in range(len(curves.labels)):
-                total = sum(curves.rates[g][index] for g in groups)
+                total = units.per_time(
+                    sum(curves.rates[g][index] for g in groups)
+                )
                 dash = (
                     (0, (4, 2))
                     if not np.isfinite(curves.coords[index])
@@ -7280,7 +7393,7 @@ def growth_bands_figure(
                     linestyle=dash,
                 )
             ax.axhline(0.0, color="0.6", linewidth=0.6)
-            ax.set_ylabel(heading + r" ($U_\mathrm{cl}/h$)")
+            _rate_axis(ax, units, heading)
             ax.set_xlabel(units.t_label)
             _time_axis(ax, tp, units, top=False)
     fig.legend(
@@ -7313,7 +7426,7 @@ def growth_ssp_figure(
     """
     units = options.units
     t = curves.t
-    tp = units.plotted_time(t)
+    tp = units.time(t)
     colours = _TRACK_SERIES[:3]
     fig, axes = plt.subplots(
         2,
@@ -7349,7 +7462,8 @@ def growth_ssp_figure(
         bbox_to_anchor=(1.0, 0.42),
         frameon=False,
     )
-    r_all, gamma_all, f_all = curves.r, curves.gamma, curves.f
+    r_all, f_all = curves.r, curves.f
+    gamma_all = units.per_time(curves.gamma)
     for index in range(len(curves.labels)):
         r, gamma = r_all[index], gamma_all[index]
         ok = (gamma > 0.0) & (r > 0.0)
@@ -7378,12 +7492,12 @@ def growth_ssp_figure(
             if sel.sum() >= 2:
                 slope, intercept = np.polyfit(t[sel], f_all[index][sel], 1)
                 ax_f.plot(
-                    units.plotted_time(t[sel]),
+                    units.time(t[sel]),
                     intercept + slope * t[sel],
                     color=colours[index],
                     linewidth=3.0,
                     alpha=0.35,
-                    label=rf"$\nu = {nu:.3g}$",
+                    label=rf"$\nu = {units.per_time(nu):.3g}$",
                 )
     g0 = float(
         np.nanmedian(
@@ -7403,12 +7517,12 @@ def growth_ssp_figure(
     ax_g.set_yscale("log")
     r_lo = float(np.nanmin(np.where(r_all > 0, r_all, np.nan)))
     ax_g.set_xlim(max(r_lo, 1e-8) * 0.5, 1.5)
-    ax_g.set_ylim(3e-3, 1.0)
+    ax_g.set_ylim(*GROWTH_RATE_RANGE)
     _slope_key(
-        ax_g, r_end=10.0 ** (math.log10(max(r_lo, 1e-8)) + 3.0), g_end=5e-3
+        ax_g, r_end=10.0 ** (math.log10(max(r_lo, 1e-8)) + 3.0), g_end=0.1
     )
     ax_g.set_xlabel(r"$R$")
-    ax_g.set_ylabel(r"$\gamma$ ($U_\mathrm{cl}/h$)")
+    _rate_axis(ax_g, units, r"$\gamma$")
     ax_g.grid(True, color="0.92", linewidth=0.5, which="both")
     ax_g.legend(fontsize="x-small", loc="upper right", frameon=False)
     ax_f.set_ylim(0.0, float(bound_free(np.array(GROWTH_R_MAX))) * 1.05)
@@ -7418,7 +7532,7 @@ def growth_ssp_figure(
         fontsize="x-small",
         loc="upper left",
         frameon=False,
-        title=r"decorrelation rate ($U_\mathrm{cl}/h$)",
+        title=r"decorrelation rate ($u_\tau/h$)",
         title_fontsize="x-small",
     )
     _time_axis(ax_f, tp, units, top=False)
@@ -7441,16 +7555,14 @@ def growth_ssp_figure(
                 values = curves.rates[key][0]
             ax_b.plot(
                 tp,
-                values,
+                units.per_time(values),
                 color=_TERM_SERIES[slots[key]],
                 linestyle=_TERM_DASHES[slots[key]],
                 linewidth=1.2,
                 label=label,
             )
         ax_b.axhline(0.0, color="0.6", linewidth=0.6)
-        ax_b.set_ylabel(
-            r"$k_x = 0$ plane, per unit energy ($U_\mathrm{cl}/h$)"
-        )
+        _rate_axis(ax_b, units, r"$k_x = 0$ plane, per unit energy")
         ax_b.set_xlabel(units.t_label)
         ax_b.legend(fontsize="x-small", loc="upper right", frameon=False)
         _time_axis(ax_b, tp, units, top=False)
@@ -7473,18 +7585,28 @@ def write_growth_npz(
     options: MapOptions,
     phases: list[GrowthPhases],
 ) -> Path:
-    """Dump a growth figure's curves, their derived laws and the phases."""
+    r"""Dump a growth figure's curves, their derived laws and the phases.
+
+    ``t`` is the curves' own clock, in code time; every other time is
+    in `$h/u_\tau$` and every rate in `$u_\tau/h$`, as drawn.  The
+    energies stay in code units (they enter only as ratios).
+    """
+    units = options.units
 
     def window(w):
-        return np.full(3, np.nan) if w is None else np.asarray(w, dtype=float)
+        if w is None:
+            return np.full(3, np.nan)
+        return np.asarray(
+            [units.time(w[0]), units.time(w[1]), units.per_time(w[2])]
+        )
 
     payload = {
         "t": curves.t,
-        "t_plotted": options.units.plotted_time(curves.t),
+        "t_plotted": units.time(curves.t),
         "energy": curves.energy,
         "saturation": curves.saturation,
         "r": curves.r,
-        "gamma": curves.gamma,
+        "gamma": units.per_time(curves.gamma),
         "f": curves.f,
         "log_slope": log_slope(curves.r, curves.gamma),
         "labels": np.asarray(curves.labels),
@@ -7495,10 +7617,11 @@ def write_growth_npz(
         ),
         "exponential": np.stack([window(p.exponential) for p in phases]),
         "decorrelation": np.stack([window(p.decorrelation) for p in phases]),
-        "windows": "(t_start, t_stop, rate) in outer time; rate in U_cl/h",
+        "windows": "(t_start, t_stop, rate): times in h/u_tau, rate in "
+        "u_tau/h",
         "tolerance": GROWTH_TOLERANCE,
         "r_max": GROWTH_R_MAX,
-        "rate_units": "U_cl/h (outer time)",
+        "rate_units": "u_tau/h",
         "source": curves.source,
         "n_members": series.n_members,
         "members": np.asarray([str(m.path) for m in series.members]),
@@ -7509,7 +7632,7 @@ def write_growth_npz(
         payload["member_energy"] = curves.members
     if curves.rates:
         for group, values in curves.rates.items():
-            payload[f"rate_{group}"] = values
+            payload[f"rate_{group}"] = units.per_time(values)
     np.savez_compressed(path, **payload)
     return path
 
@@ -7879,7 +8002,12 @@ def render_series(
         plt.close(fig)
         written.append(path)
         if not quiet:
-            print(f"  {path.name}  t = {series.t_rel[frame]:g}", flush=True)
+            t = float(series.t_rel[frame])
+            print(
+                f"  {path.name}  t u_tau/h = {options.units.time(t):.4g}, "
+                f"t+ = {options.units.time_plus(t):.4g}",
+                flush=True,
+            )
     if tracked:
         written += render_tracks(
             series,
@@ -7893,6 +8021,20 @@ def render_series(
             quiet=quiet,
         )
     return written
+
+
+def clock_tolerance(
+    value: float | None, units: Units, *, code_units: bool = False
+) -> float:
+    r"""``--align-atol`` on the stream clock, in code time.
+
+    *value* is in `$t\,u_\tau/h$`, or in `$h/U_\mathrm{cl}$` under
+    *code_units* (``--input-code-units``); unset, it is
+    :data:`_T_ATOL`, exact alignment, whichever units the others take.
+    """
+    if value is None:
+        return _T_ATOL
+    return value if code_units else value / units.u_tau
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -7922,7 +8064,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--re-tau",
         type=float,
         required=True,
-        help="measured friction Reynolds number (never re-measured)",
+        help="the reference flow's time-averaged friction Reynolds "
+        "number, supplied (never measured); u_tau = Re_tau/Re sets the "
+        "outer units h/u_tau every time is drawn in",
     )
     p.add_argument(
         "--stride", type=int, default=10, help="keep every Nth record"
@@ -7934,11 +8078,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--align-atol",
         type=float,
-        default=_T_ATOL,
+        default=None,
         metavar="T",
-        help="how far apart (in t) two members' samples may be and "
-        "still be one frame; raise it to use members recorded on "
+        help="how far apart (in t u_tau/h, or h/U_cl under "
+        "--input-code-units) two members' samples may be and still be "
+        "one frame; raise it to use members recorded on "
         "phase-displaced grids (default: exact alignment)",
+    )
+    p.add_argument(
+        "--input-code-units",
+        action="store_true",
+        help="read the time-valued options (--align-atol) in the "
+        "code's h/U_cl instead of h/u_tau",
     )
     p.add_argument(
         "--series",
@@ -8164,7 +8315,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--outer-units",
         action="store_true",
-        help="plot in h / U_cl instead of wall units",
+        help="draw the maps' lengths and budget terms in h and u_tau "
+        "(lambda/h, y/h, B h/u_tau^3) with wall units on the secondary "
+        "axes; time is t u_tau/h either way",
     )
     p.add_argument(
         "--half",
@@ -8191,8 +8344,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.tree
         else [Path(m) for m in args.members]
     )
+    units = Units(args.re, args.re_tau, wall=not args.outer_units)
+    align_atol = clock_tolerance(
+        args.align_atol, units, code_units=args.input_code_units
+    )
     options = MapOptions(
-        units=Units(args.re, args.re_tau, wall=not args.outer_units),
+        units=units,
         premultiply=args.premultiply,
         half=args.half,
         volume_fac=not args.no_volume_fac,
@@ -8227,7 +8384,7 @@ def main(argv: list[str] | None = None) -> int:
                 first=args.first,
                 last=args.last,
                 ref_stride=args.ref_stride,
-                align_atol=args.align_atol,
+                align_atol=align_atol,
             )
         except FileNotFoundError as exc:
             print(f"skipping {stem}: {exc}", file=sys.stderr)
@@ -8285,12 +8442,14 @@ def main(argv: list[str] | None = None) -> int:
             shortfall = series.grid_report()
             if shortfall is not None:
                 print(shortfall, flush=True)
-            if args.align_atol > _T_ATOL:
+            if align_atol > _T_ATOL:
+                spread = series.alignment_spread()
                 print(
-                    f"{stem}: members aligned to {args.align_atol:g} "
-                    f"in t; frames pair samples up to "
-                    f"{series.alignment_spread():.6g} apart on the "
-                    "relative clock",
+                    f"{stem}: members aligned to "
+                    f"{units.time(align_atol):g} in t u_tau/h "
+                    f"({align_atol:g} h/U_cl); frames pair samples up to "
+                    f"{units.time(spread):.6g} ({spread:.6g}) apart on "
+                    "the relative clock",
                     flush=True,
                 )
         # The reference average is one pass for the whole member set,
@@ -8306,9 +8465,11 @@ def main(argv: list[str] | None = None) -> int:
         if series is None:  # pragma: no cover - the registry guards this
             continue
         if not args.quiet:
+            first, last = float(series.t_rel[0]), float(series.t_rel[-1])
             print(
-                f"{tag}: {series.t_rel.size} frames, "
-                f"t = {series.t_rel[0]:g}..{series.t_rel[-1]:g}",
+                f"{tag}: {series.t_rel.size} frames, t u_tau/h = "
+                f"{units.time(first):.4g}..{units.time(last):.4g}, t+ = "
+                f"{units.time_plus(first):.4g}..{units.time_plus(last):.4g}",
                 flush=True,
             )
         if spec.family == GROWTH:

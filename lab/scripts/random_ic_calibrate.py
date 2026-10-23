@@ -4,7 +4,8 @@ The random perturbation of :mod:`dnsjax.ic.random_field` has a shape
 in `$(y, k)$` -- set by ``init.random_smoothness``,
 ``random_wall_smoothness`` and ``random_wall_confinement`` -- and a
 turbulent difference field has one of its own, which it settles onto
-within a few advective time units whatever it started from.  The gap
+within a few advective time units (a fraction of `$h/u_\tau$`)
+whatever it started from.  The gap
 between the two is a transient that every twin run pays before its
 growth rate means anything.  This script measures the gap, so a
 default can be *calibrated* rather than assumed.
@@ -35,11 +36,23 @@ further along, by
         \ln\frac{1 - A_{\text{old}}}{1 - A_{\text{new}}} .
 
 The script fits `$\mu$` from the ensemble it was given and reports
-`$\Delta t$` against the recorded members' own `$A(0)$`, so the
-answer is in advective time units rather than in an abstract overlap.
-It is printed as ``shape lead`` and not ``head start`` on purpose: it
-is how much sooner this field would *look* settled, not how much sooner
-it grows (below: "A(0) is a shape score, not a growth predictor").
+`$\Delta t$` against the recorded members' own `$A(0)$`, so the answer
+is a time rather than an abstract overlap.  It is printed as
+``shape lead`` and not ``head start`` on purpose: it is how much sooner
+this field would *look* settled, not how much sooner it grows (below:
+"A(0) is a shape score, not a growth predictor").
+
+**Units.**  Every time and rate is reported in outer units, `$h$` and
+`$u_\tau$` -- `$\Delta t$` and `$1/\mu$` as `$t\,u_\tau/h$`,
+`$\mu$` per `$h/u_\tau$` -- with wall units, `$t^+$` and
+`$u_\tau^2/\nu$`, beside them.  `$u_\tau = Re_\tau/Re$` in the
+code's velocity unit, from ``calib.re_tau``: the reference flow's
+time-averaged friction Reynolds number, which a target requires and
+nothing here measures.  ``calib.window`` is read in
+`$t\,u_\tau/h$` too, or in the code's own time unit under
+``calib.input_code_units``; unset, it is `$0.6 \ldots 1.2$`
+`$h/u_\tau$` (14 to 28 code units in plane Poiseuille flow at
+`$Re = 4200$`, `$Re_\tau = 179$`).
 
 **Reading the output.**  A bare run reports one configuration --
 whatever the surface resolved, which with no overrides is the
@@ -59,9 +72,9 @@ box -- so a sweep needs one seed, not an ensemble.
 **A(0) is a shape score, not a growth predictor.**  At the
 Hamilton-Kim-Waleffe minimal plane-Couette box (`$Re = 400$`) the score
 peaks at ``random_smoothness`` `$\approx 0.15$` and calls it worth
-thirteen time units, yet the difference energy grows less there than at
-the default 0.4, and at `$s = 0.04$` decays outright for the first five
-units (two seeds, both; the decades measured and the reason:
+thirteen code time units, yet the difference energy grows less there
+than at the default 0.4, and at `$s = 0.04$` decays outright for the
+first five units (two seeds, both; the decades measured and the reason:
 :mod:`dnsjax.ic.random_field`, Design notes "Shape is not growth").
 Read `$A(0)$` as "how much of this field is in the wrong part of
 `$(y, k)$`", and confirm any change of ``random_smoothness`` with a
@@ -83,8 +96,8 @@ Usage::
         --geo.lx 12.566370614 --geo.lz 6.283185307 \
         --res.nx 192 --res.ny 215 --res.nz 160 \
         --init.random_seed 1 --init.random_mean_flow True \
-        --calib.target ensemble/ \
-        --calib.window "15,30" \
+        --calib.target ensemble/ --calib.re_tau 178.6 \
+        --calib.window "0.6,1.2" \
         --calib.sweep_smoothness "0.4,0.06,0.04,0.03" \
         --calib.sweep_wall_confinement "0,0.11,0.14,0.20"
 
@@ -145,11 +158,28 @@ class CalibParams(BaseModel):
             "(those without a twin_yspectra stream are skipped)."
         ),
     )
-    window: str = Field(
-        default="15,30",
+    window: str | None = Field(
+        default=None,
         description=(
-            "Time window of the target, as 'lo,hi' in advective units "
-            "since each member's perturbation."
+            "Time window of the target, as 'lo,hi' since each member's "
+            "perturbation, in t u_tau/h (in the code's time unit under "
+            "calib.input_code_units); unset, 0.6,1.2 in t u_tau/h."
+        ),
+    )
+    re_tau: float | None = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "The reference flow's time-averaged friction Reynolds number, "
+            "supplied (never measured here); required with calib.target. "
+            "u_tau = re_tau/phys.re sets the outer units h/u_tau every "
+            "time is read and reported in."
+        ),
+    )
+    input_code_units: bool = Field(
+        default=False,
+        description=(
+            "Read calib.window in the code's time unit instead of h/u_tau."
         ),
     )
     marginal: Literal["x", "z"] = Field(
@@ -188,7 +218,8 @@ def _validate_calib(values: CalibParams, params) -> None:
             "dnsjax-twin stream, so it supports the Cartesian "
             f"wall-bounded flows only (system {params.phys.system!r})."
         )
-    _parse_window(values.window)
+    if values.window is not None:
+        _parse_window(values.window)
     for name in (
         "sweep_smoothness",
         "sweep_wall_smoothness",
@@ -222,9 +253,7 @@ def _parse_window(raw: str) -> tuple[float, float]:
     """``"lo,hi"`` as a pair, refusing anything else."""
     parts = [p.strip() for p in raw.split(",")]
     if len(parts) != 2:
-        raise ValueError(
-            f"calib.window {raw!r}: expected 'lo,hi' in advective units"
-        )
+        raise ValueError(f"calib.window {raw!r}: expected 'lo,hi'")
     try:
         lo, hi = float(parts[0]), float(parts[1])
     except ValueError as exc:
@@ -232,6 +261,30 @@ def _parse_window(raw: str) -> tuple[float, float]:
     if not hi > lo:
         raise ValueError(f"calib.window {raw!r}: needs hi > lo")
     return lo, hi
+
+
+#: ``calib.window`` when unset, in `$t\,u_\tau/h$`: the exponential
+#: phase of plane Poiseuille flow at `$Re_\tau = 179$` and `$512$`.
+_DEFAULT_WINDOW: tuple[float, float] = (0.6, 1.2)
+
+
+def window_on_clock(
+    raw: str | None, u_tau: float, *, code_units: bool = False
+) -> tuple[float, float]:
+    r"""``calib.window`` on the streams' clock, in code time.
+
+    *raw* is ``"lo,hi"`` in `$t\,u_\tau/h$`, or in code time under
+    *code_units*; unset, it is :data:`_DEFAULT_WINDOW`, in
+    `$t\,u_\tau/h$` whatever *code_units* says.  *u_tau* is in the
+    code's velocity unit.
+    """
+    if raw is None:
+        lo, hi = _DEFAULT_WINDOW
+    else:
+        lo, hi = _parse_window(raw)
+        if code_units:
+            return lo, hi
+    return lo / u_tau, hi / u_tau
 
 
 def _parse_floats(raw: str, label: str) -> list[float]:
@@ -357,8 +410,8 @@ def build_target(
         series.append((t_rel, shapes))
     if count == 0:
         raise SystemExit(
-            f"{_PROG}: error: no records in the window {window}; the "
-            "members cover "
+            f"{_PROG}: error: no records in the window {window} (code "
+            "time); the members cover "
             f"[{series[0][0][0]:.3g}, {series[0][0][-1]:.3g}]"
         )
     weights = np.asarray(meta0["y_weights"], dtype=np.float64)
@@ -446,19 +499,39 @@ def main(argv: list[str] | None = None) -> int:
     setup = resolve_parameters(argv, extensions=(CALIB_EXTENSION,), prog=_PROG)
     if calib_params.target is None:
         raise SystemExit(f"{_PROG}: error: --calib.target is required")
+    if calib_params.re_tau is None:
+        raise SystemExit(
+            f"{_PROG}: error: --calib.re_tau is required: the reference "
+            "flow's time-averaged friction Reynolds number, which sets "
+            "the units h/u_tau (it is never measured here)"
+        )
     if params.dist.np0 * params.dist.np1 != 1:
         raise SystemExit(f"{_PROG}: error: single-device (np0*np1 = 1)")
 
-    window = _parse_window(calib_params.window)
+    re_tau = calib_params.re_tau
+    u_tau = re_tau / params.phys.re
+    window = window_on_clock(
+        calib_params.window, u_tau, code_units=calib_params.input_code_units
+    )
     marginal = calib_params.marginal
     members = member_dirs(calib_params.target, calib_params.members)
-    print(f"Target: {len(members)} member(s), t in {window}", flush=True)
+    print(
+        f"Target: {len(members)} member(s), t u_tau/h in "
+        f"({window[0] * u_tau:.4g}, {window[1] * u_tau:.4g}), t+ in "
+        f"({window[0] * u_tau * re_tau:.4g}, "
+        f"{window[1] * u_tau * re_tau:.4g}); Re_tau = {re_tau:g}",
+        flush=True,
+    )
     meta, target, series = build_target(members, marginal, window)
     weights = np.asarray(meta["y_weights"], dtype=np.float64)
     mu, a_recorded, _, align = fit_mu(series, target, weights)
+    # mu per h/u_tau, and per t+ beside it; 1/mu the other way round.
+    mu_outer = mu / u_tau
     print(
         f"Recorded members: A(0) = {a_recorded:.4f}, "
-        f"mu = {mu:.4f} (1/mu = {1.0 / mu:.2f} time units)",
+        f"mu = {mu_outer:.4g} u_tau/h ({mu_outer / re_tau:.4g} "
+        f"u_tau^2/nu), 1/mu = {1.0 / mu_outer:.4g} h/u_tau "
+        f"({re_tau / mu_outer:.4g} t+)",
         flush=True,
     )
 
@@ -525,7 +598,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     print(
         f"\n{'smoothness':>12} {'wall_smooth':>12} {'wall_conf':>13}"
-        f" {'A(0)':>8} {'shape lead':>11}",
+        f" {'A(0)':>8} {'shape lead':>15} {'':>10}",
         flush=True,
     )
     for s_h in sweeps["random_smoothness"]:
@@ -540,14 +613,16 @@ def main(argv: list[str] | None = None) -> int:
                 update_parameters(params)
                 _, shape = ic_shape(marginal)
                 a_new = shape_alignment(shape, target, weights)
+                # The shape lead in t u_tau/h, and in t+ beside it.
                 gain = (
-                    np.log((1.0 - a_recorded) / (1.0 - a_new)) / mu
+                    np.log((1.0 - a_recorded) / (1.0 - a_new)) / mu_outer
                     if np.isfinite(mu) and a_new < 1.0
                     else float("nan")
                 )
                 print(
                     f"{s_h:12.4g} {s_w:12.4g} {conf:13.4g}"
-                    f" {a_new:8.4f} {gain:+10.2f} t",
+                    f" {a_new:8.4f} {gain:+7.3f} h/u_tau"
+                    f" {gain * re_tau:+7.1f} t+",
                     flush=True,
                 )
     return 0

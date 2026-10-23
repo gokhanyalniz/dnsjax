@@ -430,9 +430,19 @@ Members recorded under an absolute-step cadence, whose parents sat at
 different `it` residues, carry grids displaced against one another
 that share no relative sample time but $t = 0$. `aggregate_members`
 and `lab/scripts/twin_spectral_maps.py` both refuse them at the
-default tolerance, naming the `align_atol` (`--align-atol`) that
-accepts them: it pairs each frame with every member's nearest sample
-instead, and reports how far apart the widest such pairing is.
+default tolerance, naming the `align_atol` (`--align-atol`, in code
+time under `--input-code-units`) that accepts them: it pairs each
+frame with every member's nearest sample instead, and reports how far
+apart the widest such pairing is.
+
+The readers work in the code's units. The plotting and reporting
+scripts (`lab/scripts/twin_spectral_maps.py`,
+`lab/scripts/random_ic_calibrate.py`) present every time and rate in
+outer units, $h$ and $u_\tau$ (time as $t\ u_\tau/h$), with wall units
+beside them, from the reference flow's time-averaged $Re_\tau$: a
+required input (`--re-tau`, `calib.re_tau`) that they never measure.
+Their time-valued options are read in $h/u_\tau$, or in the code's own
+time unit under `--input-code-units` (`calib.input_code_units`).
 
 | Module | Role |
 |---|---|
