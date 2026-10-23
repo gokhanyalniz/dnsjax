@@ -82,6 +82,7 @@ from dnsjax_lab.analysis.twin.moments import (
 )
 from dnsjax_lab.analysis.twin.series import (
     ClosureResiduals,
+    GridResolutionError,
     TwinSeries,
     budget_sums,
     closure_residuals,
@@ -128,6 +129,7 @@ __all__ = [
     "ClosureResiduals",
     "Cube",
     "CubeSeries",
+    "GridResolutionError",
     "LEGACY_SUFFIXES",
     "LogMoments",
     "MomentRates",

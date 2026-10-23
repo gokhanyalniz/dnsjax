@@ -15,7 +15,9 @@ cadence, so the end-of-run state is never lost), and, when
 segment's ``t0`` row.  They are real samples, told apart by ``t``, and
 kept, so any consumer that needs a *uniform* grid (a centred
 difference, an across-member stack) selects it with
-:func:`uniform_grid` rather than assuming the raw stream is one.
+:func:`uniform_grid` rather than assuming the raw stream is one, on
+the relative times below (:attr:`TwinSeries.t_rel`): the absolute
+``t`` column does not resolve the grid, and is refused.
 
 ``twin.json`` is the member record the driver writes at the fresh
 start (seed, ``e0``, parent snapshot and clock, cadences, git hash,
@@ -43,10 +45,15 @@ from pathlib import Path
 import numpy as np
 
 from dnsjax.analysis import read_dat  # re-exported
+from dnsjax.parameters import Outputs
 
 #: Oldest ``twin.json`` schema this reader understands
 #: (``dnsjax_lab.twin.driver.TWIN_FORMAT_VERSION`` is the writer's).
 MIN_FORMAT_VERSION: int = 1
+
+#: Significant digits of a ``.dat`` column at the solver's default
+#: ``outs.stats_precision``.
+_DAT_DIGITS: int = Outputs.model_fields["stats_precision"].default
 
 #: How far a ``.dat`` sample time may read from a whole number of steps
 #: after the perturbation, in steps, before :func:`relative_time`
@@ -236,8 +243,32 @@ class ClosureResiduals:
         return self.components[key]
 
 
+class GridResolutionError(ValueError):
+    """A time column too coarse for :func:`uniform_grid`'s tolerance."""
+
+
+#: How far off its cadence grid, in units of the last digit a default
+#: ``.dat`` column prints at the column's largest ``|t|``, a sample
+#: makes :func:`uniform_grid` refuse the column rather than mask the
+#: sample (its docstring says why).
+_GRID_NEAR_MISS_UNITS: float = 2.0
+
+
+def _print_unit(t: np.ndarray) -> float:
+    """The last digit a default ``.dat`` column prints at ``max |t|``."""
+    top = float(np.max(np.abs(t)))
+    if top == 0.0:
+        return 0.0
+    return float(10.0 ** (np.floor(np.log10(top)) + 1 - _DAT_DIGITS))
+
+
 def uniform_grid(t: np.ndarray) -> tuple[float, np.ndarray]:
     r"""The sampling interval of *t*, and the mask of samples on it.
+
+    *t* is a time column exact to rounding on its own grid: a
+    member's step-counted relative times (:attr:`TwinSeries.t_rel`,
+    :meth:`TwinSeries.relative`), never a ``.dat`` column's absolute
+    ``t`` (module docstring, "Relative time is a step count").
 
     The cadence is the **median** positive gap: the stream is a
     uniform grid plus a handful of off-grid rows (module docstring),
@@ -249,8 +280,29 @@ def uniform_grid(t: np.ndarray) -> tuple[float, np.ndarray]:
     off-grid **first** row is itself excluded rather than defining a
     grid nothing else sits on.
 
-    Returns ``(dt, mask)``.  Raises when *t* is too short, has no
-    positive gap, or leaves fewer than three samples on the grid.
+    A sample whose phase misses the median by more than the tolerance
+    (`$10^{-6}\Delta t$`) but by less than two units of the last digit
+    a ``.dat`` column prints at the largest `$|t|$` (at the default
+    ``outs.stats_precision`` of 9 significant digits, `$10^{-6}$`
+    below `$t = 1000$`, `$10^{-5}$` below `$10^4$`) is the rounding of
+    a printed column, not a row the driver writes.  Those sit a whole
+    number of steps off the grid, and at relative times below `$10^4$`
+    any step of `$2\times10^{-5}$` or more clears the band.  An
+    absolute ``.dat`` ``t`` falls inside it where the printed decimals
+    change, at `$t = 1000$`: its phase moves by up to about
+    `$5\times10^{-6}$`, against a tolerance of `$2.5\times10^{-9}$`
+    at ``it_energy = 1`` and ``dt = 0.0025``.  Such a column is refused
+    (:class:`GridResolutionError`) rather than masked down to the rows
+    its rounding happens to keep.  A tolerance widened to the print
+    precision would keep the column instead, but would read a real
+    off-grid row as on the grid wherever a step falls inside it.  The
+    band is that of the default precision: a column printed at fewer
+    digits can miss by more and still be masked.
+
+    Returns ``(dt, mask)``.  Raises :class:`ValueError` when *t* is too
+    short, has no positive gap, or leaves fewer than three samples on
+    the grid, and :class:`GridResolutionError` when it holds a sample
+    inside that band.
     """
     if t.size < 3:
         raise ValueError(
@@ -266,12 +318,26 @@ def uniform_grid(t: np.ndarray) -> tuple[float, np.ndarray]:
     # Fold onto (-dt/2, dt/2] so a phase slightly under dt and one slightly
     # over 0 are the same phase.
     resid = np.where(resid > 0.5 * dt, resid - dt, resid)
-    on_grid = np.abs(resid - float(np.median(resid))) <= tol
+    miss = np.abs(resid - float(np.median(resid)))
+    on_grid = miss <= tol
     if int(on_grid.sum()) < 3:
         raise ValueError(
             "twin.dat has fewer than 3 samples on its own cadence grid "
             f"(dt = {dt:.6g}, {int(on_grid.sum())} of {t.size} rows); "
             "the centred difference below needs a single fixed cadence"
+        )
+    band = _GRID_NEAR_MISS_UNITS * _print_unit(t)
+    near = ~on_grid & (miss < band)
+    if near.any():
+        raise GridResolutionError(
+            f"{int(near.sum())} of {t.size} sample times miss the "
+            f"cadence grid (dt = {dt:.6g}) by up to "
+            f"{float(miss[near].max()):.3g}, under {band:.3g} (two "
+            "printed units of a .dat column at this |t|), where no "
+            "dnsjax-twin row sits: the time column does not resolve "
+            "the grid.  Pass step-counted relative times "
+            "(TwinSeries.t_rel, series.relative_time), not a .dat "
+            "stream's absolute t."
         )
     return dt, on_grid
 

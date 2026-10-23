@@ -421,8 +421,10 @@ modules are in the table below, and in full in its package docstring.
 At `it_energy > 1` a `twin.dat` stream routinely holds real samples
 off its sampling grid (the final row; a resumed segment's `t0` row), so
 a consumer that needs a *uniform* grid — a centred difference, an
-across-member stack — selects one with `series.uniform_grid` (the
-`series` docstring, "Off-grid rows").
+across-member stack — selects one with `series.uniform_grid` on the
+member's step-counted relative times (`TwinSeries.t_rel`); it refuses
+a `.dat` column's absolute `t`, whose printed digits do not resolve the
+grid (the `series` docstring, "Off-grid rows").
 
 Members recorded under an absolute-step cadence, whose parents sat at
 different `it` residues, carry grids displaced against one another

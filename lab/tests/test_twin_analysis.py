@@ -15,6 +15,10 @@ The package is ``dnsjax_lab.analysis.twin``, the orchestration
   member among them, with ``align_atol`` stacking one as recorded;
   members whose ``t`` column carries the driver's own 9 significant
   digits, late in a long run, still stacking exactly;
+- the cadence grid of such a column: on the member's step counts every
+  cadence row kept and the off-grid final row dropped, across the
+  printed ``t`` losing a decimal at ``t = 1000``, where the absolute
+  column is refused;
 - the growth-rate fits against planted laws;
 - the ``twin_spectra.bin`` reader: byte-exact round trip, truncated
   trailing record, duplicate-timestamp seams, version floor,
@@ -85,6 +89,7 @@ sys.stdout.reconfigure(line_buffering=True)
 import _repo  # noqa: E402 -- also puts the core suite's helpers on sys.path
 from _live import run_live  # noqa: E402
 from dnsjax_lab.analysis.twin import (  # noqa: E402
+    GridResolutionError,
     aggregate_members,
     budget_sums,
     closure_residuals,
@@ -93,6 +98,7 @@ from dnsjax_lab.analysis.twin import (  # noqa: E402
     integral_lengths_from_modes,
     read_dat,
     read_twin,
+    uniform_grid,
 )
 from dnsjax_lab.analysis.twin.growth import (  # noqa: E402
     algebraic_exponent,
@@ -615,6 +621,53 @@ def test_aggregation_at_driver_precision() -> None:
             "off a whole number of steps", lambda: aggregate_members(tree)
         )
     print("aggregation at the driver's t precision: OK")
+
+
+def test_cadence_grid_at_driver_precision() -> None:
+    """A long run's ``twin.dat`` cadence grid, read on its step counts.
+
+    Each run crosses ``t = 1000``, where the driver's printed ``t``
+    drops from six decimals to five: its phase moves by several
+    ``1e-6``, against a grid tolerance of ``1e-6`` of the cadence.  The
+    step-counted ``t_rel`` keeps every cadence row and drops only an
+    off-grid final one; the absolute column is refused rather than
+    masked down to one side of the crossing, at a cadence of many steps
+    and at the default of one, where the crossing is far wider than the
+    tolerance.
+    """
+    digits = Outputs().stats_precision
+    dt = 0.0025
+    cases = (
+        # (it_energy, rows, parent_t, steps of an off-grid final row)
+        (100, 41, 994.8712345678, 37),  # a 0.25 cadence over 10 units
+        (1, 41, 999.9512345678, None),  # every step, over 0.1 units
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        for it_energy, n, parent_t, tail in cases:
+            mdir = Path(tmp) / f"m{it_energy}"
+            _write_member(mdir, parent_t, dt=dt, budget=False)
+            steps = it_energy * np.arange(n)
+            if tail is not None:
+                steps = np.append(steps, steps[-1] + tail)
+            cols = _energy_columns(parent_t + dt * steps)
+            _write_dat(mdir / "twin.dat", cols, digits)
+            record = json.loads((mdir / "twin.json").read_text())
+            record["it_energy"] = it_energy
+            (mdir / "twin.json").write_text(json.dumps(record))
+
+            series = read_twin(mdir)
+            cadence, on_grid = uniform_grid(series.t_rel)
+            assert_allclose(cadence, it_energy * dt, rtol=1e-12)
+            assert on_grid[:n].all(), (it_energy, on_grid)
+            assert on_grid.size == n + (tail is not None)
+            assert not on_grid[n:].any(), (it_energy, on_grid)
+            try:
+                uniform_grid(series.t)
+            except GridResolutionError as exc:
+                assert "does not resolve the grid" in str(exc), exc
+            else:
+                raise AssertionError(f"it_energy {it_energy}: not refused")
+    print("cadence grid at the driver's t precision: OK")
 
 
 def _expect_value_error(fragment: str, thunk) -> None:
@@ -1866,6 +1919,7 @@ if __name__ == "__main__":
     test_closure_residuals()
     test_aggregation()
     test_aggregation_at_driver_precision()
+    test_cadence_grid_at_driver_precision()
     test_fits()
     test_spectra_reader()
     test_yspectra_reader()

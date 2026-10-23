@@ -162,7 +162,9 @@ What each case pins:
     is every cell of a saturated pair.
 24. **Growth laws.** A curve built to grow exponentially, then
     decorrelate at a constant rate, is marked with both rates; the
-    global curve aligns the members' ``twin.dat`` on whole steps, is
+    global curve aligns the members' ``twin.dat`` on whole steps,
+    keeping every row of a member whose printed ``t`` loses a decimal
+    at ``t = 1000``, is
     their geometric mean, records its source and falls back to the
     spectra totals without one; a band's budget rates are its own
     terms over its own energy; and the summary figure draws a window
@@ -2897,7 +2899,11 @@ def test_growth_laws() -> None:
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
         members = []
-        for index, start in enumerate((100.0, 237.5)):
+        # Parents as a long run harvests them: the first member's
+        # printed t crosses from six decimals to five at t = 1000,
+        # which moves its phase by several 1e-6, so only the members'
+        # step counts put every row of both on one grid.
+        for index, start in enumerate((998.3712345678, 1123.4567891234)):
             rec = _records(meta, "twin_yspectra", 4, t0=start, seed=index)
             directory = _write_member(
                 root / f"m{index}",

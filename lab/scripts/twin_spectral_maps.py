@@ -6615,11 +6615,13 @@ def growth_global(series: YSeries, options: MapOptions) -> GrowthCurves:
     r"""The total difference energy, every member, on its finest clock.
 
     Each member's ``twin.dat`` where every member has one -- the
-    ``twin.it_energy`` cadence, finer than the spectra's -- aligned on
+    ``twin.it_energy`` cadence, finer than the spectra's -- counted in
     whole steps since the perturbation
-    (:func:`~dnsjax_lab.analysis.twin.series.relative_time`) and restricted
-    to the frames' window; the
-    spectra stream's own per-member totals otherwise.  The curve is the
+    (:func:`~dnsjax_lab.analysis.twin.series.relative_time`), restricted
+    to its own cadence grid on that clock (never on the ``.dat``
+    column's absolute ``t``, which 9 significant digits do not resolve
+    to the grid's tolerance) and to the frames' window; the spectra
+    stream's own per-member totals otherwise.  The curve is the
     **geometric** member mean, `$\exp\langle\ln E\rangle$`: a rate is a
     logarithmic derivative, and the arithmetic mean would let the
     fastest member set it.  `$E_\mathrm{sat}$` is twice the reference's
@@ -6631,8 +6633,9 @@ def growth_global(series: YSeries, options: MapOptions) -> GrowthCurves:
     try:
         for member in series.members:
             twin = read_twin(member.path)
-            dt, on_grid = uniform_grid(twin.t)
-            t_rel = twin.t_rel[on_grid]
+            t_rel = twin.t_rel
+            dt, on_grid = uniform_grid(t_rel)
+            t_rel = t_rel[on_grid]
             step = float(twin.meta["dt"]) if twin.meta else dt
             keep = (t_rel >= lo - 0.5 * step) & (t_rel <= hi + 0.5 * step)
             keys = np.rint(t_rel[keep] / step).astype(np.int64)
