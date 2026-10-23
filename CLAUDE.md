@@ -15,8 +15,8 @@ Prerequisites: Python at `pyproject.toml`'s `requires-python` or newer
 `CONTRIBUTING.md` "Python versions"), `uv`, and MPI only for
 multi-process runs (a lone process needs none, even across GPUs).
 
-- `uv sync`: the environment, plus the `dnsjax` and `dnsjax-twin`
-  console scripts in `.venv/bin`.
+- `uv sync`: the environment, plus the `dnsjax`, `dnsjax-info` and
+  `dnsjax-twin` console scripts in `.venv/bin`.
 - `uv run ruff check --fix` and `uv run ruff format src tests scripts
   lab/src lab/tests lab/scripts` (never a bare `ruff format`: it also
   rewrites the Python blocks in the Markdown docs and the example
@@ -32,6 +32,9 @@ multi-process runs (a lone process needs none, even across GPUs).
   (`scripts/CLAUDE.md`).
 - A flow's parameter surface: `uv run dnsjax --help <system>` and
   `uv run dnsjax --sample-toml <system>`.
+- A snapshot's clock, parameters and stats, its state unread: `uv run
+  dnsjax-info [--time] [--provenance] [--stats] [--raw] state*.tar`
+  (`--raw` for JSON; the `tools.snapshot_info` docstring).
 
 ## Running the solver
 
@@ -136,7 +139,8 @@ JAX-free leaves, importable before JAX is configured: `parameters.py`,
 `param_surface.py`, `flow_spec.py`, `harmonics.py`, `fd.py`,
 `adaptive.py`, `snapshot_meta.py`, `seeding.py`, `run_status.py`,
 `extensions/`, `flows/registry.py`,
-the flow `specs/`, and `analysis/` (bar the members its notes name).
+the flow `specs/`, `tools/`, and `analysis/` (bar the members its
+notes name).
 Reuse them (extract a helper into one rather than copying it), and put
 a module used only outside the solver in a subpackage, not at this
 level.
@@ -167,6 +171,7 @@ ic/               random_field (the default IC), localized_rolls, mean_mode
 geometries/       wall_bounded/, triply_periodic/
 flows/            registry.py; per-family flow modules and specs/
 analysis/         snapshot API, transient_growth, snapshot_import
+tools/            console utilities: dnsjax-info (snapshot metadata)
 ```
 
 ## Invariants everywhere

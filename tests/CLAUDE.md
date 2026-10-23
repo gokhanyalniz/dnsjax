@@ -110,7 +110,8 @@ Snapshots, resume, analysis:
   `--unit-only`), `test_snapshot_export.py` (re-run after changing a
   primitive), `test_transient_growth.py` (`--fast`), all both suites;
   `test_snapshot_import.py`, `test_wedge.py` (`geo.m0`; the lab's
-  `test_quasi_keplerian.py` holds its flow's cases).
+  `test_quasi_keplerian.py` holds its flow's cases),
+  `test_snapshot_info.py` (`dnsjax-info`, no JAX).
 - `test_lowres.py` (both suites: `[lowres]` files, the static
   pressure, the cube container); multi-process `[lowres]` writes: the
   `*-mpi-pad` rows of `test_random_smoke.py`.

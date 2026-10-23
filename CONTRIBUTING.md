@@ -11,12 +11,13 @@ uv run prek install
 ```
 
 `uv sync` provisions the pinned Python, installs the dependencies and
-the `dnsjax` console script, and puts `pytest`, `ruff` and `prek` in the
-environment; `prek install` installs the commit hooks ([Lint and
-format](#lint-and-format), [Commits](#commits)). Figure scripts also
-need the `plots` group: `uv run --group plots python
-scripts/snapshot_figure.py`. An accelerator is an extra of JAX's name,
-`uv sync --extra cuda13` (the README's Quick start lists them).
+the `dnsjax` and `dnsjax-info` console scripts, and puts `pytest`,
+`ruff` and `prek` in the environment; `prek install` installs the
+commit hooks ([Lint and format](#lint-and-format),
+[Commits](#commits)). Figure scripts also need the `plots` group:
+`uv run --group plots python scripts/snapshot_figure.py`. An
+accelerator is an extra of JAX's name, `uv sync --extra cuda13` (the
+README's Quick start lists them).
 
 The repository is a
 [uv workspace](https://docs.astral.sh/uv/concepts/projects/workspaces/)

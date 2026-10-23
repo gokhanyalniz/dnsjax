@@ -1201,10 +1201,14 @@ def run_stats_isnap_case() -> str | None:
 
     It omits the stats member (with ``isnap`` defaulting to 0) when no
     stats are supplied.  Verified with the standard library alone (no
-    dnsjax).
+    dnsjax), and then against
+    :func:`dnsjax.snapshot_meta.read_snapshot_json`, which must return
+    the same members, the metadata as its stored bytes.
     """
     import json
     import tarfile
+
+    from dnsjax.snapshot_meta import read_snapshot_json
 
     name = "isnap + embedded stats"
     with tempfile.TemporaryDirectory() as tmp:
@@ -1218,16 +1222,20 @@ def run_stats_isnap_case() -> str | None:
         with tarfile.open(snap, "r") as tf:
             names = set(tf.getnames())
             assert "_dnsjax_stats.json" in names, sorted(names)
-            meta = json.loads(tf.extractfile("_dnsjax_meta.json").read())
+            raw = tf.extractfile("_dnsjax_meta.json").read()
             stats = json.loads(tf.extractfile("_dnsjax_stats.json").read())
+        meta = json.loads(raw)
         assert meta["isnap"] == ISNAP_SAVE, meta["isnap"]
         assert stats == STATS_SAVE, stats
+        assert read_snapshot_json(snap) == (meta, raw, stats)
 
         with tarfile.open(snap + ".nostats", "r") as tf:
             names = set(tf.getnames())
             assert "_dnsjax_stats.json" not in names, sorted(names)
-            meta = json.loads(tf.extractfile("_dnsjax_meta.json").read())
+            raw = tf.extractfile("_dnsjax_meta.json").read()
+        meta = json.loads(raw)
         assert meta["isnap"] == 0, meta["isnap"]
+        assert read_snapshot_json(snap + ".nostats") == (meta, raw, None)
     print(f"  PASS  {name}")
     return None
 

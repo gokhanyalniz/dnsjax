@@ -60,6 +60,7 @@ oneapi = ["jax[oneapi]"]
 
 [project.scripts]
 dnsjax = "dnsjax.__main__:main"
+dnsjax-info = "dnsjax.tools.snapshot_info:main"
 
 [project.urls]
 Repository = "https://github.com/gokhanyalniz/dnsjax"

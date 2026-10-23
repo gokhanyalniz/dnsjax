@@ -1,7 +1,8 @@
 # Snapshots and external data access
 
-The on-disk format, how a run resumes from one, the NumPy-only reading
-API, and the importer that packs a field produced elsewhere into a valid
+The on-disk format, how a run resumes from one, the `dnsjax-info`
+command that prints a snapshot's metadata, the NumPy-only reading API,
+and the importer that packs a field produced elsewhere into a valid
 snapshot. Start at the [README](../README.md) for the solver itself.
 
 ## The format
@@ -91,6 +92,31 @@ value serves an ensemble whose members were harvested at different
 times. A run split across several launches therefore gets the whole
 horizon again at each one; a fixed absolute end time is expressed by
 shortening `max_sim_time` on the resume.
+
+## Inspecting a snapshot
+
+`dnsjax-info`, a console script installed with the package, prints a
+snapshot's metadata and embedded stats without reading the state: it
+reads the tar headers and the two JSON members alone, whatever the
+state's size, and imports neither JAX nor NumPy. It takes any file of
+this format, a reduced-resolution one included.
+
+```bash
+uv run dnsjax-info state00016.tar        # every record, TOML-shaped params
+uv run dnsjax-info --time state*.tar     # t, it, isnap, step.dt: a row per file
+uv run dnsjax-info --time --provenance --stats state*.tar
+uv run dnsjax-info --raw state00016.tar  # the stored JSON, for programs
+```
+
+`--time` keeps the records that change from one snapshot to the next
+within a run, `--provenance` adds those that change from one run segment
+to the next (the code revision, the device layout, where the segment
+started), and `--stats` adds the embedded diagnostics. `--raw` prints
+JSON: the metadata member exactly as stored, or, with the other flags,
+the selected records at their stored paths, one object per line for
+several files. The views and the JSON shapes: the
+[`dnsjax.tools.snapshot_info`](../src/dnsjax/tools/snapshot_info.py)
+module docstring.
 
 ## Reading a snapshot without JAX
 

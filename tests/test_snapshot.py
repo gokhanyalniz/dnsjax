@@ -52,7 +52,9 @@ Exercises the host (non-GDS) I/O path:
   tile the leading axis and reassemble each chunk byte for byte;
 - the ``isnap`` lineage index round-trips through the metadata, and the
   optional ``_dnsjax_stats.json`` member is written when stats are
-  supplied and omitted otherwise;
+  supplied and omitted otherwise, and
+  :func:`~dnsjax.snapshot_meta.read_snapshot_json` returns both members
+  as stored;
 - the ``git_hash`` provenance agrees with ``git describe``, and git is
   spawned with ``posix_spawn`` (never CPython's ``vfork`` path).
 

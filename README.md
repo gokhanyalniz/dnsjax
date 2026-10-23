@@ -76,8 +76,9 @@ plane by itself.</a>
   transient growth about an arbitrary wall-normal profile, reusing the
   solver's own linear step mode by mode.
 - **Post-processing that needs no solver** — snapshots are ordinary tar
-  archives wrapping a zarr3 store, and the reading API imports nothing
-  but NumPy.
+  archives wrapping a zarr3 store, the reading API imports nothing
+  but NumPy, and `dnsjax-info` prints a snapshot's clock, parameters
+  and stats from the shell without reading its state.
 
 ## Quick start
 
@@ -305,7 +306,7 @@ The lab's flows and tools have a page of their own,
 | [`docs/scaling.md`](docs/scaling.md) | array layout, the memory model, choosing the device grid, measured strong scaling |
 | [`docs/running.md`](docs/running.md) | a worked run, start modes, seeds, the moving frame, every output stream |
 | [`docs/configuration.md`](docs/configuration.md) | how the parameter layers combine; extension sections; where each field is documented |
-| [`docs/snapshots.md`](docs/snapshots.md) | the snapshot format, resume and re-gridding, the JAX-free API, the importer |
+| [`docs/snapshots.md`](docs/snapshots.md) | the snapshot format, resume and re-gridding, `dnsjax-info`, the JAX-free API, the importer |
 | [`docs/validation.md`](docs/validation.md) | what is checked against what, and which test pins each claim |
 | [`docs/differentiability.md`](docs/differentiability.md) | what differentiates through a step, the two opt-in knobs, the banded solve's adjoint |
 | [`docs/extending.md`](docs/extending.md) | adding a flow system, in this package or from your own |

@@ -2,8 +2,10 @@
 
 Standalone programs that read or write the solver's snapshots, or size
 its grids; none of them changes how a simulation runs. Each script's
-module docstring is its manual. The figure script needs the `plots`
-dependency group:
+module docstring is its manual. A snapshot's metadata needs none of
+them: the installed `dnsjax-info` command prints it ([Inspecting a
+snapshot](../docs/snapshots.md#inspecting-a-snapshot)). The figure
+script needs the `plots` dependency group:
 
 ```bash
 uv run --group plots python scripts/snapshot_figure.py ...

@@ -1,6 +1,6 @@
 # Tests
 
-41 standalone scripts for the solver, and 36 more in
+42 standalone scripts for the solver, and 36 more in
 [`lab/tests/`](../lab/tests/) for the repository's lab package. Each one
 is a program with a `__main__` runner, runnable on its own:
 
@@ -90,7 +90,7 @@ variants; the claims the scripts back are mapped in
 | Stepping | `laminar_smoke`, `random_smoke`, `cnab2`, `temporal_order`, `adaptive`, `imm_continuity`, `energy_budget`, `autodiff`, `wall_normal_matvec` |
 | Parameters, bootstrap, device mesh, seeds | `param_surface`, `bootstrap`, `seeding`, `device_grid`, `host_placement`, `mpi_communicators` |
 | Initial conditions | `localized_rolls`, `rolls_smoke`, `mean_mode`, `snapshot_perturb` |
-| Snapshots, resume, analysis | `snapshot`, `resume`, `snapshot_import`, `snapshot_export`, `transient_growth`, `lowres` |
+| Snapshots, resume, analysis | `snapshot`, `resume`, `snapshot_import`, `snapshot_export`, `snapshot_info`, `transient_growth`, `lowres` |
 | Diagnostic streams, status files and run-loop hooks | `driving`, `monochromatic`, `run_hooks`, `run_status`, `wall_time_stop` |
 | Plugins, and the solver without the lab | `plugins`, `layering` |
 

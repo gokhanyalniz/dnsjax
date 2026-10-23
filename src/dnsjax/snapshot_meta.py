@@ -229,17 +229,52 @@ def read_snapshot_meta(path: str | Path) -> dict:
     """Return the parsed ``_dnsjax_meta.json`` member of a snapshot.
 
     The single version choke point: every consumer (resume, offline
-    analysis, scripts) reads metadata through here, and a snapshot
-    older than :data:`MIN_FORMAT_VERSION` is rejected rather than
-    misread under the wrong params convention.
+    analysis, scripts) reads metadata through here or through
+    :func:`read_snapshot_json`, and a snapshot older than
+    :data:`MIN_FORMAT_VERSION` is rejected rather than misread under
+    the wrong params convention.
     """
     path = Path(path)
     with _snapshot_tar(path) as tf:
-        if META_MEMBER not in tf.getnames():
-            raise ValueError(
-                f"{path} is not a dnsjax snapshot: no {META_MEMBER} member."
-            )
-        meta = json.loads(tf.extractfile(META_MEMBER).read())
+        raw = _meta_bytes(tf, path)
+    return _checked_meta(path, raw)
+
+
+def read_snapshot_json(path: str | Path) -> tuple[dict, bytes, dict | None]:
+    """Read both JSON members of a snapshot with one open.
+
+    Returns ``(meta, meta_bytes, stats)``: the parsed metadata, checked
+    as :func:`read_snapshot_meta` checks it; the ``_dnsjax_meta.json``
+    member's bytes exactly as stored; and the parsed
+    ``_dnsjax_stats.json``, or ``None`` when the snapshot carries none
+    (:func:`read_snapshot_stats`).  Only the two members' data is read:
+    the walk of the member list reads the tar headers alone, seeking
+    past every component chunk, so the cost is the same for a state of
+    any size.
+    """
+    path = Path(path)
+    with _snapshot_tar(path) as tf:
+        raw = _meta_bytes(tf, path)
+        stats = None
+        if STATS_MEMBER in tf.getnames():
+            member = tf.extractfile(STATS_MEMBER)
+            if member is not None:
+                stats = json.loads(member.read())
+    return _checked_meta(path, raw), raw, stats
+
+
+def _meta_bytes(tf: tarfile.TarFile, path: Path) -> bytes:
+    """The stored bytes of the open archive's :data:`META_MEMBER`."""
+    if META_MEMBER not in tf.getnames():
+        raise ValueError(
+            f"{path} is not a dnsjax snapshot: no {META_MEMBER} member."
+        )
+    return tf.extractfile(META_MEMBER).read()
+
+
+def _checked_meta(path: Path, raw: bytes) -> dict:
+    """Parse metadata bytes, refusing a pre-:data:`MIN_FORMAT_VERSION` one."""
+    meta = json.loads(raw)
     version = meta.get("format_version", 0)
     if version < MIN_FORMAT_VERSION:
         raise ValueError(

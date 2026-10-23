@@ -70,6 +70,8 @@ _SCRIPTS: list[Row] = [
     ("test_snapshot.py", (), (), 1800),
     ("test_snapshot_export.py", (), (), 1800),
     ("test_snapshot_import.py", (), (), 1800),
+    # No JAX: about twenty dnsjax-info runs in a second or two.
+    ("test_snapshot_info.py", (), (), 1800),
     ("test_snapshot_perturb.py", (), (), 1800),
     ("test_transient_growth.py", ("--fast",), (), 1800),
     ("test_wedge.py", (), (), 1800),
