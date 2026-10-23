@@ -80,6 +80,12 @@ shows at ``np0 > 1`` *and* ``np1 > 1``):
     difference pressure meets its interior Poisson equation and, off
     the mean mode, its imposed wall closure (1e-11 of their scales),
     while the analytic Neumann condition stays unmet (above 1e-8).
+13. The seed's peak law (``dnsjax_lab.twin.driver``): the default
+    smoothness peaks at `$\lambda^{*+} = 49.9$` at `$Re_\tau = 178.6$`,
+    the inverse gives 0.0079 at `$Re_\tau = 500$` (the values its
+    Design notes quote), and the two are inverse to rtol 1e-14; a
+    ``twin.re_tau`` without ``e0``, and a non-positive one, are refused
+    (item 6's hook).
 
 Run as a script via ``uv run python lab/tests/test_twin_unit.py``.
 """
@@ -560,6 +566,10 @@ def test_validate_hook() -> None:
     twin_params.rotational_ybudget = True
     _expect_value_error("rotational_ybudget", validate_parameters)
     twin_params.rotational_ybudget = False
+    # So is the supplied Re_tau, though it moves only a printed line.
+    twin_params.re_tau = 180.0
+    _expect_value_error("re_tau", validate_parameters)
+    twin_params.re_tau = None
 
     # Adaptive dt rejected when configured.
     twin_params.e0 = 1e-6
@@ -581,6 +591,10 @@ def test_validate_hook() -> None:
     _expect_value_error("convective budget terms", validate_parameters)
     twin_params.rotational_ybudget = False
     twin_params.it_budget3d = None
+    # A direct assignment bypasses the field's ``gt=0``.
+    twin_params.re_tau = 0.0
+    _expect_value_error("twin.re_tau must be > 0", validate_parameters)
+    twin_params.re_tau = None
 
     # ``0`` switches a cadence off on a layer, each kind its own way
     # (item 6 of the module docstring; the driver's
@@ -1253,6 +1267,25 @@ def test_difference_source() -> None:
     print("difference source = the budget's sources, summed: OK")
 
 
+def test_seed_peak_law() -> None:
+    """The seed's peak wavelength and its inverse (module docstring, 13)."""
+    from dnsjax_lab.twin.driver import (
+        SEED_PEAK_PLUS,
+        TwinParams,
+        seed_peak_wavelength,
+        smoothness_for_peak,
+    )
+
+    default = TwinParams.model_fields["smoothness"].default
+    assert round(seed_peak_wavelength(default) * 178.6, 1) == 49.9
+    assert round(smoothness_for_peak(SEED_PEAK_PLUS / 500.0), 4) == 0.0079
+    for s in (1e-4, 0.0079, default, 0.4, 0.9):
+        assert_allclose(
+            smoothness_for_peak(seed_peak_wavelength(s)), s, rtol=1e-14
+        )
+    print("seed peak law and its inverse: OK")
+
+
 if __name__ == "__main__":
     test_masks_partition()
     test_energy_partition()
@@ -1277,4 +1310,5 @@ if __name__ == "__main__":
     test_cube_marginals()
     test_difference_pressure()
     test_difference_source()
+    test_seed_peak_law()
     print("All twin unit tests passed.")

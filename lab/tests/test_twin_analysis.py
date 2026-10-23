@@ -58,11 +58,12 @@ The package is ``dnsjax_lab.analysis.twin``, the orchestration
   rates, exponential decorrelation's linear `$-\ln(1 - R)$`) and the
   window finder;
 - ``lab/scripts/ensemble_setup.py build-twin``: dry run leaves no
-  tree; an out-of-range shape knob is refused at build time; every
-  member pins its seed and its whole perturbation shape, given or
-  defaulted; the built tree's TOMLs / ``members.json`` /
-  ``run_commands.txt`` are consistent and feed ``aggregate_members``
-  end to end via synthetic member streams.
+  tree; an out-of-range shape knob or ``--re-tau`` is refused at build
+  time; every member pins its seed and its whole perturbation shape,
+  given or defaulted, and carries a given ``--re-tau``; the built
+  tree's TOMLs / ``members.json`` / ``run_commands.txt`` are
+  consistent and feed ``aggregate_members`` end to end via synthetic
+  member streams.
 
 Usage::
 
@@ -1039,6 +1040,8 @@ def test_build_twin() -> None:
             # all four must be pinned in every member either way.
             "--smoothness",
             "0.4",
+            "--re-tau",
+            "511.5",
             # The 3-D cubes and the reduced snapshots pass straight
             # through, the [lowres] block written only when given.
             "--it-spectra3d",
@@ -1056,10 +1059,9 @@ def test_build_twin() -> None:
         assert result.returncode == 0 and not tree.exists()
         assert "m0001" in result.stdout
         # Range-checked by the driver's own model, at build time.
-        result = run_live(
-            [*build_args, "--wall-smoothness", "1.5", "--dry-run"], cwd=_REPO
-        )
-        assert result.returncode != 0 and not tree.exists()
+        for bad in (["--wall-smoothness", "1.5"], ["--re-tau", "0"]):
+            result = run_live([*build_args, *bad, "--dry-run"], cwd=_REPO)
+            assert result.returncode != 0 and not tree.exists(), bad
 
         result = run_live(build_args, cwd=_REPO)
         assert result.returncode == 0
@@ -1094,6 +1096,7 @@ def test_build_twin() -> None:
             assert toml["twin"]["seed"] == record["seed"]
             assert {k: toml["twin"][k] for k in shape} == shape, toml
             assert toml["twin"]["e0"] == 1e-6
+            assert toml["twin"]["re_tau"] == 511.5
             assert toml["twin"]["it_budget"] == 5
             assert toml["outs"]["it_stats"] == 2
             assert toml["outs"]["it_corrector"] == 3

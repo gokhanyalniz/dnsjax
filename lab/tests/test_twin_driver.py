@@ -6,7 +6,12 @@ tiny plane-Couette MFU parent snapshot built in-process at module
 scope, in temporary member directories:
 
 1. Fresh start: ``twin.json`` records the member (seed / e0 / parent
-   clock), ``twin.dat`` has the sorted column set, a uniform time
+   clock, and the seed's spectral peak against a supplied
+   ``twin.re_tau``, which at the default ``twin.smoothness`` and a
+   far-off `$Re_\tau$` prints the off-target note; an explicit
+   smoothness without ``twin.re_tau`` records no wall-unit peak and
+   prints none, checked in item 2's launch), ``twin.dat`` has the
+   sorted column set, a uniform time
    grid from the inherited parent clock and first-row ``E_d == e0`` to
    the float cancellation floor, ``stats.dat`` / ``stats_twin.dat``
    share one column set and sample times (the partner's ``E'``
@@ -338,11 +343,20 @@ def _expect_error(result, fragment: str) -> None:
 
 def test_fresh_start_e0_exact() -> None:
     # The one launch at the driver's own ``twin.smoothness`` default:
-    # everything asserted here holds for any perturbation shape.
+    # everything asserted here holds for any perturbation shape.  The
+    # supplied Re_tau is far from the default's, so the off-target note
+    # must appear.
+    re_tau = 20.0
     with tempfile.TemporaryDirectory() as tmp:
-        _run_twin(
+        result = _run_twin(
             tmp,
-            [*_twin_args(1.1, smoothness=None), "--outs.it_stats", "5"],
+            [
+                *_twin_args(1.1, smoothness=None),
+                "--outs.it_stats",
+                "5",
+                "--twin.re_tau",
+                repr(re_tau),
+            ],
         )
         tmp = Path(tmp)
 
@@ -350,6 +364,14 @@ def test_fresh_start_e0_exact() -> None:
         assert meta["seed"] == 3 and meta["e0"] == E0
         assert meta["parent_t"] == PARENT_T
         assert meta["parent_it"] == PARENT_IT
+        # lambda* = 4 pi |ln(1 - s)| h (``dnsjax.ic.random_field``).
+        peak = 4.0 * np.pi * abs(np.log1p(-meta["smoothness"]))
+        assert meta["re_tau"] == re_tau
+        assert_allclose(meta["seed_peak_lambda"], peak, rtol=1e-15)
+        assert_allclose(
+            meta["seed_peak_lambda_plus"], peak * re_tau, rtol=1e-15
+        )
+        _expect_error(result, "note: the twin.smoothness default")
 
         cols = read_dat(tmp / "twin.dat")
         assert list(cols) == TWIN_COLS
@@ -422,7 +444,7 @@ def test_offphase_parent_grid() -> None:
     args = list(_twin_args(t0 + n * DT, t_start=t0))
     args[1] = str(PARENT_OFFPHASE)
     with tempfile.TemporaryDirectory() as tmp:
-        _run_twin(
+        result = _run_twin(
             tmp,
             [
                 *args,
@@ -434,6 +456,10 @@ def test_offphase_parent_grid() -> None:
                 str(cadence),
             ],
         )
+        # An explicit smoothness and no twin.re_tau: the peak has no
+        # wall-unit value and draws no note (the fresh-start test's
+        # counterpart).
+        assert "note: the twin.smoothness default" not in result.stdout
         from dnsjax_lab.analysis.twin import read_twin_yspectra
 
         assert (PARENT_IT + OFFPHASE_STEPS) % cadence != 0, (
@@ -456,6 +482,8 @@ def test_offphase_parent_grid() -> None:
                 err_msg=f"{name} does not sample the member's own grid",
             )
         meta = json.loads((Path(tmp) / "twin.json").read_text())
+        assert meta["re_tau"] is None
+        assert meta["seed_peak_lambda_plus"] is None
         assert_allclose(
             streams["twin.dat"] - meta["parent_t"],
             np.arange(0, n + 1, cadence) * DT,

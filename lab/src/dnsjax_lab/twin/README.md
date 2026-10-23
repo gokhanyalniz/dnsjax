@@ -55,6 +55,7 @@ final snapshot pair; see
 | `twin.smoothness` | `0.022` | Spectral envelope of the random perturbation over the periodic directions (`init.random_smoothness` convention). The default seeds below the minimal flow unit of plane Poiseuille at $Re_\tau = 178.6$ (below) |
 | `twin.wall_smoothness` | `0.4` | Its wall-normal envelope (`init.random_wall_smoothness` convention) |
 | `twin.wall_confinement` | `0.14` | Scale-dependent narrowing of its wall window (`init.random_wall_confinement` convention); `0` gives every mode the same window. A member whose `twin.json` has no `wall_confinement` key ran with `0`, back-fills to it, and resumes only with `--twin.wall_confinement 0` |
+| `twin.re_tau` | unset | The reference flow's friction Reynolds number, from its time-averaged statistics; used only to report the seed's spectral peak in wall units (below) |
 | `twin.mean_flow` | `true` | Perturb the $(k_x, k_z) = (0, 0)$ profile as well, conditioned on its conservation laws (below); `false` gives a mean-free partner |
 | `twin.bins` | `false` | Also record the $\Delta U$ / $\Delta u_1$ / $\Delta u_2$ three-bin energies in `twin.dat`; required by `it_budget` |
 | `twin.x0_planes` | `false` | Also store the $k_x = 0$ plane (the `_x0` fields) in both wall-normal-resolved streams: $E_{\Delta u_1}$, and with it $E_{\Delta u_2}$, resolved in $k_z$. The three-bin split does not need it; off, it is never traced |
@@ -143,9 +144,15 @@ s = 1 - \exp\left(-\frac{\lambda^{*+}}{4\pi\, Re_\tau}\right),
 which is 0.022 for plane Poiseuille at $Re = 4200$ in the
 $4\pi \times 2 \times 2\pi$ box ($Re_\tau = 178.6$) and 0.0079 at
 $Re_\tau = 500$ (`twin/driver.py`, Design notes, "The smoothness
-default"). A minimal flow unit has no room below itself, so a run in
-one (the plane-Couette box of Hamilton, Kim & Waleffe, *J. Fluid
-Mech.* **287**, 317–348, 1995) sets `--twin.smoothness 0.4`
+default"). A fresh start prints the peak it draws and records it in
+`twin.json`: $\lambda^*$ in units of $h$, and $\lambda^{*+}$ when
+`twin.re_tau` supplies the reference flow's $Re_\tau$, which the
+driver takes as given rather than measuring it from the parent
+snapshot. At the default $s$ it notes a $\lambda^{*+}$ more than 10 %
+from 50, with the $s$ that places it there. A minimal flow unit has
+no room below itself, so a run in one (the plane-Couette box of
+Hamilton, Kim & Waleffe, *J. Fluid Mech.* **287**, 317–348, 1995)
+sets `--twin.smoothness 0.4`
 (`ensemble_setup.py build-twin --smoothness 0.4` for a member tree);
 members recorded with $s = 0.4$ resume only with that flag.
 

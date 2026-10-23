@@ -51,7 +51,8 @@ Trajectory home, fresh start vs paired resume
 ---------------------------------------------
 A twin trajectory lives in its run directory: the streams below, a
 ``twin.json`` member record (seed, ``e0``, parent snapshot and clock,
-git hash, the resolved parameter dump), and paired snapshots
+the seed's spectral peak, git hash, the resolved parameter dump), and
+paired snapshots
 ``state{isnap}.tar`` (reference; the standard name, so every existing
 tool works on the reference trajectory) + ``state{isnap}_twin.tar``
 (partner, written back-to-back with identical ``t``/``it``).  The
@@ -256,6 +257,17 @@ no room below itself: the minimal box of Hamilton, Kim & Waleffe
 (1995; `$Re_\tau \approx 34$`) keeps 0.4, where this default would put
 the peak at `$\lambda^+ \sim 10$`.  A member recorded with
 `$s = 0.4$` resumes only with ``--twin.smoothness 0.4``.
+
+Since the default holds at one `$Re_\tau$` only, a fresh start reports
+the peak it draws (:func:`_seed_peak_record`): `$\lambda^*$` in units
+of `$h$`, and `$\lambda^{*+}$` when ``twin.re_tau`` supplies the
+reference flow's `$Re_\tau$`, both printed and recorded in
+``twin.json`` (``seed_peak_lambda``, ``seed_peak_lambda_plus``).  The
+driver takes that `$Re_\tau$` as given rather than measuring it: the
+parent snapshot's wall shear is one instant's, not the flow's
+time-averaged value.  At the default `$s$`, a `$\lambda^{*+}$` more
+than 10 % from 50 is noted together with the `$s$` that places it
+there; the default's own rounding moves it by under 1 %.
 """
 
 import json
@@ -464,7 +476,8 @@ class TwinParams(BaseModel):
             "The default seeds below the minimal flow unit of plane "
             "Poiseuille at Re_tau = 178.6; s = 1 - exp(-50 / (4 pi "
             "Re_tau)) elsewhere (0.0079 at Re_tau = 500), and 0.4 in a "
-            "minimal box."
+            "minimal box. A fresh start reports the seed's peak "
+            "wavelength (in wall units given twin.re_tau)."
         ),
     )
     # The wall-normal pair, mirroring ``init.random_wall_smoothness`` /
@@ -488,6 +501,21 @@ class TwinParams(BaseModel):
             "Scale-dependent narrowing of the perturbation's wall "
             "window (init.random_wall_confinement convention); zero "
             "gives every mode the same window."
+        ),
+    )
+    # Supplied, never measured here (Design notes: "The smoothness
+    # default").  It moves no trajectory and no output, so ``twin.json``
+    # records it without matching it on resume.
+    re_tau: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Friction Reynolds number of the reference flow, from its "
+            "time-averaged statistics. Used only to report the seed's "
+            "spectral peak in wall units (printed and recorded in "
+            "twin.json) and to note when the twin.smoothness default "
+            "does not place it at 50; unset, the peak is reported in "
+            "units of h."
         ),
     )
     # The partner's own knob rather than the shared
@@ -705,6 +733,32 @@ _TWIN_REF_CADENCES: tuple[str, ...] = (
     "it_spectra3d_ref",
 )
 
+#: The wall-unit peak the ``twin.smoothness`` default is set for, half
+#: the minimal flow unit's span (Design notes: "The smoothness default").
+SEED_PEAK_PLUS: float = 50.0
+
+#: Relative distance from :data:`SEED_PEAK_PLUS` beyond which a fresh
+#: start at the default ``twin.smoothness`` notes the peak as off target.
+_SEED_PEAK_TOLERANCE: float = 0.1
+
+
+def seed_peak_wavelength(smoothness: float) -> float:
+    r"""Peak wavelength of the seed's premultiplied spectra, in `$h$`.
+
+    `$\lambda^* = 4\pi|\ln(1 - s)|$` for ``twin.smoothness`` `$s$`
+    (:mod:`dnsjax.ic.random_field`, which derives it).
+    """
+    return 4.0 * math.pi * abs(math.log1p(-smoothness))
+
+
+def smoothness_for_peak(wavelength: float) -> float:
+    r"""The ``twin.smoothness`` whose seed peaks at *wavelength* (in `$h$`).
+
+    The exact inverse of :func:`seed_peak_wavelength`,
+    `$s = 1 - \exp(-\lambda^*/4\pi)$`.
+    """
+    return -math.expm1(-wavelength / (4.0 * math.pi))
+
 
 def _validate_twin(values: TwinParams, params) -> None:
     # Unconfigured (no e0): reject stray secondary knobs rather than
@@ -756,6 +810,8 @@ def _validate_twin(values: TwinParams, params) -> None:
         raise ValueError("twin.wall_smoothness must lie in (0, 1).")
     if values.wall_confinement < 0:
         raise ValueError("twin.wall_confinement must be >= 0.")
+    if values.re_tau is not None and not values.re_tau > 0:
+        raise ValueError("twin.re_tau must be > 0.")
     # A layer has already turned an off cadence's 0 into unset, so a 0
     # left here was assigned directly; a reference cadence keeps its 0.
     for name in ("it_energy", *_TWIN_OFF_CADENCES):
@@ -1193,6 +1249,8 @@ def run(
         )
 
         # --- The perturbation (once, here, never on resume) ---
+        # The seed's twin.json keys; an exact copy draws no seed.
+        seed_peak: dict = {}
         if twin_params.e0 == 0.0:
             # Exact zero perturbation: the determinism guard.  Copy,
             # not alias -- the steppers donate their inputs.
@@ -1241,6 +1299,7 @@ def run(
                 f"(E' = {twin_params.e0:.3e}, "
                 f"seed = {twin_params.seed})."
             )
+            seed_peak = _seed_peak_record()
 
         if sharding.main_device:
             sidecar = _twin_sidecar_stub()
@@ -1248,6 +1307,7 @@ def run(
                 parent=str(ref_path),
                 parent_t=params.init.t0,
                 parent_it=params.init.it0,
+                **seed_peak,
                 git_hash=git_hash(),
                 params=recorded_params_dump(params),
             )
@@ -2186,7 +2246,8 @@ def _twin_sidecar_stub() -> dict:
 
     A **superset** of :data:`_TWIN_MATCH_KEYS`: the resume check reads
     only those, and the entries after them are recorded for provenance
-    alone.  They shape an output rather than the trajectory, and a
+    alone.  They shape an output rather than the trajectory (or, for
+    ``re_tau``, only what a fresh start reports), and a
     mid-stream flip is already a hard error where it matters -- the
     budget form by ``terms`` in ``twin_ybudget.json`` and the
     `$k_x = 0$` plane by ``suffixes`` in the three `$y$`-resolved
@@ -2237,7 +2298,54 @@ def _twin_sidecar_stub() -> dict:
         "n_kz3d": twin_params.n_kz3d,
         "n_kx3d": twin_params.n_kx3d,
         "it_lowres_delta": twin_params.it_lowres_delta,
+        # The supplied value the seed's wall-unit peak is reported
+        # against (:func:`_seed_peak_record`); it shapes no output.
+        "re_tau": twin_params.re_tau,
     }
+
+
+def _seed_peak_record() -> dict:
+    r"""Print the seed's spectral peak and return its ``twin.json`` keys.
+
+    ``seed_peak_lambda`` is :func:`seed_peak_wavelength` of
+    ``twin.smoothness``, in units of `$h$`; ``seed_peak_lambda_plus``
+    is that times ``twin.re_tau``, or ``None`` when it is unset.  At the
+    default smoothness, a wall-unit peak more than
+    :data:`_SEED_PEAK_TOLERANCE` from :data:`SEED_PEAK_PLUS` is noted
+    with the smoothness that would place it there (Design notes: "The
+    smoothness default").  Prints on the main device only.
+    """
+    from dnsjax.sharding import sharding
+
+    s = twin_params.smoothness
+    peak = seed_peak_wavelength(s)
+    re_tau = twin_params.re_tau
+    if re_tau is None:
+        sharding.print(
+            f"Seed spectral peak: lambda* = {peak:.4g} h "
+            f"(twin.smoothness = {s!r}); twin.re_tau gives it in wall "
+            "units."
+        )
+        return {"seed_peak_lambda": peak, "seed_peak_lambda_plus": None}
+    peak_plus = peak * re_tau
+    sharding.print(
+        f"Seed spectral peak: lambda* = {peak:.4g} h = {peak_plus:.4g} "
+        f"wall units (twin.smoothness = {s!r}, twin.re_tau = {re_tau!r})."
+    )
+    default = TwinParams.model_fields["smoothness"].default
+    off = abs(peak_plus / SEED_PEAK_PLUS - 1.0) > _SEED_PEAK_TOLERANCE
+    if s == default and off:
+        target = smoothness_for_peak(SEED_PEAK_PLUS / re_tau)
+        sharding.print(
+            f"note: the twin.smoothness default ({default!r}) is set to "
+            f"place this peak at lambda*+ = {SEED_PEAK_PLUS:g}, below "
+            f"the minimal flow unit; at twin.re_tau = {re_tau!r} it "
+            f"sits at {peak_plus:.3g}, and --twin.smoothness "
+            f"{target:.3g} places it at {SEED_PEAK_PLUS:g} "
+            '(dnsjax_lab.twin.driver Design notes, "The smoothness '
+            'default").'
+        )
+    return {"seed_peak_lambda": peak, "seed_peak_lambda_plus": peak_plus}
 
 
 def main(argv: list[str] | None = None) -> int:

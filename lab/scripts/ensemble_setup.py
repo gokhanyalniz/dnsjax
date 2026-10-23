@@ -66,7 +66,8 @@ Three subcommands:
     generated ``parameters.toml``: [init] snapshot, [stop] horizon
     (relative to the parent, so every member integrates the same span),
     the [twin] section (the member's seed, perturbation shape and
-    cadences), and [outs] and [lowres] sections when asked for.  The
+    cadences, and ``twin.re_tau`` under ``--re-tau``), and [outs] and
+    [lowres] sections when asked for.  The
     shape -- ``--smoothness``, ``--wall-smoothness``,
     ``--wall-confinement``, ``--mean-flow`` -- is written into every
     member whether given or not, an unset one at the driver's default
@@ -493,7 +494,8 @@ def _twin_shape(args: argparse.Namespace) -> dict:
         if getattr(args, key) is not None
     }
     try:
-        values = TwinParams(e0=args.e0, **given)
+        # ``re_tau`` rides along for its range check alone.
+        values = TwinParams(e0=args.e0, re_tau=args.re_tau, **given)
     except ValidationError as exc:
         raise SystemExit(f"ensemble_setup: error: {exc}") from None
     return {key: getattr(values, key) for key in _TWIN_SHAPE_KEYS}
@@ -557,6 +559,8 @@ def _twin_member_toml(mem: dict, args: argparse.Namespace, shape: dict) -> str:
         f"mean_flow = {'true' if shape['mean_flow'] else 'false'}",
         f"it_energy = {args.it_energy}",
     ]
+    if args.re_tau is not None:
+        lines.append(f"re_tau = {args.re_tau!r}")
     # ``twin.bins`` is off by default; ``it_budget`` needs it (the
     # closure check reads twin.dat's three-bin energies) -- a positive
     # one, ``0`` being the budget switched off.
@@ -866,6 +870,14 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="perturb the (0, 0) mode as well (twin.mean_flow; default: "
         "the driver's, pinned per member)",
+    )
+    pt.add_argument(
+        "--re-tau",
+        type=float,
+        default=None,
+        help="the reference flow's time-averaged friction Reynolds "
+        "number, against which each member reports its seed's peak "
+        "in wall units (twin.re_tau)",
     )
     pt.add_argument("--it-energy", type=int, default=1)
     pt.add_argument(
