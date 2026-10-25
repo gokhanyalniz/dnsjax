@@ -20,6 +20,10 @@ The package is ``dnsjax_lab.analysis.twin``, the orchestration
   printed ``t`` losing a decimal at ``t = 1000``, where the absolute
   column is refused, by the ensemble stack's member mask too;
 - the growth-rate fits against planted laws;
+- the members' distinct reference instants: samples within
+  ``INSTANT_ATOL`` are one instant, taken from the latest parent and
+  then the first path, whatever order the members come in, and
+  samples farther apart stay two;
 - the ``twin_spectra.bin`` reader: byte-exact round trip, truncated
   trailing record, duplicate-timestamp seams, version floor,
   decorrelation-ratio guards;
@@ -89,10 +93,12 @@ sys.stdout.reconfigure(line_buffering=True)
 import _repo  # noqa: E402 -- also puts the core suite's helpers on sys.path
 from _live import run_live  # noqa: E402
 from dnsjax_lab.analysis.twin import (  # noqa: E402
+    INSTANT_ATOL,
     GridResolutionError,
     aggregate_members,
     budget_sums,
     closure_residuals,
+    distinct_instants,
     fit_exponential_rate,
     fit_linear_rate,
     integral_lengths_from_modes,
@@ -713,6 +719,41 @@ def test_fits() -> None:
 
 
 # ── Spectra reader ───────────────────────────────────────────────────
+
+
+def test_distinct_instants() -> None:
+    """Each reference instant once: the latest parent's, then by path."""
+    a = np.array([100.0, 101.0, 102.0])
+    # 101 reached by other arithmetic: off by 2e-7, inside the
+    # tolerance, where a rounded key would split the pair.
+    b = np.array([101.0 + 2e-7, 102.0, 103.0])
+    picks, n_instants, n_samples = distinct_instants(
+        [a, b], [100.0, 101.0], ["a", "b"]
+    )
+    assert (n_samples, n_instants) == (6, 4)
+    # "b" starts later, so its copies of 101 and 102 are the ones kept.
+    assert [p.tolist() for p in picks] == [[0], [0, 1, 2]]
+    picks, _, _ = distinct_instants([b, a], [101.0, 100.0], ["b", "a"])
+    assert [p.tolist() for p in picks] == [[0, 1, 2], [0]]
+
+    # A member on the same parent as "b" ties with it: the path decides.
+    members = [(a, 100.0, "a"), (b, 101.0, "b"), (b.copy(), 101.0, "c")]
+    for order in ((0, 1, 2), (2, 0, 1)):
+        given = [members[i] for i in order]
+        picks, n_instants, _ = distinct_instants(
+            [m[0] for m in given], [m[1] for m in given], [m[2] for m in given]
+        )
+        by_path = {m[2]: p.tolist() for m, p in zip(given, picks, strict=True)}
+        assert by_path == {"a": [0], "b": [0, 1, 2], "c": []}, by_path
+        assert n_instants == 4
+
+    # Farther apart than the tolerance, two instants each.
+    picks, n_instants, _ = distinct_instants(
+        [a, a + 2.0 * INSTANT_ATOL], [100.0, 100.0], ["a", "b"]
+    )
+    assert n_instants == 6
+    assert [p.tolist() for p in picks] == [[0, 1, 2], [0, 1, 2]]
+    print("distinct instants: OK")
 
 
 def _write_spectra(
@@ -1929,6 +1970,7 @@ if __name__ == "__main__":
     test_aggregation_at_driver_precision()
     test_cadence_grid_at_driver_precision()
     test_fits()
+    test_distinct_instants()
     test_spectra_reader()
     test_yspectra_reader()
     test_stored_layouts()

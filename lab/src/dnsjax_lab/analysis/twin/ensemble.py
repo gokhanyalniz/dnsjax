@@ -36,6 +36,13 @@ Growth-rate fits (least squares over a caller-chosen window):
 - :func:`fit_linear_rate` -- the algebraic-phase slope
   `$\mathrm{d}E/\mathrm{d}t$`.
 
+The saturation level a difference is measured against is a time
+average of the members' **reference** samples, which meet on the
+absolute clock instead: members from one long run cover the same
+stretch of it wherever their windows overlap.
+:func:`distinct_instants` picks each reference instant once across
+the members, to :data:`INSTANT_ATOL`.
+
 CLI: ``python -m dnsjax_lab.analysis.twin.ensemble --tree T --out A.npz``
 writes the aggregate bundle (per-column ``stack_*`` / ``mean_*`` /
 ``std_*`` arrays plus ``t_rel``, ``columns``, and the members.json
@@ -47,6 +54,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -63,6 +71,18 @@ from dnsjax_lab.analysis.twin.series import (
 #: the last bit and anything this tolerance sees is a real
 #: displacement.
 _T_ATOL = 1e-9
+
+#: Absolute-time tolerance within which two members' reference samples
+#: are one instant (:func:`distinct_instants`).  The members reach one
+#: instant by different arithmetic, accumulating from different
+#: parents, so their stored times differ in the last bits; a rounded
+#: key, however fine, splits a pair that straddles a bin's edge.  This
+#: sits three decades above the round-off it has to absorb (the stored
+#: times accumulate order `$10^{-9}$`) and five below a sampling
+#: cadence, ``it_* * dt``, of order 1.  That second side matters as
+#: much: matching is transitive, so a member's samples closer together
+#: than this would chain into one instant.
+INSTANT_ATOL: float = 1e-6
 
 
 def _grid_mask(t: np.ndarray) -> np.ndarray:
@@ -296,6 +316,53 @@ def fit_linear_rate(
         float(intercept),
         float(np.sqrt(np.mean(resid**2))),
     )
+
+
+def distinct_instants(
+    times: Sequence[np.ndarray],
+    parent_t: Sequence[float],
+    paths: Sequence[str],
+    atol: float = INSTANT_ATOL,
+) -> tuple[list[np.ndarray], int, int]:
+    """Sample indices covering each reference instant once, across members.
+
+    *times* holds each member's reference sample times on the absolute
+    clock, *parent_t* each member's parent time and *paths* its
+    directory.  Returns one ascending index array per member, into its
+    *times* -- together they name every distinct instant exactly once
+    -- with the instant and sample counts.
+
+    Samples are grouped by proximity in absolute time to *atol*, never
+    by a rounded key (:data:`INSTANT_ATOL`).  A shared instant is taken
+    from the member whose parent is the latest, the copy closest to the
+    run the parents came from: members' copies of one instant part at
+    round-off and grow apart at the leading Lyapunov exponent
+    (``lab/scripts/twin_spectral_maps.py``, Design notes, "Copies of
+    one reference instant").  Members sharing that parent go by path,
+    so the choice depends on the member set and never on the order it
+    is given in.  The grouping is transitive: a caller whose member
+    may hold two samples within *atol* of each other refuses it first.
+    """
+    flat = np.concatenate([np.asarray(t, dtype=np.float64) for t in times])
+    owner = np.concatenate(
+        [np.full(len(t), i, dtype=int) for i, t in enumerate(times)]
+    )
+    index = np.concatenate([np.arange(len(t)) for t in times])
+    order = np.argsort(flat, kind="stable")
+    opening = np.ones(order.size, dtype=bool)
+    opening[1:] = np.diff(flat[order]) > atol
+    instant = np.cumsum(opening) - 1
+    # Within each instant: the latest parent first, then the path.
+    parents = np.asarray(parent_t, dtype=np.float64)
+    path_rank = np.argsort(np.argsort([str(p) for p in paths]))
+    by = owner[order]
+    ranked = np.lexsort((path_rank[by], -parents[by], instant))
+    lead = np.ones(ranked.size, dtype=bool)
+    lead[1:] = np.diff(instant[ranked]) != 0
+    chosen = order[ranked[lead]]
+    keep, owned = index[chosen], owner[chosen]
+    picks = [np.sort(keep[owned == i]) for i in range(len(times))]
+    return picks, int(opening.sum()), int(flat.size)
 
 
 def main(argv: list[str] | None = None) -> int:

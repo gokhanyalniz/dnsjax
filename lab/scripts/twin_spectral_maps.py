@@ -959,6 +959,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import numpy as np
+from dnsjax_lab.analysis.twin.ensemble import INSTANT_ATOL, distinct_instants
 from dnsjax_lab.analysis.twin.growth import (
     bound_free,
     decorrelation_rate,
@@ -1008,13 +1009,13 @@ from matplotlib.ticker import FuncFormatter
 #: tolerance and never a rounded key, however fine: module docstring,
 #: "Ensemble averaging" and "The reference average".
 #:
-#: This sits three decades above the round-off it has to absorb (the
-#: stored times accumulate order `$10^{-9}$`) and five below the
-#: sampling cadence, ``it_* * dt``, of order 1 here.  That second side
-#: matters as much: matching is transitive, so samples closer together
-#: than this would chain into one instant, and :func:`_check_cadence`
-#: refuses such a stream.
-_T_ATOL: float = 1e-6
+#: It is the analysis package's
+#: :data:`~dnsjax_lab.analysis.twin.ensemble.INSTANT_ATOL`, whose
+#: comment gives its two bounds: three decades above the round-off of
+#: the stored times, five below the sampling cadence.  Matching is
+#: transitive, so samples closer together than this would chain into
+#: one instant, and :func:`_check_cadence` refuses such a stream.
+_T_ATOL: float = INSTANT_ATOL
 
 #: The two streams this script understands, with their reader floors.
 STEMS: dict[str, int] = {
@@ -2169,33 +2170,23 @@ class YSeries:
         parent go by path, so the choice depends on the member set and
         never on the order it is given in.  The grouping is transitive;
         :func:`_check_cadence` has already refused a stream sampled
-        closer than the tolerance.
+        closer than the tolerance.  The rule is
+        :func:`~dnsjax_lab.analysis.twin.ensemble.distinct_instants`,
+        on the stride's samples, mapped back to record indices here.
         """
         times = [m.ref.t_abs[:: self.ref_stride] for m in self.members]
         rows = [m.ref.rows[:: self.ref_stride] for m in self.members]
-        flat = np.concatenate(times)
-        owner = np.concatenate(
-            [np.full(t.size, i, dtype=int) for i, t in enumerate(times)]
+        kept, n_instants, n_samples = distinct_instants(
+            times,
+            [m.parent_t for m in self.members],
+            [str(m.path) for m in self.members],
+            _T_ATOL,
         )
-        index = np.concatenate([np.arange(t.size) for t in times])
-        order = np.argsort(flat, kind="stable")
-        opening = np.ones(order.size, dtype=bool)
-        opening[1:] = np.diff(flat[order]) > _T_ATOL
-        instant = np.cumsum(opening) - 1
-        # Within each instant: the latest parent first, then the path.
-        parent_t = np.array([m.parent_t for m in self.members])
-        path_rank = np.argsort(np.argsort([str(m.path) for m in self.members]))
-        by = owner[order]
-        ranked = np.lexsort((path_rank[by], -parent_t[by], instant))
-        lead = np.ones(ranked.size, dtype=bool)
-        lead[1:] = np.diff(instant[ranked]) != 0
-        chosen = order[ranked[lead]]
-        keep, owned = index[chosen], owner[chosen]
         picks = [
-            np.sort(member_rows[keep[owned == i]])
-            for i, member_rows in enumerate(rows)
+            np.sort(member_rows[keep])
+            for member_rows, keep in zip(rows, kept, strict=True)
         ]
-        return picks, int(opening.sum()), int(flat.size)
+        return picks, n_instants, n_samples
 
     def _check_marginals(self, member: _Member, row: int) -> None:
         """Both marginals must report the same reference total.

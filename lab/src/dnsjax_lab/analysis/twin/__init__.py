@@ -12,8 +12,10 @@ of them):
   (:func:`~.series.relative_time`) and the cadence grid
   (:func:`~.series.uniform_grid`).
 - :mod:`.ensemble` -- member-tree aggregation of the twin streams on
-  aligned relative time, and the growth-rate fits (`$\lambda$` from
-  the exponential phase, the algebraic-phase linear rate).
+  aligned relative time, the growth-rate fits (`$\lambda$` from
+  the exponential phase, the algebraic-phase linear rate), and the
+  members' distinct reference instants on absolute time, which every
+  saturation level is averaged over.
 - :mod:`.spectra` -- readers for the ``twin_spectra.bin`` stream
   and its reference counterpart (either layout), and the
   decorrelation ratio.
@@ -55,7 +57,9 @@ from dnsjax_lab.analysis.twin.cubes import (
     read_twin_spectra3d_ref,
 )
 from dnsjax_lab.analysis.twin.ensemble import (
+    INSTANT_ATOL,
     aggregate_members,
+    distinct_instants,
     fit_exponential_rate,
     fit_linear_rate,
 )
@@ -130,6 +134,7 @@ __all__ = [
     "Cube",
     "CubeSeries",
     "GridResolutionError",
+    "INSTANT_ATOL",
     "LEGACY_SUFFIXES",
     "LogMoments",
     "MomentRates",
@@ -148,6 +153,7 @@ __all__ = [
     "cube_files",
     "decorrelation_rate",
     "decorrelation_ratio",
+    "distinct_instants",
     "fit_exponential_rate",
     "fit_linear_rate",
     "fluctuation_energy",
