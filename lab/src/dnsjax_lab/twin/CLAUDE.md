@@ -33,5 +33,5 @@ docstrings. The human overview: `README.md` here.
   and the Design notes in `driver.py`: the defaults decide what a run
   costs and what its streams can answer.
 - Offline tools: `lab/scripts/twin_postprocess.py`,
-  `lab/scripts/twin_spectral_maps.py` and `lab/scripts/ensemble_setup.py
-  build-twin` (`lab/CLAUDE.md`).
+  `lab/scripts/twin_spectral_maps.py`, `lab/scripts/twin_member_check.py`
+  and `lab/scripts/ensemble_setup.py build-twin` (`lab/CLAUDE.md`).

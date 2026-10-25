@@ -412,6 +412,20 @@ member stays visible offline in its `E_ref` column. The script emits
 `run_commands.txt` and a `members.json` index, and never runs the
 solver itself.
 
+Once a member has run, `lab/scripts/twin_member_check.py` checks it
+before it joins the ensemble, without JAX: every stream complete and
+finite, the spectra and the budget against `twin.dat`, the corrector,
+and the final snapshot pair. It also reports whether every band and
+wall-distance range has decorrelated by the last sample, against a
+saturation level pooled over the members `--pool` names. Exit status 2
+means the run was too short: resume the member from its final pair for
+longer. Its module docstring is the manual:
+
+```bash
+uv run python lab/scripts/twin_member_check.py twins/m0002 \
+  --re-tau 510 --pool twins/m0000 twins/m0001
+```
+
 ## Offline analysis
 
 `dnsjax_lab.analysis.twin` reads and aggregates all of it, and is
@@ -437,7 +451,8 @@ apart the widest such pairing is.
 
 The readers work in the code's units. The plotting and reporting
 scripts (`lab/scripts/twin_spectral_maps.py`,
-`lab/scripts/random_ic_calibrate.py`) present every time and rate in
+`lab/scripts/random_ic_calibrate.py`,
+`lab/scripts/twin_member_check.py`) present every time and rate in
 outer units, $h$ and $u_\tau$ (time as $t\ u_\tau/h$), with wall units
 beside them, from the reference flow's time-averaged $Re_\tau$: a
 required input (`--re-tau`, `calib.re_tau`) that they never measure.

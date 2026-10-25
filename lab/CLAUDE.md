@@ -72,6 +72,9 @@ benchmarks and diagnostics are fixed on purpose.
   figures of the twin `(y, k)` streams over an ensemble.
 - `random_ic_calibrate.py`: score and sweep the random IC's `(y, k)`
   shape against a recorded ensemble (`[calib]`).
+- `twin_member_check.py`: JAX-free checks of one finished twin member
+  (streams, spectra and budget against `twin.dat`, corrector, snapshot
+  pairs) and whether it ran long enough to decorrelate (`--pool`).
 - `performance/solver_benchmark.py`: pallas-vs-dense validation and
   benchmark on the flows its `SIZES` / `EXTRA_ENTRIES` tables list
   (`--cpu-smoke`).
