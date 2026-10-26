@@ -12,8 +12,9 @@ in three tiers (the live-run machinery: ``tests/_run_status.py``):
    replaced (dead pid, another host), a live one refused with nothing
    touched, a peer process recording only its own exception, the
    teardown bound armed on exactly the multi-process ``TERMINATED``
-   ends -- plus the stop poll and
-   :func:`~dnsjax.run_status.loop_outcome`.
+   ends, and, in a child process blocked at exit in native code, that
+   bound exiting with status 1 and writing nothing -- plus the stop
+   poll and :func:`~dnsjax.run_status.loop_outcome`.
 2. **One process** (``dnsjax``, no launcher): a natural finish;
    ``rm RUNNING`` and ``SIGUSR1`` mid-run, each ending ``STOPPED`` with
    exit 0 and a final snapshot whose time the last ``stats.dat`` row
@@ -252,6 +253,32 @@ def unit_teardown_bound(d: Path) -> None:
         rs._agree, rs._bound_teardown = agree, bound
 
 
+# A child that arms the bound, then blocks at exit in native code
+# holding the GIL (``ctypes.PyDLL`` keeps it), as a teardown may.
+_BLOCKED_EXIT = """
+import atexit, ctypes
+from dnsjax import run_status as rs
+rs.TEARDOWN_GRACE = 1
+rs._bound_teardown()
+atexit.register(ctypes.PyDLL(None).sleep, 60)
+"""
+
+
+def unit_teardown_exit(d: Path) -> None:
+    """The armed bound exits a blocked teardown, status 1, writing nothing."""
+    start = time.monotonic()
+    child = subprocess.run(
+        [sys.executable, "-c", _BLOCKED_EXIT],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    took = time.monotonic() - start
+    assert child.returncode == 1, f"exit {child.returncode}"
+    assert child.stdout == child.stderr == "", (child.stdout, child.stderr)
+    assert took < 30, f"exited after {took:.1f} s"
+
+
 def unit_poll(d: Path) -> None:
     """The poll: RUNNING removed, SIGUSR1, the clock; a peer never stats."""
 
@@ -314,6 +341,7 @@ UNITS: list[Callable[[Path], None]] = [
     unit_live_refusal,
     unit_peer,
     unit_teardown_bound,
+    unit_teardown_exit,
     unit_poll,
     unit_loop_outcome,
 ]
@@ -441,8 +469,8 @@ def live_peer_error(d: Path, ctx: dict) -> None:
 
     Rank 1 raises in the initial snapshot's write while rank 0 waits
     in its barrier (``tests/_peer_error.py``): rank 1 records its
-    error, then exits within the shortened teardown bound, its stack
-    dumped, and ``mpirun`` ends rank 0.
+    error, then exits within the shortened teardown bound, writing
+    nothing, and ``mpirun`` ends rank 0.
     """
     shutil.copy(ctx["pids"], d / "pids.sh")
     helper = Path(__file__).resolve().parent / "_peer_error.py"
@@ -454,7 +482,7 @@ def live_peer_error(d: Path, ctx: dict) -> None:
     got = fields(d / rs.TERMINATED)
     assert got["reason"].startswith("OSError: [Errno 5]"), got
     assert got["process"].startswith("1 of 2 on "), got
-    assert "Timeout (0:00:05)!" in run.stderr, "no teardown-bound dump"
+    assert "Timeout (" not in run.stderr, "the watchdog wrote to stderr"
 
 
 ONE_PROCESS = [

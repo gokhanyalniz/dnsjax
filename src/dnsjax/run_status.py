@@ -77,9 +77,9 @@ An abnormal end of a multi-process run
 On a multi-process run, a process whose run ends in ``TERMINATED``
 exits at most :data:`TEARDOWN_GRACE` seconds later, even where it
 ended alone and its peers wait for it in a collective (an I/O error
-on some ranks): past that, every thread's Python stack goes to stderr
-and the process exits with status 1 (``TERMINATED`` keeps the cause's
-own code).  Its launcher then ends the others (``srun
+on some ranks): past that, the process exits with status 1, writing
+nothing (``TERMINATED`` keeps the cause's own code).  Its launcher
+then ends the others (``srun
 --kill-on-bad-exit=1``, as the example job script sets; ``mpirun`` by
 default), and without one the distributed runtime does, once its
 heartbeat misses the exited process for ``dist.heartbeat_timeout``
@@ -173,6 +173,13 @@ record (rejected) would also skip the orderly shutdown of an end
 every process shares, and a coordination service that vanishes under
 its clients aborts them (``PollForError: UNAVAILABLE``, observed with
 JAX 0.11.2).
+
+The watchdog writes a dump of every thread's Python stack before it
+calls ``_exit``, so the dump goes to ``/dev/null``.  Written to the
+job's stderr, it would leave the exit waiting on that write, and a
+stalled filesystem under the job log is the case the bound exists
+for; nor would it say where the process sat, the stuck finalize
+having no Python frame (above).
 """
 
 import os
@@ -373,13 +380,15 @@ def _agree(flag: bool) -> bool:
 def _bound_teardown() -> None:
     """Exit this process if it lives :data:`TEARDOWN_GRACE` s more.
 
-    Arms ``faulthandler``'s watchdog: past the grace it dumps every
-    thread's Python stack to stderr and calls ``_exit(1)`` (Design
-    notes, "Why an abnormal end bounds its teardown").
+    Arms ``faulthandler``'s watchdog: past the grace it calls
+    ``_exit(1)``, its stack dump sent to ``/dev/null`` (Design notes,
+    "Why an abnormal end bounds its teardown").
     """
     import faulthandler
 
-    faulthandler.dump_traceback_later(TEARDOWN_GRACE, exit=True)
+    # Left open: the watchdog writes to it at the end of the process.
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    faulthandler.dump_traceback_later(TEARDOWN_GRACE, exit=True, file=devnull)
 
 
 def _signal_name(n: int) -> str:
