@@ -66,9 +66,10 @@ Design notes
 communicator per device group, the first time a program runs a
 collective over that group, and refuse unless they are on the thread
 that initialized MPI: ``MPI: Communicator requested from a thread that
-is not the one MPI was initialized from``.  The error is fatal and the
-run hangs: the failed ranks wait in the distributed runtime's
-shutdown, the others in the collective, until the job is killed.  The
+is not the one MPI was initialized from``.  The error is fatal: the
+failed ranks leave the run while the others wait in the collective,
+until the teardown bound of an abnormal end
+(:mod:`dnsjax.run_status`) lets the launcher end them.  The
 inline dispatch :func:`dnsjax.bootstrap._select_cpu_collectives` turns
 on keeps a program's launch on the calling thread, not every
 collective in it: a program whose input is still being written when it

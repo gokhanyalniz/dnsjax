@@ -72,6 +72,22 @@ goes through a ``.partial`` rename, and ``TERMINATED`` blocks are
 appended and ``fsync``-ed.  An end file is written before ``RUNNING``
 is removed, so the directory always holds one status file.
 
+An abnormal end of a multi-process run
+--------------------------------------
+On a multi-process run, a process whose run ends in ``TERMINATED``
+exits at most :data:`TEARDOWN_GRACE` seconds later, even where it
+ended alone and its peers wait for it in a collective (an I/O error
+on some ranks): past that, every thread's Python stack goes to stderr
+and the process exits with status 1 (``TERMINATED`` keeps the cause's
+own code).  Its launcher then ends the others (``srun
+--kill-on-bad-exit=1``, as the example job script sets; ``mpirun`` by
+default), and without one the distributed runtime does, once its
+heartbeat misses the exited process for ``dist.heartbeat_timeout``
+seconds.  An end every process reaches together tears down in a few
+seconds, well within the bound (Design notes, "Why an abnormal end
+bounds its teardown").  ``FINISHED`` and ``STOPPED`` are left
+unbounded.
+
 A start removes the ``FINISHED``, ``STOPPED`` or ``TERMINATED`` of an
 earlier segment.  It refuses, on every process and touching no file,
 when ``RUNNING`` names a live process on this machine (same host,
@@ -122,6 +138,41 @@ so a blocking call in such a thread would return ``EINTR``.
 calls the kernel never restarts still return ``EINTR``, as for any
 signal).  The two immediate signals need nothing of the kind: the run
 ends either way.
+
+**Why an abnormal end bounds its teardown.**  A process leaving the
+run alone goes through the interpreter's exit, whose ``atexit``
+handlers tear down JAX's runtime; on the MPI collectives the first of
+them (registered last) is their finalize, which waits for every
+process, while the peers wait in their next collective for this one.
+Neither side can move.  The process's distributed-runtime client
+keeps sending its heartbeat meanwhile, so the runtime never declares
+it lost, and the launcher, seeing no exit, ends nothing: the job
+would hold its nodes until its time limit.  Reproduced with JAX
+0.11.2 and Open MPI 4.1.6, two processes on one machine, an
+``OSError`` raised on rank 1 alone where every rank reads a new
+snapshot's layout: rank 1's main thread sat in the finalize (no
+Python frame left) and rank 0 in the snapshot barrier, both still
+there when the launch was killed at 240 s, past the 100 s heartbeat
+timeout.  ``tests/test_run_status.py`` ("mpi-peer-error") runs that
+failure.  Under the bound, shortened there to 5 s, the same launch
+ended 11 s after it began, ``mpirun`` ending rank 0; with
+``mpirun``'s abort on a failed process turned off, rank 0 aborted on
+the runtime's error 15 s after rank 1 exited, at a
+``dist.heartbeat_timeout`` of 15 s.
+
+``faulthandler.dump_traceback_later(..., exit=True)`` is the bound: a
+native watchdog thread that needs no GIL (a teardown blocked in
+native code may hold it) and stays armed through the ``atexit``
+handlers.  It is armed before ``TERMINATED`` is written, since that
+write can block too on a failing filesystem.  :data:`TEARDOWN_GRACE`
+is about six times a healthy teardown at production size: on
+ARCHER2, at 4096 processes on 32 nodes, an end file to ``srun``'s
+return took about 10 s.  A teardown it cuts short loses nothing,
+since the end is already recorded.  ``os._exit`` straight after the
+record (rejected) would also skip the orderly shutdown of an end
+every process shares, and a coordination service that vanishes under
+its clients aborts them (``PollForError: UNAVAILABLE``, observed with
+JAX 0.11.2).
 """
 
 import os
@@ -143,6 +194,10 @@ END_FILES: tuple[str, ...] = (FINISHED, STOPPED, TERMINATED)
 EXIT_NON_FINITE: int = 3
 #: Exit code of a run whose corrector failed to converge.
 EXIT_CORRECTOR: int = 4
+#: Seconds a process of a multi-process run ending in ``TERMINATED``
+#: may spend recording it and tearing down before it exits regardless
+#: (module docstring, "An abnormal end of a multi-process run").
+TEARDOWN_GRACE: int = 60
 
 # Set by the SIGUSR1 handler, read at each stop poll.  A flag only:
 # the handler runs between two bytecodes of the main thread, wherever
@@ -315,6 +370,18 @@ def _agree(flag: bool) -> bool:
     return bool(broadcast_one_to_all(np.array([int(flag)], np.int32))[0])
 
 
+def _bound_teardown() -> None:
+    """Exit this process if it lives :data:`TEARDOWN_GRACE` s more.
+
+    Arms ``faulthandler``'s watchdog: past the grace it dumps every
+    thread's Python stack to stderr and calls ``_exit(1)`` (Design
+    notes, "Why an abnormal end bounds its teardown").
+    """
+    import faulthandler
+
+    faulthandler.dump_traceback_later(TEARDOWN_GRACE, exit=True)
+
+
 def _signal_name(n: int) -> str:
     try:
         return signal.Signals(n).name
@@ -353,7 +420,9 @@ class RunStatus:
     writes the new one; leaving writes the end file from
     :attr:`outcome`, or ``TERMINATED`` when an exception (a
     ``SystemExit`` included, unless its code is 0 or ``None``) is
-    leaving, which it re-raises.  The module docstring is the contract.
+    leaving, which it re-raises.  A ``TERMINATED`` end with
+    *process_count* above 1 first bounds the process's remaining life
+    (:func:`_bound_teardown`).  The module docstring is the contract.
     """
 
     def __init__(
@@ -462,6 +531,9 @@ class RunStatus:
         else:
             reason, code = _ended_by(exc)
             outcome = Outcome(TERMINATED, self._note or reason, code)
+        if outcome.status == TERMINATED and self.count > 1:
+            # Before the record, which can block on a failing filesystem.
+            _bound_teardown()
         if self.main:
             self._record(outcome)
         elif isinstance(exc, Exception):

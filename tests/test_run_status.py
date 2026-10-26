@@ -10,8 +10,10 @@ in three tiers (the live-run machinery: ``tests/_run_status.py``):
    :class:`~dnsjax.run_status.RunStatus` -- the end file and exit code
    of each way out, the note and snapshot lines, a stale ``RUNNING``
    replaced (dead pid, another host), a live one refused with nothing
-   touched, a peer process recording only its own exception -- plus
-   the stop poll and :func:`~dnsjax.run_status.loop_outcome`.
+   touched, a peer process recording only its own exception, the
+   teardown bound armed on exactly the multi-process ``TERMINATED``
+   ends -- plus the stop poll and
+   :func:`~dnsjax.run_status.loop_outcome`.
 2. **One process** (``dnsjax``, no launcher): a natural finish;
    ``rm RUNNING`` and ``SIGUSR1`` mid-run, each ending ``STOPPED`` with
    exit 0 and a final snapshot whose time the last ``stats.dat`` row
@@ -23,7 +25,10 @@ in three tiers (the live-run machinery: ``tests/_run_status.py``):
 3. **Two processes** (``mpirun -np 2``): ``rm RUNNING``; ``SIGUSR1`` to
    rank 1 alone, which only an agreed stop survives (a rank leaving
    the loop alone hangs both); ``SIGUSR1`` to ``mpirun``, which must
-   forward it.  Each must end with both ranks shut down.
+   forward it.  Each must end with both ranks shut down.  And an
+   ``OSError`` on rank 1 alone mid-write (``tests/_peer_error.py``),
+   which must end the launch within the teardown bound rather than
+   leave rank 0 waiting in the snapshot barrier.
 
 Run as a script::
 
@@ -191,8 +196,10 @@ def unit_live_refusal(d: Path) -> None:
 
 def unit_peer(d: Path) -> None:
     """A peer appends its own exception only; process 0 owns RUNNING."""
-    agree = rs._agree
+    agree, bound = rs._agree, rs._bound_teardown
     rs._agree = lambda flag: flag  # two processes, without JAX
+    # A real bound would end this script (unit_teardown_bound tests it).
+    rs._bound_teardown = lambda: None
     try:
         main = rs.RunStatus(0, 2, directory=d).__enter__()
         peer = rs.RunStatus(1, 2, directory=d).__enter__()
@@ -213,7 +220,36 @@ def unit_peer(d: Path) -> None:
         assert "process: 0 of 2 on " in blocks[1], blocks[1]
         assert "signal 15 (SIGTERM)" in blocks[1], blocks[1]
     finally:
-        rs._agree = agree
+        rs._agree, rs._bound_teardown = agree, bound
+
+
+def unit_teardown_bound(d: Path) -> None:
+    """A TERMINATED end bounds the teardown on several processes only."""
+    agree, bound = rs._agree, rs._bound_teardown
+    armed: list[int] = []
+    rs._agree = lambda flag: flag  # two processes, without JAX
+    rs._bound_teardown = lambda: armed.append(1)
+    try:
+        cases = [
+            # (process index, count, exception, outcome, armed)
+            (0, 1, RuntimeError("one process"), None, False),
+            (1, 2, OSError(5, "Input/output error"), None, True),
+            (1, 2, SystemExit(143), None, True),
+            (0, 2, SystemExit(3), None, True),
+            (0, 2, None, rs.Outcome(rs.TERMINATED, "corrector", 4), True),
+            (0, 2, None, rs.Outcome(rs.STOPPED, "requested"), False),
+            (0, 2, None, None, False),
+        ]
+        for index, count, exc, outcome, want in cases:
+            armed.clear()
+            status = rs.RunStatus(index, count, directory=d).__enter__()
+            status.outcome = outcome
+            status.__exit__(type(exc) if exc else None, exc, None)
+            assert bool(armed) == want, (index, count, exc, outcome)
+            for name in (rs.RUNNING, *rs.END_FILES):
+                (d / name).unlink(missing_ok=True)
+    finally:
+        rs._agree, rs._bound_teardown = agree, bound
 
 
 def unit_poll(d: Path) -> None:
@@ -277,6 +313,7 @@ UNITS: list[Callable[[Path], None]] = [
     unit_stale,
     unit_live_refusal,
     unit_peer,
+    unit_teardown_bound,
     unit_poll,
     unit_loop_outcome,
 ]
@@ -399,6 +436,27 @@ def live_refusal(d: Path, ctx: dict) -> None:
     assert end_files(d) == [rs.STOPPED], end_files(d)
 
 
+def live_peer_error(d: Path, ctx: dict) -> None:
+    """An I/O error on rank 1 alone ends both ranks, not a hang.
+
+    Rank 1 raises in the initial snapshot's write while rank 0 waits
+    in its barrier (``tests/_peer_error.py``): rank 1 records its
+    error, then exits within the shortened teardown bound, its stack
+    dumped, and ``mpirun`` ends rank 0.
+    """
+    shutil.copy(ctx["pids"], d / "pids.sh")
+    helper = Path(__file__).resolve().parent / "_peer_error.py"
+    cmd = ["mpirun", "-np", "2", "./pids.sh", sys.executable, str(helper)]
+    run = Run([*cmd, "--dist.np1", "2", *SOLVER, *LONG], d)
+    rc = run.finish(timeout=120)
+    assert rc is not None, "hung after rank 1's error"
+    assert rc != 0, f"exit {rc}"
+    got = fields(d / rs.TERMINATED)
+    assert got["reason"].startswith("OSError: [Errno 5]"), got
+    assert got["process"].startswith("1 of 2 on "), got
+    assert "Timeout (0:00:05)!" in run.stderr, "no teardown-bound dump"
+
+
 ONE_PROCESS = [
     ("natural", live_natural),
     ("remove", live_stop(1, "remove")),
@@ -413,6 +471,7 @@ TWO_PROCESSES = [
     ("mpi-remove", live_stop(2, "remove")),
     ("mpi-usr1-rank1", live_stop(2, "rank1")),
     ("mpi-usr1-mpirun", live_stop(2, "launched")),
+    ("mpi-peer-error", live_peer_error),
 ]
 
 

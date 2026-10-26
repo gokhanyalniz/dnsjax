@@ -209,7 +209,13 @@ When the run ends, `RUNNING` is replaced by one file saying how:
 | `TERMINATED` | failed: the corrector did not converge (4); a NaN or inf (3); SIGTERM or SIGINT (128 + the signal number); anything else (1) | as listed |
 
 Each file gives the start and end times, the reason and the newest
-snapshot the run wrote, which a resume continues from. A `RUNNING`
+snapshot the run wrote, which a resume continues from. On several
+processes, one that fails alone (an I/O error on some ranks) records
+its own block in `TERMINATED` and exits within a minute, while the
+others wait for it in a collective; the launcher then ends them
+(`srun --kill-on-bad-exit=1`, which the example job script sets, or
+`mpirun` by default), and failing that the distributed runtime does
+once it misses that process's heartbeat. A `RUNNING`
 left with no live process belongs to a run killed outright (SIGKILL,
 out of memory, a lost node): the next launch in that directory reports
 and replaces it, but a launch refuses to start next to a `RUNNING`
