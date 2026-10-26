@@ -152,7 +152,7 @@ benchmarks and diagnostics are fixed on purpose.
 - `docs/dup_prose.py`: repeated prose passages across the tree.
 - `docs/md_lint.py`: added Markdown lines against the prose rules.
 - `docs/parse_cmds.py`: parse-validates one documented command line
-  (solver, twin or a TOML), JAX-free.
+  (solver, twin), a TOML or a `dnsjax-twin` TOML, JAX-free.
 - `docs/check_render.py`: renders Markdown through GitHub's API (a POST
   per file) and compares its math with the source.
 - `docs/oxford.py` (`--dry`; its ranges: `docs/doc_ranges.py`),

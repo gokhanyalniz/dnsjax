@@ -17,7 +17,7 @@ module docstring is its manual.
 | `doc_pointers.py` | headings, titles, banners and numbering a change removes, with every line still quoting each; `--inbound`, the lines elsewhere that point into given files |
 | `dup_prose.py` | pairs of repeated prose passages across the tree, most shared first |
 | `md_lint.py` | the Markdown lines a change adds: width, Oxford spelling, banned words, inline math across a line break |
-| `parse_cmds.py` | parse-validates one documented command line or TOML file without JAX |
+| `parse_cmds.py` | parse-validates one documented command line, TOML file or `dnsjax-twin` TOML file without JAX |
 | `check_render.py` | renders a Markdown file through GitHub's API (a request per file) and compares its math with the source |
 | `oxford.py`, `reflow.py`, `underline.py` | rewrite documentation in place: Oxford spelling in the ranges `doc_ranges.py` finds (`--dry` previews), one reflowed paragraph, section underlines |
 | `doc_inventory.py` | per-file dumps of docstrings and comments, written under the current directory, and the missing docstrings, printed |
