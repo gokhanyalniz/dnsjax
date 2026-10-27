@@ -21,12 +21,15 @@ writes its disjoint byte ranges into the one file in parallel, either
 concurrently (the default, for POSIX and parallel filesystems) or rank
 by rank (`outs.snapshot_write_mode = "serial"`, for filesystems where
 concurrent writes are unsafe). The bytes land in `<name>.tar.partial`
-and are renamed into place only once complete, so a killed job leaves
-the previous snapshot intact and never a truncated archive that could
-pass for a valid one; on read, the chunk layout is checked against the
-metadata, and a damaged archive raises an error naming the file and the
-cause. The layout, the write path (the reshard onto the file's layout,
-GPUDirect Storage) and the metadata: the
+and are renamed into place only once complete and `fsync`-ed, so a
+killed job leaves the previous snapshot intact and never a truncated
+archive that could pass for a valid one. A write that fails with a
+transient filesystem error (a parallel filesystem's client evicted, a
+server failing over) is retried for up to 15.5 minutes before the run
+ends on it. On read, the chunk layout is checked against the metadata,
+and a damaged archive raises an error naming the file and the cause.
+The layout, the write path (the reshard onto the file's layout,
+GPUDirect Storage, the retries) and the metadata: the
 [`dnsjax.snapshot`](../src/dnsjax/snapshot.py) module docstring; the
 read checks: [`dnsjax.snapshot_meta`](../src/dnsjax/snapshot_meta.py)
 (Design notes, "Truncated archives").

@@ -32,6 +32,11 @@ Exercises the host (non-GDS) I/O path:
   and the final name untouched (the archive is built under a
   ``.partial`` name and renamed), with the partial file left behind
   as evidence;
+- a transient filesystem error (``EIO``, ``ESHUTDOWN``) in any step
+  of a save -- the layout, a slab write, the rename -- is retried to
+  the same archive, every write is ``fsync``-ed, and a non-transient
+  error or one past the last wait still ends the save; the offsets'
+  broadcast carries values past ``2**31`` (``_save_retry``);
 - an archive whose component chunks do not match the ``native_shape``
   describing them is refused (why: ``snapshot_meta._check_chunks_match_meta``);
 - 2D mesh round-trips: save and load with ``np0 > 1``, including
@@ -92,6 +97,7 @@ from _snapshot import (
     run_mode_case,
     run_ny_mismatch_case,
     run_parity_regrid_case,
+    run_retry_case,
     run_stats_isnap_case,
     run_truncation_case,
     run_write_mode_identity_case,
@@ -425,6 +431,7 @@ if __name__ == "__main__":
             run_write_mode_identity_case(),
         )
     )
+    results.append(("transient write errors retried", run_retry_case()))
 
     # The I/O-layout slab arithmetic (run_io_layout_case).
     results.append(("I/O layout slabs", run_io_layout_case()))

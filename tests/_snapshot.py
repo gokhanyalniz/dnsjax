@@ -457,6 +457,13 @@ def _worker(
         print("worker-save-fail-ok", flush=True)
         return
 
+    if action == "save_retry":
+        ref_true = _make_reference(np, tshape)
+        state_np = _embed_true_into_padded(ref_true, padded_shape, system)
+        _save_retry(np, jax, snapshot, jax.device_put(state_np, vshard), d)
+        print("worker-save-retry-ok", flush=True)
+        return
+
     if action in ("save_poly", "save_poly_f32"):
         from dnsjax.parameters import derived_params
 
@@ -610,6 +617,121 @@ def _worker(
     _check_standard_tools(d, ref_true, system)
 
     print("worker-load-ok", flush=True)
+
+
+def _save_retry(np, jax, snapshot, state, d: str) -> None:
+    """The ``save_retry`` worker: the save's transient-error retries.
+
+    One transient failure in each step of ``write_archive`` -- the
+    layout (``ESHUTDOWN``), the slab write (``EIO``) and the rename,
+    whose first attempt lands before raising (a reply lost) -- must be
+    re-run to an archive whose chunks equal a clean save's, each
+    reported on stderr; every write must be ``fsync``-ed on the
+    ``.partial``.  A non-transient error must raise at once, and a
+    transient one past the last wait must raise too.  The offsets'
+    broadcast must carry a value past ``2**31`` in ``int32`` digits.
+    """
+    import errno
+    import io
+    import tarfile
+
+    import jax.experimental.multihost_utils as mhu
+
+    good = d + ".good.tar"
+    snapshot.save_snapshot(state, T_SAVE, IT_SAVE, good)
+    snapshot._IO_RETRY_WAITS = (0.0, 0.0)
+    names = ("_write_tar_skeleton", "_write_chunks_host", "_commit")
+    real = {n: getattr(snapshot, n) for n in names}
+
+    def flaky(name, err, calls, *, fail_on=(1,), land_first=False):
+        def wrapped(*args, **kwargs):
+            calls[name] += 1
+            if calls[name] in fail_on:
+                if land_first:
+                    real[name](*args, **kwargs)
+                raise OSError(err, os.strerror(err))
+            return real[name](*args, **kwargs)
+
+        return wrapped
+
+    def install(**wrappers):
+        for n in names:
+            setattr(snapshot, n, wrappers.get(n, real[n]))
+
+    synced: list[str] = []
+    real_fsync = os.fsync
+
+    def spy_fsync(fd):
+        synced.append(os.readlink(f"/proc/self/fd/{fd}"))
+        real_fsync(fd)
+
+    calls = dict.fromkeys(names, 0)
+    install(
+        _write_tar_skeleton=flaky(
+            "_write_tar_skeleton", errno.ESHUTDOWN, calls
+        ),
+        _write_chunks_host=flaky("_write_chunks_host", errno.EIO, calls),
+        _commit=flaky("_commit", errno.EIO, calls, land_first=True),
+    )
+    err, real_stderr = io.StringIO(), sys.stderr
+    os.fsync, sys.stderr = spy_fsync, err
+    try:
+        snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d)
+    finally:
+        os.fsync, sys.stderr = real_fsync, real_stderr
+    assert calls == dict.fromkeys(names, 2), calls
+    assert err.getvalue().count("retrying in 0 s") == 3, err.getvalue()
+    assert not os.path.exists(d + ".partial"), (
+        "the retried save left a partial"
+    )
+    comps = [f"state/c/{i}/0/0/0" for i in range(3)]
+    with tarfile.open(good) as a, tarfile.open(d) as b:
+        for c in comps:
+            assert a.extractfile(c).read() == b.extractfile(c).read(), c
+    # The layout once, then each of this process's two slabs.
+    partial = os.path.realpath(d + ".partial")
+    assert synced == [partial] * 3, synced
+
+    for err_no, fail_on, n_calls in (
+        (errno.ENOSPC, (1,), 1),
+        (errno.EIO, (1, 2, 3), 3),
+    ):
+        calls = dict.fromkeys(names, 0)
+        install(
+            _write_chunks_host=flaky(
+                "_write_chunks_host", err_no, calls, fail_on=fail_on
+            )
+        )
+        sys.stderr = io.StringIO()
+        try:
+            snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d)
+        except OSError as e:
+            assert e.errno == err_no, e
+        else:
+            raise AssertionError(f"errno {err_no} did not end the save")
+        finally:
+            sys.stderr = real_stderr
+        assert calls["_write_chunks_host"] == n_calls, calls
+    install()
+
+    sent = []
+
+    def fake_broadcast(x, is_source=None):
+        sent.append(x)
+        return x
+
+    offsets = [0, 512, 2**31 + 512, 3 * 2**40 + 1536]
+    real_count, real_broadcast = jax.process_count, mhu.broadcast_one_to_all
+    jax.process_count, mhu.broadcast_one_to_all = (lambda: 2), fake_broadcast
+    try:
+        got = snapshot._broadcast_offsets(offsets)
+    finally:
+        jax.process_count, mhu.broadcast_one_to_all = (
+            real_count,
+            real_broadcast,
+        )
+    assert got == offsets, got
+    assert sent[0].dtype == np.int32, sent[0].dtype
 
 
 # ── orchestrator ─────────────────────────────────────────────────────
@@ -1166,6 +1288,27 @@ def run_atomic_write_case() -> str | None:
     return None
 
 
+def run_retry_case() -> str | None:
+    """A transient filesystem error in a save is retried (``_save_retry``)."""
+    name = "transient write errors retried"
+    with tempfile.TemporaryDirectory() as tmp:
+        r = _run_worker(
+            "save_retry",
+            "plane-couette",
+            "walled",
+            "concurrent",
+            2,
+            os.path.join(tmp, "snap.tar"),
+        )
+        if reason := _check(name, "save_retry", r):
+            return reason
+        if "worker-save-retry-ok" not in (r.stdout or ""):
+            print(f"  FAIL  {name}: worker did not confirm")
+            return "save_retry worker did not confirm"
+    print(f"  PASS  {name}")
+    return None
+
+
 def run_write_mode_identity_case() -> str | None:
     """``serial`` and ``concurrent`` must store the same component data.
 
@@ -1387,6 +1530,7 @@ if __name__ == "__main__":
             "load_modes",
             "save_stats",
             "save_fail",
+            "save_retry",
         ],
     )
     parser.add_argument("--system")

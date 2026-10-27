@@ -105,11 +105,15 @@ file at ``component_offset + within_component_offset``.  That
 layout is built under a ``.partial`` name and renamed once every
 write has landed (:data:`_PARTIAL_SUFFIX`), because until then the
 file is a valid archive full of zeros.  The component base offsets
-are the tar members' ``offset_data``, read back via ``tarfile``:
-512-aligned (a tar block) but not generally 4096-aligned (Design
-notes: "cuFile alignment").  TensorStore is used only to generate the
-``zarr.json`` bytes (in a throwaway temporary directory); compression
-is never used (it would break random-access streaming).
+are the tar members' ``offset_data``, read back via ``tarfile`` by
+process 0 alone and broadcast, so a device whose slab is empty never
+touches the file: 512-aligned (a tar block) but not generally
+4096-aligned (Design notes: "cuFile alignment").  Every write is
+``fsync``-ed before the rename, and a step that fails with a
+transient filesystem error is retried after a pause (Design notes:
+"Retrying an archive write").  TensorStore is used only to generate
+the ``zarr.json`` bytes (in a throwaway temporary directory);
+compression is never used (it would break random-access streaming).
 
 - **GDS** (NVIDIA GPUDirect Storage): when ``kvikio``, ``cupy`` and
   the nvidia-fs driver are usable (:func:`_gds_available`), slabs move
@@ -235,10 +239,34 @@ module's own host path below 1 MiB spans.
 offsets; the tar's 512-aligned ones cost a bounce buffer for the head
 and tail of each transfer: a real penalty on a 512 B transfer, a
 rounding error on the I/O layout's tens of MiB.
+
+**Retrying an archive write.**  Measured on three 32-node CPU runs
+(4096 processes) writing to Lustre, each ended by a
+reduced-resolution write that raised ``EIO`` or ``ESHUTDOWN`` on some
+processes, the errors a client returns once a server has evicted it.
+In two, on 10 and 16 nodes at once, all ~1600 failing processes were
+reading the ``.partial``'s tar index for the offsets (every process
+reading it: rejected), and ~1590 of them held no slab, the file's 191
+wall-normal planes going to the first 191 of 4096 devices.  A
+concurrent run on the same filesystem saw one write block for 10 min
+and complete.  In the third, on one node, 13 writers failed in
+``open``; a monitoring file that node had appended to 24 s earlier
+held 82 zero bytes in place of that line, a write that had returned
+and was dropped without an error, and the node's next append, 36 s
+after the failure, landed.  Hence the ``fsync`` before the commit (an
+``EIO`` the retry can act on, not zeros in a committed archive) and
+:data:`_IO_RETRY_WAITS`, 15.5 min in all, past both outages.  A
+retried step rewrites its whole byte range, so it is idempotent, and
+the other processes wait in the next collective; a process that spends
+every wait raises, and the run ends on that error.
 """
 
+import errno
 import json
 import math
+import os
+import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cache, partial
@@ -1212,8 +1240,8 @@ def _write_tar_skeleton(
     -- gets a correct header followed by a sparse-reserved, zero-filled
     data region padded to the 512-byte block boundary.  The archive
     ends with the two zero blocks tar expects.  After this the file is
-    full-length, so every device can safely write its disjoint byte
-    ranges into the chunk regions.
+    full-length and ``fsync``-ed, so every device can safely write its
+    disjoint byte ranges into the chunk regions.
     """
     comp_nbytes = math.prod(comp_shape) * itemsize
     comp_padded = comp_nbytes + (-comp_nbytes) % 512
@@ -1237,6 +1265,7 @@ def _write_tar_skeleton(
             f.seek(comp_padded - 1, 1)
             f.write(b"\x00")
         f.write(b"\x00" * 1024)  # end-of-archive marker
+        _flush_to_disk(f)
 
 
 # ── Snapshot metadata ─────────────────────────────────────
@@ -1393,6 +1422,10 @@ def _write_chunks_gds(
                         f"{slab.nbytes} bytes (component {comp}); "
                         "the archive is incomplete."
                     )
+        # A CuFile has no fsync; one on any descriptor of the file
+        # flushes what kvikIO's compat path left in the page cache.
+        with open(tar_path, "rb") as f:
+            _flush_to_disk(f)
 
 
 def _read_chunks_gds(
@@ -1496,6 +1529,8 @@ def _write_chunks_host(
     of a handful of big writes.  Otherwise (CPU runs, non-NVIDIA GPUs)
     the full shard is copied once with ``np.asarray`` and the slabs are
     written directly from it (the module docstring's memory table).
+    The file is ``fsync``-ed before it is closed, so a write the
+    filesystem loses raises here (:func:`write_archive`).
     """
     a_true, kz_true, kx_true = comp_shape
     try:
@@ -1530,6 +1565,7 @@ def _write_chunks_host(
                         f"{buf.nbytes} bytes (component {comp}); "
                         "the archive is incomplete."
                     )
+            _flush_to_disk(f)
 
 
 def _read_chunks_host(
@@ -1606,6 +1642,97 @@ def _read_chunks_host(
     return per_device
 
 
+# ── Committing an archive ─────────────────────────────────
+
+
+#: The ``errno`` values of an ``OSError`` that :func:`write_archive`
+#: retries: what a Lustre client returns while its connection to a
+#: server is lost or being re-established (a client eviction, a server
+#: failover), not a fault of the archive.  ``EIO`` and ``ESHUTDOWN``
+#: are the observed ones (Design notes: "Retrying an archive write").
+_TRANSIENT_ERRNOS = frozenset(
+    {errno.EIO, errno.ESHUTDOWN, errno.ENOTCONN, errno.ETIMEDOUT}
+)
+
+#: Seconds :func:`_retry_transient` waits before each re-attempt,
+#: 15.5 min in all: past the 10 min outage observed (Design notes:
+#: "Retrying an archive write"), short of a job's remaining budget.
+_IO_RETRY_WAITS = (30.0, 60.0, 120.0, 240.0, 480.0)
+
+
+def _flush_to_disk(f) -> None:
+    """Flush the open file *f* and ``fsync`` it.
+
+    On return the filesystem has acknowledged every byte written
+    through *f*.  A write it drops before then (a client eviction
+    discards the pages not yet sent, the ``write`` having returned)
+    raises here, rather than leaving zeros in an archive that is then
+    committed.
+    """
+    f.flush()
+    os.fsync(f.fileno())
+
+
+def _retry_transient[T](step: Callable[[bool], T], what: str) -> T:
+    """Return ``step(retried)``, re-running it on a transient error.
+
+    An ``OSError`` whose ``errno`` is in :data:`_TRANSIENT_ERRNOS` is
+    reported on stderr with this process's index and *what* it was
+    doing, and *step* runs again, with ``retried=True``, after each
+    wait of :data:`_IO_RETRY_WAITS` in turn; any other exception, or a
+    transient one once the waits are spent, propagates.  *step* must
+    be idempotent (each of :func:`write_archive`'s rewrites its whole
+    byte range or file).  Local to this process: the others wait in
+    the next collective meanwhile.
+    """
+    for attempt, wait in enumerate((*_IO_RETRY_WAITS, None)):
+        try:
+            return step(attempt > 0)
+        except OSError as error:
+            if wait is None or error.errno not in _TRANSIENT_ERRNOS:
+                raise
+            print(
+                f"[process {jax.process_index()}] {what}: {error}; "
+                f"retrying in {wait:.0f} s (retry {attempt + 1} of "
+                f"{len(_IO_RETRY_WAITS)})",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(wait)
+    raise AssertionError("unreachable: the last attempt returns or raises")
+
+
+def _broadcast_offsets(offsets: list[int]) -> list[int]:
+    """Process 0's byte *offsets* on every process (a collective).
+
+    Every process passes a list of the same length; only process 0's
+    values matter.  They travel as ``int32`` pairs of 30-bit digits:
+    an offset passes ``2**31`` in any archive above 2 GiB, and an
+    ``int64`` would be narrowed while ``jax_enable_x64`` is off.
+    """
+    if jax.process_count() == 1:
+        return offsets
+    from jax.experimental.multihost_utils import broadcast_one_to_all
+
+    pairs = [divmod(o, 1 << 30) for o in offsets]
+    digits = np.array(pairs, np.int32).reshape(-1, 2)
+    out = np.asarray(
+        broadcast_one_to_all(digits, is_source=sharding.main_device)
+    )
+    return [(int(hi) << 30) | int(lo) for hi, lo in out]
+
+
+def _commit(partial: Path, path: Path, retried: bool) -> None:
+    """Rename *partial* onto *path* (``os.replace``, atomic).
+
+    A retried rename whose earlier attempt reached the server, its
+    reply lost, finds *partial* gone and *path* in place: done.
+    """
+    if retried and not partial.exists() and path.exists():
+        return
+    partial.replace(path)
+
+
 # ── Public API ────────────────────────────────────────────
 
 
@@ -1643,53 +1770,82 @@ def write_archive(
     *meta* builds the ``_dnsjax_meta.json`` content and runs on the
     main process only.  Collective: every process calls it, in the
     same order as every other collective.
+
+    Process 0 alone reads the chunk offsets back from the layout and
+    broadcasts them, so a process holding no slab never opens the
+    file; every write is ``fsync``-ed before the commit, and each
+    step (the layout, a process's slabs, the rename) is retried on a
+    transient filesystem error (:func:`_retry_transient`; Design
+    notes: "Retrying an archive write").
     """
     path = Path(path)
     # The sibling the archive is built in (:data:`_PARTIAL_SUFFIX`).
     partial = path.with_name(path.name + _PARTIAL_SUFFIX)
     itemsize = _np_dtype(dtype_name).itemsize
+    n_comps = [int(array.shape[0]) for _, array in members]
 
+    flat = [0] * sum(n_comps)
     if sharding.main_device:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _write_tar_skeleton(
-            partial,
-            comp_shape,
-            itemsize,
-            json.dumps(meta(), indent=2, default=str).encode("utf-8"),
-            [
-                (
-                    name,
-                    int(array.shape[0]),
-                    _zarr_json_bytes(
-                        (int(array.shape[0]), *comp_shape),
-                        (1, *comp_shape),
-                        dtype_name,
-                    ),
-                )
-                for name, array in members
-            ],
-            None if stats is None else _stats_json_bytes(stats),
-        )
-    _barrier("snapshot_create")
+        meta_bytes = json.dumps(meta(), indent=2, default=str).encode()
+        layout = [
+            (
+                name,
+                n,
+                _zarr_json_bytes(
+                    (n, *comp_shape), (1, *comp_shape), dtype_name
+                ),
+            )
+            for (name, _), n in zip(members, n_comps, strict=True)
+        ]
+        stats_bytes = None if stats is None else _stats_json_bytes(stats)
+
+        def lay_out(_retried: bool) -> list[int]:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _write_tar_skeleton(
+                partial,
+                comp_shape,
+                itemsize,
+                meta_bytes,
+                layout,
+                stats_bytes,
+            )
+            return [
+                offsets[c]
+                for (name, _), n in zip(members, n_comps, strict=True)
+                for offsets in [_MEMBER_OFFSETS[name](partial)]
+                for c in range(n)
+            ]
+
+        flat = _retry_transient(lay_out, f"laying out {partial}")
+    # Also the barrier: no process writes before the layout exists.
+    flat = _broadcast_offsets(flat)
+    member_offsets, start = {}, 0
+    for (name, _), n in zip(members, n_comps, strict=True):
+        member_offsets[name] = dict(enumerate(flat[start : start + n]))
+        start += n
 
     use_gds = _gds_available()
     if use_gds:
         sharding.print("Snapshot: using GDS path")
-    write_fn = _write_chunks_gds if use_gds else _write_chunks_host
+    engine = _write_chunks_gds if use_gds else _write_chunks_host
+
+    def write_fn(*args) -> None:
+        _retry_transient(lambda _retried: engine(*args), f"writing {partial}")
 
     for name, array in members:
-        offsets = _MEMBER_OFFSETS[name](partial)
+        args = (array, partial, member_offsets[name], comp_shape, itemsize)
         if params.outs.snapshot_write_mode == "serial":
-            _write_serialized(
-                write_fn, array, partial, offsets, comp_shape, itemsize
-            )
+            _write_serialized(write_fn, *args)
         else:
-            write_fn(array, partial, offsets, comp_shape, itemsize)
-    # Every write has landed and every file handle is closed (the
-    # engines all use ``with``): the archive is complete.
+            write_fn(*args)
+    # Every write has landed, been fsync-ed and its file handle closed
+    # (the engines all use ``with``): the archive is complete.
     _barrier("snapshot_write")
     if sharding.main_device:
-        partial.replace(path)
+        _retry_transient(
+            lambda retried: _commit(partial, path, retried),
+            f"committing {path}",
+        )
     # Only after this does the snapshot exist for a reader, on every
     # process -- so a rank that returns early cannot report a
     # checkpoint the run has not committed.
