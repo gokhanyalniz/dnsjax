@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import os
 import signal
 import socket
@@ -260,8 +261,23 @@ def sample(args: argparse.Namespace) -> int:
 
 
 def _load(path: Path) -> list[dict]:
+    """The samples of one ``memwatch_<host>.csv``, as floats.
+
+    Zero bytes are dropped first, with a note on stderr: a sample the
+    filesystem lost after ``write`` returned (a client eviction drops
+    the pages not yet sent) leaves a run of them where its line was,
+    run into the start of the next one.
+    """
+    text = path.read_text(newline="")
+    if (zeros := text.count("\0")) > 0:
+        print(
+            f"{path}: dropped {zeros} zero bytes (a sample the "
+            "filesystem lost)",
+            file=sys.stderr,
+        )
+        text = text.replace("\0", "")
     rows = []
-    with open(path, newline="") as fh:
+    with io.StringIO(text, newline="") as fh:
         reader = csv.DictReader(fh)
         for rec in reader:
             if None in rec or None in rec.values():
