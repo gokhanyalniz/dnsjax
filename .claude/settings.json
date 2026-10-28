@@ -16,18 +16,5 @@
       "Bash(git status *)",
       "Bash(git branch *)"
     ]
-  },
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "f=$(uv run python -c 'import json,sys; print(json.load(sys.stdin).get(\"tool_input\",{}).get(\"file_path\",\"\"))'); case \"$f\" in *.py) uv run ruff check --fix --quiet \"$f\"; uv run ruff format --quiet \"$f\";; esac; exit 0"
-          }
-        ]
-      }
-    ]
   }
 }

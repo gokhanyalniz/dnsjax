@@ -21,8 +21,7 @@ multi-process runs (a lone process needs none, even across GPUs).
   lab/src lab/tests lab/scripts` (never a bare `ruff format`: it also
   rewrites the Python blocks in the Markdown docs and the example
   notebook, laid out for reading). Lines are at most 79 columns.
-  `prek.toml` (at commit) and `.claude/settings.json` (on each edited
-  `.py`) run both.
+  `prek.toml` runs both at commit.
 - `uv run pytest -m "not slow and not mpi"` (the offline loop, a heavy
   suite), `-m "not slow"` (adds the quick `mpirun` rows), `uv run pytest`
   (everything), each over both suites; one script: `uv run python
