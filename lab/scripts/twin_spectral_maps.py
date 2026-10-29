@@ -623,7 +623,14 @@ a constant-rate decorrelation phase marked by a stated criterion
 (:func:`growth_phases`: the longest window within
 :data:`GROWTH_TOLERANCE` of its own mean).  The rates it prints,
 `$\gamma_0$` and `$\kappa$`, are each window's mean and so depend on
-the window: the onset's legend names it as the longest.  ``growth_x`` /
+the window: the onset's legend names it as the longest.  Its
+`$\gamma$`-`$R$` panel shades the members' standard error of
+`$\gamma$` (:func:`member_rate_error`) and, given
+``--two-lambda-plus`` (a published `$2\lambda_1^+$`) or
+``--copies-lambda-plus`` (the `$\lambda_1^+$` the members' reference
+copies give; Design notes, "Copies of one reference instant"), draws
+`$2\lambda_1$` across it: the rate at which the energy of an
+infinitesimal difference grows.  ``growth_x`` /
 ``growth_z`` follow one band per octave of `$m$` and the `$m = 0$`
 column (the `$(0, 0)$` mode off both halves), ``growth_y`` a row per
 octave of wall distance, each against twice its own reference share,
@@ -1012,6 +1019,7 @@ from matplotlib.colors import (
     Normalize,
     TwoSlopeNorm,
 )
+from matplotlib.legend_handler import HandlerTuple
 from matplotlib.ticker import FuncFormatter
 
 #: Tolerance within which two sample times are held to be the same
@@ -6877,6 +6885,24 @@ def member_energies(series: YSeries) -> np.ndarray:
     return np.stack(out)
 
 
+def member_rate_error(curves: GrowthCurves) -> np.ndarray | None:
+    r"""The members' standard error of `$\gamma$` per sample, or ``None``.
+
+    The standard deviation of the members' own
+    `$\gamma_i = \mathrm{d}\ln E_i/\mathrm{d}t$` over the root of their
+    number, in code units like :attr:`GrowthCurves.gamma`; ``None``
+    with fewer than two members (``curves.members``).  The drawn
+    `$\gamma$` is the geometric member mean's, and since
+    :func:`~dnsjax_lab.analysis.twin.growth.log_rate` is linear in
+    `$\ln E$` it is the mean of the `$\gamma_i$`: this is the standard
+    error of the drawn curve, by the same estimator.
+    """
+    if curves.members is None or curves.members.shape[0] < 2:
+        return None
+    rates = log_rate(curves.t, curves.members)
+    return rates.std(axis=0, ddof=1) / math.sqrt(rates.shape[0])
+
+
 @dataclass(frozen=True)
 class GrowthPhases:
     r"""The two phases a growth curve is marked by, by stated criteria.
@@ -7014,6 +7040,9 @@ def growth_summary_figure(
     phases: GrowthPhases,
     options: MapOptions,
     style: PlotStyle,
+    *,
+    two_lambda_plus: float | None = None,
+    copies_lambda_plus: float | None = None,
 ):
     r"""Which growth law holds when, read off four sets of axes.
 
@@ -7032,7 +7061,13 @@ def growth_summary_figure(
         parallel to one of the keyed slopes `$-1/\alpha$`, and
         constant-rate decorrelation follows `$\kappa(1 - R)/R$` -- and a
         window with no positive rate (one inside saturation) leaves it
-        empty, saying so;
+        empty, saying so.  The members' standard error of `$\gamma$`
+        (:func:`member_rate_error`) is shaded about the curve, over its
+        samples where `$R$` reaches a new maximum, and
+        *two_lambda_plus* (`$2\lambda_1^+$`, a published value) and
+        *copies_lambda_plus* (`$\lambda_1^+$`, as the members'
+        reference copies give it) are drawn across at `$2\lambda_1$`,
+        named in the legend, which they would otherwise cross;
     (c) `$-\ln(1 - R)$` against `$t$`: constant-rate decorrelation is a
         line of slope `$\kappa$`, where the logistic at the exponential's
         rate, through the same half-saturation time, would end at slope
@@ -7148,18 +7183,69 @@ def growth_summary_figure(
             transform=ax_g.transAxes,
             fontsize="x-small",
         )
+    # Twice the leading Lyapunov exponent, given per t+ and drawn in
+    # u_tau/h: the rate of an infinitesimal difference's energy.
+    lyapunov = sorted(
+        (units.rate_to_plus[1](value), name, dashes)
+        for value, name, dashes in (
+            (two_lambda_plus, "literature", (0, (5, 2))),
+            (
+                None if copies_lambda_plus is None else 2 * copies_lambda_plus,
+                "reference copies",
+                (0, (1.5, 1.2)),
+            ),
+        )
+        if value is not None
+    )
+    if lyapunov:
+        g_bottom = min(g_bottom, 0.7 * lyapunov[0][0])
+        g_top = max(g_top, 1.4 * lyapunov[-1][0])
     ax_g.set_xscale("log")
     ax_g.set_yscale("log")
     ax_g.set_xlim(r_lo * 0.5, 1.5)
     ax_g.set_ylim(g_bottom, g_top)
-    ax_g.plot(
+    error = member_rate_error(curves)
+    shaded = error is not None and path.any()
+    (curve,) = ax_g.plot(
         r[path],
         gamma[path],
         color="black",
         linewidth=1.4,
         zorder=3,
-        label=r"$\gamma(R)$",
+        label=(
+            r"$\gamma(R)$, $\pm$ member standard error"
+            if shaded
+            else r"$\gamma(R)$"
+        ),
     )
+    handle = curve
+    if shaded:
+        # Where R reaches a new maximum, so the band's abscissa rises.
+        rising = np.where(path, r, -np.inf)
+        band = path & (rising >= np.maximum.accumulate(rising))
+        error = units.per_time(error)
+        handle = (
+            ax_g.fill_between(
+                r[band],
+                np.maximum(gamma[band] - error[band], g_bottom),
+                gamma[band] + error[band],
+                color="0.85",
+                linewidth=0,
+                zorder=1,
+            ),
+            curve,
+        )
+    # In the legend, not on the lines: a curve growing at 2 lambda_1
+    # runs along them.
+    for value, name, dashes in lyapunov:
+        ax_g.axhline(
+            value,
+            color=_TRACK_SERIES[2],
+            linewidth=1.1,
+            linestyle=dashes,
+            zorder=1.5,
+            label=rf"$2\lambda_1$, {name}",
+        )
     for window, colour in ((exp_w, blue), (dec_w, vermillion)):
         if window is not None:
             sel = path & (t >= window[0]) & (t <= window[1])
@@ -7216,7 +7302,11 @@ def growth_summary_figure(
     ax_g.set_xlabel(r"$R$")
     _rate_axis(ax_g, units, r"$\gamma = \mathrm{d}\ln E_\Delta/\mathrm{d}t$")
     ax_g.grid(True, color="0.92", linewidth=0.5, which="both")
+    handles, labels = ax_g.get_legend_handles_labels()
     ax_g.legend(
+        [handle if h is curve else h for h in handles],
+        labels,
+        handler_map={tuple: HandlerTuple(ndivide=1)},
         fontsize="x-small",
         loc="upper center",
         bbox_to_anchor=(0.5, -0.24),
@@ -7627,12 +7717,18 @@ def write_growth_npz(
     curves: GrowthCurves,
     options: MapOptions,
     phases: list[GrowthPhases],
+    *,
+    two_lambda_plus: float | None = None,
+    copies_lambda_plus: float | None = None,
 ) -> Path:
     r"""Dump a growth figure's curves, their derived laws and the phases.
 
     ``t`` is the curves' own clock, in code time; every other time is
     in `$h/u_\tau$` and every rate in `$u_\tau/h$`, as drawn.  The
-    energies stay in code units (they enter only as ratios).
+    energies stay in code units (they enter only as ratios).  The
+    summary's curve adds ``gamma_member_se`` (:func:`member_rate_error`)
+    and the two Lyapunov references as given, in wall units, ``nan``
+    where not given (:func:`growth_summary_figure`).
     """
     units = options.units
 
@@ -7673,6 +7769,19 @@ def write_growth_npz(
     }
     if curves.members is not None:
         payload["member_energy"] = curves.members
+        payload["two_lambda_plus"] = (
+            np.nan if two_lambda_plus is None else two_lambda_plus
+        )
+        payload["copies_lambda_plus"] = (
+            np.nan if copies_lambda_plus is None else copies_lambda_plus
+        )
+        payload["lyapunov_units"] = (
+            "per t+, as given; drawn at 2 lambda_1 = Re_tau times "
+            "two_lambda_plus, or twice copies_lambda_plus, in u_tau/h"
+        )
+    error = member_rate_error(curves)
+    if error is not None:
+        payload["gamma_member_se"] = units.per_time(error)
     if curves.rates:
         for group, values in curves.rates.items():
             payload[f"rate_{group}"] = units.per_time(values)
@@ -7691,8 +7800,14 @@ def render_growth(
     style: PlotStyle,
     fmt: str = "png",
     quiet: bool = False,
+    two_lambda_plus: float | None = None,
+    copies_lambda_plus: float | None = None,
 ) -> list[Path]:
-    """Render one growth-law figure and its ``.npz`` (module docstring)."""
+    """Render one growth-law figure and its ``.npz`` (module docstring).
+
+    The two Lyapunov references reach the summary alone
+    (:func:`growth_summary_figure`).
+    """
     kind = spec.marginal
     if kind == "global":
         curves = growth_global(spectra, options)
@@ -7712,7 +7827,13 @@ def render_growth(
     if curves.t.size >= 5:
         if kind == "global":
             fig = growth_summary_figure(
-                spectra, curves, phases[0], options, style
+                spectra,
+                curves,
+                phases[0],
+                options,
+                style,
+                two_lambda_plus=two_lambda_plus,
+                copies_lambda_plus=copies_lambda_plus,
             )
         elif kind == "ssp":
             fig = growth_ssp_figure(spectra, curves, options, style)
@@ -7755,7 +7876,13 @@ def render_growth(
         written.append(path)
     written.append(
         write_growth_npz(
-            target / f"{tag}.npz", spectra, curves, options, phases
+            target / f"{tag}.npz",
+            spectra,
+            curves,
+            options,
+            phases,
+            two_lambda_plus=two_lambda_plus,
+            copies_lambda_plus=copies_lambda_plus,
         )
     )
     if not quiet:
@@ -8080,6 +8207,14 @@ def clock_tolerance(
     return value if code_units else value / units.u_tau
 
 
+def _positive(text: str) -> float:
+    """An ``argparse`` ``type``: a positive, finite number."""
+    value = float(text)
+    if not (math.isfinite(value) and value > 0.0):
+        raise argparse.ArgumentTypeError(f"{text}: not a positive number")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The CLI surface; every documented number is a knob."""
     p = argparse.ArgumentParser(
@@ -8227,6 +8362,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="also render the growth-law figures (growth_global, the "
         "summary; growth_x / growth_z / growth_y per band; growth_ssp, "
         "streaks, rolls and waves); needs the reference; off by default",
+    )
+    p.add_argument(
+        "--two-lambda-plus",
+        type=_positive,
+        default=None,
+        metavar="RATE",
+        help="twice the flow's leading Lyapunov exponent in wall units "
+        "(per t+), a published value at this Re_tau: drawn across "
+        "growth_global's gamma-R panel",
+    )
+    p.add_argument(
+        "--copies-lambda-plus",
+        type=_positive,
+        default=None,
+        metavar="RATE",
+        help="the leading Lyapunov exponent in wall units as the "
+        "members' reference copies give it: drawn across the same panel "
+        "at twice its value",
     )
     p.add_argument(
         "--log-decades",
@@ -8555,6 +8708,8 @@ def _render(args: argparse.Namespace) -> int:
                 style=style,
                 fmt=args.format,
                 quiet=args.quiet,
+                two_lambda_plus=args.two_lambda_plus,
+                copies_lambda_plus=args.copies_lambda_plus,
             )
             continue
         if spec.family == FRONT:

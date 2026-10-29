@@ -176,7 +176,12 @@ What each case pins:
     `$u_\tau/h$`, the onset's as its longest window's and the late one
     as `$\kappa$`, never `$\nu$`, the viscosity; and it draws a window
     with no positive rate -- inside saturation, its energy drifting
-    down -- rather than failing on it.
+    down -- rather than failing on it.  Its `$\gamma$`-`$R$` panel
+    shades the members' standard error of `$\gamma$`, whose mean is the
+    drawn `$\gamma$`, and none for one member; given the two Lyapunov
+    references (each `$> 0$`), it draws them at `$2\lambda_1$` in
+    `$u_\tau/h$`, inside its limits and named in its legend, and the
+    ``.npz`` records them.
 25. **Presented units.** Time is `$t\,u_\tau/h$` and a rate per
     `$h/u_\tau$` whatever ``--outer-units`` says, each with its wall
     unit a factor of `$Re_\tau$` away; both headers state both times;
@@ -200,6 +205,8 @@ Usage::
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -230,6 +237,7 @@ from dnsjax_lab.analysis.twin.yspectra import (  # noqa: E402
     MIN_YSPECTRA_REF_VERSION,
 )
 from matplotlib import pyplot as plt  # noqa: E402
+from matplotlib.collections import PolyCollection  # noqa: E402
 from matplotlib.contour import ContourSet  # noqa: E402
 
 # ── Fixtures ─────────────────────────────────────────────────────────
@@ -3007,7 +3015,68 @@ def test_growth_laws() -> None:
     assert r"u_\tau/h" in ax_g.get_ylabel()
     # The axis spans the outer clock, not the code one.
     assert 0.0 < ax_e.get_xlim()[1] <= t[-1] * U_TAU * (1.0 + 1e-12)
+    # One member and no references: no band, no line across.
+    assert not _bands(ax_g) and not _across(ax_g)
     plt.close(fig)
+
+    # Two members whose geometric mean is the curve: the band is their
+    # standard error of gamma about the drawn gamma, and the Lyapunov
+    # references are drawn at 2 lambda_1 in u_tau/h.
+    wobble = 0.01 * np.sin(t)
+    pair = energy * np.exp(np.stack([wobble, -wobble]))
+    two = tsm.GrowthCurves(
+        t=t,
+        energy=energy[None, :],
+        saturation=np.array([sat]),
+        labels=["E"],
+        members=pair,
+    )
+    error = tsm.member_rate_error(two)
+    assert np.allclose(error, 0.01 * np.abs(np.gradient(np.sin(t), t)))
+    assert np.allclose(tsm.log_rate(t, pair).mean(axis=0), two.gamma[0])
+    fig = tsm.growth_summary_figure(
+        types.SimpleNamespace(t_rel=t, n_members=2),
+        two,
+        phases,
+        options,
+        tsm.PlotStyle(),
+        two_lambda_plus=0.042,
+        copies_lambda_plus=0.02,
+    )
+    ax_g = fig.axes[1]
+    want = [0.04 * RE_TAU, 0.042 * RE_TAU]
+    assert np.allclose(_across(ax_g), want), _across(ax_g)
+    lo, hi = ax_g.get_ylim()
+    assert lo < min(want) and max(want) < hi
+    (band,) = _bands(ax_g)
+    gamma = options.units.per_time(two.gamma[0])
+    top = gamma + options.units.per_time(error)
+    bottom = np.maximum(gamma - options.units.per_time(error), lo)
+    for x, y in band.get_paths()[0].vertices:
+        at = np.flatnonzero(two.r[0] == x)
+        assert at.size, x
+        assert np.any(np.isclose(y, top[at]) | np.isclose(y, bottom[at]))
+    legend = [text.get_text() for text in ax_g.get_legend().get_texts()]
+    assert {
+        r"$\gamma(R)$, $\pm$ member standard error",
+        r"$2\lambda_1$, literature",
+        r"$2\lambda_1$, reference copies",
+    } <= set(legend), legend
+    plt.close(fig)
+    parser = tsm.build_parser()
+    base = ["--members", "a", "--out", "o", "--re", str(RE)]
+    base += ["--re-tau", str(RE_TAU)]
+    args = parser.parse_args(
+        base + ["--two-lambda-plus", "0.042", "--copies-lambda-plus", "0.02"]
+    )
+    assert (args.two_lambda_plus, args.copies_lambda_plus) == (0.042, 0.02)
+    for bad in ("0", "-1", "nan", "inf"):
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                parser.parse_args(base + ["--copies-lambda-plus", bad])
+        except SystemExit:
+            continue
+        raise AssertionError(f"--copies-lambda-plus {bad} was accepted")
     meta = _meta("twin_yspectra")
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
@@ -3049,6 +3118,22 @@ def test_growth_laws() -> None:
         assert np.isclose(
             curves.saturation[0], 2.0 * series.reference_scale().sum()
         )
+        npz = tsm.write_growth_npz(
+            root / "global.npz",
+            series,
+            curves,
+            options,
+            [tsm.growth_phases(curves.t, curves.energy[0], 1.0)],
+            two_lambda_plus=0.042,
+        )
+        with np.load(npz) as z:
+            assert float(z["two_lambda_plus"]) == 0.042
+            assert np.isnan(z["copies_lambda_plus"])
+            assert np.allclose(
+                z["gamma_member_se"],
+                options.units.per_time(tsm.member_rate_error(curves)),
+                equal_nan=True,
+            )
         (members[1] / "twin.dat").unlink()  # one member without it
         fallback = tsm.growth_global(
             tsm.open_series(members, "twin_yspectra"), options
@@ -3100,6 +3185,22 @@ def test_growth_laws() -> None:
     )
     plt.close(fig)
     print("growth laws: OK")
+
+
+def _bands(ax) -> list:
+    """The filled bands of an axes (``fill_between``)."""
+    return [c for c in ax.collections if isinstance(c, PolyCollection)]
+
+
+def _across(ax) -> list[float]:
+    """The heights of an axes' horizontal lines (``axhline``), sorted."""
+    return sorted(
+        float(line.get_ydata()[0])
+        for line in ax.get_lines()
+        if line.get_linestyle() != "None"
+        and len(line.get_ydata()) == 2
+        and line.get_ydata()[0] == line.get_ydata()[1]
+    )
 
 
 def test_presented_units() -> None:
