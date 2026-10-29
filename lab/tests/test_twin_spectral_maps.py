@@ -157,11 +157,14 @@ What each case pins:
 22. **The moment budget closes.** On a stream whose terms add up to
     `$\partial_t e$`, the per-term rates sum to the moments' own
     rates in physical space and on both marginals, and two streams on
-    different frames are refused.
+    different frames are refused.  Its rows write the energy-weighted
+    means `$\mu_{\ln y}$`, `$\mu_{\ln\lambda}$`, never a bracket,
+    which would read as a volume average.
 23. **Front times** take the last upward crossing of the level,
     interpolated, so a dip below it is not the crossing; a cell never
     above it is ``nan``, one never below it the first time -- which
-    is every cell of a saturated pair.
+    is every cell of a saturated pair.  The title writes the
+    reference's time average `$\bar r$`, never a bracket.
 24. **Growth laws.** A curve built to grow exponentially, then
     decorrelate at a constant rate, is marked with both rates; the
     global curve aligns the members' ``twin.dat`` on whole steps,
@@ -2914,6 +2917,11 @@ def test_moment_budget() -> None:
         lambda: tsm.moment_budget(spectra, short, "x", options),
         "different grids",
     )
+    labels = dict(tsm._MOMENT_ROWS_Y) | dict(tsm._MOMENT_ROWS_JOINT)
+    assert r"\mu_{\ln y}" in labels["mean_y"]
+    assert r"\mu_{\ln\lambda}" in labels["mean_lam"]
+    rows = tsm._MOMENT_ROWS_Y + tsm._MOMENT_ROWS_JOINT
+    assert not any(r"\langle" in label for _, label in rows)
     print("moment budget closes: OK")
 
 
@@ -2941,6 +2949,9 @@ def test_front_times() -> None:
     for map_ in tsm.front_maps(series, "x", options):
         finite = map_.values[np.isfinite(map_.values)]
         assert finite.size and np.allclose(finite, series.t_rel[0] * U_TAU)
+    title = tsm._front_suptitle(series, options.units, 0.5)
+    assert r"e/2\bar{r}$ rises through $0.5$" in title, title
+    assert r"\langle" not in title.splitlines()[0], title
     print("front times: OK")
 
 

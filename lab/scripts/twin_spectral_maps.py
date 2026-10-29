@@ -260,11 +260,11 @@ Three things here are measured against the reference field's own
 fluctuation energy: the two decorrelations (next section), the
 decorrelation front, and the growth laws, whose saturation level is
 twice it.  All three read one time average of the reference spectra,
-whose scalar reduction is
+written with an overline throughout (the figures as well), whose
+scalar reduction is
 
 .. math::
-    E^{\mathrm{ref}}_\alpha = \bigl\langle R_\alpha
-        - R^{00}_\alpha \bigr\rangle_t ,
+    E^{\mathrm{ref}}_\alpha = \overline{R_\alpha - R^{00}_\alpha} ,
     \quad R_\alpha = \sum_m \sum_j w_j\, r^{x}_\alpha(y_j, m) ,
     \quad R^{00}_\alpha = \sum_j w_j\, r^{xz00}_\alpha(y_j) ,
 
@@ -359,12 +359,12 @@ reference is a decorrelation, and there are two of them, differing
 only in what the divisor does with `$k$`:
 
 .. math::
-    D_\alpha(y) = \bigl\langle \textstyle\sum_m r_\alpha(y, m)
-        - r^{00}_\alpha(y) \bigr\rangle_t , \\
+    D_\alpha(y) = \overline{\textstyle\sum_m r_\alpha(y, m)
+        - r^{00}_\alpha(y)} , \\
     \mathcal{R}^k_\alpha(y, m) = \frac{e_\alpha(y, m)}
         {2\,D_\alpha(y)} , \qquad
     \mathcal{R}_\alpha(y, m) = \frac{e_\alpha(y, m)}
-        {2\,\langle r_\alpha(y, m)\rangle_t} .
+        {2\,\bar r_\alpha(y, m)} .
 
 Both saturate at 1, by the reading of "The reference average"
 applied where it is resolved.  `$\mathcal{R}$` is the sharper of the
@@ -552,18 +552,18 @@ each folded off-wall cell weighted by :func:`half_weights`, so a cell's
 weight times its entry is its exact share of the volume average -- in
 the component sum, the only one the component-summed budget can
 explain.  If `$\partial_t e = \sum_B B$` then for any function
-`$\varphi$` of the cell
+`$\varphi$` of the cell, `$\mu_\varphi$` its energy-weighted mean,
 
 .. math::
-    \frac{\mathrm{d}\langle\varphi\rangle}{\mathrm{d}t}
-      = E^{-1} \sum w\,(\varphi - \langle\varphi\rangle)\,
+    \frac{\mathrm{d}\mu_\varphi}{\mathrm{d}t}
+      = E^{-1} \sum w\,(\varphi - \mu_\varphi)\,
         \partial_t e ,
 
 so every moment's rate is a sum over the terms
 (:func:`~dnsjax_lab.analysis.twin.moments.moment_rates`): ``moments_y`` in
 physical space -- the `$k$`-sum over every mode, the history
 ``_y`` map's distribution, with `$\mathrm{d}\ln E/\mathrm{d}t$`,
-`$\mathrm{d}\langle\ln y\rangle/\mathrm{d}t$` and the rate of
+`$\mathrm{d}\mu_{\ln y}/\mathrm{d}t$` and the rate of
 `$\sigma^2_{\ln y}$` -- and ``moments_x`` / ``moments_z`` over the
 joint `$(\ln\lambda, \ln y)$` distribution of `$m \ge 1$`, whose
 wavelength moments are the history ``_x`` / ``_z`` maps', adding the
@@ -584,7 +584,7 @@ Decorrelation front
 The time each `$(\lambda, y)$` cell decorrelates (``front_x``,
 ``front_z``): the last upward crossing of ``--front-level`` (one half
 by default) by the mode-by-mode ratio `$\mathcal{R} =
-e/(2\langle r\rangle_t)$`, interpolated between frames
+e/(2\bar r)$`, interpolated between frames
 (:func:`front_times`).  The last crossing rather than the first, so a
 seed that starts above the level and dips below it is not timed at
 the start; a cell that never stays above it by the end of the record
@@ -2057,7 +2057,7 @@ class YSeries:
         return total / self.n_members
 
     def reference_spectrum(self, marginal: str) -> np.ndarray:
-        r"""`$\langle r_\alpha(y, m)\rangle_t$`, `$(0, 0)$` mode off.
+        r"""`$\bar r_\alpha(y, m)$`, the time average, `$(0, 0)$` mode off.
 
         ``(3, n_y, n_k)``: the member set's mean reference spectrum
         over the **distinct** reference instants, with the mean mode
@@ -5871,16 +5871,19 @@ def render_history(
 
 #: The rows of a moment budget figure: ``(MomentRates field, label)``
 #: in the order drawn, for the wall-distance budget (physical space)
-#: and for a marginal's joint one (Fourier space).
+#: and for a marginal's joint one (Fourier space).  `$\mu$` is an
+#: energy-weighted mean, `$\sigma^2$` a variance, `$C$` the covariance
+#: (module docstring, "Moment budget"); a bare bracket would read as a
+#: volume average.
 _MOMENT_ROWS_Y: tuple[tuple[str, str], ...] = (
     ("mass", r"$\mathrm{d}\ln E/\mathrm{d}t$"),
-    ("mean_y", r"$\mathrm{d}\langle\ln y\rangle/\mathrm{d}t$"),
+    ("mean_y", r"$\mathrm{d}\mu_{\ln y}/\mathrm{d}t$"),
     ("var_y", r"$\mathrm{d}\sigma^2_{\ln y}/\mathrm{d}t$"),
 )
 _MOMENT_ROWS_JOINT: tuple[tuple[str, str], ...] = (
     ("mass", r"$\mathrm{d}\ln E'/\mathrm{d}t$"),
-    ("mean_lam", r"$\mathrm{d}\langle\ln\lambda\rangle/\mathrm{d}t$"),
-    ("mean_y", r"$\mathrm{d}\langle\ln y\rangle/\mathrm{d}t$"),
+    ("mean_lam", r"$\mathrm{d}\mu_{\ln\lambda}/\mathrm{d}t$"),
+    ("mean_y", r"$\mathrm{d}\mu_{\ln y}/\mathrm{d}t$"),
     ("var_lam", r"$\mathrm{d}\sigma^2_{\ln\lambda}/\mathrm{d}t$"),
     ("var_y", r"$\mathrm{d}\sigma^2_{\ln y}/\mathrm{d}t$"),
     ("cov", r"$\mathrm{d}C_{\lambda y}/\mathrm{d}t$"),
@@ -6248,7 +6251,7 @@ def front_maps(
     r"""The four `$t_{1/2}$` panels of one marginal: u, v, w and the sum.
 
     Each from the mode-by-mode decorrelation
-    `$\mathcal{R} = e/(2\langle r\rangle_t)$` (the ``decorr`` maps'
+    `$\mathcal{R} = e/(2\bar r)$` (the ``decorr`` maps'
     ratio, :func:`map_divisor`, symmetrized before the fold), the summed
     panel one ratio of sums; then folded, `$m = 0$` dropped, ascending
     in wavelength, and timed (:func:`front_times`) in `$t\,u_\tau/h$`.
@@ -6348,6 +6351,20 @@ def draw_front(
     return filled
 
 
+def _front_suptitle(series: YSeries, units: Units, level: float) -> str:
+    r"""A front figure's title: what is timed, then the window.
+
+    `$\bar r$` is the reference's time average, an overline as
+    throughout (module docstring, "The reference average").
+    """
+    return (
+        rf"Time $\mathcal{{R}} = e/2\bar{{r}}$ rises through "
+        rf"${level:g}$ for good (white: not by the end)"
+        + "\n"
+        + _spacetime_suptitle(series, units)
+    )
+
+
 def render_front(
     series: YSeries,
     spec: SeriesSpec,
@@ -6395,10 +6412,7 @@ def render_front(
             ylim=ylim,
         )
     fig.suptitle(
-        rf"Time $\mathcal{{R}} = e/2\langle r\rangle$ rises through "
-        rf"${level:g}$ for good (white: not by the end)"
-        + "\n"
-        + _spacetime_suptitle(series, options.units),
+        _front_suptitle(series, options.units, level),
         y=1.0 - 0.15 * _SUP_HEIGHT / geometry.fig_h,
         va="top",
         fontsize="medium",
@@ -6418,7 +6432,8 @@ def render_front(
         y_plotted=maps[0].y,
         panels=np.asarray(["u", "v", "w", "sum"]),
         level=level,
-        ratio="e / (2 <r>_t), mode by mode, (0,0) mode off the reference",
+        ratio="e / (2 rbar), rbar the reference's time average, mode by "
+        "mode, (0,0) mode off the reference",
         n_members=series.n_members,
         members=np.asarray([str(m.path) for m in series.members]),
         meta_json=json.dumps(_stream_meta(series)),
@@ -6554,7 +6569,7 @@ def _mean_mode_suffix(series: YSeries) -> str:
 
 
 def _reference_bands(series: YSeries, marginal: str, half: str) -> np.ndarray:
-    r"""`$\langle r\rangle_t$` averaged over `$y$`, ``(3, n_k)``, mean-free."""
+    r"""`$\bar r$` averaged over `$y$`, ``(3, n_k)``, mean-free."""
     folded, _ = _select_half(
         series.reference_spectrum(marginal), series.y, half
     )
@@ -6805,7 +6820,7 @@ def growth_global(series: YSeries, options: MapOptions) -> GrowthCurves:
     column's absolute ``t``, which 9 significant digits do not resolve
     to the grid's tolerance) and to the frames' window; the spectra
     stream's own per-member totals otherwise.  The curve is the
-    **geometric** member mean, `$\exp\langle\ln E\rangle$`: a rate is a
+    **geometric** member mean, `$(\prod_i E_i)^{1/n}$`: a rate is a
     logarithmic derivative, and the arithmetic mean would let the
     fastest member set it.  `$E_\mathrm{sat}$` is twice the reference's
     fluctuation energy (:meth:`YSeries.reference_scale`).

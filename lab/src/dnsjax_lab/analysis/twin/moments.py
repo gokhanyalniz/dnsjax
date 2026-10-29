@@ -29,7 +29,7 @@ What the moments say (:class:`LogMoments`):
 - **how tilted**: the correlation `$\rho$` and the ridge slope
   `$b = C_{\xi\eta}/C_{\eta\eta}$`.  The latter is also the slope of
   the mass-weighted least-squares line through the conditional mean
-  `$\langle\xi \mid \eta\rangle$`, row by row, so `$b = 1$` is
+  `$\mu_{\xi \mid \eta}$`, row by row, so `$b = 1$` is
   `$\lambda \propto y$` along the ridge.  The principal-axis angle is
   kept for drawing the ellipse only: it is ill-conditioned when the
   ellipse is nearly round (`$C_{\xi\xi} \approx C_{\eta\eta}$` and
@@ -41,11 +41,11 @@ not -- it is what decides the weighting.
 
 Their budget (:func:`moment_rates`).  If `$\partial_t f = \sum_B B$`
 with the weights fixed in time, then for any function `$\varphi$` of
-the cell
+the cell, `$\mu_\varphi$` its mass-weighted mean,
 
 .. math::
-    \frac{\mathrm{d}\langle\varphi\rangle}{\mathrm{d}t}
-      = M^{-1} \sum w\,(\varphi - \langle\varphi\rangle)\,
+    \frac{\mathrm{d}\mu_\varphi}{\mathrm{d}t}
+      = M^{-1} \sum w\,(\varphi - \mu_\varphi)\,
         \partial_t f ,
 
 so every moment's rate splits term by term: `$\mathrm{d}\ln M /
