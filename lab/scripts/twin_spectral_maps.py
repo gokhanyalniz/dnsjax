@@ -6084,7 +6084,7 @@ def moment_budget_figure(
     where = (
         "wall distance, every mode"
         if not marginal
-        else rf"$(\lambda_{{{MARGINALS[marginal][0]}}}, y)$, $m \ge 1$"
+        else rf"$(\lambda_{{{MARGINALS[marginal][0]}}}, y)$, $m \geq 1$"
     )
     fig.suptitle(
         "Moment budget of the difference energy: "
