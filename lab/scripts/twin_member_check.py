@@ -44,7 +44,16 @@ five sections:
 Usage::
 
     uv run python lab/scripts/twin_member_check.py MEMBER \
-        --re-tau 510 [--pool OTHER_MEMBER ...]
+        --re-tau 510 [--pool OTHER_MEMBER ...] [--read-cap MB/s]
+
+``--read-cap`` reads the ``(y, k)`` streams by ``pread`` at most that
+many MB/s on average, each read's pages released, and charges every
+cube, reduced snapshot and ``.dat`` file read whole to the same cap
+(:mod:`dnsjax_lab.analysis.streamio`, which says when that matters).
+The checks read each ``(y, k)`` stream two to three times -- whole for
+the finiteness check, its energy fields for the consistency check and
+the run length -- and each cube and reduced snapshot once, so a capped
+check takes about that many passes over the member at that rate.
 
 Pool the ensemble's other members: one member's reference covers only
 a few correlation times of the box-scale bands, which sets how well
@@ -103,6 +112,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+from dnsjax_lab.analysis import streamio
 from dnsjax_lab.analysis.twin.cubes import read_cube
 from dnsjax_lab.analysis.twin.ensemble import distinct_instants
 from dnsjax_lab.analysis.twin.series import read_dat, relative_time
@@ -195,13 +205,17 @@ class Member:
         return np.rint(rel / self.dt).astype(np.int64)
 
     def stream(self, stem: str):
-        """``(sidecar, records, trailing bytes)`` of a ``.bin`` stream."""
+        """``(sidecar, records, trailing bytes)`` of a ``.bin`` stream.
+
+        The records are memory-mapped, or under ``--read-cap`` read on
+        demand at the cap (module docstring, "Usage").
+        """
         sidecar = json.loads((self.path / f"{stem}.json").read_text())
         dtype = record_dtype(sidecar, stem)
         size = (self.path / f"{stem}.bin").stat().st_size
-        n, rest = divmod(size, dtype.itemsize)
-        records = np.memmap(
-            self.path / f"{stem}.bin", dtype=dtype, mode="r", shape=(n,)
+        rest = size % dtype.itemsize
+        records = streamio.map_records(
+            self.path / f"{stem}.bin", dtype, throttle=streamio.throttle()
         )
         return sidecar, records, rest
 
@@ -265,7 +279,8 @@ def check_dat(report: Report, member: Member, last: int) -> dict:
             if cadence:
                 report.check(False, f"{name}: absent")
             continue
-        columns = read_dat(path)
+        with streamio.paced(path):
+            columns = read_dat(path)
         steps = member.steps(columns["t"], str(path))
         _grid(report, name, steps, _cadence(cadence, steps), last)
         bad = [k for k, v in columns.items() if not np.isfinite(v).all()]
@@ -317,12 +332,13 @@ def check_tars(report: Report, member: Member, last: int) -> None:
         bad = []
         for f in files:
             try:
-                if kind.startswith("lowres"):
-                    fields = read_state(
-                        f, return_physical=False, return_spectral=True
-                    ).spectral
-                else:
-                    fields = tuple(read_cube(f).fields.values())
+                with streamio.paced(f):
+                    if kind.startswith("lowres"):
+                        fields = read_state(
+                            f, return_physical=False, return_spectral=True
+                        ).spectral
+                    else:
+                        fields = tuple(read_cube(f).fields.values())
             except ValueError as error:  # a damaged archive
                 bad.append(f"{f.name} ({error})")
                 continue
@@ -658,13 +674,37 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="other members whose reference spectra join the saturation level",
     )
+    parser.add_argument(
+        "--read-cap",
+        type=streamio.parse_read_cap,
+        default=None,
+        metavar="MB/s",
+        help="read the streams by pread at most this many MB/s on average "
+        "(1 MB = 10^6 bytes), each read's pages released, and charge the "
+        "cubes, reduced snapshots and .dat files to the same cap "
+        "(dnsjax_lab.analysis.streamio); default: full speed",
+    )
     args = parser.parse_args(argv)
+    before = streamio.bytes_read()
+    with streamio.capped(args.read_cap):
+        code = _check(args)
+    if args.read_cap is not None:
+        print(
+            f"read {(streamio.bytes_read() - before) / 1e6:.0f} MB at "
+            f"most {args.read_cap:g} MB/s"
+        )
+    return code
+
+
+def _check(args: argparse.Namespace) -> int:
+    """:func:`main` on its parsed command line."""
     member = Member(args.member)
     pool = [Member(p) for p in args.pool]
     report = Report()
 
     report.section(f"Streams of {member.path}")
-    twin = read_dat(member.path / "twin.dat")
+    with streamio.paced(member.path / "twin.dat"):
+        twin = read_dat(member.path / "twin.dat")
     last = int(member.steps(twin["t"], "twin.dat").max())
     dat = check_dat(report, member, last)
     check_bin(report, member, last)

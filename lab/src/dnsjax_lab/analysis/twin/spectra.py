@@ -16,7 +16,9 @@ reference on its own times.
 
 The readers tolerate a truncated trailing record (a kill mid-write)
 and drop exact-duplicate timestamps (resume seams), like the probe
-reader.
+reader.  Each takes ``read_cap``, in MB/s, to read by ``pread`` at most
+that fast (:mod:`dnsjax_lab.analysis.streamio`); unset, the process's
+cap applies, full speed unless one is set.
 """
 
 from __future__ import annotations
@@ -26,6 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+from dnsjax_lab.analysis import streamio
 
 #: Oldest ``twin_spectra.json`` schema this reader understands
 #: (``dnsjax_lab.twin.spectra.FORMAT_VERSION`` is the writer's).
@@ -79,8 +83,17 @@ def _resolve_pair(path: str | Path, stem: str = "twin_spectra"):
     return path, path.with_suffix(".json")
 
 
-def _read(bin_path: Path, json_path: Path, floor: int):
-    """``(records, t, meta, kz, kx)`` of one stream, deduplicated."""
+def _read(
+    bin_path: Path,
+    json_path: Path,
+    floor: int,
+    limit: streamio.Throttle | None = None,
+):
+    """``(records, t, meta, kz, kx)`` of one stream, deduplicated.
+
+    *limit* is the read's throttle
+    (:func:`dnsjax_lab.analysis.streamio.throttle`).
+    """
     if not json_path.is_file():
         raise FileNotFoundError(f"no sidecar {json_path}")
     with open(json_path) as fh:
@@ -102,15 +115,11 @@ def _read(bin_path: Path, json_path: Path, floor: int):
         [("t", "<f8")] + [(name, value_dtype, (n2, n3)) for name in names]
     )
 
-    raw = np.fromfile(bin_path, dtype=np.uint8)
-    n_records = raw.size // record_dtype.itemsize
-    if n_records == 0:
+    # A kill mid-write leaves a partial trailing record, never read:
+    # the complete prefix is intact (append-only + fsync per flush).
+    records = streamio.read_records(bin_path, record_dtype, throttle=limit)
+    if records.size == 0:
         raise ValueError(f"{bin_path}: no complete records")
-    if raw.size % record_dtype.itemsize:
-        # A kill mid-write leaves a partial trailing record; the
-        # complete prefix is intact (append-only + fsync per flush).
-        raw = raw[: n_records * record_dtype.itemsize]
-    records = raw.view(record_dtype)
 
     t = records["t"].astype(np.float64)
     keep = np.sort(np.unique(t, return_index=True)[1])
@@ -152,26 +161,36 @@ def on_times(
     return out
 
 
-def read_twin_spectra_ref(path: str | Path = ".") -> TwinSpectraRefData:
+def read_twin_spectra_ref(
+    path: str | Path = ".", *, read_cap: float | None = None
+) -> TwinSpectraRefData:
     """The reference spectrum of a run directory, in either layout.
 
     From ``twin_spectra_ref.bin`` when the run has it, else from the
     ``e_ref`` of a pre-split ``twin_spectra.bin``; refused when neither
     holds one (``twin.spectra_ref`` was off).  *path* is the run
-    directory or either stream's ``.bin`` / ``.json``.
+    directory or either stream's ``.bin`` / ``.json``; *read_cap*
+    (MB/s) caps the read (module docstring).
     """
     path = Path(path)
     directory = path if path.is_dir() else path.parent
+    return _read_ref(directory, streamio.throttle(read_cap))
+
+
+def _read_ref(
+    directory: Path, limit: streamio.Throttle | None
+) -> TwinSpectraRefData:
+    """:func:`read_twin_spectra_ref` of a directory, on a throttle."""
     ref_bin, ref_json = _resolve_pair(directory, "twin_spectra_ref")
     if ref_json.is_file():
         records, t, meta, kz, kx = _read(
-            ref_bin, ref_json, MIN_REF_FORMAT_VERSION
+            ref_bin, ref_json, MIN_REF_FORMAT_VERSION, limit
         )
         return TwinSpectraRefData(
             t, records["e_ref"].astype(np.float64), kz, kx, meta
         )
     records, t, meta, kz, kx = _read(
-        *_resolve_pair(directory), MIN_FORMAT_VERSION
+        *_resolve_pair(directory), MIN_FORMAT_VERSION, limit
     )
     if not meta["includes_ref"]:
         raise ValueError(
@@ -183,19 +202,24 @@ def read_twin_spectra_ref(path: str | Path = ".") -> TwinSpectraRefData:
     )
 
 
-def read_twin_spectra(path: str | Path = ".") -> TwinSpectraData:
+def read_twin_spectra(
+    path: str | Path = ".", *, read_cap: float | None = None
+) -> TwinSpectraData:
     """Read a stream (a run directory, the ``.bin``, or the ``.json``).
 
     ``e_ref`` comes from whichever layout holds the reference, on the
     difference stream's times (module docstring); ``None`` when the
-    run recorded none.
+    run recorded none.  *read_cap* (MB/s) caps both files' reads.
     """
+    limit = streamio.throttle(read_cap)
     bin_path, json_path = _resolve_pair(path)
-    records, t, meta, kz, kx = _read(bin_path, json_path, MIN_FORMAT_VERSION)
+    records, t, meta, kz, kx = _read(
+        bin_path, json_path, MIN_FORMAT_VERSION, limit
+    )
     if meta["includes_ref"]:
         e_ref = records["e_ref"].astype(np.float64)
     elif json_path.with_name("twin_spectra_ref.json").is_file():
-        ref = read_twin_spectra_ref(json_path.parent)
+        ref = _read_ref(json_path.parent, limit)
         e_ref = on_times(t, ref.t, ref.e_ref)
     else:
         e_ref = None

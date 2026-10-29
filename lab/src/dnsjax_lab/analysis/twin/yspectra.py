@@ -14,6 +14,11 @@ member recorded before that split, from inside ``twin_yspectra.bin``
 stream's times, with ``nan`` rows where the reference has no sample;
 :func:`read_twin_yspectra_ref` returns them on their own times.
 
+Every reader takes ``read_cap``, in MB/s: the file is then read by
+``pread`` at most that fast, each read's pages released
+(:mod:`dnsjax_lab.analysis.streamio`, which says when that matters).
+Unset, the process's cap applies, full speed unless one is set.
+
 Which fields a stream carries is the sidecar's ``suffixes``, and
 :func:`stored_fields` is the one place that turns it into a record
 layout -- shared with the memory-mapped reader in
@@ -60,6 +65,7 @@ from pathlib import Path
 
 import numpy as np
 
+from dnsjax_lab.analysis import streamio
 from dnsjax_lab.analysis.twin.spectra import on_times
 
 #: Reader floors: the oldest layout this module can still *name*, not
@@ -205,8 +211,17 @@ def _resolve_pair(path: str | Path, stem: str) -> tuple[Path, Path]:
     return path, path.with_suffix(".json")
 
 
-def _read(path: str | Path, stem: str, floor: int) -> YResolvedData:
-    """Shared body: sidecar, record dtype, truncation, seam drop."""
+def _read(
+    path: str | Path,
+    stem: str,
+    floor: int,
+    limit: streamio.Throttle | None = None,
+) -> YResolvedData:
+    """Shared body: sidecar, record dtype, truncation, seam drop.
+
+    *limit* is the read's throttle
+    (:func:`dnsjax_lab.analysis.streamio.throttle`).
+    """
     bin_path, json_path = _resolve_pair(path, stem)
     if not json_path.is_file():
         raise FileNotFoundError(f"no sidecar {json_path}")
@@ -224,15 +239,11 @@ def _read(path: str | Path, stem: str, floor: int) -> YResolvedData:
     names = stored_fields(meta, stem)
     dtype = record_dtype(meta, stem)
 
-    raw = np.fromfile(bin_path, dtype=np.uint8)
-    n_records = raw.size // dtype.itemsize
-    if n_records == 0:
+    # Complete records only: a partial trailing record is never read,
+    # as in ``dnsjax_lab.analysis.twin.spectra._read`` (which says why).
+    records = streamio.read_records(bin_path, dtype, throttle=limit)
+    if records.size == 0:
         raise ValueError(f"{bin_path}: no complete records")
-    if raw.size % dtype.itemsize:
-        # A partial trailing record, dropped as in
-        # ``dnsjax_lab.analysis.twin.spectra._read`` (which says why).
-        raw = raw[: n_records * dtype.itemsize]
-    records = raw.view(dtype)
 
     t = records["t"].astype(np.float64)
     keep = np.sort(np.unique(t, return_index=True)[1])
@@ -268,7 +279,9 @@ def _read(path: str | Path, stem: str, floor: int) -> YResolvedData:
     )
 
 
-def read_twin_yspectra(path: str | Path = ".") -> YResolvedData:
+def read_twin_yspectra(
+    path: str | Path = ".", *, read_cap: float | None = None
+) -> YResolvedData:
     """Read ``twin_yspectra`` (a run directory, the ``.bin`` or ``.json``).
 
     Fields ``e_<suffix>`` for each of
@@ -277,14 +290,16 @@ def read_twin_yspectra(path: str | Path = ".") -> YResolvedData:
     ``twin.spectra_ref``: from the same records in the pre-split
     layout, else from ``twin_yspectra_ref.bin`` placed on these
     records' times, ``nan`` where the reference has no sample
-    (:func:`dnsjax_lab.analysis.twin.spectra.on_times`)."""
-    data = _read(path, "twin_yspectra", MIN_YSPECTRA_VERSION)
+    (:func:`dnsjax_lab.analysis.twin.spectra.on_times`).  *read_cap*
+    (MB/s) caps both files' reads (module docstring)."""
+    limit = streamio.throttle(read_cap)
+    data = _read(path, "twin_yspectra", MIN_YSPECTRA_VERSION, limit)
     if bool(data.meta.get("includes_ref")):
         return data
     directory = _resolve_pair(path, "twin_yspectra")[1].parent
     if not (directory / "twin_yspectra_ref.json").is_file():
         return data
-    ref = read_twin_yspectra_ref(directory)
+    ref = _read_ref(directory, limit)
     fields = dict(data.fields) | {
         name: on_times(data.t, ref.t, values)
         for name, values in ref.fields.items()
@@ -292,19 +307,31 @@ def read_twin_yspectra(path: str | Path = ".") -> YResolvedData:
     return replace(data, fields=fields)
 
 
-def read_twin_yspectra_ref(path: str | Path = ".") -> YResolvedData:
+def read_twin_yspectra_ref(
+    path: str | Path = ".", *, read_cap: float | None = None
+) -> YResolvedData:
     """The reference marginals of a run directory, on their own times.
 
     From ``twin_yspectra_ref.bin`` when the run has it, else the
     ``r_*`` fields of a pre-split ``twin_yspectra.bin``; refused when
     neither holds them (``twin.spectra_ref`` was off).  Fields
-    ``r_<suffix>``, shaped as in :func:`read_twin_yspectra`.
+    ``r_<suffix>``, shaped as in :func:`read_twin_yspectra`; *read_cap*
+    as there.
     """
     path = Path(path)
     directory = path if path.is_dir() else path.parent
+    return _read_ref(directory, streamio.throttle(read_cap))
+
+
+def _read_ref(
+    directory: Path, limit: streamio.Throttle | None
+) -> YResolvedData:
+    """:func:`read_twin_yspectra_ref` of a directory, on a throttle."""
     if (directory / "twin_yspectra_ref.json").is_file():
-        return _read(directory, "twin_yspectra_ref", MIN_YSPECTRA_REF_VERSION)
-    data = _read(directory, "twin_yspectra", MIN_YSPECTRA_VERSION)
+        return _read(
+            directory, "twin_yspectra_ref", MIN_YSPECTRA_REF_VERSION, limit
+        )
+    data = _read(directory, "twin_yspectra", MIN_YSPECTRA_VERSION, limit)
     if not bool(data.meta.get("includes_ref")):
         raise ValueError(
             f"{directory} carries no reference spectra "
@@ -320,14 +347,21 @@ def read_twin_yspectra_ref(path: str | Path = ".") -> YResolvedData:
     )
 
 
-def read_twin_ybudget(path: str | Path = ".") -> YResolvedData:
+def read_twin_ybudget(
+    path: str | Path = ".", *, read_cap: float | None = None
+) -> YResolvedData:
     """Read ``twin_ybudget`` (a run directory, the ``.bin`` or ``.json``).
 
     Fields ``<term>_<suffix>`` for each name in the sidecar's ``terms``
     and each of :func:`stored_suffixes`, ``(n_t, n_y, n_k)`` or
-    ``(n_t, n_y)``.
+    ``(n_t, n_y)``; *read_cap* (MB/s) caps the read (module docstring).
     """
-    return _read(path, "twin_ybudget", MIN_YBUDGET_VERSION)
+    return _read(
+        path,
+        "twin_ybudget",
+        MIN_YBUDGET_VERSION,
+        streamio.throttle(read_cap),
+    )
 
 
 def integrate_y(data: YResolvedData, name: str) -> np.ndarray:

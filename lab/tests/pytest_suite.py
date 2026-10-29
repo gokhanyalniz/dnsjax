@@ -61,6 +61,7 @@ _SCRIPTS: list[Row] = [
     ("response/test_probes_reader.py", (), (), 1800),
     ("response/test_ssi.py", (), (), 1800),
     ("test_snapshot.py", (), (), 1800),
+    ("test_streamio.py", (), (), 1800),
     ("test_snapshot_export.py", (), (), 1800),
     ("test_snapshot_perturb.py", (), (), 1800),
     ("test_transient_growth.py", ("--fast",), (), 1800),

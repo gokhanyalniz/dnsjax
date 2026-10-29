@@ -48,7 +48,9 @@ The package is ``dnsjax_lab.analysis.twin``, the orchestration
   the pre-split combined layout: merged on the difference times,
   exactly where the reference has a sample and ``nan`` elsewhere, and
   on their own times through the ``*_ref`` readers, the ``(y, k)`` one
-  refusing a run that has none;
+  refusing a run that has none; and every one of these readers giving
+  the same arrays under a read cap, its own ``read_cap`` or the
+  process's;
 - the 3-D cube reader on a hand-built tar: whole, by wall-distance
   slab, a directory stacked and subset, mismatched points and a wrong
   ``kind`` refused;
@@ -80,6 +82,7 @@ Usage::
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sys
 import tempfile
@@ -923,7 +926,46 @@ def test_reference_layouts() -> None:
         _expect_value_error(
             "no reference spectra", lambda: read_twin_yspectra_ref(none)
         )
+        for directory in (legacy, split):
+            for read in (
+                read_twin_spectra,
+                read_twin_spectra_ref,
+                read_twin_yspectra,
+                read_twin_yspectra_ref,
+            ):
+                _capped_alike(read, directory)
     print("reference spectra, both layouts: OK")
+
+
+def _same(a, b) -> bool:
+    """Whether two readings hold equal arrays, ``nan`` where ``nan``."""
+    if dataclasses.is_dataclass(a):
+        return type(a) is type(b) and all(
+            _same(getattr(a, f.name), getattr(b, f.name))
+            for f in dataclasses.fields(a)
+        )
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, np.ndarray):
+        nan = a.dtype.kind in "fc"
+        return a.dtype == b.dtype and np.array_equal(a, b, equal_nan=nan)
+    return a == b
+
+
+def _capped_alike(read, path) -> None:
+    """*read* gives the same arrays under its ``read_cap`` and the process's.
+
+    The rates are the largest accepted, so that the capped path runs at
+    no cost: what is pinned is that it reads the same bytes.
+    """
+    from dnsjax_lab.analysis import streamio
+
+    plain = read(path)
+    own = read(path, read_cap=streamio.MAX_READ_CAP)
+    with streamio.capped(streamio.MAX_READ_CAP):
+        process = read(path)
+    assert _same(plain, own), (read.__name__, path)
+    assert _same(plain, process), (read.__name__, path)
 
 
 def _write_cube(path: Path, kind: str, cube: np.ndarray, meta: dict) -> None:
@@ -1657,6 +1699,7 @@ def test_ybudget_reader() -> None:
             rtol=0,
             atol=0,
         )
+        _capped_alike(read_twin_ybudget, d)
         # A y grid of the wrong length is a hard error, not a reshape.
         _write_y_stream(
             d,

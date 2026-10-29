@@ -449,6 +449,14 @@ time under `--input-code-units`) that accepts them: it pairs each
 frame with every member's nearest sample instead, and reports how far
 apart the widest such pairing is.
 
+A member's streams run to several GB, and the readers read them at
+full disk speed by default. Each reader takes `read_cap` (MB/s), and
+`lab/scripts/twin_spectral_maps.py` and `lab/scripts/twin_member_check.py`
+take `--read-cap`: the files are then read by `pread` at most that fast
+on average, each read's pages released from the page cache.
+`dnsjax_lab.analysis.streamio` holds the shared machinery, and its
+docstring says when that matters.
+
 The readers work in the code's units. The plotting and reporting
 scripts (`lab/scripts/twin_spectral_maps.py`,
 `lab/scripts/random_ic_calibrate.py`,

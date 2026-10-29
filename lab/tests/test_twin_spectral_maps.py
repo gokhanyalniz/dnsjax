@@ -182,6 +182,13 @@ What each case pins:
     same code-time tolerance read in `$h/u_\tau$` or, under
     ``--input-code-units``, in `$h/U_\mathrm{cl}$`, exact alignment
     when unset.
+26. **The read cap.**  A member set opened under a cap, one member of
+    each reference layout, reads every field, `$k$`-sum, reference
+    scale and member energy bitwise as the memory maps do, through
+    stand-ins; and ``main()`` under ``--read-cap``, with ``np.memmap``
+    and ``np.fromfile`` refusing, renders the whole-run families of
+    both streams into ``.npz`` arrays equal to an uncapped run's -- no
+    read goes around the cap -- and lifts the cap on return.
 
 Usage::
 
@@ -215,6 +222,7 @@ except ImportError:  # pragma: no cover - the plots group is optional
 matplotlib.use("Agg")
 
 import twin_spectral_maps as tsm  # noqa: E402
+from dnsjax_lab.analysis import streamio  # noqa: E402
 from dnsjax_lab.analysis.twin.yspectra import (  # noqa: E402
     MIN_YSPECTRA_REF_VERSION,
 )
@@ -3148,6 +3156,143 @@ def test_presented_units() -> None:
         )
         assert got == tsm._T_ATOL, argv
     print("presented units: OK")
+
+
+def test_read_cap() -> None:
+    """Under a read cap every read goes through the stand-in, unchanged."""
+    meta = _meta("twin_yspectra")
+    split_meta = meta | {"includes_ref": False}
+    ref_meta = _ref_meta(split_meta)
+    lean_dtype = tsm._record_dtype(split_meta, "twin_yspectra")
+    budget_meta = _meta("twin_ybudget")
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        members = []
+        for index, layout in enumerate(("legacy", "split")):
+            start = 100.0 + 0.5 * index  # interleaved reference instants
+            directory = root / f"m{index}"
+            rec = _records(meta, "twin_yspectra", 5, t0=start, seed=30 + index)
+            if layout == "legacy":
+                _write_member(
+                    directory, "twin_yspectra", meta, rec, parent_t=start
+                )
+            else:
+                lean = np.zeros(rec.size, dtype=lean_dtype)
+                for name in lean.dtype.names:
+                    lean[name] = rec[name]
+                _write_member(
+                    directory,
+                    "twin_yspectra",
+                    split_meta,
+                    lean,
+                    parent_t=start,
+                )
+                ref = _ref_records(ref_meta, rec)
+                (directory / "twin_yspectra_ref.json").write_text(
+                    json.dumps(ref_meta)
+                )
+                (directory / "twin_yspectra_ref.bin").write_bytes(
+                    ref.tobytes()
+                )
+            budget = _records(
+                budget_meta, "twin_ybudget", 5, t0=start, seed=40 + index
+            )
+            _write_member(
+                directory, "twin_ybudget", budget_meta, budget, parent_t=start
+            )
+            members.append(directory)
+
+        def readings():
+            spectra = tsm.open_series(members, "twin_yspectra")
+            budget = tsm.open_series(members, "twin_ybudget")
+            kinds = {
+                type(records)
+                for series in (spectra, budget)
+                for member in series.members
+                for records in (
+                    member.records,
+                    getattr(member.ref, "records", None),
+                )
+                if records is not None
+            }
+            values = [
+                spectra.field("e_x"),
+                spectra.field("r_z"),
+                budget.field("prod_x"),
+                tsm.k_summed(spectra, "e"),
+                tsm.k_summed(budget, "prod"),
+                spectra.reference_scale(),
+                tsm.member_energies(spectra),
+            ]
+            return kinds, values
+
+        kinds, plain = readings()
+        assert kinds == {np.memmap}, kinds
+        with streamio.capped(streamio.MAX_READ_CAP):
+            kinds, capped = readings()
+        assert kinds == {streamio.CappedRecords}, kinds
+        for got, want in zip(capped, plain, strict=True):
+            assert np.array_equal(got, want)
+
+        argv = [
+            "--members",
+            *(str(m) for m in members),
+            "--re",
+            str(RE),
+            "--re-tau",
+            str(RE_TAU),
+            "--stride",
+            "1",
+            "--usetex",
+            "off",
+            "--dpi",
+            "50",
+            "--no-frames",
+            "--growth",
+            "--front",
+            "--moment-budget",
+            "--spacetime",
+            "--history",
+            "--quiet",
+        ]
+        assert tsm.main([*argv, "--out", str(root / "plain")]) == 0
+        real = np.memmap, np.fromfile
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("a stream was read around the read cap")
+
+        np.memmap = np.fromfile = refuse
+        try:
+            code = tsm.main(
+                [
+                    *argv,
+                    "--out",
+                    str(root / "capped"),
+                    "--read-cap",
+                    str(streamio.MAX_READ_CAP),
+                ]
+            )
+        finally:
+            np.memmap, np.fromfile = real
+        assert code == 0
+        assert streamio.throttle() is None, "the cap outlived main()"
+        written = {
+            label: sorted((root / label).rglob("*.npz"))
+            for label in ("plain", "capped")
+        }
+        names = {
+            label: [p.relative_to(root / label) for p in paths]
+            for label, paths in written.items()
+        }
+        assert names["plain"] == names["capped"] and names["plain"]
+        for a, b in zip(written["plain"], written["capped"], strict=True):
+            with np.load(a) as za, np.load(b) as zb:
+                assert za.files == zb.files, a.name
+                for key in za.files:
+                    x, y = za[key], zb[key]
+                    nan = x.dtype.kind in "fc"
+                    assert np.array_equal(x, y, equal_nan=nan), (a.name, key)
+    print("the read cap changes nothing but the reads: OK")
 
 
 # ── Runner ───────────────────────────────────────────────────────────

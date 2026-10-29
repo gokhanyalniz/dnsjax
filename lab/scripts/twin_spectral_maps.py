@@ -919,6 +919,14 @@ in.  The record layout and the format-version floors are that
 reader's, imported; its truncation and duplicate-``t`` policies are
 mirrored here.
 
+``--read-cap MB/s`` reads the same records by ``pread`` instead, at
+most that many MB/s on average over the run, each read's pages released
+(:mod:`dnsjax_lab.analysis.streamio`, which says when that matters);
+every number drawn is the same.  In a notebook, call
+:func:`dnsjax_lab.analysis.streamio.set_read_cap` before
+:func:`open_series`: whether a stream is mapped or read on demand is
+decided when it opens.
+
 Design notes
 ------------
 **Copies of one reference instant.**  Two members' reference copies of
@@ -962,6 +970,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import numpy as np
+from dnsjax_lab.analysis import streamio
 from dnsjax_lab.analysis.twin.ensemble import INSTANT_ATOL, distinct_instants
 from dnsjax_lab.analysis.twin.growth import (
     bound_free,
@@ -1130,8 +1139,8 @@ COMPLETE_MARGINALS: frozenset[str] = frozenset({"x", "z"})
 #: wall itself, which is a position it can show.
 Y_FLOOR_PLUS: float = 1.0
 
-#: Records read from a memory-mapped stream at a time while the
-#: reference average is accumulated.  Each is reduced onto the
+#: Records read from a stream at a time while the reference average
+#: is accumulated.  Each is reduced onto the
 #: running mean immediately, so this bounds that pass's memory.
 _REF_CHUNK: int = 64
 
@@ -1623,26 +1632,27 @@ def _record_dtype(meta: dict, stem: str) -> np.dtype:
     :func:`dnsjax_lab.analysis.twin.yspectra.record_dtype`, imported
     rather than mirrored (module docstring, "Usage"), so the two readers
     cannot disagree about which layout a sidecar describes.  The dtype
-    is what lets the memory map read a record without the eager
-    reader's whole-file pass.
+    is what lets the memory map, or its rate-capped stand-in
+    (:func:`_map_stream`), read a record without the eager reader's
+    whole-file pass.
     """
     return record_dtype(meta, stem)
 
 
 @dataclass(frozen=True)
 class _Reference:
-    """A member's reference spectra, memory-mapped and deduplicated.
+    """A member's reference spectra, opened and deduplicated.
 
     Their own stream, ``twin_yspectra_ref.bin``, on its own cadence
     (``twin.it_yspectra_ref``, by default the difference stream's) --
     or, for a member recorded before the reference had a stream of its
     own, the ``r_*`` fields of ``twin_yspectra.bin`` itself
-    (``includes_ref``), which is then this same memory map.  Every
+    (``includes_ref``), which are then the member's own records.  Every
     ``r_*`` read goes through here, so the two layouts read alike.
     """
 
     meta: dict
-    records: np.memmap
+    records: np.memmap | streamio.CappedRecords
     rows: np.ndarray
     t_abs: np.ndarray
     t_rel: np.ndarray
@@ -1650,11 +1660,15 @@ class _Reference:
 
 @dataclass(frozen=True)
 class _Member:
-    """One member's memory-mapped stream, deduplicated in time."""
+    """One member's stream, opened by :func:`_map_stream`, deduplicated.
+
+    *records* is a memory map, or under a read cap its stand-in that
+    reads on demand (module docstring, "Usage").
+    """
 
     path: Path
     meta: dict
-    records: np.memmap
+    records: np.memmap | streamio.CappedRecords
     rows: np.ndarray  # record indices, ascending, unique in t
     t_abs: np.ndarray  # their absolute simulation times
     t_rel: np.ndarray  # the same, since the perturbation
@@ -1733,7 +1747,11 @@ def _map_stream(path: Path, stem: str, floor: int):
     n_records = bin_path.stat().st_size // dtype.itemsize
     if n_records == 0:
         raise ValueError(f"{bin_path}: no complete records")
-    records = np.memmap(bin_path, dtype=dtype, mode="r", shape=(n_records,))
+    # Memory-mapped, or under a read cap read on demand by ``pread``
+    # (:mod:`dnsjax_lab.analysis.streamio`).
+    records = streamio.map_records(
+        bin_path, dtype, throttle=streamio.throttle()
+    )
     t = np.asarray(records["t"], dtype=np.float64)
     # Resume-by-append can repeat a seam row: keep its first copy,
     # the eager reader's policy.
@@ -1744,7 +1762,7 @@ def _map_stream(path: Path, stem: str, floor: int):
 
 
 def _open_member(path: Path, stem: str) -> _Member:
-    """Memory-map one member and resolve its usable records."""
+    """Open one member's stream and resolve its usable records."""
     meta, records, rows, t_abs = _map_stream(path, stem, STEMS[stem])
     record = _twin_record(path)
     parent_t = record.get("parent_t")
@@ -1929,7 +1947,9 @@ class YSeries:
             return ()
         return ("e", "r") if bool(self.meta.get("has_ref")) else ("e",)
 
-    def source(self, index: int, name: str) -> tuple[np.memmap, np.ndarray]:
+    def source(
+        self, index: int, name: str
+    ) -> tuple[np.memmap | streamio.CappedRecords, np.ndarray]:
         """``(records, rows)`` holding *name* for member *index*.
 
         A difference or budget field reads the member's own stream on
@@ -6424,6 +6444,14 @@ GROWTH_TERMS: tuple[str, ...] = (
     "diss",
 )
 
+#: The files :func:`~dnsjax_lab.analysis.twin.series.read_twin` reads
+#: from a member, charged to a read cap before it reads them.
+_TWIN_RECORD_FILES: tuple[str, ...] = (
+    "twin.dat",
+    "twin_budget.dat",
+    "twin.json",
+)
+
 #: The wall distances, in wall units, whose rows a ``growth_y`` figure
 #: follows: one per octave from the viscous sublayer to the centreline,
 #: each the nearest row of the grid.
@@ -6787,7 +6815,10 @@ def growth_global(series: YSeries, options: MapOptions) -> GrowthCurves:
     source = "twin.dat"
     try:
         for member in series.members:
-            twin = read_twin(member.path)
+            with streamio.paced(
+                *(member.path / name for name in _TWIN_RECORD_FILES)
+            ):
+                twin = read_twin(member.path)
             t_rel = twin.t_rel
             dt, on_grid = uniform_grid(t_rel)
             t_rel = t_rel[on_grid]
@@ -8211,6 +8242,16 @@ def build_parser() -> argparse.ArgumentParser:
         "every one, whatever --stride is)",
     )
     p.add_argument(
+        "--read-cap",
+        type=streamio.parse_read_cap,
+        default=None,
+        metavar="MB/s",
+        help="read the streams by pread at most this many MB/s on "
+        "average over the run (1 MB = 10^6 bytes), each read's pages "
+        "released (dnsjax_lab.analysis.streamio); default: "
+        "memory-mapped, at full speed",
+    )
+    p.add_argument(
         "--clim",
         choices=("series", "frame", "ramped"),
         default="series",
@@ -8333,8 +8374,27 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Render every series of both streams for one member set."""
+    """Render every series of both streams for one member set.
+
+    ``--read-cap`` holds for the whole run
+    (:func:`dnsjax_lab.analysis.streamio.capped`) and is lifted on
+    return.
+    """
     args = build_parser().parse_args(argv)
+    before = streamio.bytes_read()
+    with streamio.capped(args.read_cap):
+        code = _render(args)
+    if args.read_cap is not None and not args.quiet:
+        print(
+            f"read {(streamio.bytes_read() - before) / 1e6:.0f} MB at "
+            f"most {args.read_cap:g} MB/s",
+            flush=True,
+        )
+    return code
+
+
+def _render(args: argparse.Namespace) -> int:
+    """:func:`main` on its parsed command line."""
     apply_rcparams(resolve_usetex(args.usetex))
     members = (
         tree_members(args.tree)

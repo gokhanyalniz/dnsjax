@@ -119,7 +119,8 @@ Snapshots, resume, analysis:
 Streams: `test_driving.py`; `test_run_hooks.py` (an extension
 section's `RunHooks`: call order, inert default, modify after every
 save, abort on a report); the lab's `test_probes.py`,
-`test_forcing.py` (each `--unit-only`).
+`test_forcing.py` (each `--unit-only`) and `test_streamio.py` (the
+lab's rate-capped stream reads).
 
 Twin (all in `lab/tests/`): `test_twin_unit.py`, `test_twin_driver.py`
 (`--only`), `test_twin_budget.py` (`--only`, `--quick`),
