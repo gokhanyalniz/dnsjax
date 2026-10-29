@@ -170,9 +170,10 @@ What each case pins:
     their geometric mean, records its source and falls back to the
     spectra totals without one; a band's budget rates are its own
     terms over its own energy; the summary figure states the rates in
-    `$u_\tau/h$`; and it draws a window with no positive rate --
-    inside saturation, its energy drifting down -- rather than failing
-    on it.
+    `$u_\tau/h$`, the onset's as its longest window's and the late one
+    as `$\kappa$`, never `$\nu$`, the viscosity; and it draws a window
+    with no positive rate -- inside saturation, its energy drifting
+    down -- rather than failing on it.
 25. **Presented units.** Time is `$t\,u_\tau/h$` and a rate per
     `$h/u_\tau$` whatever ``--outer-units`` says, each with its wall
     unit a factor of `$Re_\tau$` away; both headers state both times;
@@ -2966,12 +2967,22 @@ def test_growth_laws() -> None:
     gamma_label = options.units.per_time(phases.exponential[2])
     nu_label = options.units.per_time(phases.decorrelation[2])
     assert any(
-        f"{gamma_label:.3g}" in label and r"u_\tau/h" in label
+        f"{gamma_label:.3g}" in label
+        and r"u_\tau/h" in label
+        and "longest window" in label
         for label in ax_e.get_legend_handles_labels()[1]
     )
     assert any(
-        f"{nu_label:.3g}" in label and r"u_\tau/h" in label
+        f"{nu_label:.3g}" in label
+        and r"u_\tau/h" in label
+        and r"\kappa" in label
         for label in ax_f.get_legend_handles_labels()[1]
+    )
+    # The late rate is kappa on every panel: nu is the viscosity.
+    assert not any(
+        r"\nu" in label
+        for ax in fig.axes
+        for label in ax.get_legend_handles_labels()[1]
     )
     assert ax_e.get_xlabel() == r"$t\,u_\tau/h$"
     assert r"u_\tau/h" in ax_g.get_ylabel()

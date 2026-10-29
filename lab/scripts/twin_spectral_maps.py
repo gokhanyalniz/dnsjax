@@ -602,15 +602,16 @@ against `$t$` and flat in the log-log `$\gamma$`-`$R$` diagram
 (`$\gamma = \mathrm{d}\ln E/\mathrm{d}t$`); an algebraic law
 `$E \propto (t - t_0)^\alpha$` a line of slope `$-1/\alpha$` in that
 diagram; constant-rate decorrelation, the twin correlation `$C = 1 - R$`
-decaying as `$e^{-\nu t}$`, a line of slope `$\nu$` in `$-\ln(1 - R)$`
-against `$t$`.  Saturation alone -- the logistic at the exponential's
+decaying as `$e^{-\kappa t}$`, a line of slope `$\kappa$` in
+`$-\ln(1 - R)$` against `$t$` (`$\kappa$`, since `$\nu$` is the
+viscosity).  Saturation alone -- the logistic at the exponential's
 rate -- bends the `$\gamma$`-`$R$` diagram only as `$R \to 1$`, by
 `$-R/(1 - R)$`, and gives `$-\ln(1 - R)$` a late slope equal to the
 early rate; a slowing at `$R \ll 1$`, or a late rate well below the
 early one, is therefore no inflection.
 
 The phases are found on the streams' clock and drawn in outer units
-("Units"): time in `$t\,u_\tau/h$`, `$\gamma$` and `$\nu$` in
+("Units"): time in `$t\,u_\tau/h$`, `$\gamma$` and `$\kappa$` in
 `$u_\tau/h$`, with `$t^+$` and `$u_\tau^2/\nu$` on secondary axes.
 
 ``growth_global`` is the summary: the total difference energy on each
@@ -620,7 +621,9 @@ the figure saying which), the member geometric mean, on the four sets
 of axes (:func:`growth_summary_figure`), with an exponential phase and
 a constant-rate decorrelation phase marked by a stated criterion
 (:func:`growth_phases`: the longest window within
-:data:`GROWTH_TOLERANCE` of its own mean).  ``growth_x`` /
+:data:`GROWTH_TOLERANCE` of its own mean).  The rates it prints,
+`$\gamma_0$` and `$\kappa$`, are each window's mean and so depend on
+the window: the onset's legend names it as the longest.  ``growth_x`` /
 ``growth_z`` follow one band per octave of `$m$` and the `$m = 0$`
 column (the `$(0, 0)$` mode off both halves), ``growth_y`` a row per
 octave of wall distance, each against twice its own reference share,
@@ -6841,7 +6844,7 @@ class GrowthPhases:
     within :data:`GROWTH_TOLERANCE` of its own mean
     (:func:`~dnsjax_lab.analysis.twin.growth.longest_window`).  The rate of
     the first is the exponential's `$\gamma_0$`, of the second the
-    decorrelation rate `$\nu$`.
+    decorrelation rate `$\kappa$`.
     """
 
     exponential: tuple[float, float, float] | None
@@ -6975,16 +6978,17 @@ def growth_summary_figure(
 
     (a) `$\ln R$` against `$t$`: an exponential is a line, fitted on
         its window and continued both ways, so the departure from it
-        shows;
+        shows, its legend naming `$\gamma_0$` the longest window's
+        rate;
     (b) `$\ln\gamma$` against `$\ln R$`: an exponential is flat,
         saturation alone bends the curve only near `$R = 1$` (the
         logistic at the exponential's rate), an algebraic law runs
         parallel to one of the keyed slopes `$-1/\alpha$`, and
-        constant-rate decorrelation follows `$\nu(1 - R)/R$` -- and a
+        constant-rate decorrelation follows `$\kappa(1 - R)/R$` -- and a
         window with no positive rate (one inside saturation) leaves it
         empty, saying so;
     (c) `$-\ln(1 - R)$` against `$t$`: constant-rate decorrelation is a
-        line of slope `$\nu$`, where the logistic at the exponential's
+        line of slope `$\kappa$`, where the logistic at the exponential's
         rate, through the same half-saturation time, would end at slope
         `$\gamma_0$`;
     (d) `$R$` against `$t$`, with the tangent at the inflection and the
@@ -7044,9 +7048,10 @@ def growth_summary_figure(
             color=blue,
             linestyle=(0, (5, 2)),
             linewidth=1.3,
+            # Two lines keep the legend clear of the curve's start.
             label=(
-                rf"exponential, $\gamma_0 = {units.per_time(exp_w[2]):.3g}"
-                rf"\,u_\tau/h$"
+                "exponential (longest window),\n"
+                rf"$\gamma_0 = {units.per_time(exp_w[2]):.3g}\,u_\tau/h$"
             ),
         )
     ax_e.set_yscale("log")
@@ -7139,7 +7144,7 @@ def growth_summary_figure(
             color=vermillion,
             linewidth=1.0,
             linestyle=(0, (1.5, 1.2)),
-            label=r"constant-rate decorrelation, $\nu(1 - R)/R$",
+            label=r"constant-rate decorrelation, $\kappa(1 - R)/R$",
         )
     y_lo, y_hi = math.log10(g_bottom), math.log10(g_top)
     _slope_key(
@@ -7188,7 +7193,7 @@ def growth_summary_figure(
             linestyle=(0, (5, 2)),
             linewidth=1.3,
             label=(
-                rf"constant rate, $\nu = {units.per_time(dec_w[2]):.3g}"
+                rf"constant rate, $\kappa = {units.per_time(dec_w[2]):.3g}"
                 rf"\,u_\tau/h$"
             ),
         )
@@ -7410,10 +7415,11 @@ def growth_ssp_figure(
 
     Their shares of the difference energy against the reference's
     (dotted), their `$\gamma$`-`$R$` diagrams, their `$-\ln(1 - R)$`
-    with each one's constant-rate window fitted, and -- where the
-    budget was read -- the `$k_x = 0$` plane's budget per unit energy:
-    the lift-up that builds it, the transfer out of it (breakdown) and
-    the rest (module docstring, "Growth laws").
+    with each one's constant-rate window fitted and its rate
+    `$\kappa$` in the legend, and -- where the budget was read -- the
+    `$k_x = 0$` plane's budget per unit energy: the lift-up that
+    builds it, the transfer out of it (breakdown) and the rest (module
+    docstring, "Growth laws").
     """
     units = options.units
     t = curves.t
@@ -7488,7 +7494,7 @@ def growth_ssp_figure(
                     color=colours[index],
                     linewidth=3.0,
                     alpha=0.35,
-                    label=rf"$\nu = {units.per_time(nu):.3g}$",
+                    label=rf"$\kappa = {units.per_time(nu):.3g}$",
                 )
     g0 = float(
         np.nanmedian(

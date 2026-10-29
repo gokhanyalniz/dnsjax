@@ -31,11 +31,12 @@ What each law looks like, on the axes that make it a straight line:
   `$s = -R/(1 - R)$` -- flat for `$R \ll 1$`, bending only as
   `$R \to 1$`.  Its `$f$` grows like `$e^{\gamma_0 t}$` early and like
   `$\gamma_0 t$` late: **the same rate at both ends**.
-- **Exponential decorrelation**, `$C \propto e^{-\nu t}$`
-  (:func:`decorrelation_rate`): `$f$` is a line of slope `$\nu$`, and
-  `$\gamma = \nu (1 - R)/R$`.  A late `$\nu$` well below the early
-  `$\gamma_0$` is therefore a phase of its own, which the logistic
-  cannot produce.
+- **Exponential decorrelation**, `$C \propto e^{-\kappa t}$`
+  (:func:`decorrelation_rate`; `$\kappa$`, since `$\nu$` is the
+  viscosity): `$f$` is a line of slope `$\kappa$`, and
+  `$\gamma = \kappa (1 - R)/R$`.  A late `$\kappa$` well below the
+  early `$\gamma_0$` is therefore a phase of its own, which the
+  logistic cannot produce.
 
 An inflection of `$E$` -- the time where `$\ddot E = 0$` and `$\dot E$`
 is stationary -- is none of these.  Every saturating curve has one,
@@ -116,7 +117,10 @@ def logistic_rate(r: np.ndarray, gamma0: float) -> np.ndarray:
 
 
 def decorrelation_rate(r: np.ndarray, nu: float) -> np.ndarray:
-    r"""`$\gamma = \nu (1 - R)/R$`: exponential decorrelation, rate `$\nu$`."""
+    r"""`$\gamma = \kappa (1 - R)/R$`: exponential decorrelation.
+
+    *nu* is its rate `$\kappa$`.
+    """
     r = np.asarray(r, dtype=np.float64)
     with np.errstate(divide="ignore", invalid="ignore"):
         return nu * (1.0 - r) / r
