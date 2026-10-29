@@ -9,7 +9,13 @@ written by hand with NumPy (no solver), covering:
   upcast from ``<f4`` values, path forms: directory / ``.bin`` /
   ``.json``), the truncated-trailing-record drop, the resume-seam
   drop (exact-duplicate timestamps, the last kept), and the
-  non-monotonic-timestamp warning path;
+  non-monotonic-timestamp warning path; the same arrays under a read
+  cap, the call's own or the process's;
+- ``iter_probes``: its blocks concatenate to ``read_probes`` exactly,
+  for blocks of one record and blocks larger than the stream, with a
+  seam on a block boundary and a truncated trailing record, capped or
+  not; a ``t_min`` / ``t_max`` window is the same records inside it;
+  an empty window and a re-run segment inside the window are refused;
 - the ``MIN_FORMAT_VERSION`` reject of an older sidecar;
 - ``mean_profile``: laminar-profile addition, tilt projection, and
   the ``t_min`` transient cut;
@@ -152,6 +158,93 @@ def test_read_probes_drops_resume_seams() -> None:
         assert_allclose(
             data.u[:, 0, 0, 0].real, np.array([1.0, 3.0, 5.0]) * DELTA_U[0]
         )
+
+
+def _concatenated(blocks) -> tuple[np.ndarray, np.ndarray]:
+    """The ``t`` and ``u`` of :func:`iter_probes` blocks, end to end."""
+    blocks = list(blocks)
+    assert blocks and all(b.t.size for b in blocks)
+    return (
+        np.concatenate([b.t for b in blocks]),
+        np.concatenate([b.u for b in blocks]),
+    )
+
+
+def test_read_cap_and_blocks() -> None:
+    """Capped reads and blocks give :func:`read_probes`' arrays exactly."""
+    from dnsjax_lab.analysis import streamio
+
+    fast = streamio.MAX_READ_CAP
+    # Seams at 0.01 and 0.03; the truncated record is dropped.
+    t = np.array([0.0, 0.01, 0.01, 0.02, 0.03, 0.03, 0.04])
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_stream(tmp, t, truncate_bytes=100)
+        whole = rp.read_probes(tmp)
+        assert_allclose(whole.t, [0.0, 0.01, 0.02, 0.03, 0.04], rtol=0)
+        for data in (
+            rp.read_probes(tmp, read_cap=fast),
+            _read_under_process_cap(tmp, fast),
+        ):
+            assert np.array_equal(data.t, whole.t)
+            assert np.array_equal(data.u, whole.u)
+        # One stored record: ``t`` and the ``<f8`` pairs, as many bytes
+        # as the complex128 profiles.
+        record = 8 + whole.u[0].nbytes
+        for block_bytes in (1, record, 2 * record, 3 * record, 10**9):
+            for read_cap in (None, fast):
+                got_t, got_u = _concatenated(
+                    rp.iter_probes(
+                        tmp, block_bytes=block_bytes, read_cap=read_cap
+                    )
+                )
+                assert np.array_equal(got_t, whole.t), block_bytes
+                assert np.array_equal(got_u, whole.u), block_bytes
+            sizes = [
+                b.t.size for b in rp.iter_probes(tmp, block_bytes=block_bytes)
+            ]
+            # Seven stored records in blocks of at most block_bytes, the
+            # two seam copies dropped from theirs, an emptied block
+            # skipped.
+            keep = np.array([1, 0, 1, 1, 0, 1, 1], dtype=bool)
+            per = max(1, block_bytes // record)
+            want = [int(keep[a : a + per].sum()) for a in range(0, 7, per)]
+            assert sizes == [n for n in want if n], (block_bytes, sizes)
+        # A window: the same records, and only those.
+        inside = (whole.t >= 0.01) & (whole.t <= 0.03)
+        got_t, got_u = _concatenated(
+            rp.iter_probes(tmp, t_min=0.01, t_max=0.03, block_bytes=record)
+        )
+        assert np.array_equal(got_t, whole.t[inside])
+        assert np.array_equal(got_u, whole.u[inside])
+        assert np.array_equal(
+            _concatenated(rp.iter_probes(tmp, t_min=0.035))[0], [0.04]
+        )
+        for window in ({"t_min": 1.0}, {"t_min": 0.021, "t_max": 0.029}):
+            try:
+                next(rp.iter_probes(tmp, **window))
+            except ValueError as exc:
+                assert "no probe samples" in str(exc), exc
+            else:
+                raise AssertionError(f"empty window {window} was accepted")
+    # A resume that re-ran a segment: refused inside the window only.
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_stream(tmp, np.array([0.0, 0.01, 0.02, 0.015, 0.025]))
+        try:
+            next(rp.iter_probes(tmp))
+        except ValueError as exc:
+            assert "do not rise strictly" in str(exc), exc
+        else:
+            raise AssertionError("a re-run segment was accepted")
+        got_t, _ = _concatenated(rp.iter_probes(tmp, t_min=0.021))
+        assert_allclose(got_t, [0.025], rtol=0)
+
+
+def _read_under_process_cap(path, mb_per_s: float) -> rp.ProbeData:
+    """:func:`read_probes` under the process's cap."""
+    from dnsjax_lab.analysis import streamio
+
+    with streamio.capped(mb_per_s):
+        return rp.read_probes(path)
 
 
 def test_read_probes_rejects_old_format() -> None:

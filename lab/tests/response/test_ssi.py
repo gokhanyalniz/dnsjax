@@ -23,7 +23,8 @@ All offline (no solver runs; the solver-side kick machinery is
    ~10 % with a small causality level, and the CLI's ``G_id`` tracks
    that law's growth to 30 %.
 4. **read_forcing error paths**: missing sidecar, truncated record,
-   and the ``MIN_FORMAT_VERSION`` reject.
+   and the ``MIN_FORMAT_VERSION`` reject; and the same arrays under a
+   read cap, the call's own or the process's.
 
 Usage::
 
@@ -386,6 +387,14 @@ def test_read_forcing_errors() -> None:
         (tmp / "forcing.bin").write_bytes(raw[:-5])
         data = read_forcing(tmp)
         assert data.w.shape == (2, 1, 2)
+        from dnsjax_lab.analysis import streamio
+
+        fast = streamio.MAX_READ_CAP
+        with streamio.capped(fast):
+            under_process = read_forcing(tmp)
+        for capped in (read_forcing(tmp, read_cap=fast), under_process):
+            assert np.array_equal(capped.t, data.t)
+            assert np.array_equal(capped.w, data.w)
 
         # A pre-MIN_FORMAT_VERSION sidecar is rejected rather than
         # misread at its unchanged record layout (what changed: the

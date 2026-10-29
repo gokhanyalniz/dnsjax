@@ -86,6 +86,7 @@ from pathlib import Path
 
 import numpy as np
 
+from dnsjax_lab.analysis import streamio
 from dnsjax_lab.analysis.response.ensemble import (
     identify_generator,
     project_series,
@@ -153,8 +154,15 @@ class ForcingData:
         return int(hits[0])
 
 
-def read_forcing(path: str | Path = ".") -> ForcingData:
-    """Load a kick stream (a run directory or the ``forcing.bin``)."""
+def read_forcing(
+    path: str | Path = ".", *, read_cap: float | None = None
+) -> ForcingData:
+    """Load a kick stream (a run directory or the ``forcing.bin``).
+
+    *read_cap* (MB/s) reads it by ``pread`` at most that fast
+    (:mod:`dnsjax_lab.analysis.streamio`); unset, the process's cap
+    applies, full speed unless one is set.
+    """
     bin_path, json_path = _resolve_pair(path, "forcing")
     if not json_path.exists():
         raise FileNotFoundError(f"forcing sidecar {json_path} not found")
@@ -173,7 +181,12 @@ def read_forcing(path: str | Path = ".") -> ForcingData:
             f"[ssi] {bin_path}: dropping a truncated trailing record "
             f"({rem} of {record_dtype.itemsize} bytes)."
         )
-    rec = np.fromfile(bin_path, dtype=record_dtype, count=n_rec)
+    rec = streamio.read_records(
+        bin_path,
+        record_dtype,
+        stop=n_rec,
+        throttle=streamio.throttle(read_cap),
+    )
     t = rec["t"].astype(np.float64)
     if n_rec > 1 and not (np.diff(t) > 0).all():
         print(

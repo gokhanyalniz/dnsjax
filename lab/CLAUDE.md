@@ -15,7 +15,8 @@ parameters.py     FIELDS: the lab flows' fields in the core sections
 extensions/       [probes] and [force]: sections and their streams
 twin/             dnsjax-twin (its own CLAUDE.md)
 analysis/         twin/ (the twin streams' readers, JAX-free),
-                  response/, toroidal.py
+                  response/, toroidal.py, streamio.py (the readers'
+                  rate-capped reads)
 harmonics.py      the curved pipe's metric harmonics
 ```
 
@@ -43,6 +44,10 @@ harmonics.py      the curved pipe's metric harmonics
   pipeline and the route trade-offs: `analysis/response/__init__.py`.
   Its per-mode generators come from the core's `--tg.save_operator`:
   change either end with the other.
+- A `.bin` stream reader reads through `analysis/streamio.py`
+  (`read_records`, `map_records`) and takes `read_cap`, so the cap
+  reaches it; `scripts/random_ic_calibrate.py` alone still memory-maps
+  its member streams directly, uncapped.
 - `analysis/toroidal.ToroidalMetric` is the curved pipe's
   `GeometryInfo.metric`: change it with
   `geometries/wall_bounded/cylindrical_curved.py`.

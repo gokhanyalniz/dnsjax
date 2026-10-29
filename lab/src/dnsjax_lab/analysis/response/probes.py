@@ -23,18 +23,26 @@ Conventions
   records its initial state off the grid, and one that re-ran a
   trajectory segment shows up as non-monotonic ``t`` and is flagged
   with a warning (filter with ``t`` yourself in either case).
+- A stream reaches several GB.  :func:`read_probes` holds all of it;
+  :func:`iter_probes` reads it in blocks of records, in time order,
+  for a single pass that holds one block at a time.  Both take
+  ``read_cap``, in MB/s, to read by ``pread`` at most that fast
+  (:mod:`dnsjax_lab.analysis.streamio`); unset, the process's cap
+  applies, full speed unless one is set.
 """
 
 from __future__ import annotations
 
 import json
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from dnsjax.fd import build_diff_matrices
+from dnsjax_lab.analysis import streamio
 
 #: Oldest ``probes.json`` schema this reader accepts (the writer's
 #: current version is ``dnsjax_lab.extensions.probes.FORMAT_VERSION``).
@@ -47,6 +55,11 @@ from dnsjax.fd import build_diff_matrices
 #: spectrum from them is wrong by `$m_0$` (correct only at
 #: ``geo.m0 = 1``).
 MIN_FORMAT_VERSION: int = 3
+
+#: Bytes of records an :func:`iter_probes` block holds at most (at
+#: least one record): with the complex copy of their profiles, a block
+#: takes about twice this in memory.
+_BLOCK_BYTES: int = 64 * 2**20
 
 #: Laminar streamwise total profiles `$U_s(y)$` of the Cartesian
 #: base-flow systems (`$y \in [-1, 1]$`; the tilted frame's
@@ -128,7 +141,86 @@ def _check_format_version(json_path: Path, meta: dict, minimum: int) -> None:
         )
 
 
-def read_probes(path: str | Path = ".") -> ProbeData:
+def _layout(path: str | Path) -> tuple[Path, dict, np.dtype, int]:
+    """``(bin_path, meta, record dtype, complete records)`` of a stream.
+
+    Reads the sidecar, refuses one older than :data:`MIN_FORMAT_VERSION`
+    and reports a truncated trailing record (a killed writer), which
+    neither reader reads.
+    """
+    bin_path, json_path = _resolve_pair(path)
+    if not json_path.exists():
+        raise FileNotFoundError(f"probe sidecar {json_path} not found")
+    with open(json_path) as f:
+        meta = json.load(f)
+    _check_format_version(json_path, meta, MIN_FORMAT_VERSION)
+    shape = (
+        len(meta["modes"]),
+        int(meta["n_components"]),
+        int(meta["ny"]),
+        2,
+    )
+    record_dtype = np.dtype([("t", "<f8"), ("u", meta["value_dtype"], shape)])
+    n_rec, rem = divmod(bin_path.stat().st_size, record_dtype.itemsize)
+    if rem:
+        print(
+            f"[probes] {bin_path}: dropping a truncated trailing "
+            f"record ({rem} of {record_dtype.itemsize} bytes)."
+        )
+    return bin_path, meta, record_dtype, n_rec
+
+
+def _seam_mask(t: np.ndarray, bin_path: Path) -> np.ndarray:
+    """Which records to keep: the last of each run of equal times.
+
+    Exact-duplicate consecutive timestamps are a clean continuation's
+    seam (the :mod:`dnsjax_lab.extensions.probes` docstring); each
+    drop is noted, and non-monotonic times among the kept records (a
+    resume that re-ran a trajectory segment) are warned of and kept.
+    """
+    keep = np.ones(t.size, dtype=bool)
+    if t.size > 1:
+        dup = np.diff(t) == 0.0
+        if dup.any():
+            keep[:-1][dup] = False  # keep the last of each seam
+            print(
+                f"[probes] {bin_path}: dropped {int(dup.sum())} "
+                "duplicate-timestamp record(s) (continuation-resume "
+                "seams)."
+            )
+    kept = t[keep]
+    if kept.size > 1 and not (np.diff(kept) > 0).all():
+        print(
+            f"[probes] {bin_path}: non-monotonic timestamps (a resume "
+            "re-ran a trajectory segment?); filter by t before "
+            "averaging."
+        )
+    return keep
+
+
+def _probe_data(meta: dict, t: np.ndarray, raw: np.ndarray) -> ProbeData:
+    """The records' times *t* and ``u`` fields *raw* as a :class:`ProbeData`.
+
+    Real and imaginary parts are written in place: no complex
+    temporary beside ``u`` (the streams reach several GB).
+    """
+    u = np.empty(raw.shape[:-1], dtype=np.complex128)
+    u.real = raw[..., 0]
+    u.imag = raw[..., 1]
+    return ProbeData(
+        t=t,
+        u=u,
+        modes=np.asarray(meta["modes"], dtype=int),
+        wavenumbers=np.asarray(meta["wavenumbers"], dtype=int),
+        y=np.asarray(meta["wall_normal_grid"], dtype=float),
+        component_labels=list(meta["component_labels"]),
+        meta=meta,
+    )
+
+
+def read_probes(
+    path: str | Path = ".", *, read_cap: float | None = None
+) -> ProbeData:
     """Load a probe stream (a run directory or the ``probes.bin``).
 
     Reconstructs the record dtype from the sidecar, reads every whole
@@ -139,71 +231,94 @@ def read_probes(path: str | Path = ".") -> ProbeData:
     dropped, keeping the last, with a note, so downstream consumers
     see a uniform grid across such resumes; genuinely decreasing
     timestamps (a re-run trajectory segment) still only warn.
+
+    *read_cap* (MB/s) reads the stream by ``pread`` at most that fast
+    (module docstring).  A stream too large to hold:
+    :func:`iter_probes`.
     """
-    bin_path, json_path = _resolve_pair(path)
-    if not json_path.exists():
-        raise FileNotFoundError(f"probe sidecar {json_path} not found")
-    with open(json_path) as f:
-        meta = json.load(f)
-    _check_format_version(json_path, meta, MIN_FORMAT_VERSION)
-
-    modes = np.asarray(meta["modes"], dtype=int)
-    n_components = int(meta["n_components"])
-    ny = int(meta["ny"])
-    record_dtype = np.dtype(
-        [
-            ("t", "<f8"),
-            (
-                "u",
-                meta["value_dtype"],
-                (len(modes), n_components, ny, 2),
-            ),
-        ]
-    )
-
+    bin_path, meta, record_dtype, n_rec = _layout(path)
     # Sized read straight into the record dtype: no intermediate
     # byte-array copies (the streams reach multi-GB).
-    n_rec, rem = divmod(bin_path.stat().st_size, record_dtype.itemsize)
-    if rem:
-        print(
-            f"[probes] {bin_path}: dropping a truncated trailing "
-            f"record ({rem} of {record_dtype.itemsize} bytes)."
-        )
-    rec = np.fromfile(bin_path, dtype=record_dtype, count=n_rec)
-
-    t = rec["t"].astype(np.float64)
-    if n_rec > 1:
-        dup = np.diff(t) == 0.0
-        if dup.any():
-            keep = np.ones(n_rec, dtype=bool)
-            keep[:-1][dup] = False  # keep the last of each seam
-            print(
-                f"[probes] {bin_path}: dropped {int(dup.sum())} "
-                "duplicate-timestamp record(s) (continuation-resume "
-                "seams)."
-            )
-            rec, t = rec[keep], t[keep]
-    if len(t) > 1 and not (np.diff(t) > 0).all():
-        print(
-            f"[probes] {bin_path}: non-monotonic timestamps (a resume "
-            "re-ran a trajectory segment?); filter by t before "
-            "averaging."
-        )
-    # Real and imaginary parts written in place: no complex temporary
-    # beside ``u`` (the streams reach several GB).
-    u = np.empty(rec["u"].shape[:-1], dtype=np.complex128)
-    u.real = rec["u"][..., 0]
-    u.imag = rec["u"][..., 1]
-
-    return ProbeData(
-        t=t,
-        u=u,
-        modes=modes,
-        wavenumbers=np.asarray(meta["wavenumbers"], dtype=int),
-        y=np.asarray(meta["wall_normal_grid"], dtype=float),
-        component_labels=list(meta["component_labels"]),
-        meta=meta,
+    rec = streamio.read_records(
+        bin_path,
+        record_dtype,
+        stop=n_rec,
+        throttle=streamio.throttle(read_cap),
     )
+    t = rec["t"].astype(np.float64)
+    keep = _seam_mask(t, bin_path)
+    if not keep.all():
+        rec, t = rec[keep], t[keep]
+    return _probe_data(meta, t, rec["u"])
+
+
+def iter_probes(
+    path: str | Path = ".",
+    *,
+    t_min: float | None = None,
+    t_max: float | None = None,
+    block_bytes: int = _BLOCK_BYTES,
+    read_cap: float | None = None,
+) -> Iterator[ProbeData]:
+    """A probe stream in blocks of records, in time order, read once.
+
+    The records :func:`read_probes` returns -- the same seams dropped,
+    the same notes printed -- with ``t_min <= t <= t_max`` (either
+    bound optional), as :class:`ProbeData` blocks of consecutive
+    records, at most *block_bytes* of them and at least one record
+    each: concatenated, they are :func:`read_probes`' ``t`` and ``u``
+    inside that window.  For a single pass over a stream too large to
+    hold, such as a covariance accumulation.
+
+    The times are read first, one ``pread`` per record
+    (:func:`dnsjax_lab.analysis.streamio.read_column`), then each
+    block in one read; nothing before the window's first record or
+    after its last is read.  *read_cap* as for :func:`read_probes`,
+    one throttle for the whole pass.
+
+    Refused: a window holding no record (as :func:`mean_profile`
+    refuses one), and kept times inside it that do not rise strictly
+    -- a resume that re-ran a trajectory segment, whose overlap the
+    pass would count twice; raise *t_min* past it.
+    """
+    bin_path, meta, record_dtype, n_rec = _layout(path)
+    limit = streamio.throttle(read_cap)
+    t = streamio.read_column(
+        bin_path, record_dtype, "t", throttle=limit
+    ).astype(np.float64)
+    keep = _seam_mask(t, bin_path)
+    if t_min is not None:
+        keep &= t >= t_min
+    if t_max is not None:
+        keep &= t <= t_max
+    rows = np.flatnonzero(keep)
+    if rows.size == 0:
+        covers = (
+            f"the stream covers t = {t.min():g} .. {t.max():g}"
+            if t.size
+            else "the stream holds no complete record"
+        )
+        raise ValueError(
+            f"{bin_path}: no probe samples with {t_min} <= t <= {t_max} "
+            f"({covers})"
+        )
+    if rows.size > 1 and not (np.diff(t[rows]) > 0).all():
+        raise ValueError(
+            f"{bin_path}: the kept times between t = {t[rows[0]]:g} and "
+            f"{t[rows[-1]]:g} do not rise strictly (a resume re-ran a "
+            "trajectory segment); raise t_min past the overlap"
+        )
+    per = max(1, block_bytes // record_dtype.itemsize)
+    first, last = int(rows[0]), int(rows[-1]) + 1
+    for start in range(first, last, per):
+        stop = min(start + per, last)
+        mask = keep[start:stop]
+        if not mask.any():
+            continue
+        rec = streamio.read_records(
+            bin_path, record_dtype, start=start, stop=stop, throttle=limit
+        )
+        yield _probe_data(meta, t[start:stop][mask], rec["u"][mask])
 
 
 def _time_mask(data: ProbeData, t_min: float) -> np.ndarray:

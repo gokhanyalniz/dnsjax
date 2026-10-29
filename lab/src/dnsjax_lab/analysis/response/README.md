@@ -47,7 +47,10 @@ Stream format, cadence guidance and resume rules:
 
 ### 2. The turbulent mean
 
-`read_probes` loads the stream; `mean_profile` turns the `(0,0)` record
+`read_probes` loads the stream; `iter_probes` reads it in blocks of
+records in time order, for a single pass over a stream too large to
+hold, and both take `read_cap` (MB/s) to read at a capped rate
+(`dnsjax_lab.analysis.streamio`). `mean_profile` turns the `(0,0)` record
 into a total mean profile (the closed-form laminar profile is added
 back; plane Couette and plane Poiseuille, as `re_tau`), and
 `write_profile_file` writes it in the two-column, top-wall-first form
