@@ -22,9 +22,10 @@ with NumPy (no solver), this pins:
    integer, a negative index, a slice, an integer array of any shape
    and an empty one, a whole record and its fields -- and raises
    numpy's exceptions where they do.
-5. **Readahead off, pages released.**  ``posix_fadvise`` is called with
-   ``POSIX_FADV_RANDOM`` at open and ``POSIX_FADV_DONTNEED`` on the page
-   span of every read.
+5. **Readahead off, pages released under a throttle.**
+   ``posix_fadvise`` is called with ``POSIX_FADV_RANDOM`` at every
+   ``pread`` descriptor's open, and with ``POSIX_FADV_DONTNEED`` on the
+   page span of every throttled read and of no other.
 6. **``map_records``** maps without a throttle, reads on demand with
    one, and refuses a file without a complete record; **``paced``**
    charges whole files only under a cap.
@@ -295,7 +296,7 @@ def test_capped_records_is_a_memory_map() -> None:
 
 
 def test_fadvise() -> None:
-    """Readahead off at open; every read's page span released."""
+    """Readahead off at open; a throttled read's page span released."""
     if not sio._FADVISE:
         print("fadvise: skipped (no os.posix_fadvise here)")
         return
@@ -329,6 +330,19 @@ def test_fadvise() -> None:
                     dontneed,
                 )
             ]
+            # Without a throttle readahead is still off, and nothing
+            # is released.
+            calls.clear()
+            sio.read_column(path, DTYPE, "t")
+            assert [c[1:] for c in calls] == [(0, 0, random_)]
+            calls.clear()
+            sio.read_column(path, DTYPE, "t", throttle=sio.Throttle())
+            assert [c[1:] for c in calls[1:]] == [
+                (*sio._span(i * DTYPE.itemsize, 8), dontneed) for i in range(N)
+            ]
+            calls.clear()
+            sio.CappedRecords(path, DTYPE)["a"][3]
+            assert [c[1:] for c in calls] == [(0, 0, random_)]
         finally:
             os.posix_fadvise = real
     print("fadvise: OK")

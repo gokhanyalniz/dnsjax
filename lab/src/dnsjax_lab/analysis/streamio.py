@@ -20,10 +20,11 @@ module:
   cube, a reduced snapshot, a ``.dat`` stream) to the process's cap.
 
 A ``pread`` here switches readahead off on its descriptor
-(``POSIX_FADV_RANDOM``) and releases the pages it read from the page
-cache (``POSIX_FADV_DONTNEED``), so that the traffic is what was asked
-for and nothing accumulates in memory (Design notes, "Why pread, not a
-memory map").
+(``POSIX_FADV_RANDOM``), so that the traffic is what was asked for, and
+under a throttle releases the pages it read from the page cache
+(``POSIX_FADV_DONTNEED``), so that nothing accumulates in memory either;
+without one they stay cached, as a memory map's do (Design notes, "Why
+pread, not a memory map").
 
 The cap
 -------
@@ -54,7 +55,8 @@ memory limit on the process did not prevent it.  Reads by ``pread`` at
 25 MB/s, each read's pages released, read 20 GB there without one.  One
 more came ten seconds into a read capped at 12.5 MB/s, with the page
 cache already holding some 12 GB from another source: the cap lowers
-the risk, it does not remove it.
+the risk, it does not remove it.  Releasing each read's pages belongs
+to the same measure as the cap, so it comes with the throttle.
 
 **Why pread, not a memory map.**  A memory map reads whole pages, lets
 the kernel read ahead around each fault, and keeps what it read cached:
@@ -275,7 +277,7 @@ def _pread_into(
     limit: Throttle | None,
     path: Path,
 ) -> None:
-    """Fill *buffer* from *offset*, charged first and released after."""
+    """Fill *buffer* from *offset*, under *limit* charged and released."""
     global _charged
     start, length = _span(offset, len(buffer))
     if limit is not None:
@@ -295,7 +297,7 @@ def _pread_into(
                 f"({done} of {len(buffer)} bytes)"
             )
         done += got
-    if _FADVISE:
+    if limit is not None and _FADVISE:
         os.posix_fadvise(fd, start, length, os.POSIX_FADV_DONTNEED)
 
 
@@ -370,9 +372,9 @@ def read_column(
     """One field of every complete record, a ``pread`` per record.
 
     ``(n_records, *field shape)`` in the stored dtype.  Readahead is off
-    and each read's pages are released whether or not a *throttle*
-    charges them, so a pass over a stream's ``t`` reads a page per
-    record, never a readahead window around each.
+    with or without a *throttle*, so a pass over a stream's ``t`` reads
+    a page per record, never a readahead window around each; under a
+    throttle each read's pages are also released.
     """
     path, dtype = Path(path), np.dtype(dtype)
     sub, offset = _field(dtype, name)
@@ -441,8 +443,8 @@ class CappedRecords:
 
     An unknown field raises ``ValueError``, a row out of range
     ``IndexError``, as numpy does.  Every read is charged to *throttle*
-    (none: no limit) and its pages released; readahead is off on the
-    descriptor, which closes with the object.
+    and its pages released (none: no limit, the pages left cached);
+    readahead is off on the descriptor, which closes with the object.
     """
 
     def __init__(
