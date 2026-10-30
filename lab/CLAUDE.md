@@ -107,6 +107,9 @@ benchmarks and diagnostics are fixed on purpose.
   partial-tile path.
 - `diagnostics/gds_probe.py`: cluster diagnostic for the snapshot GDS
   path (`--cpu-smoke`).
+- `diagnostics/snapshot_holes.py`: JAX-free, metadata-only scan of an
+  archive for the holes of writes that never landed; run it on the
+  filesystem the run wrote, since a copy without holes always passes.
 - `refactor/verify.py`: the gate for a refactor that must change
   nothing: capture a commit in a throwaway worktree and compare it with
   a reference capture (`--only` narrows the cases).

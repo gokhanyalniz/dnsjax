@@ -58,6 +58,7 @@ Functionality checks, in [`scripts/diagnostics/`](scripts/diagnostics/):
 | `grad_probe.py` | which stepping configurations differentiate in forward and reverse mode, each gradient checked against a finite difference ([`docs/differentiability.md`](../docs/differentiability.md)) |
 | `pallas_tiling_diagnostic.py` | GPU harness that bisects the observed miscompile of the Pallas banded kernel's masked partial-tile path, which the kernel's whole-tile padding avoids, and checks that the padded solve passes |
 | `gds_probe.py` | cluster diagnostic for the snapshot's GPUDirect Storage path: whether it engages, and what limits its transfer rate |
+| `snapshot_holes.py` | whether every byte of an archive written while the filesystem was failing reached it: the holes left in the archive's sparse layout, each placed by member, component, rows and writing devices, from metadata alone, with a sparse probe file as the control |
 
 ## Tests
 
